@@ -7,15 +7,23 @@ from diffusers import DiffusionPipeline
 import torch
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-model_repo_id = "stabilityai/sdxl-turbo"  # Replace to the model you would like to use
 
 if torch.cuda.is_available():
     torch_dtype = torch.float16
 else:
     torch_dtype = torch.float32
 
-pipe = DiffusionPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
-pipe = pipe.to(device)
+MODEL_OPTIONS = {
+    "Sana": "sana-model-repo-id",
+    "SD3": "sd3-model-repo-id",
+    "Flux": "flux-model-repo-id"
+}
+
+def load_model(model_choice):
+    model_repo_id = MODEL_OPTIONS[model_choice]
+    pipe = DiffusionPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
+    pipe = pipe.to(device)
+    return pipe
 
 MAX_SEED = np.iinfo(np.int32).max
 MAX_IMAGE_SIZE = 1024
@@ -31,12 +39,15 @@ def infer(
     height,
     guidance_scale,
     num_inference_steps,
+    model_choice,
     progress=gr.Progress(track_tqdm=True),
 ):
     if randomize_seed:
         seed = random.randint(0, MAX_SEED)
 
     generator = torch.Generator().manual_seed(seed)
+
+    pipe = load_model(model_choice)
 
     image = pipe(
         prompt=prompt,
@@ -75,6 +86,11 @@ with gr.Blocks(css=css) as demo:
                 max_lines=1,
                 placeholder="Enter your prompt",
                 container=False,
+            )
+            model_choice = gr.Dropdown(
+                label="Model Choice",
+                choices=["Sana", "SD3", "Flux"],
+                value="Sana"
             )
 
             run_button = gr.Button("Run", scale=0, variant="primary")
@@ -146,6 +162,7 @@ with gr.Blocks(css=css) as demo:
             height,
             guidance_scale,
             num_inference_steps,
+            model_choice,
         ],
         outputs=[result, seed],
     )

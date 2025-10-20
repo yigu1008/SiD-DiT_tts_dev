@@ -3,7 +3,7 @@ import numpy as np
 import random
 
 # import spaces #[uncomment to use ZeroGPU]
-from diffusers import DiffusionPipeline
+from diffusers import SanaPipeline, StableDiffusion3Pipeline, FluxPipeline
 import torch
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -14,14 +14,22 @@ else:
     torch_dtype = torch.float32
 
 MODEL_OPTIONS = {
-    "Sana": "sana-model-repo-id",
-    "SD3": "sd3-model-repo-id",
-    "Flux": "flux-model-repo-id"
+    "Sana": "Efficient-Large-Model/Sana_1600M_1024px",
+    "SD3": "stabilityai/stable-diffusion-3-medium",
+    "Flux": "black-forest-labs/FLUX.1-dev"
 }
 
 def load_model(model_choice):
     model_repo_id = MODEL_OPTIONS[model_choice]
-    pipe = DiffusionPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
+    # pipe = DiffusionPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
+    if model_choice == 'Sana':
+        pipe = SanaPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
+    elif model_choice == 'SD3':
+        pipe = StableDiffusion3Pipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
+    else:
+        pipe = FluxPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
+        
+        
     pipe = pipe.to(device)
     return pipe
 

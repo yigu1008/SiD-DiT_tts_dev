@@ -1,5 +1,5 @@
 ---
-title: Text-to-Image Gradio Template
+title: Sid Dit
 emoji: 🖼
 colorFrom: purple
 colorTo: red

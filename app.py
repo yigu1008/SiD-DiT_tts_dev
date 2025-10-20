@@ -14,7 +14,7 @@ else:
     torch_dtype = torch.float32
 
 MODEL_OPTIONS = {
-    "Sana": "Efficient-Large-Model/Sana_1600M_1024px",
+    "Sana": "Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers",
     "SD3": "stabilityai/stable-diffusion-3-medium",
     "Flux": "black-forest-labs/FLUX.1-dev"
 }

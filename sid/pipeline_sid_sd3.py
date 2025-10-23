@@ -759,28 +759,32 @@ class SiDSD3Pipeline(
                 raise ValueError(f"Unknown noise_type: {noise_type}")
                 
             # Compute t value, normalized to [0, 1]
-            t_val = 1.0 - float(i) / float(num_inference_steps)
+            init_timesteps = 999
+            scalar_t = float(init_timesteps) * (1.0 - float(i) / float(num_inference_steps))
+            t_val = scalar_t / 999.0
+            # t_val = 1.0 - float(i) / float(num_inference_steps)
             if use_sd3_shift:
                 shift = 3.0
                 t_val = shift * t_val / (1 + (shift - 1) * t_val)
+                
             t = torch.full((latents.shape[0],), t_val, device=latents.device, dtype=latents.dtype)
-            t_flatten = t.flatten()
+            t_flattern = t.flatten()
             if t.numel() > 1:
-                t_view = t.view(-1, 1, 1, 1)
-            else:
-                t_view = t
-            # SiD update
-            latents = (1.0 - t_view) * D_x + t_view * noise
+                t = t.view(-1, 1, 1, 1)
+
+            latents = (1.0 - t) * D_x + t * noise
+            latent_model_input = latents
+
             flow_pred = self.transformer(
-                hidden_states=latents,
+                hidden_states=latent_model_input,
                 encoder_hidden_states=prompt_embeds,
+                #encoder_attention_mask=prompt_attention_mask,
                 pooled_projections=pooled_prompt_embeds,
-                timestep=t_flatten,
+                timestep=1000*t_flattern,
                 return_dict=False,
             )[0]
-
-            D_x = latents - (t_view * flow_pred if torch.numel(t_view) == 1 else t_view.view(-1, 1, 1, 1) * flow_pred)
-
+            D_x = latents - (t * flow_pred if torch.numel(t) == 1 else t.view(-1, 1, 1, 1) * flow_pred)
+        
         # 5. Decode latent to image
         image = self.vae.decode((D_x / self.vae.config.scaling_factor) + self.vae.config.shift_factor, return_dict=False)[0]
         image = self.image_processor.postprocess(image, output_type=output_type)

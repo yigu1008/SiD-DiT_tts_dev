@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from ...utils import (
+from diffusers.utils import (
     DIFFUSERS_SLOW_IMPORT,
     OptionalDependencyNotAvailable,
     _LazyModule,
@@ -19,7 +19,7 @@ try:
     if not (is_transformers_available() and is_torch_available()):
         raise OptionalDependencyNotAvailable()
 except OptionalDependencyNotAvailable:
-    from ...utils import dummy_torch_and_transformers_objects  # noqa F403
+    from diffusers.utils import dummy_torch_and_transformers_objects  # noqa F403
 
     _dummy_objects.update(get_objects_from_module(dummy_torch_and_transformers_objects))
 else:
@@ -32,7 +32,7 @@ if TYPE_CHECKING or DIFFUSERS_SLOW_IMPORT:
         if not (is_transformers_available() and is_torch_available()):
             raise OptionalDependencyNotAvailable()
     except OptionalDependencyNotAvailable:
-        from ...utils.dummy_torch_and_transformers_objects import *  # noqa F403
+        from diffusers.utils.dummy_torch_and_transformers_objects import *  # noqa F403
     else:
         from .pipeline_sid_sd3 import SiDSD3Pipeline
         from .pipeline_sid_flux import SiDFluxPipeline

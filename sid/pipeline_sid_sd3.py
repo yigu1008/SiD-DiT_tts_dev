@@ -749,16 +749,16 @@ class SiDSD3Pipeline(
         # Initialize D_x
         D_x = torch.zeros_like(latents).to(latents.device)
         # Use fixed noise for now (can be extended as needed)
-        initial_latents = latents.clone()
+        initial_latents = latents.clone() if noise_type == 'fixed' else None
         for i in range(num_inference_steps):
             if noise_type == "fresh":
                 noise = (
                     latents if i == 0 else torch.randn_like(latents).to(latents.device)
                 )
             elif noise_type == "ddim":
-                noise = (
-                    latents if i == 0 else ((latents - (1.0 - t) * D_x) / t).detach()
-                )
+                    noise = (
+                        latents if i == 0 else ((latents - (1.0 - t) * D_x) / t).detach()
+                    )
             elif noise_type == "fixed":
                 noise = initial_latents  # Use the initial, unmodified latents
             else:

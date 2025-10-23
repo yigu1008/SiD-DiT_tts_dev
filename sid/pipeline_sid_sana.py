@@ -159,9 +159,13 @@ def retrieve_timesteps(
         second element is the number of inference steps.
     """
     if timesteps is not None and sigmas is not None:
-        raise ValueError("Only one of `timesteps` or `sigmas` can be passed. Please choose one to set custom values")
+        raise ValueError(
+            "Only one of `timesteps` or `sigmas` can be passed. Please choose one to set custom values"
+        )
     if timesteps is not None:
-        accepts_timesteps = "timesteps" in set(inspect.signature(scheduler.set_timesteps).parameters.keys())
+        accepts_timesteps = "timesteps" in set(
+            inspect.signature(scheduler.set_timesteps).parameters.keys()
+        )
         if not accepts_timesteps:
             raise ValueError(
                 f"The current scheduler class {scheduler.__class__}'s `set_timesteps` does not support custom"
@@ -171,7 +175,9 @@ def retrieve_timesteps(
         timesteps = scheduler.timesteps
         num_inference_steps = len(timesteps)
     elif sigmas is not None:
-        accept_sigmas = "sigmas" in set(inspect.signature(scheduler.set_timesteps).parameters.keys())
+        accept_sigmas = "sigmas" in set(
+            inspect.signature(scheduler.set_timesteps).parameters.keys()
+        )
         if not accept_sigmas:
             raise ValueError(
                 f"The current scheduler class {scheduler.__class__}'s `set_timesteps` does not support custom"
@@ -209,7 +215,11 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
         super().__init__()
 
         self.register_modules(
-            tokenizer=tokenizer, text_encoder=text_encoder, vae=vae, transformer=transformer, scheduler=scheduler
+            tokenizer=tokenizer,
+            text_encoder=text_encoder,
+            vae=vae,
+            transformer=transformer,
+            scheduler=scheduler,
         )
 
         self.vae_scale_factor = (
@@ -217,7 +227,9 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
             if hasattr(self, "vae") and self.vae is not None
             else 32
         )
-        self.image_processor = PixArtImageProcessor(vae_scale_factor=self.vae_scale_factor)
+        self.image_processor = PixArtImageProcessor(
+            vae_scale_factor=self.vae_scale_factor
+        )
 
     def enable_vae_slicing(self):
         r"""
@@ -301,7 +313,9 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
         prompt_attention_mask = text_inputs.attention_mask
         prompt_attention_mask = prompt_attention_mask.to(device)
 
-        prompt_embeds = self.text_encoder(text_input_ids.to(device), attention_mask=prompt_attention_mask)
+        prompt_embeds = self.text_encoder(
+            text_input_ids.to(device), attention_mask=prompt_attention_mask
+        )
         prompt_embeds = prompt_embeds[0].to(dtype=dtype, device=device)
 
         return prompt_embeds, prompt_attention_mask
@@ -398,33 +412,51 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
         bs_embed, seq_len, _ = prompt_embeds.shape
         # duplicate text embeddings and attention mask for each generation per prompt, using mps friendly method
         prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
-        prompt_embeds = prompt_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
+        prompt_embeds = prompt_embeds.view(
+            bs_embed * num_images_per_prompt, seq_len, -1
+        )
         prompt_attention_mask = prompt_attention_mask.view(bs_embed, -1)
         prompt_attention_mask = prompt_attention_mask.repeat(num_images_per_prompt, 1)
 
         # get unconditional embeddings for classifier free guidance
         if do_classifier_free_guidance and negative_prompt_embeds is None:
-            negative_prompt = [negative_prompt] * batch_size if isinstance(negative_prompt, str) else negative_prompt
-            negative_prompt_embeds, negative_prompt_attention_mask = self._get_gemma_prompt_embeds(
-                prompt=negative_prompt,
-                device=device,
-                dtype=dtype,
-                clean_caption=clean_caption,
-                max_sequence_length=max_sequence_length,
-                complex_human_instruction=False,
+            negative_prompt = (
+                [negative_prompt] * batch_size
+                if isinstance(negative_prompt, str)
+                else negative_prompt
+            )
+            negative_prompt_embeds, negative_prompt_attention_mask = (
+                self._get_gemma_prompt_embeds(
+                    prompt=negative_prompt,
+                    device=device,
+                    dtype=dtype,
+                    clean_caption=clean_caption,
+                    max_sequence_length=max_sequence_length,
+                    complex_human_instruction=False,
+                )
             )
 
         if do_classifier_free_guidance:
             # duplicate unconditional embeddings for each generation per prompt, using mps friendly method
             seq_len = negative_prompt_embeds.shape[1]
 
-            negative_prompt_embeds = negative_prompt_embeds.to(dtype=dtype, device=device)
+            negative_prompt_embeds = negative_prompt_embeds.to(
+                dtype=dtype, device=device
+            )
 
-            negative_prompt_embeds = negative_prompt_embeds.repeat(1, num_images_per_prompt, 1)
-            negative_prompt_embeds = negative_prompt_embeds.view(batch_size * num_images_per_prompt, seq_len, -1)
+            negative_prompt_embeds = negative_prompt_embeds.repeat(
+                1, num_images_per_prompt, 1
+            )
+            negative_prompt_embeds = negative_prompt_embeds.view(
+                batch_size * num_images_per_prompt, seq_len, -1
+            )
 
-            negative_prompt_attention_mask = negative_prompt_attention_mask.view(bs_embed, -1)
-            negative_prompt_attention_mask = negative_prompt_attention_mask.repeat(num_images_per_prompt, 1)
+            negative_prompt_attention_mask = negative_prompt_attention_mask.view(
+                bs_embed, -1
+            )
+            negative_prompt_attention_mask = negative_prompt_attention_mask.repeat(
+                num_images_per_prompt, 1
+            )
         else:
             negative_prompt_embeds = None
             negative_prompt_attention_mask = None
@@ -434,7 +466,12 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
                 # Retrieve the original scale by scaling back the LoRA layers
                 unscale_lora_layers(self.text_encoder, lora_scale)
 
-        return prompt_embeds, prompt_attention_mask, negative_prompt_embeds, negative_prompt_attention_mask
+        return (
+            prompt_embeds,
+            prompt_attention_mask,
+            negative_prompt_embeds,
+            negative_prompt_attention_mask,
+        )
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.prepare_extra_step_kwargs
     def prepare_extra_step_kwargs(self, generator, eta):
@@ -443,13 +480,17 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
         # eta corresponds to η in DDIM paper: https://huggingface.co/papers/2010.02502
         # and should be between [0, 1]
 
-        accepts_eta = "eta" in set(inspect.signature(self.scheduler.step).parameters.keys())
+        accepts_eta = "eta" in set(
+            inspect.signature(self.scheduler.step).parameters.keys()
+        )
         extra_step_kwargs = {}
         if accepts_eta:
             extra_step_kwargs["eta"] = eta
 
         # check if the scheduler accepts generator
-        accepts_generator = "generator" in set(inspect.signature(self.scheduler.step).parameters.keys())
+        accepts_generator = "generator" in set(
+            inspect.signature(self.scheduler.step).parameters.keys()
+        )
         if accepts_generator:
             extra_step_kwargs["generator"] = generator
         return extra_step_kwargs
@@ -467,10 +508,13 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
         negative_prompt_attention_mask=None,
     ):
         if height % 32 != 0 or width % 32 != 0:
-            raise ValueError(f"`height` and `width` have to be divisible by 32 but are {height} and {width}.")
+            raise ValueError(
+                f"`height` and `width` have to be divisible by 32 but are {height} and {width}."
+            )
 
         if callback_on_step_end_tensor_inputs is not None and not all(
-            k in self._callback_tensor_inputs for k in callback_on_step_end_tensor_inputs
+            k in self._callback_tensor_inputs
+            for k in callback_on_step_end_tensor_inputs
         ):
             raise ValueError(
                 f"`callback_on_step_end_tensor_inputs` has to be in {self._callback_tensor_inputs}, but found {[k for k in callback_on_step_end_tensor_inputs if k not in self._callback_tensor_inputs]}"
@@ -485,8 +529,12 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
             raise ValueError(
                 "Provide either `prompt` or `prompt_embeds`. Cannot leave both `prompt` and `prompt_embeds` undefined."
             )
-        elif prompt is not None and (not isinstance(prompt, str) and not isinstance(prompt, list)):
-            raise ValueError(f"`prompt` has to be of type `str` or `list` but is {type(prompt)}")
+        elif prompt is not None and (
+            not isinstance(prompt, str) and not isinstance(prompt, list)
+        ):
+            raise ValueError(
+                f"`prompt` has to be of type `str` or `list` but is {type(prompt)}"
+            )
 
         if prompt is not None and negative_prompt_embeds is not None:
             raise ValueError(
@@ -501,10 +549,17 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
             )
 
         if prompt_embeds is not None and prompt_attention_mask is None:
-            raise ValueError("Must provide `prompt_attention_mask` when specifying `prompt_embeds`.")
+            raise ValueError(
+                "Must provide `prompt_attention_mask` when specifying `prompt_embeds`."
+            )
 
-        if negative_prompt_embeds is not None and negative_prompt_attention_mask is None:
-            raise ValueError("Must provide `negative_prompt_attention_mask` when specifying `negative_prompt_embeds`.")
+        if (
+            negative_prompt_embeds is not None
+            and negative_prompt_attention_mask is None
+        ):
+            raise ValueError(
+                "Must provide `negative_prompt_attention_mask` when specifying `negative_prompt_embeds`."
+            )
 
         if prompt_embeds is not None and negative_prompt_embeds is not None:
             if prompt_embeds.shape != negative_prompt_embeds.shape:
@@ -523,12 +578,16 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
     # Copied from diffusers.pipelines.deepfloyd_if.pipeline_if.IFPipeline._text_preprocessing
     def _text_preprocessing(self, text, clean_caption=False):
         if clean_caption and not is_bs4_available():
-            logger.warning(BACKENDS_MAPPING["bs4"][-1].format("Setting `clean_caption=True`"))
+            logger.warning(
+                BACKENDS_MAPPING["bs4"][-1].format("Setting `clean_caption=True`")
+            )
             logger.warning("Setting `clean_caption` to False...")
             clean_caption = False
 
         if clean_caption and not is_ftfy_available():
-            logger.warning(BACKENDS_MAPPING["ftfy"][-1].format("Setting `clean_caption=True`"))
+            logger.warning(
+                BACKENDS_MAPPING["ftfy"][-1].format("Setting `clean_caption=True`")
+            )
             logger.warning("Setting `clean_caption` to False...")
             clean_caption = False
 
@@ -616,13 +675,17 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
         # "123456.."
         caption = re.sub(r"\b\d{6,}\b", "", caption)
         # filenames:
-        caption = re.sub(r"[\S]+\.(?:png|jpg|jpeg|bmp|webp|eps|pdf|apk|mp4)", "", caption)
+        caption = re.sub(
+            r"[\S]+\.(?:png|jpg|jpeg|bmp|webp|eps|pdf|apk|mp4)", "", caption
+        )
 
         #
         caption = re.sub(r"[\"\']{2,}", r'"', caption)  # """AUSVERKAUFT"""
         caption = re.sub(r"[\.]{2,}", r" ", caption)  # """AUSVERKAUFT"""
 
-        caption = re.sub(self.bad_punct_regex, r" ", caption)  # ***AUSVERKAUFT***, #AUSVERKAUFT
+        caption = re.sub(
+            self.bad_punct_regex, r" ", caption
+        )  # ***AUSVERKAUFT***, #AUSVERKAUFT
         caption = re.sub(r"\s+\.\s+", r" ", caption)  # " . "
 
         # this-is-my-cute-cat / this_is_my_cute_cat
@@ -640,10 +703,14 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
         caption = re.sub(r"(worldwide\s+)?(free\s+)?shipping", "", caption)
         caption = re.sub(r"(free\s)?download(\sfree)?", "", caption)
         caption = re.sub(r"\bclick\b\s(?:for|on)\s\w+", "", caption)
-        caption = re.sub(r"\b(?:png|jpg|jpeg|bmp|webp|eps|pdf|apk|mp4)(\simage[s]?)?", "", caption)
+        caption = re.sub(
+            r"\b(?:png|jpg|jpeg|bmp|webp|eps|pdf|apk|mp4)(\simage[s]?)?", "", caption
+        )
         caption = re.sub(r"\bpage\s+\d+\b", "", caption)
 
-        caption = re.sub(r"\b\d*[a-zA-Z]+\d+[a-zA-Z]+\d+[a-zA-Z\d]*\b", r" ", caption)  # j2d1a2a...
+        caption = re.sub(
+            r"\b\d*[a-zA-Z]+\d+[a-zA-Z]+\d+[a-zA-Z\d]*\b", r" ", caption
+        )  # j2d1a2a...
 
         caption = re.sub(r"\b\d+\.?\d*[xх×]\d+\.?\d*\b", "", caption)
 
@@ -660,7 +727,17 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
 
         return caption.strip()
 
-    def prepare_latents(self, batch_size, num_channels_latents, height, width, dtype, device, generator, latents=None):
+    def prepare_latents(
+        self,
+        batch_size,
+        num_channels_latents,
+        height,
+        width,
+        dtype,
+        device,
+        generator,
+        latents=None,
+    ):
         if latents is not None:
             return latents.to(device=device, dtype=dtype)
 
@@ -733,8 +810,10 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
             else:
                 raise ValueError("Invalid sample size")
             orig_height, orig_width = height, width
-            height, width = self.image_processor.classify_height_width_bin(height, width, ratios=aspect_ratio_bin)
-        
+            height, width = self.image_processor.classify_height_width_bin(
+                height, width, ratios=aspect_ratio_bin
+            )
+
         if isinstance(callback_on_step_end, (PipelineCallback, MultiPipelineCallbacks)):
             callback_on_step_end_tensor_inputs = callback_on_step_end.tensor_inputs
 
@@ -764,7 +843,8 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
         (
             prompt_embeds,
             prompt_attention_mask,
-            _, _,
+            _,
+            _,
         ) = self.encode_prompt(
             prompt,
             prompt_embeds=prompt_embeds,
@@ -840,7 +920,9 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
             return_dict=False,
         )[0]
         if use_resolution_binning:
-            image = self.image_processor.resize_and_crop_tensor(image, orig_height, orig_width)
+            image = self.image_processor.resize_and_crop_tensor(
+                image, orig_height, orig_width
+            )
         image = self.image_processor.postprocess(image, output_type=output_type)
         # Offload all models
         self.maybe_free_model_hooks()

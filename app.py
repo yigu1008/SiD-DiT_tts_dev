@@ -8,7 +8,7 @@ from sid import SiDFluxPipeline, SiDSD3Pipeline, SiDSanaPipeline
 import torch
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
+torch_dtype = torch.float16
 
 MODEL_OPTIONS = {
     "SiD-Flow-SD3-medium": "YGu1998/SiD-Flow-SD3-medium",
@@ -31,13 +31,13 @@ def load_model(model_choice):
     model_repo_id = MODEL_OPTIONS[model_choice]
     time_scale = 1000.0
     if "Sana" in model_choice:
-        pipe = SiDSanaPipeline.from_pretrained(model_repo_id, torch_dtype=torch.float16)
+        pipe = SiDSanaPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
         if "Sprint" in model_choice:
             time_scale = 1.0
     elif "SD3" in model_choice:
-        pipe = SiDSD3Pipeline.from_pretrained(model_repo_id, torch_dtype=torch.float16)
+        pipe = SiDSD3Pipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
     elif "Flux" in model_choice:
-        pipe = SiDFluxPipeline.from_pretrained(model_repo_id, torch_dtype=torch.float16)
+        pipe = SiDFluxPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
     else:
         raise ValueError(f"Unknown model type for: {model_choice}")
     pipe = pipe.to(device)

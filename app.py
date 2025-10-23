@@ -58,7 +58,6 @@ def infer(
     randomize_seed,
     width,
     height,
-    guidance_scale,
     num_inference_steps,
     model_choice,
     progress=gr.Progress(track_tqdm=True),
@@ -73,7 +72,7 @@ def infer(
     image = pipe(
         prompt=prompt,
         negative_prompt=negative_prompt,
-        guidance_scale=guidance_scale,
+        guidance_scale=1,
         num_inference_steps=num_inference_steps,
         width=width,
         height=height,
@@ -155,18 +154,18 @@ with gr.Blocks(css=css) as demo:
                 )
 
             with gr.Row():
-                guidance_scale = gr.Slider(
-                    label="Guidance scale",
-                    minimum=0.0,
-                    maximum=10.0,
-                    step=0.1,
-                    value=0.0,  # Replace with defaults that work for your model
-                )
+                # guidance_scale = gr.Slider(
+                #     label="Guidance scale",
+                #     minimum=0.0,
+                #     maximum=10.0,
+                #     step=0.1,
+                #     value=0.0,  # Replace with defaults that work for your model
+                # )
 
                 num_inference_steps = gr.Slider(
                     label="Number of inference steps",
                     minimum=1,
-                    maximum=50,
+                    maximum=4,
                     step=1,
                     value=2,  # Replace with defaults that work for your model
                 )
@@ -182,7 +181,6 @@ with gr.Blocks(css=css) as demo:
             randomize_seed,
             width,
             height,
-            guidance_scale,
             num_inference_steps,
             model_choice,
         ],

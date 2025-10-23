@@ -54,6 +54,7 @@ else:
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
+
 # Copied from diffusers.pipelines.flux.pipeline_flux.calculate_shift
 def calculate_shift(
     image_seq_len,
@@ -683,7 +684,8 @@ class SiDSD3Pipeline(
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 256,
         use_sd3_shift: bool = False,
-        noise_type: str = 'fresh', # 'fresh', 'ddim', 'fixed'
+        noise_type: str = "fresh",  # 'fresh', 'ddim', 'fixed'
+        time_scale: float = 1000.0,
     ):
         height = height or self.default_sample_size * self.vae_scale_factor
         width = width or self.default_sample_size * self.vae_scale_factor
@@ -749,25 +751,33 @@ class SiDSD3Pipeline(
         # Use fixed noise for now (can be extended as needed)
         initial_latents = latents.clone()
         for i in range(num_inference_steps):
-            if noise_type == 'fresh':
-                noise = latents if i == 0 else torch.randn_like(latents).to(latents.device)
-            elif noise_type=='ddim':
-                noise = latents if i == 0 else ((latents - (1.0 - t) * D_x) / t).detach()
-            elif noise_type == 'fixed':
+            if noise_type == "fresh":
+                noise = (
+                    latents if i == 0 else torch.randn_like(latents).to(latents.device)
+                )
+            elif noise_type == "ddim":
+                noise = (
+                    latents if i == 0 else ((latents - (1.0 - t) * D_x) / t).detach()
+                )
+            elif noise_type == "fixed":
                 noise = initial_latents  # Use the initial, unmodified latents
             else:
                 raise ValueError(f"Unknown noise_type: {noise_type}")
-                
+
             # Compute t value, normalized to [0, 1]
             init_timesteps = 999
-            scalar_t = float(init_timesteps) * (1.0 - float(i) / float(num_inference_steps))
+            scalar_t = float(init_timesteps) * (
+                1.0 - float(i) / float(num_inference_steps)
+            )
             t_val = scalar_t / 999.0
             # t_val = 1.0 - float(i) / float(num_inference_steps)
             if use_sd3_shift:
                 shift = 3.0
                 t_val = shift * t_val / (1 + (shift - 1) * t_val)
-                
-            t = torch.full((latents.shape[0],), t_val, device=latents.device, dtype=latents.dtype)
+
+            t = torch.full(
+                (latents.shape[0],), t_val, device=latents.device, dtype=latents.dtype
+            )
             t_flattern = t.flatten()
             if t.numel() > 1:
                 t = t.view(-1, 1, 1, 1)
@@ -778,19 +788,28 @@ class SiDSD3Pipeline(
             flow_pred = self.transformer(
                 hidden_states=latent_model_input,
                 encoder_hidden_states=prompt_embeds,
-                #encoder_attention_mask=prompt_attention_mask,
+                # encoder_attention_mask=prompt_attention_mask,
                 pooled_projections=pooled_prompt_embeds,
-                timestep=1000*t_flattern,
+                timestep=time_scale * t_flattern,
                 return_dict=False,
             )[0]
-            D_x = latents - (t * flow_pred if torch.numel(t) == 1 else t.view(-1, 1, 1, 1) * flow_pred)
-        
+            D_x = latents - (
+                t * flow_pred
+                if torch.numel(t) == 1
+                else t.view(-1, 1, 1, 1) * flow_pred
+            )
+
         # 5. Decode latent to image
-        image = self.vae.decode((D_x / self.vae.config.scaling_factor) + self.vae.config.shift_factor, return_dict=False)[0]
+        image = self.vae.decode(
+            (D_x / self.vae.config.scaling_factor) + self.vae.config.shift_factor,
+            return_dict=False,
+        )[0]
         image = self.image_processor.postprocess(image, output_type=output_type)
+        
+        self.maybe_free_model_hooks()
 
         # 6. Return output
         if not return_dict:
             return (image,)
-        
+
         return SiDPipelineOutput(images=image)

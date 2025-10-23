@@ -9,10 +9,6 @@ import torch
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-if torch.cuda.is_available():
-    torch_dtype = torch.float16
-else:
-    torch_dtype = torch.float32
 
 MODEL_OPTIONS = {
     "SiD-Flow-SD3-medium": "YGu1998/SiD-Flow-SD3-medium",
@@ -33,16 +29,19 @@ MODEL_OPTIONS = {
 
 def load_model(model_choice):
     model_repo_id = MODEL_OPTIONS[model_choice]
+    time_scale = 1000.0
     if "Sana" in model_choice:
-        pipe = SiDSanaPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
+        pipe = SiDSanaPipeline.from_pretrained(model_repo_id, torch_dtype=torch.float16)
+        if "Sprint" in model_choice:
+            time_scale = 1.0
     elif "SD3" in model_choice:
-        pipe = SiDSD3Pipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
+        pipe = SiDSD3Pipeline.from_pretrained(model_repo_id, torch_dtype=torch.float16)
     elif "Flux" in model_choice:
-        pipe = SiDFluxPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
+        pipe = SiDFluxPipeline.from_pretrained(model_repo_id, torch_dtype=torch.float16)
     else:
         raise ValueError(f"Unknown model type for: {model_choice}")
     pipe = pipe.to(device)
-    return pipe
+    return pipe, time_scale
 
 
 MAX_SEED = np.iinfo(np.int32).max
@@ -65,7 +64,7 @@ def infer(
 
     generator = torch.Generator().manual_seed(seed)
 
-    pipe = load_model(model_choice)
+    pipe, time_scale = load_model(model_choice)
 
     image = pipe(
         prompt=prompt,
@@ -74,6 +73,7 @@ def infer(
         width=width,
         height=height,
         generator=generator,
+        time_scale=time_scale,
     ).images[0]
 
     return image, seed

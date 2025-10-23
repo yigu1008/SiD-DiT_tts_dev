@@ -711,7 +711,7 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         latents: Optional[torch.FloatTensor] = None,
         prompt_embeds: Optional[torch.FloatTensor] = None,
-        pooled_prompt_embeds: Optional[torch.FloatTensor] = None,
+        prompt_attention_mask: Optional[torch.FloatTensor] = None,
         output_type: Optional[str] = "pil",
         return_dict: bool = True,
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
@@ -744,7 +744,7 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
             height,
             width,
             prompt_embeds=prompt_embeds,
-            pooled_prompt_embeds=pooled_prompt_embeds,
+            prompt_attention_mask=prompt_attention_mask,
             callback_on_step_end_tensor_inputs=callback_on_step_end_tensor_inputs,
         )
 
@@ -763,12 +763,12 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
 
         (
             prompt_embeds,
-            pooled_prompt_embeds,
+            prompt_attention_mask,
             _, _,
         ) = self.encode_prompt(
             prompt,
             prompt_embeds=prompt_embeds,
-            pooled_prompt_embeds=pooled_prompt_embeds,
+            prompt_attention_mask=prompt_attention_mask,
             device=device,
             num_images_per_prompt=num_images_per_prompt,
             max_sequence_length=max_sequence_length,
@@ -824,8 +824,7 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
             flow_pred = self.transformer(
                 hidden_states=latent_model_input,
                 encoder_hidden_states=prompt_embeds,
-                # encoder_attention_mask=prompt_attention_mask,
-                pooled_projections=pooled_prompt_embeds,
+                encoder_attention_mask=prompt_attention_mask,
                 timestep=time_scale * t_flattern,
                 return_dict=False,
             )[0]

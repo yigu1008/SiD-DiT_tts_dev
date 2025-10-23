@@ -778,10 +778,12 @@ class SiDSD3Pipeline(
                 timestep=t_flatten,
                 return_dict=False,
             )[0]
-            D_x = latents - t_view * flow_pred
+
+            D_x = latents - (t_view * flow_pred if torch.numel(t_view) == 1 else t_view.view(-1, 1, 1, 1) * flow_pred)
 
         # 5. Decode latent to image
         image = self.vae.decode((D_x / self.vae.config.scaling_factor) + self.vae.config.shift_factor, return_dict=False)[0]
+        image = self.image_processor.postprocess(image, output_type=output_type)
 
         # 6. Return output
         if not return_dict:

@@ -32,16 +32,14 @@ MODEL_OPTIONS = {
 
 def load_model(model_choice):
     model_repo_id = MODEL_OPTIONS[model_choice]
-    # pipe = DiffusionPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
-    if model_choice == "Sana":
+    if "Sana" in model_choice:
         pipe = SanaPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
-    elif model_choice == "SD3":
-        pipe = StableDiffusion3Pipeline.from_pretrained(
-            model_repo_id, torch_dtype=torch_dtype
-        )
-    else:
+    elif "SD3" in model_choice:
+        pipe = StableDiffusion3Pipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
+    elif "Flux" in model_choice:
         pipe = FluxPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
-
+    else:
+        raise ValueError(f"Unknown model type for: {model_choice}")
     pipe = pipe.to(device)
     return pipe
 

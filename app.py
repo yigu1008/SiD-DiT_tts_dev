@@ -3,7 +3,8 @@ import numpy as np
 import random
 
 # import spaces #[uncomment to use ZeroGPU]
-from diffusers import SanaPipeline, StableDiffusion3Pipeline, FluxPipeline
+# from diffusers import SanaPipeline, StableDiffusion3Pipeline, FluxPipeline
+from sid import SiDFluxPipeline, SiDSD3Pipeline, SiDSanaPipeline
 import torch
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -33,11 +34,11 @@ MODEL_OPTIONS = {
 def load_model(model_choice):
     model_repo_id = MODEL_OPTIONS[model_choice]
     if "Sana" in model_choice:
-        pipe = SanaPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
+        pipe = SiDSanaPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
     elif "SD3" in model_choice:
-        pipe = StableDiffusion3Pipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
+        pipe = SiDSD3Pipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
     elif "Flux" in model_choice:
-        pipe = FluxPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
+        pipe = SiDFluxPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
     else:
         raise ValueError(f"Unknown model type for: {model_choice}")
     pipe = pipe.to(device)

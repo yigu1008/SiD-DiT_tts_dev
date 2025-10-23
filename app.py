@@ -18,6 +18,7 @@ MODEL_OPTIONS = {
     "SiD-Flow-Sana-0.6B-512-res": "YGu1998/SiD-Flow-Sana-0.6B-512-res",
     "SiDA-Flow-Sana-0.6B-512-res": "YGu1998/SiDA-Flow-Sana-0.6B-512-res",
     "SiD-Flow-Sana-1.6B-512-res": "YGu1998/SiD-Flow-Sana-1.6B-512-res",
+    "SiDA-Flow-Sana-1.6B-512-res": "YGu1998/SiDA-Flow-Sana-1.6B-512-res",
     "SiD-Flow-Sana-Sprint-0.6B-1024-res": "YGu1998/SiD-Flow-Sana-Sprint-0.6B-1024-res",
     "SiDA-Flow-Sana-Sprint-0.6B-1024-res": "YGu1998/SiDA-Flow-Sana-Sprint-0.6B-1024-res",
     "SiD-Flow-Sana-Sprint-1.6B-1024-res": "YGu1998/SiD-Flow-Sana-Sprint-1.6B-1024-res",
@@ -31,7 +32,7 @@ def load_model(model_choice):
     model_repo_id = MODEL_OPTIONS[model_choice]
     time_scale = 1000.0
     if "Sana" in model_choice:
-        pipe = SiDSanaPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
+        pipe = SiDSanaPipeline.from_pretrained(model_repo_id, torch_dtype=torch.bfloat16)
         if "Sprint" in model_choice:
             time_scale = 1.0
     elif "SD3" in model_choice:

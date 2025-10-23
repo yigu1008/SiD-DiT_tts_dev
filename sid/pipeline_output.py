@@ -4,7 +4,7 @@ from typing import List, Union
 import numpy as np
 import PIL.Image
 
-from ...utils import BaseOutput
+from diffusers.utils import BaseOutput
 
 
 @dataclass

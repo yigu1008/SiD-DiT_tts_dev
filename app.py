@@ -52,7 +52,6 @@ MAX_IMAGE_SIZE = 1024
 # @spaces.GPU #[uncomment to use ZeroGPU]
 def infer(
     prompt,
-    negative_prompt,
     seed,
     randomize_seed,
     width,
@@ -70,7 +69,6 @@ def infer(
 
     image = pipe(
         prompt=prompt,
-        negative_prompt=negative_prompt,
         guidance_scale=1,
         num_inference_steps=num_inference_steps,
         width=width,
@@ -118,12 +116,6 @@ with gr.Blocks(css=css) as demo:
         result = gr.Image(label="Result", show_label=False)
 
         with gr.Accordion("Advanced Settings", open=False):
-            negative_prompt = gr.Text(
-                label="Negative prompt",
-                max_lines=1,
-                placeholder="Enter a negative prompt",
-                visible=False,
-            )
 
             seed = gr.Slider(
                 label="Seed",
@@ -175,7 +167,6 @@ with gr.Blocks(css=css) as demo:
         fn=infer,
         inputs=[
             prompt,
-            negative_prompt,
             seed,
             randomize_seed,
             width,

@@ -14,24 +14,37 @@ else:
     torch_dtype = torch.float32
 
 MODEL_OPTIONS = {
-    "Sana": "Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers",
-    "SD3": "stabilityai/stable-diffusion-3-medium",
-    "Flux": "black-forest-labs/FLUX.1-dev"
+    "SiD-Flow-SD3-medium": "YGu1998/SiD-Flow-SD3-medium",
+    "SiDA-Flow-SD3-medium": "YGu1998/SiDA-Flow-SD3-medium",
+    "SiD-Flow-SD3.5-large": "YGu1998/SiD-Flow-SD3.5-large",
+    "SiDA-Flow-SD3.5-large": "YGu1998/SiDA-Flow-SD3.5-large",
+    "SiD-Flow-Sana-0.6B-512-res": "YGu1998/SiD-Flow-Sana-0.6B-512-res",
+    "SiDA-Flow-Sana-0.6B-512-res": "YGu1998/SiDA-Flow-Sana-0.6B-512-res",
+    "SiD-Flow-Sana-1.6B-512-res": "YGu1998/SiD-Flow-Sana-1.6B-512-res",
+    "SiD-Flow-Sana-Sprint-0.6B-1024-res": "YGu1998/SiD-Flow-Sana-Sprint-0.6B-1024-res",
+    "SiDA-Flow-Sana-Sprint-0.6B-1024-res": "YGu1998/SiDA-Flow-Sana-Sprint-0.6B-1024-res",
+    "SiD-Flow-Sana-Sprint-1.6B-1024-res": "YGu1998/SiD-Flow-Sana-Sprint-1.6B-1024-res",
+    "SiDA-Flow-Sana-Sprint-1.6B-1024-res": "YGu1998/SiDA-Flow-Sana-Sprint-1.6B-1024-res",
+    "SiD-Flow-Flux-1024-res": "YGu1998/SiD-Flow-Flux-1024-res",
+    "SiD-Flow-Flux-512-res": "YGu1998/SiD-Flow-Flux-512-res",
 }
+
 
 def load_model(model_choice):
     model_repo_id = MODEL_OPTIONS[model_choice]
     # pipe = DiffusionPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
-    if model_choice == 'Sana':
+    if model_choice == "Sana":
         pipe = SanaPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
-    elif model_choice == 'SD3':
-        pipe = StableDiffusion3Pipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
+    elif model_choice == "SD3":
+        pipe = StableDiffusion3Pipeline.from_pretrained(
+            model_repo_id, torch_dtype=torch_dtype
+        )
     else:
         pipe = FluxPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
-        
-        
+
     pipe = pipe.to(device)
     return pipe
+
 
 MAX_SEED = np.iinfo(np.int32).max
 MAX_IMAGE_SIZE = 1024
@@ -95,13 +108,14 @@ with gr.Blocks(css=css) as demo:
                 placeholder="Enter your prompt",
                 container=False,
             )
-            model_choice = gr.Dropdown(
-                label="Model Choice",
-                choices=["Sana", "SD3", "Flux"],
-                value="Sana"
-            )
 
             run_button = gr.Button("Run", scale=0, variant="primary")
+
+        model_choice = gr.Dropdown(
+            label="Model Choice",
+            choices=list(MODEL_OPTIONS.keys()),
+            value="SiD-Flow-SD3-medium",
+        )
 
         result = gr.Image(label="Result", show_label=False)
 

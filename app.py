@@ -2,7 +2,7 @@ import gradio as gr
 import numpy as np
 import random
 
-# import spaces #[uncomment to use ZeroGPU]
+import spaces #[uncomment to use ZeroGPU]
 # from diffusers import SanaPipeline, StableDiffusion3Pipeline, FluxPipeline
 from sid import SiDFluxPipeline, SiDSD3Pipeline, SiDSanaPipeline
 import torch
@@ -49,7 +49,7 @@ MAX_SEED = np.iinfo(np.int32).max
 MAX_IMAGE_SIZE = 1024
 
 
-# @spaces.GPU #[uncomment to use ZeroGPU]
+@spaces.GPU #[uncomment to use ZeroGPU]
 def infer(
     prompt,
     seed,

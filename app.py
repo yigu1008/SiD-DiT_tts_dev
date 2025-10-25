@@ -61,7 +61,7 @@ def infer(
     height,
     num_inference_steps,
     model_choice,
-    progress=gr.Progress(track_tqdm=True),
+    progress=gr.Progress(track_tqdm=False),
 ):
     if randomize_seed:
         seed = random.randint(0, MAX_SEED)
@@ -81,8 +81,8 @@ def infer(
     ).images[0]
     
     pipe.maybe_free_model_hooks()
-    torch.cuda.empty_cache()
     del pipe
+    torch.cuda.empty_cache()
 
     return image, seed
 

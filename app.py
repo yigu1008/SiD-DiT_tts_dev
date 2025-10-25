@@ -6,6 +6,9 @@ import spaces #[uncomment to use ZeroGPU]
 # from diffusers import SanaPipeline, StableDiffusion3Pipeline, FluxPipeline
 from sid import SiDFluxPipeline, SiDSD3Pipeline, SiDSanaPipeline
 import torch
+import os
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 torch_dtype = torch.float16

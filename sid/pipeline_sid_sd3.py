@@ -807,6 +807,7 @@ class SiDSD3Pipeline(
         image = self.image_processor.postprocess(image, output_type=output_type)
         
         self.maybe_free_model_hooks()
+        
 
         # 6. Return output
         if not return_dict:

@@ -79,6 +79,10 @@ def infer(
         generator=generator,
         time_scale=time_scale,
     ).images[0]
+    
+    pipe.maybe_free_model_hooks()
+    torch.cuda.empty_cache()
+    del pipe
 
     return image, seed
 

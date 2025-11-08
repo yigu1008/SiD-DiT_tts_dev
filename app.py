@@ -16,6 +16,8 @@ torch_dtype = torch.float16
 MODEL_OPTIONS = {
     "SiD-Flow-SD3-medium": "YGu1998/SiD-Flow-SD3-medium",
     "SiDA-Flow-SD3-medium": "YGu1998/SiDA-Flow-SD3-medium",
+    "SiD-Flow-SD3.5-medium": "YGu1998/SiD-Flow-SD3.5-medium",
+    "SiDA-Flow-SD3.5-medium": "YGu1998/SiDA-Flow-SD3.5-medium",
     "SiD-Flow-SD3.5-large": "YGu1998/SiD-Flow-SD3.5-large",
     "SiDA-Flow-SD3.5-large": "YGu1998/SiDA-Flow-SD3.5-large",
     "SiD-Flow-Sana-0.6B-512-res": "YGu1998/SiD-Flow-Sana-0.6B-512-res",

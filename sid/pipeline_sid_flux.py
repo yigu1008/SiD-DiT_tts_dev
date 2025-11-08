@@ -45,7 +45,7 @@ from diffusers.utils import (
 )
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
-from .pipeline_output import SiDPipelineOutput
+from pipeline_output import SiDPipelineOutput
 
 
 if is_torch_xla_available():
@@ -84,7 +84,6 @@ def retrieve_timesteps(
     r"""
     Calls the scheduler's `set_timesteps` method and retrieves timesteps from the scheduler after the call. Handles
     custom timesteps. Any kwargs will be supplied to `scheduler.set_timesteps`.
-
     Args:
         scheduler (`SchedulerMixin`):
             The scheduler to get timesteps from.
@@ -99,7 +98,6 @@ def retrieve_timesteps(
         sigmas (`List[float]`, *optional*):
             Custom sigmas used to override the timestep spacing strategy of the scheduler. If `sigmas` is passed,
             `num_inference_steps` and `timesteps` must be `None`.
-
     Returns:
         `Tuple[torch.Tensor, int]`: A tuple where the first element is the timestep schedule from the scheduler and the
         second element is the number of inference steps.
@@ -147,9 +145,7 @@ class SiDFluxPipeline(
 ):
     r"""
     The Flux pipeline for text-to-image generation.
-
     Reference: https://blackforestlabs.ai/announcing-black-forest-labs/
-
     Args:
         transformer ([`FluxTransformer2DModel`]):
             Conditional Transformer (MMDiT) architecture to denoise the encoded image latents.
@@ -342,7 +338,6 @@ class SiDFluxPipeline(
         lora_scale: Optional[float] = None,
     ):
         r"""
-
         Args:
             prompt (`str` or `List[str]`, *optional*):
                 prompt to be encoded
@@ -713,7 +708,8 @@ class SiDFluxPipeline(
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 512,
-        noise_type: str = "fresh",  # 'fresh', 'ddim', 'fixed'
+        noise_type: str = "fresh",  # 'fresh', 'ddim', 'fixed',
+        time_scale =1000,
     ):
 
         height = height or self.default_sample_size * self.vae_scale_factor
@@ -773,6 +769,13 @@ class SiDFluxPipeline(
             latents,
         )
 
+
+        latents = self._unpack_latents(
+                latents,
+                height=height ,
+                width=width ,
+                vae_scale_factor=self.vae_scale_factor,
+            )
         # Denoising loop
         D_x = torch.zeros_like(latents).to(latents.device)
         initial_latents = latents.clone() if noise_type == "fixed" else None
@@ -838,8 +841,8 @@ class SiDFluxPipeline(
 
             flow_pred = self._unpack_latents(
                 flow_pred,
-                height=height * self.vae_scale_factor,
-                width=width * self.vae_scale_factor,
+                height=height ,
+                width=width ,
                 vae_scale_factor=self.vae_scale_factor,
             )
             D_x = latents - t.view(-1, 1, 1, 1) * flow_pred
@@ -857,3 +860,4 @@ class SiDFluxPipeline(
             return (image,)
 
         return SiDPipelineOutput(images=image)
+

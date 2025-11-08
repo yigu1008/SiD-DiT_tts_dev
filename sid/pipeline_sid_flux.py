@@ -45,7 +45,7 @@ from diffusers.utils import (
 )
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
-from pipeline_output import SiDPipelineOutput
+from .pipeline_output import SiDPipelineOutput
 
 
 if is_torch_xla_available():

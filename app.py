@@ -2,42 +2,60 @@ import gradio as gr
 import numpy as np
 import random
 
-import spaces #[uncomment to use ZeroGPU]
-# from diffusers import SanaPipeline, StableDiffusion3Pipeline, FluxPipeline
+import spaces  # [uncomment to use ZeroGPU]
 from sid import SiDFluxPipeline, SiDSD3Pipeline, SiDSanaPipeline
 import torch
 import os
+
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-torch_dtype = torch.float16
-model_repo_id = "YGu1998/SiD-Flow-Sana-0.6B-512-res"
+torch_dtype = torch.float16  # you can switch to bfloat16 if your GPU supports it
 
-
-
-def load_model(model_repo_id, progress=None):
-    if progress is not None:
-        progress(0.1, desc=f"Loading {model_choice}...")
-
-    time_scale = 1000.0
-
-    
-    pipe = SiDSanaPipeline.from_pretrained(model_repo_id, torch_dtype=torch.bfloat16)
-       
-
-    if progress is not None:
-        progress(0.5, desc=f"{model_choice} loaded")
-
-    pipe = pipe.to(device)
-    return pipe, time_scale
-
+# Single model for this demo
+MODEL_REPO_ID = "YGu1998/SiD-Flow-Sana-0.6B-512-res"
 
 MAX_SEED = np.iinfo(np.int32).max
 MAX_IMAGE_SIZE = 1024
 
+# ---- CACHING STATE ----
+CACHED_PIPE = None
+CACHED_TIME_SCALE = None
 
-@spaces.GPU #[uncomment to use ZeroGPU]
+
+def load_model(model_repo_id, progress=None):
+    """
+    Load the model once and cache it in globals.
+    Subsequent calls reuse the same pipeline.
+    """
+    global CACHED_PIPE, CACHED_TIME_SCALE
+
+    # If already loaded, reuse
+    if CACHED_PIPE is not None:
+        if progress is not None:
+            progress(0.3, desc="Reusing cached model...")
+        return CACHED_PIPE, CACHED_TIME_SCALE
+
+    if progress is not None:
+        progress(0.1, desc=f"Loading model from {model_repo_id}...")
+
+    time_scale = 1000.0  # for SANA Rectified Flow / TrigFlow
+
+    # Load pipeline (you had bfloat16 here; keep if you like)
+    pipe = SiDSanaPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
+    pipe = pipe.to(device)
+
+    CACHED_PIPE = pipe
+    CACHED_TIME_SCALE = time_scale
+
+    if progress is not None:
+        progress(0.5, desc="Model loaded")
+
+    return pipe, time_scale
+
+
+@spaces.GPU  # [uncomment to use ZeroGPU]
 def infer(
     prompt,
     seed,
@@ -45,17 +63,20 @@ def infer(
     width,
     height,
     num_inference_steps,
-    model_repo_id,
+    model_repo_id,  # in practice always MODEL_REPO_ID
     progress=gr.Progress(track_tqdm=False),
 ):
+    # Seed handling
     if randomize_seed:
         seed = random.randint(0, MAX_SEED)
 
     generator = torch.Generator().manual_seed(seed)
+
+    # Phase 1: model loading / reuse
     progress(0.0, desc="Preparing model...")
-    pipe, time_scale = load_model(model_repo_id)
+    pipe, time_scale = load_model(model_repo_id, progress=progress)
 
-
+    # Phase 2: inference
     progress(0.7, desc="Running inference...")
     image = pipe(
         prompt=prompt,
@@ -67,12 +88,12 @@ def infer(
         time_scale=time_scale,
     ).images[0]
 
-
     progress(1.0, desc="Done")
 
-    pipe.maybe_free_model_hooks()
-    del pipe
-    torch.cuda.empty_cache()
+    # IMPORTANT: do NOT delete the pipe if you want caching
+    # pipe.maybe_free_model_hooks()
+    # del pipe
+    # torch.cuda.empty_cache()
 
     return image, seed
 
@@ -92,7 +113,7 @@ css = """
 
 with gr.Blocks(css=css) as demo:
     with gr.Column(elem_id="col-container"):
-        gr.Markdown(" # SiD-DiT demo")
+        gr.Markdown("# SiD-DiT demo")
 
         with gr.Row():
             prompt = gr.Text(
@@ -102,15 +123,11 @@ with gr.Blocks(css=css) as demo:
                 placeholder="Enter your prompt",
                 container=False,
             )
-
             run_button = gr.Button("Run", scale=0, variant="primary")
-
-        
 
         result = gr.Image(label="Result", show_label=False)
 
         with gr.Accordion("Advanced Settings", open=False):
-
             seed = gr.Slider(
                 label="Seed",
                 minimum=0,
@@ -127,35 +144,28 @@ with gr.Blocks(css=css) as demo:
                     minimum=256,
                     maximum=MAX_IMAGE_SIZE,
                     step=32,
-                    value=1024,  # Replace with defaults that work for your model
+                    value=1024,
                 )
-
                 height = gr.Slider(
                     label="Height",
                     minimum=256,
                     maximum=MAX_IMAGE_SIZE,
                     step=32,
-                    value=1024,  # Replace with defaults that work for your model
+                    value=1024,
                 )
 
             with gr.Row():
-                # guidance_scale = gr.Slider(
-                #     label="Guidance scale",
-                #     minimum=0.0,
-                #     maximum=10.0,
-                #     step=0.1,
-                #     value=0.0,  # Replace with defaults that work for your model
-                # )
-
                 num_inference_steps = gr.Slider(
                     label="Number of inference steps",
                     minimum=4,
                     maximum=4,
                     step=1,
                     value=4,
+                    interactive=False,  # read-only
                 )
 
         gr.Examples(examples=examples, inputs=[prompt])
+
     gr.on(
         triggers=[run_button.click, prompt.submit],
         fn=infer,
@@ -166,7 +176,7 @@ with gr.Blocks(css=css) as demo:
             width,
             height,
             num_inference_steps,
-            model_repo_id,
+            MODEL_REPO_ID,  # pass constant repo id
         ],
         outputs=[result, seed],
     )

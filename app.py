@@ -144,14 +144,14 @@ with gr.Blocks(css=css) as demo:
                     minimum=256,
                     maximum=MAX_IMAGE_SIZE,
                     step=32,
-                    value=1024,
+                    value=512,
                 )
                 height = gr.Slider(
                     label="Height",
                     minimum=256,
                     maximum=MAX_IMAGE_SIZE,
                     step=32,
-                    value=1024,
+                    value=512,
                 )
 
             with gr.Row():

@@ -24,7 +24,7 @@ CACHED_PIPE = None
 CACHED_TIME_SCALE = None
 
 
-def load_model(model_repo_id, progress=None):
+def load_model( progress=None):
     """
     Load the model once and cache it in globals.
     Subsequent calls reuse the same pipeline.
@@ -38,12 +38,12 @@ def load_model(model_repo_id, progress=None):
         return CACHED_PIPE, CACHED_TIME_SCALE
 
     if progress is not None:
-        progress(0.1, desc=f"Loading model from {model_repo_id}...")
+        progress(0.1, desc=f"Loading model from {MODEL_REPO_ID}...")
 
     time_scale = 1000.0  # for SANA Rectified Flow / TrigFlow
 
     # Load pipeline (you had bfloat16 here; keep if you like)
-    pipe = SiDSanaPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
+    pipe = SiDSanaPipeline.from_pretrained(MODEL_REPO_ID, torch_dtype=torch_dtype)
     pipe = pipe.to(device)
 
     CACHED_PIPE = pipe
@@ -74,7 +74,7 @@ def infer(
 
     # Phase 1: model loading / reuse
     progress(0.0, desc="Preparing model...")
-    pipe, time_scale = load_model(model_repo_id, progress=progress)
+    pipe, time_scale = load_model( progress=progress)
 
     # Phase 2: inference
     progress(0.7, desc="Running inference...")
@@ -176,7 +176,6 @@ with gr.Blocks(css=css) as demo:
             width,
             height,
             num_inference_steps,
-            MODEL_REPO_ID,  # pass constant repo id
         ],
         outputs=[result, seed],
     )

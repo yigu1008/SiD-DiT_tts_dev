@@ -113,7 +113,7 @@ css = """
 
 with gr.Blocks(css=css) as demo:
     with gr.Column(elem_id="col-container"):
-        gr.Markdown("# SiD-DiT demo")
+        gr.Markdown("# SiD-DiT SANA 0.6B Rectified Flow  demo")
 
         with gr.Row():
             prompt = gr.Text(

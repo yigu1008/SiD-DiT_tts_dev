@@ -178,10 +178,10 @@ with gr.Blocks(css=css) as demo:
 
                 num_inference_steps = gr.Slider(
                     label="Number of inference steps",
-                    minimum=1,
+                    minimum=4,
                     maximum=4,
                     step=1,
-                    value=4,  # Replace with defaults that work for your model
+                    value=4,
                 )
 
         gr.Examples(examples=examples, inputs=[prompt])

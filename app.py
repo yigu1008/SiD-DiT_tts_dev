@@ -33,9 +33,13 @@ MODEL_OPTIONS = {
 }
 
 
-def load_model(model_choice):
+def load_model(model_choice, progress=None):
+    if progress is not None:
+        progress(0.1, desc=f"Loading {model_choice}...")
+
     model_repo_id = MODEL_OPTIONS[model_choice]
     time_scale = 1000.0
+
     if "Sana" in model_choice:
         pipe = SiDSanaPipeline.from_pretrained(model_repo_id, torch_dtype=torch.bfloat16)
         if "Sprint" in model_choice:
@@ -46,6 +50,10 @@ def load_model(model_choice):
         pipe = SiDFluxPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
     else:
         raise ValueError(f"Unknown model type for: {model_choice}")
+
+    if progress is not None:
+        progress(0.5, desc=f"{model_choice} loaded")
+
     pipe = pipe.to(device)
     return pipe, time_scale
 
@@ -69,9 +77,11 @@ def infer(
         seed = random.randint(0, MAX_SEED)
 
     generator = torch.Generator().manual_seed(seed)
-
+    progress(0.0, desc="Preparing model...")
     pipe, time_scale = load_model(model_choice)
 
+
+    progress(0.7, desc="Running inference...")
     image = pipe(
         prompt=prompt,
         guidance_scale=1,
@@ -81,7 +91,10 @@ def infer(
         generator=generator,
         time_scale=time_scale,
     ).images[0]
-    
+
+
+    progress(1.0, desc="Done")
+
     pipe.maybe_free_model_hooks()
     del pipe
     torch.cuda.empty_cache()
@@ -168,7 +181,7 @@ with gr.Blocks(css=css) as demo:
                     minimum=1,
                     maximum=4,
                     step=1,
-                    value=2,  # Replace with defaults that work for your model
+                    value=4,  # Replace with defaults that work for your model
                 )
 
         gr.Examples(examples=examples, inputs=[prompt])

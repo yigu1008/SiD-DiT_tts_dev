@@ -12,44 +12,19 @@ os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 torch_dtype = torch.float16
-
-MODEL_OPTIONS = {
-    "SiD-Flow-SD3-medium": "YGu1998/SiD-Flow-SD3-medium",
-    "SiDA-Flow-SD3-medium": "YGu1998/SiDA-Flow-SD3-medium",
-    "SiD-Flow-SD3.5-medium": "YGu1998/SiD-Flow-SD3.5-medium",
-    "SiDA-Flow-SD3.5-medium": "YGu1998/SiDA-Flow-SD3.5-medium",
-    "SiD-Flow-SD3.5-large": "YGu1998/SiD-Flow-SD3.5-large",
-    "SiDA-Flow-SD3.5-large": "YGu1998/SiDA-Flow-SD3.5-large",
-    "SiD-Flow-Sana-0.6B-512-res": "YGu1998/SiD-Flow-Sana-0.6B-512-res",
-    "SiDA-Flow-Sana-0.6B-512-res": "YGu1998/SiDA-Flow-Sana-0.6B-512-res",
-    "SiD-Flow-Sana-1.6B-512-res": "YGu1998/SiD-Flow-Sana-1.6B-512-res",
-    "SiDA-Flow-Sana-1.6B-512-res": "YGu1998/SiDA-Flow-Sana-1.6B-512-res",
-    "SiD-Flow-Sana-Sprint-0.6B-1024-res": "YGu1998/SiD-Flow-Sana-Sprint-0.6B-1024-res",
-    "SiDA-Flow-Sana-Sprint-0.6B-1024-res": "YGu1998/SiDA-Flow-Sana-Sprint-0.6B-1024-res",
-    "SiD-Flow-Sana-Sprint-1.6B-1024-res": "YGu1998/SiD-Flow-Sana-Sprint-1.6B-1024-res",
-    "SiDA-Flow-Sana-Sprint-1.6B-1024-res": "YGu1998/SiDA-Flow-Sana-Sprint-1.6B-1024-res",
-    "SiD-Flow-Flux-1024-res": "YGu1998/SiD-Flow-Flux-1024-res",
-    "SiD-Flow-Flux-512-res": "YGu1998/SiD-Flow-Flux-512-res",
-}
+model_repo_id = "YGu1998/SiD-Flow-Sana-0.6B-512-res"
 
 
-def load_model(model_choice, progress=None):
+
+def load_model(model_repo_id, progress=None):
     if progress is not None:
         progress(0.1, desc=f"Loading {model_choice}...")
 
-    model_repo_id = MODEL_OPTIONS[model_choice]
     time_scale = 1000.0
 
-    if "Sana" in model_choice:
-        pipe = SiDSanaPipeline.from_pretrained(model_repo_id, torch_dtype=torch.bfloat16)
-        if "Sprint" in model_choice:
-            time_scale = 1.0
-    elif "SD3" in model_choice:
-        pipe = SiDSD3Pipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
-    elif "Flux" in model_choice:
-        pipe = SiDFluxPipeline.from_pretrained(model_repo_id, torch_dtype=torch_dtype)
-    else:
-        raise ValueError(f"Unknown model type for: {model_choice}")
+    
+    pipe = SiDSanaPipeline.from_pretrained(model_repo_id, torch_dtype=torch.bfloat16)
+       
 
     if progress is not None:
         progress(0.5, desc=f"{model_choice} loaded")
@@ -70,7 +45,7 @@ def infer(
     width,
     height,
     num_inference_steps,
-    model_choice,
+    model_repo_id,
     progress=gr.Progress(track_tqdm=False),
 ):
     if randomize_seed:
@@ -78,7 +53,7 @@ def infer(
 
     generator = torch.Generator().manual_seed(seed)
     progress(0.0, desc="Preparing model...")
-    pipe, time_scale = load_model(model_choice)
+    pipe, time_scale = load_model(model_repo_id)
 
 
     progress(0.7, desc="Running inference...")
@@ -130,11 +105,7 @@ with gr.Blocks(css=css) as demo:
 
             run_button = gr.Button("Run", scale=0, variant="primary")
 
-        model_choice = gr.Dropdown(
-            label="Model Choice",
-            choices=list(MODEL_OPTIONS.keys()),
-            value="SiD-Flow-SD3-medium",
-        )
+        
 
         result = gr.Image(label="Result", show_label=False)
 
@@ -195,7 +166,7 @@ with gr.Blocks(css=css) as demo:
             width,
             height,
             num_inference_steps,
-            model_choice,
+            model_repo_id,
         ],
         outputs=[result, seed],
     )

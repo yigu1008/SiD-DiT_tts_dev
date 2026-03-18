@@ -1,0 +1,1138 @@
+"""
+Unified test-time sampling/search for SiD SANA.
+
+This script merges the former sampling entrypoints:
+- greedy_search.py
+- greedy_prompt_cfg_search.py
+- mcts_prompt_cfg_search.py
+- geneval_greedy.py
+- geneval_mcts.py
+
+Core knobs:
+- search method: greedy or mcts
+- reward type: imagereward or geneval
+- action space: (prompt_variant_idx, cfg_scale)
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import io
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch
+from PIL import Image, ImageDraw, ImageFont
+
+
+REWRITE_SYSTEM = (
+    "You are a concise image prompt editor. "
+    "Given a text-to-image prompt, produce a single minimally-changed rewrite. "
+    "Keep the subject and composition identical. "
+    "You may only change: lighting descriptors, camera/lens terms, mood adjectives, "
+    "or add/remove one small detail. "
+    "Output ONLY the rewritten prompt, no explanation, no quotes."
+)
+
+REWRITE_STYLES = [
+    "Adjust the lighting or time of day slightly.",
+    "Swap or add a camera/lens detail.",
+    "Change one mood or atmosphere word.",
+]
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Unified SiD sampler for prompt/cfg action-space search."
+    )
+
+    # High-level mode
+    parser.add_argument("--search_method", choices=["greedy", "mcts"], default="greedy")
+    parser.add_argument("--reward_type", choices=["imagereward", "geneval"], default="imagereward")
+
+    # Model + generation
+    parser.add_argument("--model_id", default="YGu1998/SiD-DiT-SANA-0.6B-RectifiedFlow")
+    parser.add_argument("--ckpt", default=None)
+    parser.add_argument("--neg_embed", default=None)
+    parser.add_argument("--steps", type=int, default=4)
+    parser.add_argument(
+        "--cfg_scales",
+        nargs="+",
+        type=float,
+        default=[1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5],
+    )
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--width", type=int, default=512)
+    parser.add_argument("--height", type=int, default=512)
+    parser.add_argument("--time_scale", type=float, default=1000.0)
+    parser.add_argument("--out_dir", default="./sampling_unified_out")
+
+    # Prompt sources (regular)
+    parser.add_argument(
+        "--prompt",
+        default="a studio portrait of an elderly woman smiling, soft window light, 85mm lens, photorealistic",
+    )
+    parser.add_argument("--prompt_file", default=None)
+
+    # Prompt sources (GenEval)
+    parser.add_argument("--geneval_prompts", default=None)
+    parser.add_argument("--start_index", type=int, default=0)
+    parser.add_argument("--end_index", type=int, default=-1)
+    parser.add_argument("--n_samples", type=int, default=1)
+
+    # Prompt variants
+    parser.add_argument("--n_variants", type=int, default=0)
+    parser.add_argument("--no_qwen", action="store_true")
+    parser.add_argument("--qwen_id", default="Qwen/Qwen3-4B")
+    parser.add_argument("--qwen_python", default="python3")
+    parser.add_argument("--qwen_dtype", default="bfloat16", choices=["float16", "bfloat16"])
+    parser.add_argument("--qwen_device", default="auto")  # legacy arg; not used in subprocess flow
+    parser.add_argument("--rewrites_file", default=None)
+
+    # MCTS
+    parser.add_argument("--n_sims", type=int, default=50)
+    parser.add_argument("--ucb_c", type=float, default=1.41)
+
+    # GenEval reward backends
+    parser.add_argument("--reward_url", default=None)
+    parser.add_argument("--geneval_python", default=None)
+    parser.add_argument("--geneval_repo", default=None)
+    parser.add_argument("--detector_path", default=None)
+
+    # Legacy compatibility knobs (ignored by unified logic where not needed)
+    parser.add_argument("--max_batch", type=int, default=28)
+    parser.add_argument("--neg_prompt", default="")
+
+    return parser.parse_args(argv)
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _unwrap_state_dict(raw: Any, depth: int = 0) -> Any:
+    if not isinstance(raw, dict):
+        return raw
+    dotted = sum(1 for k in raw if "." in str(k))
+    if dotted / max(len(raw), 1) > 0.5:
+        return raw
+    if depth > 4:
+        return raw
+    for key in ("ema", "ema_model", "model_ema", "model", "state_dict", "generator", "G_state"):
+        if key in raw and isinstance(raw[key], dict):
+            return _unwrap_state_dict(raw[key], depth + 1)
+    return raw
+
+
+def _load_prompt_entries(args: argparse.Namespace) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    if args.geneval_prompts:
+        with open(args.geneval_prompts) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    entries.append(json.loads(line))
+        end = len(entries) if args.end_index == -1 else min(args.end_index, len(entries))
+        entries = entries[args.start_index:end]
+        out = []
+        for local_idx, meta in enumerate(entries):
+            global_idx = args.start_index + local_idx
+            out.append(
+                {
+                    "index": global_idx,
+                    "slug": f"p{global_idx:05d}",
+                    "prompt": meta["prompt"],
+                    "metadata": meta,
+                }
+            )
+        return out
+
+    if args.prompt_file:
+        prompts = [line.strip() for line in open(args.prompt_file) if line.strip()]
+    else:
+        prompts = [args.prompt]
+
+    for i, prompt in enumerate(prompts):
+        entries.append({"index": i, "slug": f"p{i:02d}", "prompt": prompt, "metadata": None})
+    return entries
+
+
+@dataclass
+class PipelineContext:
+    pipe: Any
+    device: str
+    dtype: torch.dtype
+    latent_c: int
+    variance_split: bool
+    aspect_ratio_bins: dict[int, dict[str, Any]]
+
+
+def load_pipeline(args: argparse.Namespace) -> PipelineContext:
+    repo_root = _repo_root()
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    try:
+        from sid import SiDSanaPipeline
+    except ImportError as e:
+        raise RuntimeError(f"Cannot import SiDSanaPipeline: {e}") from e
+
+    from diffusers.pipelines.pixart_alpha.pipeline_pixart_alpha import (
+        ASPECT_RATIO_512_BIN,
+        ASPECT_RATIO_1024_BIN,
+    )
+    try:
+        from diffusers.pipelines.pixart_alpha.pipeline_pixart_sigma import ASPECT_RATIO_2048_BIN
+    except ImportError:
+        ASPECT_RATIO_2048_BIN = ASPECT_RATIO_1024_BIN
+
+    os.makedirs(args.out_dir, exist_ok=True)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.float16
+
+    print("Loading SiD pipeline ...")
+    pipe = SiDSanaPipeline.from_pretrained(args.model_id, torch_dtype=dtype).to(device)
+
+    if args.ckpt:
+        print(f"Loading checkpoint {args.ckpt} ...")
+        raw = torch.load(args.ckpt, map_location=device, weights_only=False)
+        state_dict = _unwrap_state_dict(raw)
+        if any(str(k).startswith("module.") for k in state_dict):
+            state_dict = {k.removeprefix("module."): v for k, v in state_dict.items()}
+        missing, unexpected = pipe.transformer.load_state_dict(state_dict, strict=False)
+        print(
+            f"  loaded={len(state_dict) - len(unexpected)}/{len(state_dict)} "
+            f"missing={len(missing)} unexpected={len(unexpected)}"
+        )
+
+    pipe.transformer.eval()
+
+    latent_c = pipe.transformer.config.in_channels
+    out_c = pipe.transformer.config.out_channels
+    variance_split = (out_c // 2 == latent_c)
+    bins = {16: ASPECT_RATIO_512_BIN, 32: ASPECT_RATIO_1024_BIN, 64: ASPECT_RATIO_2048_BIN}
+
+    print(f"Loaded. device={device} variance_split={variance_split}")
+    return PipelineContext(
+        pipe=pipe,
+        device=device,
+        dtype=dtype,
+        latent_c=latent_c,
+        variance_split=variance_split,
+        aspect_ratio_bins=bins,
+    )
+
+
+@dataclass
+class RewardContext:
+    kind: str
+    score_images: Any
+    geneval_mode: str | None = None
+    scorer_path: str | None = None
+
+
+GENEVAL_SCORER_SCRIPT = r'''
+import argparse
+import glob
+import json
+import os
+import sys
+import numpy as np
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--image_dir", required=True)
+parser.add_argument("--metadata_json", required=True)
+parser.add_argument("--detector_path", required=True)
+parser.add_argument("--geneval_repo", required=True)
+args = parser.parse_args()
+
+sys.path.insert(0, args.geneval_repo)
+sys.path.insert(0, os.path.join(args.geneval_repo, "evaluation"))
+
+metadata = json.loads(args.metadata_json)
+include_spec = metadata["include"]
+if isinstance(include_spec, str):
+    include_spec = eval(include_spec)
+tag = metadata.get("tag", "unknown")
+
+det_path = args.detector_path
+if det_path.endswith(".pth"):
+    ckpt_file = det_path
+    det_dir = os.path.dirname(det_path)
+    configs = glob.glob(os.path.join(det_dir, "*.py"))
+    if configs:
+        config_file = configs[0]
+    else:
+        try:
+            import mmdet
+            mmdet_root = os.path.dirname(os.path.dirname(mmdet.__file__))
+            config_file = os.path.join(
+                mmdet_root, "configs", "mask2former",
+                "mask2former_swin-s-p4-w7-224_lsj_8x2_50e_coco.py")
+            if not os.path.exists(config_file):
+                config_file = os.path.join(
+                    mmdet_root, "configs", "mask2former",
+                    "mask2former_swin-s-p4-w7-224_lsj_8x2_50e_coco-panoptic.py")
+        except:
+            config_file = None
+else:
+    configs = glob.glob(os.path.join(det_path, "*.py"))
+    ckpts = glob.glob(os.path.join(det_path, "*.pth"))
+    config_file = configs[0] if configs else None
+    ckpt_file = ckpts[0] if ckpts else None
+
+if not config_file or not os.path.exists(str(config_file)):
+    print(json.dumps([{"file":"error","score":0.0,"correct":False}]))
+    sys.exit(0)
+if not ckpt_file or not os.path.exists(str(ckpt_file)):
+    print(json.dumps([{"file":"error","score":0.0,"correct":False}]))
+    sys.exit(0)
+
+from mmdet.apis import init_detector, inference_detector
+model = init_detector(config_file, ckpt_file, device="cuda:0")
+classes = model.CLASSES if hasattr(model, "CLASSES") else []
+class_to_idx = {name.lower(): idx for idx, name in enumerate(classes)}
+
+def score_image(image_path):
+    result = inference_detector(model, image_path)
+    bbox_results = result[0] if isinstance(result, tuple) else result
+    scores = []
+    is_correct = True
+    for obj_spec in include_spec:
+        cls_name = obj_spec["class"].lower()
+        required = obj_spec.get("count", 1)
+        cls_idx = class_to_idx.get(cls_name, -1)
+        if cls_idx == -1:
+            for cn, ci in class_to_idx.items():
+                if cls_name in cn or cn in cls_name:
+                    cls_idx = ci
+                    break
+        if cls_idx == -1 or cls_idx >= len(bbox_results):
+            scores.append(0.0)
+            is_correct = False
+            continue
+        dets = bbox_results[cls_idx]
+        if len(dets) > 0:
+            dets = dets[dets[:, 4] > 0.3]
+        n_det = len(dets)
+        max_conf = float(dets[:, 4].max()) if n_det > 0 else 0.0
+        count_score = max(0.0, 1.0 - abs(n_det - required) / required)
+        obj_score = count_score * max(max_conf, 0.5 if n_det > 0 else 0.0)
+        scores.append(obj_score)
+        if n_det < required:
+            is_correct = False
+        if tag == "counting" and n_det != required:
+            is_correct = False
+    soft = float(np.mean(scores)) if scores else 0.0
+    return {"score": soft, "correct": is_correct}
+
+image_files = sorted(glob.glob(os.path.join(args.image_dir, "candidate_*.png")))
+results = []
+for img_path in image_files:
+    info = score_image(img_path)
+    results.append({
+        "file": os.path.basename(img_path),
+        "score": info["score"],
+        "correct": info["correct"],
+    })
+print(json.dumps(results))
+'''
+
+
+def load_reward(args: argparse.Namespace, ctx: PipelineContext) -> RewardContext:
+    if args.reward_type == "imagereward":
+        print("Loading ImageReward ...")
+        import ImageReward as RM
+
+        reward_model = RM.load("ImageReward-v1.0", device=ctx.device)
+        reward_model.eval()
+
+        def score_images(prompt: str, images: list[Image.Image], metadata: dict[str, Any] | None = None) -> list[float]:
+            return [float(reward_model.score(prompt, img)) for img in images]
+
+        return RewardContext(kind="imagereward", score_images=score_images)
+
+    # Geneval
+    geneval_mode = None
+    if args.reward_url:
+        try:
+            import requests
+
+            requests.get(f"{args.reward_url}/", timeout=3)
+            geneval_mode = "http"
+            print(f"Using GenEval HTTP reward server: {args.reward_url}")
+        except Exception:
+            print(f"GenEval reward server unreachable at {args.reward_url}; trying subprocess backend.")
+
+    if geneval_mode is None:
+        if not (args.geneval_python and args.geneval_repo and args.detector_path):
+            raise RuntimeError(
+                "GenEval reward requires either --reward_url or all of "
+                "--geneval_python --geneval_repo --detector_path."
+            )
+        geneval_mode = "subprocess"
+
+    scorer_path = os.path.join(args.out_dir, "_geneval_scorer.py")
+    if geneval_mode == "subprocess":
+        with open(scorer_path, "w") as f:
+            f.write(GENEVAL_SCORER_SCRIPT)
+        print(f"Wrote GenEval scorer helper: {scorer_path}")
+
+    def score_images_geneval(
+        prompt: str, images: list[Image.Image], metadata: dict[str, Any] | None = None
+    ) -> list[float]:
+        del prompt
+        if metadata is None:
+            raise RuntimeError("GenEval scoring requires metadata per prompt entry.")
+        if geneval_mode == "http":
+            import requests
+
+            payload = {"images": [pil_to_b64(img) for img in images], "metadata": metadata}
+            try:
+                response = requests.post(f"{args.reward_url}/geneval", json=payload, timeout=120)
+                response.raise_for_status()
+                return response.json()["scores"]
+            except Exception as exc:
+                print(f"  HTTP scoring error: {exc}")
+                return [0.0] * len(images)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for i, img in enumerate(images):
+                img.save(os.path.join(tmpdir, f"candidate_{i:03d}.png"))
+            cmd = [
+                args.geneval_python,
+                scorer_path,
+                "--image_dir",
+                tmpdir,
+                "--metadata_json",
+                json.dumps(metadata),
+                "--detector_path",
+                args.detector_path,
+                "--geneval_repo",
+                args.geneval_repo,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if result.returncode != 0:
+                print(f"  subprocess scoring failed rc={result.returncode}")
+                if result.stderr:
+                    print(f"  stderr: {result.stderr[:240]}")
+                return [0.0] * len(images)
+
+            for line in result.stdout.strip().splitlines():
+                if line.strip().startswith("["):
+                    try:
+                        parsed = json.loads(line.strip())
+                        return [float(item["score"]) for item in parsed]
+                    except json.JSONDecodeError:
+                        continue
+            print("  unable to parse scorer output")
+            return [0.0] * len(images)
+
+    return RewardContext(
+        kind="geneval",
+        score_images=score_images_geneval,
+        geneval_mode=geneval_mode,
+        scorer_path=scorer_path,
+    )
+
+
+def pil_to_b64(img: Image.Image) -> str:
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode()
+
+
+@dataclass
+class EmbeddingContext:
+    pe_list: list[tuple[torch.Tensor, torch.Tensor]]
+    ue: torch.Tensor
+    um: torch.Tensor
+
+
+def load_neg_embed(args: argparse.Namespace, ctx: PipelineContext) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    if not args.neg_embed:
+        return None, None
+    checkpoint = torch.load(args.neg_embed, map_location="cpu", weights_only=True)
+    if isinstance(checkpoint, dict) and "neg_embeds" in checkpoint:
+        neg_embeds = checkpoint["neg_embeds"].to(ctx.device, ctx.dtype)
+        neg_mask = checkpoint["neg_mask"].to(ctx.device)
+    else:
+        neg_embeds = checkpoint.to(ctx.device, ctx.dtype)
+        neg_mask = torch.ones(neg_embeds.shape[:2], device=ctx.device, dtype=torch.long)
+    print(f"Loaded negative embedding: {tuple(neg_embeds.shape)}")
+    return neg_embeds, neg_mask
+
+
+def qwen_rewrite(args: argparse.Namespace, prompt: str, instruction: str) -> str:
+    dtype_literal = "torch.bfloat16" if args.qwen_dtype == "bfloat16" else "torch.float16"
+    script = f"""
+import re
+import sys
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
+tok = AutoTokenizer.from_pretrained({repr(args.qwen_id)})
+mdl = AutoModelForCausalLM.from_pretrained(
+    {repr(args.qwen_id)},
+    torch_dtype={dtype_literal},
+    device_map="auto")
+mdl.eval()
+messages = [
+    {{"role":"system","content":{repr(REWRITE_SYSTEM)}}},
+    {{"role":"user","content":sys.argv[1] + "\\n\\nOriginal prompt: " + sys.argv[2] + " /no_think"}}
+]
+text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+inputs = tok([text], return_tensors="pt").to(mdl.device)
+with torch.no_grad():
+    out = mdl.generate(
+        **inputs,
+        max_new_tokens=120,
+        temperature=0.6,
+        top_p=0.9,
+        do_sample=True,
+        pad_token_id=tok.eos_token_id)
+decoded = tok.decode(out[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
+decoded = re.sub(r"<think>.*?</think>", "", decoded, flags=re.DOTALL).strip()
+for line in decoded.splitlines():
+    line = line.strip()
+    if line:
+        print(line)
+        raise SystemExit(0)
+print(sys.argv[2])
+"""
+    result = subprocess.run(
+        [args.qwen_python, "-c", script, instruction, prompt],
+        capture_output=True,
+        text=True,
+    )
+    candidate = result.stdout.strip()
+    return candidate if candidate else prompt
+
+
+def generate_variants(args: argparse.Namespace, prompt: str, cache: dict[str, list[str]]) -> list[str]:
+    if args.n_variants <= 0 or args.no_qwen:
+        return [prompt]
+
+    if prompt in cache:
+        variants = cache[prompt][: args.n_variants + 1]
+        return variants if variants else [prompt]
+
+    variants = [prompt]
+    styles = (REWRITE_STYLES * ((args.n_variants // len(REWRITE_STYLES)) + 1))[: args.n_variants]
+    for style in styles:
+        variants.append(qwen_rewrite(args, prompt, style))
+    return variants
+
+
+def encode_variants(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    variants: list[str],
+    neg_embeds: torch.Tensor | None,
+    neg_mask: torch.Tensor | None,
+    max_seq: int = 256,
+) -> EmbeddingContext:
+    pe_list: list[tuple[torch.Tensor, torch.Tensor]] = []
+    ue = None
+    um = None
+    for i, variant in enumerate(variants):
+        pe, pm, ne, nm = ctx.pipe.encode_prompt(
+            prompt=variant,
+            do_classifier_free_guidance=True,
+            negative_prompt="",
+            device=ctx.device,
+            num_images_per_prompt=1,
+            max_sequence_length=max_seq,
+        )
+        pe_list.append((pe.detach(), pm.detach()))
+        if i == 0:
+            ue = ne.detach()
+            um = nm.detach()
+
+    assert ue is not None
+    assert um is not None
+
+    if neg_embeds is not None and neg_mask is not None:
+        cond_len = pe_list[0][0].shape[1]
+        cur_ne = neg_embeds
+        cur_nm = neg_mask
+        neg_len = cur_ne.shape[1]
+        if neg_len < cond_len:
+            cur_ne = torch.cat(
+                [
+                    cur_ne,
+                    torch.zeros(
+                        1,
+                        cond_len - neg_len,
+                        cur_ne.shape[2],
+                        device=ctx.device,
+                        dtype=cur_ne.dtype,
+                    ),
+                ],
+                dim=1,
+            )
+            cur_nm = torch.cat(
+                [
+                    cur_nm,
+                    torch.zeros(1, cond_len - neg_len, device=ctx.device, dtype=cur_nm.dtype),
+                ],
+                dim=1,
+            )
+        elif neg_len > cond_len:
+            cur_ne = cur_ne[:, :cond_len]
+            cur_nm = cur_nm[:, :cond_len]
+        ue = cur_ne.to(dtype=pe_list[0][0].dtype, device=ctx.device)
+        um = cur_nm.to(device=ctx.device)
+
+    return EmbeddingContext(pe_list=pe_list, ue=ue, um=um)
+
+
+def make_latents(ctx: PipelineContext, seed: int, h: int, w: int, dtype: torch.dtype) -> torch.Tensor:
+    try:
+        generator = torch.Generator(device=ctx.device).manual_seed(seed)
+        return ctx.pipe.prepare_latents(1, ctx.latent_c, h, w, dtype, ctx.device, generator)
+    except Exception:
+        torch.manual_seed(seed)
+        return torch.randn(1, ctx.latent_c, h, w, device=ctx.device, dtype=dtype)
+
+
+@torch.no_grad()
+def transformer_step(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    latents: torch.Tensor,
+    pe: torch.Tensor,
+    pm: torch.Tensor,
+    ue: torch.Tensor,
+    um: torch.Tensor,
+    t_flat: torch.Tensor,
+    cfg_scale: float,
+) -> torch.Tensor:
+    if cfg_scale == 1.0:
+        velocity = ctx.pipe.transformer(
+            hidden_states=latents,
+            encoder_hidden_states=pe,
+            encoder_attention_mask=pm,
+            timestep=args.time_scale * t_flat,
+            return_dict=False,
+        )[0]
+        if ctx.variance_split:
+            velocity = velocity.chunk(2, dim=1)[0]
+        return velocity
+
+    flow_both = ctx.pipe.transformer(
+        hidden_states=torch.cat([latents, latents]),
+        encoder_hidden_states=torch.cat([ue, pe]),
+        encoder_attention_mask=torch.cat([um, pm]),
+        timestep=args.time_scale * torch.cat([t_flat, t_flat]),
+        return_dict=False,
+    )[0]
+    if ctx.variance_split:
+        flow_both = flow_both.chunk(2, dim=1)[0]
+    flow_uncond, flow_cond = flow_both.chunk(2)
+    return flow_uncond + cfg_scale * (flow_cond - flow_uncond)
+
+
+@torch.no_grad()
+def decode_to_pil(ctx: PipelineContext, dx: torch.Tensor, orig_h: int, orig_w: int) -> Image.Image:
+    image = ctx.pipe.vae.decode(dx / ctx.pipe.vae.config.scaling_factor, return_dict=False)[0]
+    image = ctx.pipe.image_processor.resize_and_crop_tensor(image, orig_h, orig_w)
+    return ctx.pipe.image_processor.postprocess(image, output_type="pil")[0]
+
+
+def maybe_resize_to_bin(ctx: PipelineContext, height: int, width: int) -> tuple[int, int]:
+    sample_size = ctx.pipe.transformer.config.sample_size
+    if sample_size in ctx.aspect_ratio_bins:
+        return ctx.pipe.image_processor.classify_height_width_bin(
+            height, width, ratios=ctx.aspect_ratio_bins[sample_size]
+        )
+    return height, width
+
+
+@dataclass
+class SearchResult:
+    image: Image.Image
+    score: float
+    actions: list[tuple[int, float]]
+
+
+def _step_tensors(ctx: PipelineContext, steps: int, dtype: torch.dtype) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    schedule = []
+    for i in range(steps):
+        scalar_t = 999.0 * (1.0 - float(i) / float(steps))
+        t_flat = torch.full((1,), scalar_t / 999.0, device=ctx.device, dtype=dtype)
+        t_4d = t_flat.view(1, 1, 1, 1)
+        schedule.append((t_flat, t_4d))
+    return schedule
+
+
+def run_baseline(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    reward_ctx: RewardContext,
+    prompt: str,
+    metadata: dict[str, Any] | None,
+    seed: int,
+    h: int,
+    w: int,
+    orig_h: int,
+    orig_w: int,
+    emb: EmbeddingContext,
+) -> tuple[Image.Image, float]:
+    pe, pm = emb.pe_list[0]
+    latents = make_latents(ctx, seed, h, w, pe.dtype)
+    schedule = _step_tensors(ctx, args.steps, latents.dtype)
+
+    dx = torch.zeros_like(latents)
+    for step_idx, (t_flat, t_4d) in enumerate(schedule):
+        noise = latents if step_idx == 0 else torch.randn_like(latents)
+        latents = (1.0 - t_4d) * dx + t_4d * noise
+        velocity = transformer_step(args, ctx, latents, pe, pm, emb.ue, emb.um, t_flat, 1.0)
+        dx = latents - t_4d * velocity
+
+    image = decode_to_pil(ctx, dx, orig_h, orig_w)
+    score = reward_ctx.score_images(prompt, [image], metadata)[0]
+    return image, float(score)
+
+
+def run_greedy(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    reward_ctx: RewardContext,
+    prompt: str,
+    metadata: dict[str, Any] | None,
+    seed: int,
+    h: int,
+    w: int,
+    orig_h: int,
+    orig_w: int,
+    emb: EmbeddingContext,
+    variants: list[str],
+) -> SearchResult:
+    actions = [(vi, cfg) for vi in range(len(emb.pe_list)) for cfg in args.cfg_scales]
+    latents = make_latents(ctx, seed, h, w, emb.pe_list[0][0].dtype)
+    schedule = _step_tensors(ctx, args.steps, latents.dtype)
+    dx = torch.zeros_like(latents)
+    chosen: list[tuple[int, float]] = []
+
+    for step_idx, (t_flat, t_4d) in enumerate(schedule):
+        noise = latents if step_idx == 0 else torch.randn_like(latents)
+        latents = (1.0 - t_4d) * dx + t_4d * noise
+
+        best_score = -float("inf")
+        best_action = actions[0]
+        best_dx = None
+
+        print(f"  step {step_idx + 1}/{args.steps}: evaluating {len(actions)} actions")
+        for variant_idx, cfg in actions:
+            pe, pm = emb.pe_list[variant_idx]
+            velocity = transformer_step(args, ctx, latents, pe, pm, emb.ue, emb.um, t_flat, cfg)
+            candidate_dx = latents - t_4d * velocity
+            candidate_img = decode_to_pil(ctx, candidate_dx, orig_h, orig_w)
+            score = float(reward_ctx.score_images(prompt, [candidate_img], metadata)[0])
+            mark = ""
+            if score > best_score:
+                best_score = score
+                best_action = (variant_idx, cfg)
+                best_dx = candidate_dx.clone()
+                mark = " <- best"
+            print(f"    v{variant_idx} cfg={cfg:.2f} score={score:.4f}{mark}")
+
+        assert best_dx is not None
+        dx = best_dx
+        chosen.append(best_action)
+        preview_prompt = variants[best_action[0]][:56]
+        print(
+            f"  selected: step={step_idx + 1} v={best_action[0]} cfg={best_action[1]:.2f} "
+            f"prompt='{preview_prompt}' score={best_score:.4f}"
+        )
+
+    final_image = decode_to_pil(ctx, dx, orig_h, orig_w)
+    final_score = float(reward_ctx.score_images(prompt, [final_image], metadata)[0])
+    return SearchResult(image=final_image, score=final_score, actions=chosen)
+
+
+class MCTSNode:
+    __slots__ = ("step", "dx", "latents", "children", "n", "action_n", "action_q")
+
+    def __init__(self, step: int, dx: torch.Tensor, latents: torch.Tensor | None):
+        self.step = step
+        self.dx = dx
+        self.latents = latents
+        self.children: dict[tuple[int, float], "MCTSNode"] = {}
+        self.n = 0
+        self.action_n: dict[tuple[int, float], int] = {}
+        self.action_q: dict[tuple[int, float], float] = {}
+
+    def is_leaf(self, steps: int) -> bool:
+        return self.step >= steps
+
+    def untried_actions(self, actions: list[tuple[int, float]]) -> list[tuple[int, float]]:
+        return [action for action in actions if action not in self.action_n]
+
+    def ucb1(self, action: tuple[int, float], c: float) -> float:
+        action_visits = self.action_n.get(action, 0)
+        if action_visits == 0:
+            return float("inf")
+        avg = self.action_q[action] / action_visits
+        return avg + c * math.sqrt(math.log(max(self.n, 1)) / action_visits)
+
+    def best_action_ucb(self, actions: list[tuple[int, float]], c: float) -> tuple[int, float]:
+        return max(actions, key=lambda action: self.ucb1(action, c))
+
+    def best_action_exploit(self, actions: list[tuple[int, float]]) -> tuple[int, float] | None:
+        best_action = None
+        best_avg = -float("inf")
+        for action in actions:
+            action_visits = self.action_n.get(action, 0)
+            if action_visits == 0:
+                continue
+            avg = self.action_q[action] / action_visits
+            if avg > best_avg:
+                best_avg = avg
+                best_action = action
+        return best_action
+
+
+def _mcts_forward_child(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    emb: EmbeddingContext,
+    node: MCTSNode,
+    action: tuple[int, float],
+    schedule: list[tuple[torch.Tensor, torch.Tensor]],
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    variant_idx, cfg = action
+    pe, pm = emb.pe_list[variant_idx]
+    t_flat, t_4d = schedule[node.step]
+    velocity = transformer_step(args, ctx, node.latents, pe, pm, emb.ue, emb.um, t_flat, cfg)
+    new_dx = node.latents - t_4d * velocity
+    next_step = node.step + 1
+    if next_step < len(schedule):
+        _, next_t_4d = schedule[next_step]
+        noise = torch.randn_like(new_dx)
+        new_latents = (1.0 - next_t_4d) * new_dx + next_t_4d * noise
+    else:
+        new_latents = None
+    return new_dx, new_latents
+
+
+def run_mcts(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    reward_ctx: RewardContext,
+    prompt: str,
+    metadata: dict[str, Any] | None,
+    seed: int,
+    h: int,
+    w: int,
+    orig_h: int,
+    orig_w: int,
+    emb: EmbeddingContext,
+) -> SearchResult:
+    actions = [(vi, cfg) for vi in range(len(emb.pe_list)) for cfg in args.cfg_scales]
+    n_actions = len(actions)
+    latents_init = make_latents(ctx, seed, h, w, emb.pe_list[0][0].dtype)
+    schedule = _step_tensors(ctx, args.steps, latents_init.dtype)
+
+    dx_init = torch.zeros_like(latents_init)
+    _, t0_4d = schedule[0]
+    latents_0 = (1.0 - t0_4d) * dx_init + t0_4d * latents_init
+    root = MCTSNode(step=0, dx=dx_init, latents=latents_0)
+
+    best_global_score = -float("inf")
+    best_global_dx = None
+    best_global_path: list[tuple[int, float]] = []
+
+    print(
+        f"  mcts sims={args.n_sims} actions_per_step={n_actions} steps={args.steps} c={args.ucb_c:.2f}"
+    )
+    for sim in range(args.n_sims):
+        node = root
+        path: list[tuple[MCTSNode, tuple[int, float]]] = []
+
+        # Select
+        while not node.is_leaf(args.steps):
+            untried = node.untried_actions(actions)
+            if untried:
+                action = untried[np.random.randint(len(untried))]
+                break
+            action = node.best_action_ucb(actions, args.ucb_c)
+            path.append((node, action))
+            node = node.children[action]
+
+        # Expand
+        if not node.is_leaf(args.steps):
+            if action not in node.children:
+                new_dx, new_latents = _mcts_forward_child(args, ctx, emb, node, action, schedule)
+                node.children[action] = MCTSNode(step=node.step + 1, dx=new_dx, latents=new_latents)
+            path.append((node, action))
+            node = node.children[action]
+
+        # Rollout
+        rollout_dx = node.dx
+        rollout_latents = node.latents
+        rollout_step = node.step
+        while rollout_step < args.steps:
+            variant_idx, cfg = actions[np.random.randint(n_actions)]
+            pe, pm = emb.pe_list[variant_idx]
+            t_flat, t_4d = schedule[rollout_step]
+            velocity = transformer_step(args, ctx, rollout_latents, pe, pm, emb.ue, emb.um, t_flat, cfg)
+            rollout_dx = rollout_latents - t_4d * velocity
+            rollout_step += 1
+            if rollout_step < args.steps:
+                _, next_t_4d = schedule[rollout_step]
+                noise = torch.randn_like(rollout_dx)
+                rollout_latents = (1.0 - next_t_4d) * rollout_dx + next_t_4d * noise
+
+        rollout_img = decode_to_pil(ctx, rollout_dx, orig_h, orig_w)
+        rollout_score = float(reward_ctx.score_images(prompt, [rollout_img], metadata)[0])
+
+        if rollout_score > best_global_score:
+            best_global_score = rollout_score
+            best_global_dx = rollout_dx.clone()
+            best_global_path = [action for _, action in path]
+
+        for parent_node, parent_action in path:
+            parent_node.n += 1
+            parent_node.action_n[parent_action] = parent_node.action_n.get(parent_action, 0) + 1
+            parent_node.action_q[parent_action] = parent_node.action_q.get(parent_action, 0.0) + rollout_score
+
+        if (sim + 1) % 10 == 0 or sim == 0:
+            print(f"    sim={sim + 1:3d}/{args.n_sims} best_score={best_global_score:.4f}")
+
+    # Exploit best average path from the tree
+    exploit_path: list[tuple[int, float]] = []
+    node = root
+    for _ in range(args.steps):
+        action = node.best_action_exploit(actions)
+        if action is None:
+            break
+        exploit_path.append(action)
+        if action in node.children:
+            node = node.children[action]
+        else:
+            break
+
+    replay_dx = dx_init
+    replay_latents = latents_0
+    for step_idx, (variant_idx, cfg) in enumerate(exploit_path):
+        pe, pm = emb.pe_list[variant_idx]
+        t_flat, t_4d = schedule[step_idx]
+        velocity = transformer_step(args, ctx, replay_latents, pe, pm, emb.ue, emb.um, t_flat, cfg)
+        replay_dx = replay_latents - t_4d * velocity
+        if step_idx + 1 < args.steps:
+            _, next_t_4d = schedule[step_idx + 1]
+            noise = torch.randn_like(replay_dx)
+            replay_latents = (1.0 - next_t_4d) * replay_dx + next_t_4d * noise
+
+    exploit_img = decode_to_pil(ctx, replay_dx, orig_h, orig_w)
+    exploit_score = float(reward_ctx.score_images(prompt, [exploit_img], metadata)[0])
+
+    if exploit_score >= best_global_score:
+        return SearchResult(image=exploit_img, score=exploit_score, actions=exploit_path)
+    if best_global_dx is None:
+        return SearchResult(image=exploit_img, score=exploit_score, actions=exploit_path)
+    best_global_img = decode_to_pil(ctx, best_global_dx, orig_h, orig_w)
+    return SearchResult(image=best_global_img, score=best_global_score, actions=best_global_path)
+
+
+def _font(size: int = 16) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    try:
+        return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size)
+    except Exception:
+        return ImageFont.load_default()
+
+
+def save_comparison(
+    out_path: str,
+    baseline_img: Image.Image,
+    search_img: Image.Image,
+    baseline_score: float,
+    search_score: float,
+    actions: list[tuple[int, float]],
+) -> None:
+    width, height = baseline_img.size
+    header_h = 54
+    grid = Image.new("RGB", (width * 2, height + header_h), (18, 18, 18))
+    draw = ImageDraw.Draw(grid)
+    grid.paste(baseline_img, (0, header_h))
+    grid.paste(search_img, (width, header_h))
+    draw.text((4, 4), f"baseline score={baseline_score:.3f}", fill=(200, 200, 200), font=_font(15))
+    delta = search_score - baseline_score
+    score_col = (100, 255, 100) if delta >= 0 else (255, 100, 100)
+    draw.text(
+        (width + 4, 4),
+        f"search score={search_score:.3f} delta={delta:+.3f}",
+        fill=score_col,
+        font=_font(15),
+    )
+    path_text = " ".join(f"s{idx + 1}:v{vi}/cfg{cfg:.2f}" for idx, (vi, cfg) in enumerate(actions))
+    draw.text((width + 4, 28), path_text[:96], fill=(255, 220, 50), font=_font(11))
+    grid.save(out_path)
+
+
+def save_geneval_layout(image: Image.Image, metadata: dict[str, Any], prompt_index: int, root: str, sample_index: int) -> None:
+    prompt_dir = os.path.join(root, f"{prompt_index:05d}")
+    sample_dir = os.path.join(prompt_dir, "samples")
+    os.makedirs(sample_dir, exist_ok=True)
+    with open(os.path.join(prompt_dir, "metadata.jsonl"), "w") as f:
+        json.dump(metadata, f)
+    image.save(os.path.join(sample_dir, f"{sample_index:04d}.png"))
+
+
+def run(args: argparse.Namespace) -> None:
+    os.makedirs(args.out_dir, exist_ok=True)
+    entries = _load_prompt_entries(args)
+    if not entries:
+        raise RuntimeError("No prompts found to evaluate.")
+    if args.reward_type == "geneval" and args.geneval_prompts is None:
+        raise RuntimeError("Geneval mode requires --geneval_prompts metadata jsonl input.")
+
+    ctx = load_pipeline(args)
+    reward_ctx = load_reward(args, ctx)
+    neg_embeds, neg_mask = load_neg_embed(args, ctx)
+
+    rewrite_cache: dict[str, list[str]] = {}
+    if args.rewrites_file and os.path.exists(args.rewrites_file):
+        with open(args.rewrites_file) as f:
+            rewrite_cache = json.load(f)
+        print(f"Loaded rewrites cache for {len(rewrite_cache)} prompts from {args.rewrites_file}")
+
+    # Pre-generate prompt variants once per prompt.
+    variant_map: dict[int, list[str]] = {}
+    for entry in entries:
+        variants = generate_variants(args, entry["prompt"], rewrite_cache)
+        variant_map[entry["index"]] = variants
+        variants_path = os.path.join(args.out_dir, f"{entry['slug']}_variants.txt")
+        with open(variants_path, "w") as f:
+            for idx, variant in enumerate(variants):
+                f.write(f"v{idx}: {variant}\n")
+
+    summary: list[dict[str, Any]] = []
+    geneval_root = os.path.join(args.out_dir, "geneval_images")
+    if args.reward_type == "geneval":
+        os.makedirs(geneval_root, exist_ok=True)
+
+    for entry in entries:
+        prompt = entry["prompt"]
+        metadata = entry["metadata"]
+        slug = entry["slug"]
+        index = entry["index"]
+        variants = variant_map[index]
+        print(f"\n{'=' * 72}\n[{slug}] {prompt}\n{'=' * 72}")
+
+        orig_h, orig_w = args.height, args.width
+        h, w = maybe_resize_to_bin(ctx, orig_h, orig_w)
+
+        prompt_samples: list[dict[str, Any]] = []
+        for sample_i in range(args.n_samples):
+            seed = args.seed + sample_i
+            print(f"\n  sample {sample_i + 1}/{args.n_samples} seed={seed}")
+
+            emb = encode_variants(args, ctx, variants, neg_embeds, neg_mask)
+            baseline_img, baseline_score = run_baseline(
+                args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb
+            )
+
+            if args.search_method == "greedy":
+                search_result = run_greedy(
+                    args,
+                    ctx,
+                    reward_ctx,
+                    prompt,
+                    metadata,
+                    seed,
+                    h,
+                    w,
+                    orig_h,
+                    orig_w,
+                    emb,
+                    variants,
+                )
+            else:
+                search_result = run_mcts(
+                    args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb
+                )
+
+            search_name = args.search_method
+            baseline_path = os.path.join(args.out_dir, f"{slug}_s{sample_i}_baseline.png")
+            search_path = os.path.join(args.out_dir, f"{slug}_s{sample_i}_{search_name}.png")
+            comparison_path = os.path.join(args.out_dir, f"{slug}_s{sample_i}_comparison.png")
+            baseline_img.save(baseline_path)
+            search_result.image.save(search_path)
+            save_comparison(
+                comparison_path,
+                baseline_img,
+                search_result.image,
+                baseline_score,
+                search_result.score,
+                search_result.actions,
+            )
+
+            if args.reward_type == "geneval" and metadata is not None:
+                save_geneval_layout(search_result.image, metadata, index, geneval_root, sample_i)
+
+            print(
+                f"  baseline={baseline_score:.4f} {search_name}={search_result.score:.4f} "
+                f"delta={search_result.score - baseline_score:+.4f}"
+            )
+
+            sample_payload = {
+                "seed": seed,
+                "baseline_score": baseline_score,
+                "search_score": search_result.score,
+                "delta_score": search_result.score - baseline_score,
+                "actions": [[int(vi), float(cfg)] for vi, cfg in search_result.actions],
+            }
+            if args.reward_type == "geneval":
+                sample_payload["baseline_pass"] = baseline_score >= 0.99
+                sample_payload["search_pass"] = search_result.score >= 0.99
+            prompt_samples.append(sample_payload)
+
+        summary.append(
+            {
+                "slug": slug,
+                "index": index,
+                "prompt": prompt,
+                "reward_type": args.reward_type,
+                "search_method": args.search_method,
+                "variants": variants,
+                "samples": prompt_samples,
+            }
+        )
+
+    summary_path = os.path.join(args.out_dir, "summary.json")
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"\n{'=' * 72}\nSUMMARY\n{'=' * 72}")
+    deltas = []
+    for row in summary:
+        sample_deltas = [sample["delta_score"] for sample in row["samples"]]
+        mean_delta = float(np.mean(sample_deltas)) if sample_deltas else 0.0
+        deltas.extend(sample_deltas)
+        print(f"{row['slug']}: mean_delta={mean_delta:+.4f} n_samples={len(row['samples'])}")
+    if deltas:
+        print(f"overall mean delta: {float(np.mean(deltas)):+.4f}")
+    print(f"summary json: {summary_path}")
+    if args.reward_type == "geneval":
+        print(f"geneval images: {os.path.abspath(geneval_root)}/")
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    run(args)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,336 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from collections import defaultdict
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
+import numpy as np
+import torch
+
+from sampling_unified_sd35 import (
+    encode_variants,
+    generate_variants,
+    load_pipeline,
+    load_reward_model,
+    run_baseline,
+    run_greedy,
+    run_mcts,
+    save_comparison,
+)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="DDP multi-GPU SD3.5 evaluation (base/greedy/mcts).")
+    parser.add_argument("--model_id", default="YGu1998/SiD-DiT-SD3.5-large")
+    parser.add_argument("--ckpt", default=None)
+    parser.add_argument("--prompt_file", required=True, help="Prompt txt file (one prompt per line).")
+    parser.add_argument("--start_index", type=int, default=0)
+    parser.add_argument("--end_index", type=int, default=-1, help="Exclusive end index; -1 means all.")
+    parser.add_argument("--out_dir", default="./sd35_ddp_out")
+
+    parser.add_argument("--modes", nargs="+", choices=["base", "greedy", "mcts"], default=["base", "greedy", "mcts"])
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed_per_prompt", action="store_true", help="Use seed + prompt_index for each prompt.")
+
+    parser.add_argument("--steps", type=int, default=4)
+    parser.add_argument("--cfg_scales", nargs="+", type=float, default=[1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5])
+    parser.add_argument("--baseline_cfg", type=float, default=1.0)
+    parser.add_argument("--width", type=int, default=1024)
+    parser.add_argument("--height", type=int, default=1024)
+    parser.add_argument("--time_scale", type=float, default=1000.0)
+
+    parser.add_argument("--n_variants", type=int, default=3)
+    parser.add_argument("--no_qwen", action="store_true")
+    parser.add_argument("--qwen_id", default="Qwen/Qwen3-4B")
+    parser.add_argument("--qwen_python", default="python3")
+    parser.add_argument("--qwen_dtype", default="bfloat16", choices=["float16", "bfloat16"])
+    parser.add_argument("--rewrites_file", default=None)
+    parser.add_argument("--max_sequence_length", type=int, default=256)
+
+    parser.add_argument("--n_sims", type=int, default=50)
+    parser.add_argument("--ucb_c", type=float, default=1.41)
+
+    parser.add_argument("--save_images", action="store_true")
+    parser.add_argument("--save_variants", action="store_true")
+    return parser.parse_args()
+
+
+def _resolve_file(path_str: str, label: str) -> str:
+    path = Path(path_str).expanduser()
+    if not path.is_absolute():
+        path = (Path.cwd() / path).resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"{label} not found: {path}")
+    return str(path)
+
+
+def _resolve_optional_file(path_str: str | None, label: str) -> str | None:
+    if path_str is None:
+        return None
+    return _resolve_file(path_str, label)
+
+
+def _resolve_out_dir(path_str: str) -> str:
+    path = Path(path_str).expanduser()
+    if not path.is_absolute():
+        path = (Path.cwd() / path).resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
+def normalize_paths(args: argparse.Namespace) -> argparse.Namespace:
+    args.prompt_file = _resolve_file(args.prompt_file, "prompt_file")
+    args.ckpt = _resolve_optional_file(args.ckpt, "ckpt")
+    args.rewrites_file = _resolve_optional_file(args.rewrites_file, "rewrites_file")
+    args.out_dir = _resolve_out_dir(args.out_dir)
+    return args
+
+
+def init_dist() -> Tuple[int, int, int, bool]:
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    distributed = world_size > 1
+    if distributed:
+        torch.distributed.init_process_group(backend="nccl")
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+    return rank, world_size, local_rank, distributed
+
+
+def maybe_barrier(distributed: bool) -> None:
+    if distributed:
+        torch.distributed.barrier()
+
+
+def cleanup_dist(distributed: bool) -> None:
+    if distributed:
+        torch.distributed.destroy_process_group()
+
+
+def load_prompt_range(prompt_file: str, start_index: int, end_index: int) -> List[Tuple[int, str]]:
+    prompts = [line.strip() for line in open(prompt_file, encoding="utf-8") if line.strip()]
+    if end_index == -1:
+        end_index = len(prompts)
+    start = max(0, start_index)
+    end = min(len(prompts), end_index)
+    selected = []
+    for global_idx in range(start, end):
+        selected.append((global_idx, prompts[global_idx]))
+    return selected
+
+
+def shard(entries: List[Tuple[int, str]], rank: int, world_size: int) -> List[Tuple[int, str]]:
+    return [entry for i, entry in enumerate(entries) if i % world_size == rank]
+
+
+def aggregate_logs(log_dir: str, out_dir: str) -> Dict[str, Any]:
+    rows: List[Dict[str, Any]] = []
+    for name in sorted(os.listdir(log_dir)):
+        if not name.endswith(".jsonl"):
+            continue
+        with open(os.path.join(log_dir, name), encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    rows.append(json.loads(line))
+
+    by_mode = defaultdict(list)
+    by_prompt = defaultdict(dict)
+    for row in rows:
+        mode = row["mode"]
+        by_mode[mode].append(row)
+        by_prompt[row["prompt_index"]][mode] = row
+
+    mode_stats: Dict[str, Dict[str, Any]] = {}
+    for mode, mode_rows in by_mode.items():
+        deltas = [r.get("delta_vs_base", 0.0) for r in mode_rows]
+        scores = [r["score"] for r in mode_rows]
+        mode_stats[mode] = {
+            "count": len(mode_rows),
+            "mean_score": float(np.mean(scores)) if scores else 0.0,
+            "mean_delta_vs_base": float(np.mean(deltas)) if deltas else 0.0,
+            "std_delta_vs_base": float(np.std(deltas)) if deltas else 0.0,
+        }
+
+    best_mode_counts = defaultdict(int)
+    for _, mode_map in by_prompt.items():
+        best_mode = max(mode_map.items(), key=lambda kv: kv[1]["score"])[0]
+        best_mode_counts[best_mode] += 1
+
+    aggregate = {
+        "num_rows": len(rows),
+        "num_prompts": len(by_prompt),
+        "mode_stats": mode_stats,
+        "best_mode_counts": dict(best_mode_counts),
+    }
+
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "aggregate_summary.json"), "w", encoding="utf-8") as f:
+        json.dump(aggregate, f, indent=2)
+
+    txt = []
+    txt.append("Mode\tCount\tMeanScore\tMeanDeltaVsBase\tStdDeltaVsBase")
+    for mode in sorted(mode_stats):
+        s = mode_stats[mode]
+        txt.append(
+            f"{mode}\t{s['count']}\t{s['mean_score']:.6f}\t"
+            f"{s['mean_delta_vs_base']:+.6f}\t{s['std_delta_vs_base']:.6f}"
+        )
+    txt.append("")
+    txt.append("Best mode counts:")
+    for mode, c in sorted(best_mode_counts.items()):
+        txt.append(f"{mode}: {c}")
+    with open(os.path.join(out_dir, "aggregate_summary.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(txt) + "\n")
+    return aggregate
+
+
+def main() -> None:
+    args = normalize_paths(parse_args())
+    rank, world_size, local_rank, distributed = init_dist()
+
+    os.makedirs(args.out_dir, exist_ok=True)
+    log_dir = os.path.join(args.out_dir, "logs")
+    img_dir = os.path.join(args.out_dir, "images")
+    os.makedirs(log_dir, exist_ok=True)
+    if args.save_images:
+        os.makedirs(img_dir, exist_ok=True)
+
+    all_entries = load_prompt_range(args.prompt_file, args.start_index, args.end_index)
+    my_entries = shard(all_entries, rank, world_size)
+
+    if rank == 0:
+        print(
+            f"DDP launch: world_size={world_size} prompts_total={len(all_entries)} "
+            f"range=[{args.start_index},{args.end_index if args.end_index!=-1 else 'end'})"
+        )
+    print(f"[rank {rank}] local_rank={local_rank} assigned_prompts={len(my_entries)}")
+
+    rewrite_cache: Dict[str, List[str]] = {}
+    if args.rewrites_file and os.path.exists(args.rewrites_file):
+        rewrite_cache = json.load(open(args.rewrites_file, encoding="utf-8"))
+
+    ctx = load_pipeline(args)
+    reward_model = load_reward_model(ctx.device)
+
+    rank_rows: List[Dict[str, Any]] = []
+    for prompt_index, prompt in my_entries:
+        slug = f"p{prompt_index:05d}"
+        seed = args.seed + prompt_index if args.seed_per_prompt else args.seed
+        print(f"[rank {rank}] {slug} seed={seed}")
+
+        variants = generate_variants(args, prompt, rewrite_cache)
+        if args.save_variants:
+            with open(os.path.join(args.out_dir, f"{slug}_variants.txt"), "w", encoding="utf-8") as f:
+                for vi, text in enumerate(variants):
+                    f.write(f"v{vi}: {text}\n")
+
+        emb = encode_variants(ctx, variants, max_sequence_length=args.max_sequence_length)
+        base_img, base_score = run_baseline(
+            args,
+            ctx,
+            emb,
+            reward_model,
+            prompt,
+            seed,
+            cfg_scale=float(args.baseline_cfg),
+        )
+
+        if args.save_images:
+            base_img.save(os.path.join(img_dir, f"{slug}_base.png"))
+
+        if "base" in args.modes:
+            rank_rows.append(
+                {
+                    "prompt_index": prompt_index,
+                    "prompt": prompt,
+                    "seed": seed,
+                    "mode": "base",
+                    "score": float(base_score),
+                    "delta_vs_base": 0.0,
+                    "baseline_cfg": float(args.baseline_cfg),
+                    "schedule": [[0, float(args.baseline_cfg)] for _ in range(args.steps)],
+                }
+            )
+
+        if "greedy" in args.modes:
+            greedy = run_greedy(args, ctx, emb, reward_model, prompt, variants, seed)
+            if args.save_images:
+                greedy.image.save(os.path.join(img_dir, f"{slug}_greedy.png"))
+                save_comparison(
+                    os.path.join(img_dir, f"{slug}_greedy_comp.png"),
+                    base_img,
+                    greedy.image,
+                    base_score,
+                    greedy.score,
+                    greedy.actions,
+                )
+            rank_rows.append(
+                {
+                    "prompt_index": prompt_index,
+                    "prompt": prompt,
+                    "seed": seed,
+                    "mode": "greedy",
+                    "score": float(greedy.score),
+                    "delta_vs_base": float(greedy.score - base_score),
+                    "baseline_score": float(base_score),
+                    "actions": [[int(v), float(c)] for v, c in greedy.actions],
+                }
+            )
+
+        if "mcts" in args.modes:
+            mcts = run_mcts(args, ctx, emb, reward_model, prompt, variants, seed)
+            if args.save_images:
+                mcts.image.save(os.path.join(img_dir, f"{slug}_mcts.png"))
+                save_comparison(
+                    os.path.join(img_dir, f"{slug}_mcts_comp.png"),
+                    base_img,
+                    mcts.image,
+                    base_score,
+                    mcts.score,
+                    mcts.actions,
+                )
+            rank_rows.append(
+                {
+                    "prompt_index": prompt_index,
+                    "prompt": prompt,
+                    "seed": seed,
+                    "mode": "mcts",
+                    "score": float(mcts.score),
+                    "delta_vs_base": float(mcts.score - base_score),
+                    "baseline_score": float(base_score),
+                    "actions": [[int(v), float(c)] for v, c in mcts.actions],
+                }
+            )
+
+    rank_log = os.path.join(log_dir, f"rank_{rank:03d}.jsonl")
+    with open(rank_log, "w", encoding="utf-8") as f:
+        for row in rank_rows:
+            f.write(json.dumps(row) + "\n")
+    with open(os.path.join(log_dir, f"rank_{rank:03d}_meta.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "rank": rank,
+                "world_size": world_size,
+                "assigned_prompts": len(my_entries),
+                "rows": len(rank_rows),
+            },
+            f,
+            indent=2,
+        )
+
+    maybe_barrier(distributed)
+    if rank == 0:
+        aggregate = aggregate_logs(log_dir=log_dir, out_dir=args.out_dir)
+        print("Aggregate summary:")
+        print(json.dumps(aggregate, indent=2))
+    maybe_barrier(distributed)
+    cleanup_dist(distributed)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,8 @@
+# Shell scripts must be LF everywhere
+*.sh   text eol=lf
+*.bash text eol=lf
+*.zsh  text eol=lf
+
+# (optional) also keep these LF (use if you want)
+*.yml  text eol=lf
+*.yaml text eol=lf

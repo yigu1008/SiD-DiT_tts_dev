@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Optional local env defaults (override by exporting before running this script)
-export HF_HOME="${HF_HOME:-/data/ygu/.cache}"
-export PATH="${SID_ENV_PATH:-/home/ygu/miniconda3/envs/sid_dit/bin}:$PATH"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/shell_env.sh"
 
-python sampling_unified_sd35.py \
+"${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified_sd35.py" \
   --search_method greedy \
-  --prompt_file prompts.txt \
+  --prompt_file "${SCRIPT_DIR}/prompts.txt" \
   --n_variants 3 \
   --cfg_scales 1.0 1.25 1.5 1.75 2.0 2.25 2.5 \
   --steps 4 \
@@ -16,4 +15,3 @@ python sampling_unified_sd35.py \
   --height 1024 \
   --out_dir ./imagereward_sd35_greedy_out \
   "$@"
-

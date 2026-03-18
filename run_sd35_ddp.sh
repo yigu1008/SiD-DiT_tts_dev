@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export HF_HOME="${HF_HOME:-/data/ygu/.cache}"
-export PATH="${SID_ENV_PATH:-/home/ygu/miniconda3/envs/sid_dit/bin}:$PATH"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/shell_env.sh"
 
-NUM_GPUS="${NUM_GPUS:-$(python - <<'PY'
+NUM_GPUS="${NUM_GPUS:-$("${PYTHON_BIN}" - <<'PY'
 import torch
 print(max(torch.cuda.device_count(), 1))
 PY
 )}"
 
-PROMPT_FILE="${PROMPT_FILE:-parti_prompts.txt}"
+PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/parti_prompts.txt}"
 OUT_DIR="${OUT_DIR:-./sd35_ddp_out}"
 
 if [[ ! -f "${PROMPT_FILE}" ]]; then
@@ -19,12 +19,12 @@ if [[ ! -f "${PROMPT_FILE}" ]]; then
 fi
 mkdir -p "${OUT_DIR}"
 
-PROMPT_FILE_ABS="$(python - <<'PY' "${PROMPT_FILE}"
+PROMPT_FILE_ABS="$("${PYTHON_BIN}" - <<'PY' "${PROMPT_FILE}"
 import pathlib,sys
 print(pathlib.Path(sys.argv[1]).expanduser().resolve())
 PY
 )"
-OUT_DIR_ABS="$(python - <<'PY' "${OUT_DIR}"
+OUT_DIR_ABS="$("${PYTHON_BIN}" - <<'PY' "${OUT_DIR}"
 import pathlib,sys
 p = pathlib.Path(sys.argv[1]).expanduser().resolve()
 p.mkdir(parents=True, exist_ok=True)
@@ -49,7 +49,7 @@ if [[ -n "${REWRITES_FILE:-}" ]]; then
   EXTRA_ARGS+=(--rewrites_file "${REWRITES_FILE}")
 fi
 
-torchrun --standalone --nproc_per_node "${NUM_GPUS}" sd35_ddp_experiment.py \
+torchrun --standalone --nproc_per_node "${NUM_GPUS}" "${SCRIPT_DIR}/sd35_ddp_experiment.py" \
   --prompt_file "${PROMPT_FILE_ABS}" \
   --start_index "${START_INDEX:-0}" \
   --end_index "${END_INDEX:--1}" \
@@ -65,4 +65,4 @@ torchrun --standalone --nproc_per_node "${NUM_GPUS}" sd35_ddp_experiment.py \
   "${EXTRA_ARGS[@]}" \
   "$@"
 
-python summarize_sd35_ddp.py --log_dir "${OUT_DIR_ABS}/logs" --out_dir "${OUT_DIR_ABS}"
+"${PYTHON_BIN}" "${SCRIPT_DIR}/summarize_sd35_ddp.py" --log_dir "${OUT_DIR_ABS}/logs" --out_dir "${OUT_DIR_ABS}"

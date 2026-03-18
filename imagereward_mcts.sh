@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Optional local env defaults (override by exporting before running this script)
-export HF_HOME="${HF_HOME:-/data/ygu/.cache}"
-export PATH="${SID_ENV_PATH:-/home/ygu/miniconda3/envs/sid_dit/bin}:$PATH"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/shell_env.sh"
 
-python sampling_unified.py \
+"${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified.py" \
   --search_method mcts \
   --reward_type imagereward \
-  --prompt_file prompts.txt \
+  --prompt_file "${SCRIPT_DIR}/prompts.txt" \
   --n_variants 3 \
   --cfg_scales 1.0 1.25 1.5 1.75 2.0 2.25 2.5 2.75 3.0 3.25 3.5 3.75 4.0 4.25 4.5 4.75 5.0 \
   --steps 4 \
@@ -17,4 +16,3 @@ python sampling_unified.py \
   --seed 42 \
   --out_dir ./imagereward_mcts_out \
   "$@"
-

@@ -28,10 +28,12 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from types import MethodType
 from typing import Any
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -137,6 +139,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Move text encoder to CPU after prompt embeddings are computed.",
+    )
+    parser.add_argument(
+        "--sana_no_fp32_attn",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Disable fp32 upcast in Sana multiscale attention (lower memory, possible minor numeric drift).",
     )
     parser.add_argument(
         "--decode_device",
@@ -344,6 +352,29 @@ def _resolve_decode_device(args: argparse.Namespace, model_device: str) -> str:
     raise RuntimeError("Unsupported decode_device. Use auto/cpu/cuda.")
 
 
+def _patch_sana_no_fp32_attn(pipe: Any) -> int:
+    def _linear_no_upcast(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+        value = F.pad(value, (0, 0, 0, 1), mode="constant", value=1)
+        scores = torch.matmul(value, key.transpose(-1, -2))
+        hidden_states = torch.matmul(scores, query)
+        hidden_states = hidden_states[:, :, :-1] / (hidden_states[:, :, -1:] + self.eps)
+        return hidden_states
+
+    def _quadratic_no_upcast(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+        scores = torch.matmul(key.transpose(-1, -2), query)
+        scores = scores / (torch.sum(scores, dim=2, keepdim=True) + self.eps)
+        hidden_states = torch.matmul(value, scores.to(value.dtype))
+        return hidden_states
+
+    patched = 0
+    for mod in pipe.vae.modules():
+        if mod.__class__.__name__ == "SanaMultiscaleLinearAttention":
+            mod.apply_linear_attention = MethodType(_linear_no_upcast, mod)
+            mod.apply_quadratic_attention = MethodType(_quadratic_no_upcast, mod)
+            patched += 1
+    return patched
+
+
 @dataclass
 class PipelineContext:
     pipe: Any
@@ -355,6 +386,8 @@ class PipelineContext:
     empty_cache_after_decode: bool
     decode_counts: dict[str, int]
     decode_device: str
+    decode_device_request: str
+    decode_cpu_if_free_below_gb: float
 
 
 def load_pipeline(args: argparse.Namespace) -> PipelineContext:
@@ -412,6 +445,10 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
 
     pipe.transformer.eval()
 
+    if args.sana_no_fp32_attn:
+        patched = _patch_sana_no_fp32_attn(pipe)
+        print(f"Patched Sana multiscale attention (no fp32 upcast): {patched} modules")
+
     decode_device = _resolve_decode_device(args, device)
     if decode_device == "cpu":
         try:
@@ -451,6 +488,8 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
         empty_cache_after_decode=args.empty_cache_after_decode,
         decode_counts={},
         decode_device=decode_device,
+        decode_device_request=str(args.decode_device).strip().lower(),
+        decode_cpu_if_free_below_gb=float(args.decode_cpu_if_free_below_gb),
     )
 
 
@@ -949,6 +988,38 @@ def transformer_step(
 
 
 @torch.no_grad()
+def _is_cuda_oom(exc: RuntimeError) -> bool:
+    msg = str(exc).lower()
+    return "out of memory" in msg and "cuda" in msg
+
+
+@torch.no_grad()
+def _cuda_free_gb(device: str) -> float | None:
+    if not device.startswith("cuda"):
+        return None
+    try:
+        dev_idx = int(device.split(":", 1)[1])
+    except Exception:
+        dev_idx = 0
+    try:
+        free_bytes, _ = torch.cuda.mem_get_info(dev_idx)
+    except Exception:
+        return None
+    return float(free_bytes) / (1024 ** 3)
+
+
+@torch.no_grad()
+def _switch_decode_to_cpu(ctx: PipelineContext, reason: str) -> None:
+    if ctx.decode_device == "cpu":
+        return
+    print(f"Decode fallback: switching VAE decode to CPU ({reason}).")
+    ctx.pipe.vae.to("cpu")
+    ctx.decode_device = "cpu"
+    if ctx.device.startswith("cuda"):
+        torch.cuda.empty_cache()
+
+
+@torch.no_grad()
 def decode_to_pil(
     ctx: PipelineContext,
     dx: torch.Tensor,
@@ -957,13 +1028,33 @@ def decode_to_pil(
     tag: str = "generic",
 ) -> Image.Image:
     ctx.decode_counts[tag] = ctx.decode_counts.get(tag, 0) + 1
+
+    if ctx.decode_device_request == "auto" and ctx.decode_device != "cpu":
+        free_gb = _cuda_free_gb(ctx.device)
+        if free_gb is not None and free_gb < ctx.decode_cpu_if_free_below_gb:
+            _switch_decode_to_cpu(
+                ctx,
+                reason=(
+                    f"free_gb={free_gb:.2f} < decode_cpu_if_free_below_gb="
+                    f"{ctx.decode_cpu_if_free_below_gb:.2f}"
+                ),
+            )
+
     scaled = dx / ctx.pipe.vae.config.scaling_factor
     if ctx.decode_device == "cpu":
         scaled = scaled.to(device="cpu", dtype=torch.float32)
         image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
     else:
         scaled = scaled.to(device=ctx.device, dtype=ctx.dtype)
-        image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
+        try:
+            image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
+        except RuntimeError as exc:
+            if ctx.decode_device_request == "auto" and _is_cuda_oom(exc):
+                _switch_decode_to_cpu(ctx, reason="CUDA OOM during decode")
+                scaled = scaled.to(device="cpu", dtype=torch.float32)
+                image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
+            else:
+                raise
     image = ctx.pipe.image_processor.resize_and_crop_tensor(image, orig_h, orig_w)
     pil = ctx.pipe.image_processor.postprocess(image, output_type="pil")[0]
     if ctx.empty_cache_after_decode and ctx.device == "cuda":

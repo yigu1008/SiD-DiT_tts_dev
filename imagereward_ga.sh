@@ -4,10 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/shell_env.sh"
 
-  "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified.py" \
+"${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified.py" \
   --search_method ga \
   --reward_type imagereward \
   --reward_device same \
+  --sana_no_fp32_attn \
   --decode_device auto \
   --decode_cpu_if_free_below_gb 20 \
   --no-resolution_binning \

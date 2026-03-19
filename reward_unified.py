@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import base64
+import io
+import json
+import os
+import re
+import urllib.request
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -14,41 +20,203 @@ class _BackendState:
     imagereward: Optional[object] = None
     hps_model: Optional[object] = None
     open_clip: Optional[object] = None
+    unifiedreward_model: Optional[object] = None
+    unifiedreward_processor: Optional[object] = None
+    unifiedreward_process_vision_info: Optional[object] = None
+    unifiedreward_api_base: Optional[str] = None
+    unifiedreward_api_key: Optional[str] = None
+    unifiedreward_api_model: Optional[str] = None
 
 
 class UnifiedRewardScorer:
     """
-    Unified reward wrapper.
+    Unified reward wrapper for TTS.
 
     Backends:
+      - unifiedreward: paper model scoring (CodeGoat24 UnifiedReward)
+      - unified      : alias of unifiedreward (kept for compatibility)
       - imagereward
       - hpsv2
-      - auto    : prefer ImageReward, then HPSv2
-      - unified : weighted average of all available backends
+      - blend        : weighted average of ImageReward and HPSv2
+      - auto         : prefer unifiedreward, then imagereward, then hpsv2
     """
 
     _clip_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073])
     _clip_std = torch.tensor([0.26862954, 0.26130258, 0.27577711])
+
+    _point_prompt_standard = (
+        "You are given a text caption and a generated image based on that caption. "
+        "Your task is to evaluate this image based on two key criteria:\n"
+        "1. Alignment with the Caption: Assess how well this image aligns with the provided caption. "
+        "Consider the accuracy of depicted objects, their relationships, and attributes as described in the caption.\n"
+        "2. Overall Image Quality: Examine the visual quality of this image, including clarity, detail preservation, "
+        "color accuracy, and overall aesthetic appeal.\n"
+        "Based on the above criteria, assign a score from 1 to 5 after 'Final Score:'.\n"
+        "Your task is provided as follows:\n"
+        "Text Caption: [{prompt}]"
+    )
+
+    _point_prompt_strict = (
+        "You are an image reward model.\n"
+        "Evaluate one generated image against the given caption.\n"
+        "Consider both prompt alignment and overall visual quality.\n"
+        "Output exactly one line in this format and nothing else:\n"
+        "Final Score: <float from 1.0 to 5.0>\n"
+        "Caption: [{prompt}]"
+    )
+
+    _final_score_re = re.compile(r"Final Score:\s*([-+]?\d*\.?\d+)", re.IGNORECASE)
+    _align_re = re.compile(r"Alignment Score[^:]*:\s*([-+]?\d*\.?\d+)", re.IGNORECASE)
+    _coherence_re = re.compile(r"Coherence Score[^:]*:\s*([-+]?\d*\.?\d+)", re.IGNORECASE)
+    _style_re = re.compile(r"Style Score[^:]*:\s*([-+]?\d*\.?\d+)", re.IGNORECASE)
+    _unifiedreward_install_hint = (
+        "Install/update dependencies for local UnifiedReward, e.g.:\n"
+        "  pip install -U \"transformers>=4.51.0\" accelerate \"qwen-vl-utils>=0.0.14\""
+    )
 
     def __init__(
         self,
         device: str = "cuda",
         backend: str = "auto",
         image_reward_model: str = "ImageReward-v1.0",
+        unifiedreward_model: str = "CodeGoat24/UnifiedReward-qwen-7b",
         unified_weights: Tuple[float, float] = (1.0, 1.0),
+        unifiedreward_api_base: Optional[str] = None,
+        unifiedreward_api_key: str = "unifiedreward",
+        unifiedreward_api_model: str = "UnifiedReward-7b-v1.5",
+        max_new_tokens: int = 512,
+        unifiedreward_prompt_mode: str = "standard",
     ) -> None:
-        if backend not in {"auto", "imagereward", "hpsv2", "unified"}:
+        valid = {"auto", "imagereward", "hpsv2", "blend", "unified", "unifiedreward"}
+        if backend not in valid:
             raise ValueError(f"Unsupported backend: {backend}")
+        if unifiedreward_prompt_mode not in {"standard", "strict"}:
+            raise ValueError(f"Unsupported unifiedreward_prompt_mode: {unifiedreward_prompt_mode}")
+
         self.device = device
+        self._hf_device = self._normalize_hf_device(device)
         self.backend = backend
         self.image_reward_model = image_reward_model
+        self.unifiedreward_model = unifiedreward_model
         self.unified_weights = unified_weights
+        self.unifiedreward_api_base = unifiedreward_api_base
+        self.unifiedreward_api_key = unifiedreward_api_key
+        self.unifiedreward_api_model = unifiedreward_api_model
+        self.max_new_tokens = int(max_new_tokens)
+        self.unifiedreward_prompt_mode = unifiedreward_prompt_mode
         self.state = _BackendState()
         self.available: List[str] = []
+        self.unifiedreward_last_error: Optional[str] = None
+        self.debug = str(os.environ.get("UNIFIEDREWARD_DEBUG", "")).strip().lower() in {"1", "true", "yes", "on"}
         self._load_backends()
 
+    @staticmethod
+    def _normalize_hf_device(device: str) -> str:
+        if device.startswith("cuda") and ":" not in device:
+            return "cuda:0"
+        return device
+
     def _load_backends(self) -> None:
-        # Try ImageReward
+        target = "unifiedreward" if self.backend == "unified" else self.backend
+        need_unifiedreward = target in {"unifiedreward", "auto"}
+        need_imagereward = target in {"imagereward", "blend", "auto"}
+        need_hpsv2 = target in {"hpsv2", "blend", "auto"}
+
+        if need_unifiedreward:
+            self._try_load_unifiedreward()
+        if need_imagereward:
+            self._try_load_imagereward()
+        if need_hpsv2:
+            self._try_load_hpsv2()
+
+        if target == "unifiedreward" and "unifiedreward" not in self.available:
+            detail = f" Last error: {self.unifiedreward_last_error}" if self.unifiedreward_last_error else ""
+            raise RuntimeError(
+                "Requested backend=unifiedreward, but UnifiedReward is unavailable."
+                f"{detail}\n{self._unifiedreward_install_hint}"
+            )
+        if target == "imagereward" and "imagereward" not in self.available:
+            raise RuntimeError("Requested backend=imagereward, but ImageReward is unavailable.")
+        if target == "hpsv2" and "hpsv2" not in self.available:
+            raise RuntimeError("Requested backend=hpsv2, but HPSv2 is unavailable.")
+        if target == "blend":
+            if "imagereward" not in self.available and "hpsv2" not in self.available:
+                raise RuntimeError("Requested backend=blend, but ImageReward/HPSv2 are both unavailable.")
+        if target == "auto" and not self.available:
+            raise RuntimeError("No reward backend available.")
+
+    def _try_load_unifiedreward(self) -> None:
+        if self.unifiedreward_api_base:
+            self.state.unifiedreward_api_base = self.unifiedreward_api_base.rstrip("/")
+            self.state.unifiedreward_api_key = self.unifiedreward_api_key
+            self.state.unifiedreward_api_model = self.unifiedreward_api_model
+            self.available.append("unifiedreward")
+            return
+
+        try:
+            import transformers
+            from transformers import AutoProcessor
+
+            try:
+                from qwen_vl_utils import process_vision_info  # type: ignore
+            except Exception:
+                process_vision_info = None
+
+            model = None
+            load_errors: List[str] = []
+            for cls_name in (
+                "Qwen2_5_VLForConditionalGeneration",
+                "Qwen3VLForConditionalGeneration",
+                "AutoModelForImageTextToText",
+                "AutoModelForVision2Seq",
+                "AutoModelForCausalLM",
+                "AutoModel",
+            ):
+                cls = getattr(transformers, cls_name, None)
+                if cls is None:
+                    load_errors.append(f"{cls_name}: class not found in transformers")
+                    continue
+                for dm in ({"": self._hf_device}, "auto", None):
+                    kwargs: Dict[str, Any] = {
+                        "torch_dtype": "auto",
+                        "trust_remote_code": True,
+                    }
+                    if dm is not None:
+                        kwargs["device_map"] = dm
+                    try:
+                        candidate = cls.from_pretrained(self.unifiedreward_model, **kwargs)
+                        if dm is None and hasattr(candidate, "to"):
+                            try:
+                                candidate = candidate.to(self._hf_device)
+                            except Exception:
+                                pass
+                        if not hasattr(candidate, "generate"):
+                            load_errors.append(f"{cls_name}(device_map={dm}): loaded model has no generate()")
+                            continue
+                        model = candidate
+                        break
+                    except Exception as exc:
+                        err = f"{cls_name}(device_map={dm}): {type(exc).__name__}: {str(exc)[:240]}"
+                        load_errors.append(err)
+                if model is not None:
+                    break
+            if model is None:
+                preview = " | ".join(load_errors[:4]) if load_errors else "no loader attempts captured"
+                raise RuntimeError(f"No compatible transformers loader worked for UnifiedReward. {preview}")
+
+            processor = AutoProcessor.from_pretrained(self.unifiedreward_model, trust_remote_code=True)
+            model.eval()
+            self.state.unifiedreward_model = model
+            self.state.unifiedreward_processor = processor
+            self.state.unifiedreward_process_vision_info = process_vision_info
+            self.available.append("unifiedreward")
+            self.unifiedreward_last_error = None
+        except Exception as exc:
+            self.unifiedreward_last_error = str(exc)
+            print(f"[Reward] UnifiedReward unavailable: {exc}")
+            print(f"[Reward] {self._unifiedreward_install_hint}")
+
+    def _try_load_imagereward(self) -> None:
         try:
             import ImageReward as RM
 
@@ -59,7 +227,7 @@ class UnifiedRewardScorer:
         except Exception as exc:
             print(f"[Reward] ImageReward unavailable: {exc}")
 
-        # Try HPSv2
+    def _try_load_hpsv2(self) -> None:
         try:
             import hpsv2 as hm
             import open_clip
@@ -73,25 +241,24 @@ class UnifiedRewardScorer:
         except Exception as exc:
             print(f"[Reward] HPSv2 unavailable: {exc}")
 
-        if self.backend == "imagereward" and "imagereward" not in self.available:
-            raise RuntimeError("Requested backend=imagereward, but ImageReward is unavailable.")
-        if self.backend == "hpsv2" and "hpsv2" not in self.available:
-            raise RuntimeError("Requested backend=hpsv2, but HPSv2 is unavailable.")
-        if self.backend in {"auto", "unified"} and not self.available:
-            raise RuntimeError("No reward backend available (ImageReward/HPSv2 both unavailable).")
-
     def describe(self) -> str:
-        if self.backend == "auto":
-            selected = self._auto_backend()
-            return f"backend=auto(selected={selected}) available={self.available}"
-        if self.backend == "unified":
+        target = "unifiedreward" if self.backend == "unified" else self.backend
+        if target == "auto":
+            return f"backend=auto(selected={self._auto_backend()}) available={self.available}"
+        if target == "blend":
             return (
-                f"backend=unified available={self.available} "
+                f"backend=blend available={self.available} "
                 f"weights=(imagereward={self.unified_weights[0]}, hpsv2={self.unified_weights[1]})"
             )
-        return f"backend={self.backend} available={self.available}"
+        if target == "unifiedreward":
+            mode = "api" if self.state.unifiedreward_api_base else "local"
+            detail = self.state.unifiedreward_api_model if mode == "api" else self.unifiedreward_model
+            return f"backend=unifiedreward({mode}) model={detail} available={self.available}"
+        return f"backend={target} available={self.available}"
 
     def _auto_backend(self) -> str:
+        if "unifiedreward" in self.available:
+            return "unifiedreward"
         if "imagereward" in self.available:
             return "imagereward"
         if "hpsv2" in self.available:
@@ -122,26 +289,156 @@ class UnifiedRewardScorer:
         vf = vf / vf.norm(dim=-1, keepdim=True)
         return float((vf * tf).sum(dim=-1).item())
 
-    def score(self, prompt: str, image: Image.Image) -> float:
-        if self.backend == "imagereward":
-            return self._score_imagereward(prompt, image)
-        if self.backend == "hpsv2":
-            return self._score_hpsv2(prompt, image)
+    def _unifiedreward_question(self, prompt: str) -> str:
+        if self.unifiedreward_prompt_mode == "strict":
+            return self._point_prompt_strict.format(prompt=prompt)
+        return self._point_prompt_standard.format(prompt=prompt)
 
-        if self.backend == "auto":
-            selected = self._auto_backend()
-            if selected == "imagereward":
-                return self._score_imagereward(prompt, image)
-            return self._score_hpsv2(prompt, image)
+    def _image_to_data_url(self, image: Image.Image) -> str:
+        buf = io.BytesIO()
+        image.convert("RGB").save(buf, format="JPEG", quality=95)
+        payload = base64.b64encode(buf.getvalue()).decode("utf-8")
+        return f"data:image/jpeg;base64,{payload}"
 
-        # unified
+    def _extract_unifiedreward_score(self, text: str) -> float:
+        text = text.replace("\r", "\n").strip()
+        # Some UnifiedReward checkpoints return a bare float only.
+        bare = re.fullmatch(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", text)
+        if bare:
+            return float(bare.group(0))
+        match = self._final_score_re.search(text)
+        if not match:
+            match = re.search(r"Final\s*score\s*[:=]\s*([-+]?\d*\.?\d+)", text, re.IGNORECASE)
+        if match:
+            return float(match.group(1))
+        a = self._align_re.search(text)
+        c = self._coherence_re.search(text)
+        s = self._style_re.search(text)
+        if a and c and s:
+            return (float(a.group(1)) + float(c.group(1)) + float(s.group(1))) / 3.0
+        scored_fields = list(
+            re.finditer(r"(?:^|\n)\s*[^:\n]*score[^:\n]*[:=]\s*([-+]?\d*\.?\d+)", text, re.IGNORECASE)
+        )
+        if scored_fields:
+            # Prefer the last explicit score field if "Final Score" is absent.
+            return float(scored_fields[-1].group(1))
+        # Last fallback: return the last numeric line if the model output is terse.
+        numeric_lines = re.findall(r"(?:^|\n)\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*(?=\n|$)", text)
+        if numeric_lines:
+            return float(numeric_lines[-1])
+        raise RuntimeError(f"Unable to parse UnifiedReward score from output: {text[:200]!r}")
+
+    @torch.no_grad()
+    def _score_unifiedreward_local(self, prompt: str, image: Image.Image) -> float:
+        model = self.state.unifiedreward_model
+        processor = self.state.unifiedreward_processor
+        if model is None or processor is None:
+            raise RuntimeError("UnifiedReward local model is not loaded.")
+
+        question = self._unifiedreward_question(prompt)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image.convert("RGB")},
+                    {"type": "text", "text": question},
+                ],
+            }
+        ]
+        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        process_vision_info = self.state.unifiedreward_process_vision_info
+        if process_vision_info is not None:
+            image_inputs, video_inputs = process_vision_info(messages)
+            inputs = processor(
+                text=[text],
+                images=image_inputs,
+                videos=video_inputs,
+                padding=True,
+                return_tensors="pt",
+            )
+        else:
+            inputs = processor(
+                text=[text],
+                images=[image.convert("RGB")],
+                padding=True,
+                return_tensors="pt",
+            )
+        inputs = {k: v.to(model.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+        generated_ids = model.generate(
+            **inputs,
+            max_new_tokens=self.max_new_tokens,
+            do_sample=False,
+        )
+        generated_ids_trimmed = [
+            out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
+        ]
+        output_text = processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0]
+        score = self._extract_unifiedreward_score(output_text)
+        if self.debug:
+            print(f"[UnifiedReward][local] raw={output_text[:300]!r} score={score:.4f}")
+        return score
+
+    def _score_unifiedreward_api(self, prompt: str, image: Image.Image) -> float:
+        if not self.state.unifiedreward_api_base:
+            raise RuntimeError("UnifiedReward API base URL is missing.")
+        url = f"{self.state.unifiedreward_api_base}/chat/completions"
+        payload = {
+            "model": self.state.unifiedreward_api_model or "UnifiedReward-7b-v1.5",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": self._image_to_data_url(image)}},
+                        {"type": "text", "text": self._unifiedreward_question(prompt)},
+                    ],
+                }
+            ],
+            "temperature": 0,
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.state.unifiedreward_api_key or 'unifiedreward'}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+        content = raw["choices"][0]["message"]["content"]
+        if isinstance(content, list):
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    maybe_text = item.get("text")
+                    if isinstance(maybe_text, str):
+                        text_parts.append(maybe_text)
+            content = "\n".join(text_parts)
+        if not isinstance(content, str):
+            content = str(content)
+        score = self._extract_unifiedreward_score(content)
+        if self.debug:
+            print(f"[UnifiedReward][api] raw={content[:300]!r} score={score:.4f}")
+        return score
+
+    def _score_unifiedreward(self, prompt: str, image: Image.Image) -> float:
+        if self.state.unifiedreward_api_base:
+            return self._score_unifiedreward_api(prompt, image)
+        return self._score_unifiedreward_local(prompt, image)
+
+    def _score_blend(self, prompt: str, image: Image.Image) -> float:
         scored: Dict[str, float] = {}
         if "imagereward" in self.available:
             scored["imagereward"] = self._score_imagereward(prompt, image)
         if "hpsv2" in self.available:
             scored["hpsv2"] = self._score_hpsv2(prompt, image)
         if not scored:
-            raise RuntimeError("No backend available in unified mode.")
+            raise RuntimeError("No backend available in blend mode.")
 
         w_ir, w_hps = self.unified_weights
         numer = 0.0
@@ -153,5 +450,24 @@ class UnifiedRewardScorer:
             numer += w_hps * scored["hpsv2"]
             denom += w_hps
         if denom <= 0:
-            raise RuntimeError("Invalid unified reward weights; sum must be > 0.")
+            raise RuntimeError("Invalid blend weights; sum must be > 0.")
         return numer / denom
+
+    def score(self, prompt: str, image: Image.Image) -> float:
+        target = "unifiedreward" if self.backend == "unified" else self.backend
+        if target == "imagereward":
+            return self._score_imagereward(prompt, image)
+        if target == "hpsv2":
+            return self._score_hpsv2(prompt, image)
+        if target == "blend":
+            return self._score_blend(prompt, image)
+        if target == "unifiedreward":
+            return self._score_unifiedreward(prompt, image)
+        if target == "auto":
+            selected = self._auto_backend()
+            if selected == "unifiedreward":
+                return self._score_unifiedreward(prompt, image)
+            if selected == "imagereward":
+                return self._score_imagereward(prompt, image)
+            return self._score_hpsv2(prompt, image)
+        raise RuntimeError(f"Unexpected backend: {self.backend}")

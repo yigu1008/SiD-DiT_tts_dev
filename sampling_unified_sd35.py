@@ -7,7 +7,7 @@ Search space per denoising step:
 Supports:
   - greedy search
   - MCTS search
-  - ImageReward scoring
+  - paper UnifiedReward scoring (with blend fallback)
 """
 
 from __future__ import annotations
@@ -27,6 +27,8 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
+from reward_unified import UnifiedRewardScorer
+
 
 REWRITE_SYSTEM = (
     "You are a concise image prompt editor. "
@@ -45,7 +47,7 @@ REWRITE_STYLES = [
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Unified SD3.5 sampling/search with ImageReward.")
+    parser = argparse.ArgumentParser(description="Unified SD3.5 sampling/search with unified reward.")
     parser.add_argument("--search_method", choices=["greedy", "mcts"], default="greedy")
 
     parser.add_argument("--model_id", default="YGu1998/SiD-DiT-SD3.5-large")
@@ -76,6 +78,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument("--n_sims", type=int, default=50)
     parser.add_argument("--ucb_c", type=float, default=1.41)
+    parser.add_argument("--reward_model", default="CodeGoat24/UnifiedReward-qwen-7b")
+    parser.add_argument(
+        "--reward_backend",
+        choices=["auto", "unifiedreward", "unified", "imagereward", "hpsv2", "blend"],
+        default="unifiedreward",
+    )
+    parser.add_argument(
+        "--reward_weights",
+        nargs=2,
+        type=float,
+        default=[1.0, 1.0],
+        help="Blend backend weights: imagereward hpsv2",
+    )
+    parser.add_argument("--reward_api_base", default=None, help="Optional OpenAI-compatible API base for UnifiedReward.")
+    parser.add_argument("--reward_api_key", default="unifiedreward")
+    parser.add_argument("--reward_api_model", default="UnifiedReward-7b-v1.5")
+    parser.add_argument("--reward_max_new_tokens", type=int, default=512)
+    parser.add_argument(
+        "--reward_prompt_mode",
+        choices=["standard", "strict"],
+        default="standard",
+        help="UnifiedReward prompt template mode.",
+    )
     return parser.parse_args(argv)
 
 
@@ -176,13 +201,21 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
     return PipelineContext(pipe=pipe, device=device, dtype=dtype, latent_c=latent_c)
 
 
-def load_reward_model(device: str) -> Any:
-    print("Loading ImageReward ...")
-    import ImageReward as RM
-
-    reward_model = RM.load("ImageReward-v1.0", device=device)
-    reward_model.eval()
-    return reward_model
+def load_reward_model(args: argparse.Namespace, device: str) -> UnifiedRewardScorer:
+    scorer = UnifiedRewardScorer(
+        device=device,
+        backend=args.reward_backend,
+        image_reward_model=args.reward_model,
+        unifiedreward_model=args.reward_model,
+        unified_weights=(float(args.reward_weights[0]), float(args.reward_weights[1])),
+        unifiedreward_api_base=args.reward_api_base,
+        unifiedreward_api_key=args.reward_api_key,
+        unifiedreward_api_model=args.reward_api_model,
+        max_new_tokens=int(args.reward_max_new_tokens),
+        unifiedreward_prompt_mode=args.reward_prompt_mode,
+    )
+    print(f"Reward: {scorer.describe()}")
+    return scorer
 
 
 def load_prompts(args: argparse.Namespace) -> list[str]:
@@ -341,7 +374,7 @@ def decode_to_pil(ctx: PipelineContext, dx: torch.Tensor) -> Image.Image:
     return ctx.pipe.image_processor.postprocess(image, output_type="pil")[0]
 
 
-def score_image(reward_model: Any, prompt: str, image: Image.Image) -> float:
+def score_image(reward_model: UnifiedRewardScorer, prompt: str, image: Image.Image) -> float:
     return float(reward_model.score(prompt, image))
 
 
@@ -359,7 +392,7 @@ def run_baseline(
     args: argparse.Namespace,
     ctx: PipelineContext,
     emb: EmbeddingContext,
-    reward_model: Any,
+    reward_model: UnifiedRewardScorer,
     prompt: str,
     seed: int,
     cfg_scale: float = 1.0,
@@ -380,7 +413,7 @@ def run_greedy(
     args: argparse.Namespace,
     ctx: PipelineContext,
     emb: EmbeddingContext,
-    reward_model: Any,
+    reward_model: UnifiedRewardScorer,
     prompt: str,
     variants: list[str],
     seed: int,
@@ -494,7 +527,7 @@ def run_mcts(
     args: argparse.Namespace,
     ctx: PipelineContext,
     emb: EmbeddingContext,
-    reward_model: Any,
+    reward_model: UnifiedRewardScorer,
     prompt: str,
     variants: list[str],
     seed: int,
@@ -630,7 +663,7 @@ def run(args: argparse.Namespace) -> None:
     os.makedirs(args.out_dir, exist_ok=True)
     prompts = load_prompts(args)
     ctx = load_pipeline(args)
-    reward_model = load_reward_model(ctx.device)
+    reward_model = load_reward_model(args, ctx.device)
 
     rewrite_cache: dict[str, list[str]] = {}
     if args.rewrites_file and os.path.exists(args.rewrites_file):

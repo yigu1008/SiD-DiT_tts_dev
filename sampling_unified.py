@@ -9,7 +9,7 @@ This script merges the former sampling entrypoints:
 - geneval_mcts.py
 
 Core knobs:
-- search method: greedy or mcts
+- search method: greedy, mcts, or ga
 - reward type: imagereward or geneval
 - action space: (prompt_variant_idx, cfg_scale)
 """
@@ -50,6 +50,14 @@ REWRITE_STYLES = [
     "Change one mood or atmosphere word.",
 ]
 
+GA_PROMPT_FOCUS = {
+    "balanced": "",
+    "subject": "Focus on subject identity, face, and outfit fidelity.",
+    "prop": "Focus on key props, object pose, and hand-object interaction.",
+    "background": "Focus on composition, scene layout, and background structure.",
+    "detail": "Focus on high-frequency details, textures, and fine attributes.",
+}
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -57,7 +65,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     # High-level mode
-    parser.add_argument("--search_method", choices=["greedy", "mcts"], default="greedy")
+    parser.add_argument("--search_method", choices=["greedy", "mcts", "ga"], default="greedy")
     parser.add_argument("--reward_type", choices=["imagereward", "geneval"], default="imagereward")
 
     # Model + generation
@@ -102,6 +110,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # MCTS
     parser.add_argument("--n_sims", type=int, default=50)
     parser.add_argument("--ucb_c", type=float, default=1.41)
+
+    # GA
+    parser.add_argument("--ga_population", type=int, default=24)
+    parser.add_argument("--ga_generations", type=int, default=12)
+    parser.add_argument("--ga_elites", type=int, default=3)
+    parser.add_argument("--ga_mutation_prob", type=float, default=0.10)
+    parser.add_argument("--ga_tournament_k", type=int, default=3)
+    parser.add_argument("--ga_crossover", choices=["uniform", "one_point"], default="uniform")
+    parser.add_argument("--ga_log_topk", type=int, default=3)
+    parser.add_argument("--ga_random_trials", type=int, default=32)
+    parser.add_argument("--ga_phase_constraints", action="store_true")
+    parser.add_argument(
+        "--ga_cfg_scales",
+        nargs="+",
+        type=float,
+        default=[1.0, 1.25, 1.5],
+        help="Small CFG bank for GA genomes.",
+    )
 
     # GenEval reward backends
     parser.add_argument("--reward_url", default=None)
@@ -533,6 +559,15 @@ def generate_variants(args: argparse.Namespace, prompt: str, cache: dict[str, li
     return variants
 
 
+def build_ga_prompt_bank(prompt: str) -> list[tuple[str, str]]:
+    bank: list[tuple[str, str]] = []
+    for label in ("balanced", "subject", "prop", "background", "detail"):
+        suffix = GA_PROMPT_FOCUS[label]
+        text = prompt if not suffix else f"{prompt} {suffix}"
+        bank.append((label, text))
+    return bank
+
+
 def encode_variants(
     args: argparse.Namespace,
     ctx: PipelineContext,
@@ -673,6 +708,379 @@ def _step_tensors(ctx: PipelineContext, steps: int, dtype: torch.dtype) -> list[
         t_4d = t_flat.view(1, 1, 1, 1)
         schedule.append((t_flat, t_4d))
     return schedule
+
+
+def run_action_sequence(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    reward_ctx: RewardContext,
+    prompt: str,
+    metadata: dict[str, Any] | None,
+    seed: int,
+    h: int,
+    w: int,
+    orig_h: int,
+    orig_w: int,
+    emb: EmbeddingContext,
+    actions: list[tuple[int, float]],
+) -> SearchResult:
+    if len(actions) != args.steps:
+        raise ValueError(f"Expected {args.steps} actions, got {len(actions)}")
+    latents = make_latents(ctx, seed, h, w, emb.pe_list[0][0].dtype)
+    schedule = _step_tensors(ctx, args.steps, latents.dtype)
+    rng = torch.Generator(device=ctx.device).manual_seed(seed + 2048)
+    dx = torch.zeros_like(latents)
+
+    for step_idx, ((t_flat, t_4d), (variant_idx, cfg)) in enumerate(zip(schedule, actions)):
+        if step_idx == 0:
+            noise = latents
+        else:
+            noise = torch.randn(
+                latents.shape,
+                device=latents.device,
+                dtype=latents.dtype,
+                generator=rng,
+            )
+        latents = (1.0 - t_4d) * dx + t_4d * noise
+        pe, pm = emb.pe_list[variant_idx]
+        velocity = transformer_step(args, ctx, latents, pe, pm, emb.ue, emb.um, t_flat, cfg)
+        dx = latents - t_4d * velocity
+
+    image = decode_to_pil(ctx, dx, orig_h, orig_w)
+    score = float(reward_ctx.score_images(prompt, [image], metadata)[0])
+    return SearchResult(image=image, score=score, actions=list(actions))
+
+
+def _ga_step_phase(step_idx: int, steps: int) -> str:
+    return "early" if step_idx < max(1, steps // 2) else "late"
+
+
+def _ga_allowed_prompt_indices(
+    step_idx: int,
+    steps: int,
+    prompt_bank: list[tuple[str, str]],
+    use_constraints: bool,
+) -> list[int]:
+    all_ids = list(range(len(prompt_bank)))
+    if not use_constraints:
+        return all_ids
+    label_to_idx = {label: i for i, (label, _) in enumerate(prompt_bank)}
+    phase = _ga_step_phase(step_idx, steps)
+    if phase == "early":
+        prefer = ["balanced", "background", "subject"]
+    else:
+        prefer = ["detail", "balanced", "prop", "subject"]
+    out = [label_to_idx[name] for name in prefer if name in label_to_idx]
+    return out if out else all_ids
+
+
+def _ga_default_actions(
+    args: argparse.Namespace,
+    prompt_bank: list[tuple[str, str]],
+    cfg_bank: list[float],
+) -> list[tuple[int, float]]:
+    label_to_idx = {label: i for i, (label, _) in enumerate(prompt_bank)}
+    pidx = label_to_idx.get("balanced", 0)
+    cfg_target = 1.0
+    cfg = min(cfg_bank, key=lambda x: abs(float(x) - cfg_target))
+    return [(pidx, float(cfg)) for _ in range(args.steps)]
+
+
+def _ga_random_genome(
+    rng: np.random.Generator,
+    steps: int,
+    prompt_bank: list[tuple[str, str]],
+    cfg_bank: list[float],
+    use_constraints: bool,
+) -> list[int]:
+    genome: list[int] = []
+    for step in range(steps):
+        allowed = _ga_allowed_prompt_indices(step, steps, prompt_bank, use_constraints)
+        p_gene = int(allowed[int(rng.integers(0, len(allowed)))])
+        c_gene = int(rng.integers(0, len(cfg_bank)))
+        genome.extend([p_gene, c_gene])
+    return genome
+
+
+def _ga_decode_genome(
+    genome: list[int],
+    args: argparse.Namespace,
+    prompt_bank: list[tuple[str, str]],
+    cfg_bank: list[float],
+) -> tuple[list[int], list[tuple[int, float]]]:
+    repaired = list(genome)
+    actions: list[tuple[int, float]] = []
+    for step in range(args.steps):
+        p_raw = int(repaired[2 * step])
+        c_raw = int(repaired[2 * step + 1])
+        allowed = _ga_allowed_prompt_indices(step, args.steps, prompt_bank, args.ga_phase_constraints)
+        p_idx = allowed[abs(p_raw) % len(allowed)]
+        c_idx = abs(c_raw) % len(cfg_bank)
+        repaired[2 * step] = int(p_idx)
+        repaired[2 * step + 1] = int(c_idx)
+        actions.append((int(p_idx), float(cfg_bank[c_idx])))
+    return repaired, actions
+
+
+def _ga_mutate(
+    genome: list[int],
+    rng: np.random.Generator,
+    args: argparse.Namespace,
+    prompt_bank: list[tuple[str, str]],
+    cfg_bank: list[float],
+) -> list[int]:
+    out = list(genome)
+    for step in range(args.steps):
+        if rng.random() < args.ga_mutation_prob:
+            allowed = _ga_allowed_prompt_indices(step, args.steps, prompt_bank, args.ga_phase_constraints)
+            out[2 * step] = int(allowed[int(rng.integers(0, len(allowed)))])
+        if rng.random() < args.ga_mutation_prob:
+            out[2 * step + 1] = int(rng.integers(0, len(cfg_bank)))
+    return out
+
+
+def _ga_crossover(
+    a: list[int],
+    b: list[int],
+    rng: np.random.Generator,
+    mode: str,
+) -> tuple[list[int], list[int]]:
+    if len(a) != len(b):
+        raise ValueError("Genome length mismatch in crossover.")
+    n = len(a)
+    if n < 2:
+        return list(a), list(b)
+    if mode == "one_point":
+        point = int(rng.integers(1, n))
+        return list(a[:point] + b[point:]), list(b[:point] + a[point:])
+    # uniform
+    child1: list[int] = []
+    child2: list[int] = []
+    for ga, gb in zip(a, b):
+        if rng.random() < 0.5:
+            child1.append(int(ga))
+            child2.append(int(gb))
+        else:
+            child1.append(int(gb))
+            child2.append(int(ga))
+    return child1, child2
+
+
+def _ga_tournament_select(
+    scored: list[dict[str, Any]],
+    rng: np.random.Generator,
+    k: int,
+) -> list[int]:
+    if not scored:
+        raise RuntimeError("Tournament selection received empty population.")
+    picks = [scored[int(rng.integers(0, len(scored)))] for _ in range(max(1, k))]
+    best = max(picks, key=lambda row: float(row["score"]))
+    return list(best["genome"])
+
+
+def run_ga(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    reward_ctx: RewardContext,
+    prompt: str,
+    metadata: dict[str, Any] | None,
+    seed: int,
+    h: int,
+    w: int,
+    orig_h: int,
+    orig_w: int,
+    emb: EmbeddingContext,
+    prompt_bank: list[tuple[str, str]],
+    cfg_bank: list[float],
+    log_root: str,
+) -> tuple[SearchResult, dict[str, Any]]:
+    os.makedirs(log_root, exist_ok=True)
+    rng = np.random.default_rng(seed + 9001)
+    pop_size = max(4, int(args.ga_population))
+    elites = min(max(1, int(args.ga_elites)), pop_size)
+    topk = max(1, int(args.ga_log_topk))
+    cfg_bank = [float(c) for c in cfg_bank]
+
+    population = [
+        _ga_random_genome(rng, args.steps, prompt_bank, cfg_bank, args.ga_phase_constraints)
+        for _ in range(pop_size)
+    ]
+    default_actions = _ga_default_actions(args, prompt_bank, cfg_bank)
+    cache: dict[tuple[int, ...], dict[str, Any]] = {}
+    history: list[dict[str, Any]] = []
+    global_best: dict[str, Any] | None = None
+
+    def _eval(genome: list[int], need_image: bool = False) -> dict[str, Any]:
+        repaired, actions = _ga_decode_genome(genome, args, prompt_bank, cfg_bank)
+        key = tuple(repaired)
+        cached = cache.get(key)
+        if cached is not None and (not need_image or cached.get("image") is not None):
+            return cached
+        result = run_action_sequence(
+            args,
+            ctx,
+            reward_ctx,
+            prompt,
+            metadata,
+            seed,
+            h,
+            w,
+            orig_h,
+            orig_w,
+            emb,
+            actions,
+        )
+        payload = {
+            "genome": repaired,
+            "score": float(result.score),
+            "actions": actions,
+            "image": result.image if need_image else None,
+        }
+        cache[key] = payload
+        return payload
+
+    for gen in range(int(args.ga_generations)):
+        scored = [_eval(genome, need_image=False) for genome in population]
+        scored.sort(key=lambda row: float(row["score"]), reverse=True)
+        best = scored[0]
+        if global_best is None or float(best["score"]) > float(global_best["score"]):
+            global_best = _eval(best["genome"], need_image=True)
+
+        gen_dir = os.path.join(log_root, f"gen_{gen:03d}")
+        os.makedirs(gen_dir, exist_ok=True)
+        top_records: list[dict[str, Any]] = []
+        for rank, row in enumerate(scored[:topk]):
+            with_img = _eval(row["genome"], need_image=True)
+            img_path = os.path.join(gen_dir, f"rank_{rank:02d}.png")
+            with_img["image"].save(img_path)
+            decoded = []
+            for step_i, (vi, cfg) in enumerate(with_img["actions"]):
+                label = prompt_bank[vi][0]
+                decoded.append(
+                    {
+                        "step": step_i,
+                        "prompt_idx": int(vi),
+                        "prompt_label": label,
+                        "cfg": float(cfg),
+                    }
+                )
+            top_records.append(
+                {
+                    "rank": rank,
+                    "score": float(with_img["score"]),
+                    "genome": [int(x) for x in with_img["genome"]],
+                    "actions": decoded,
+                    "image": os.path.basename(img_path),
+                }
+            )
+
+        gen_summary = {
+            "generation": gen,
+            "best": float(scored[0]["score"]),
+            "mean": float(np.mean([float(row["score"]) for row in scored])),
+            "median": float(np.median([float(row["score"]) for row in scored])),
+            "worst": float(scored[-1]["score"]),
+            "top": top_records,
+        }
+        history.append(gen_summary)
+        with open(os.path.join(gen_dir, "summary.json"), "w", encoding="utf-8") as f:
+            json.dump(gen_summary, f, indent=2)
+        print(
+            f"    [ga] gen={gen + 1:02d}/{args.ga_generations} "
+            f"best={gen_summary['best']:.4f} mean={gen_summary['mean']:.4f}"
+        )
+
+        if gen == int(args.ga_generations) - 1:
+            break
+
+        next_population: list[list[int]] = [list(row["genome"]) for row in scored[:elites]]
+        while len(next_population) < pop_size:
+            p1 = _ga_tournament_select(scored, rng, args.ga_tournament_k)
+            p2 = _ga_tournament_select(scored, rng, args.ga_tournament_k)
+            c1, c2 = _ga_crossover(p1, p2, rng, args.ga_crossover)
+            c1 = _ga_mutate(c1, rng, args, prompt_bank, cfg_bank)
+            c2 = _ga_mutate(c2, rng, args, prompt_bank, cfg_bank)
+            next_population.append(c1)
+            if len(next_population) < pop_size:
+                next_population.append(c2)
+        population = next_population
+
+    assert global_best is not None
+    best_actions = [(int(vi), float(cfg)) for vi, cfg in global_best["actions"]]
+    final_result = SearchResult(image=global_best["image"], score=float(global_best["score"]), actions=best_actions)
+
+    # Baselines against the same action banks.
+    no_search_result = run_action_sequence(
+        args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb, default_actions
+    )
+    random_best = no_search_result
+    for _ in range(max(1, int(args.ga_random_trials))):
+        genome = _ga_random_genome(rng, args.steps, prompt_bank, cfg_bank, args.ga_phase_constraints)
+        row = _eval(genome, need_image=False)
+        if row["score"] > random_best.score:
+            random_best = run_action_sequence(
+                args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb, row["actions"]
+            )
+
+    # Greedy baseline over GA banks (step-wise with full rollout scoring).
+    greedy_actions = list(default_actions)
+    for step in range(args.steps):
+        best_score = -float("inf")
+        best = greedy_actions[step]
+        prompt_ids = _ga_allowed_prompt_indices(step, args.steps, prompt_bank, args.ga_phase_constraints)
+        for vi in prompt_ids:
+            for cfg in cfg_bank:
+                cand = list(greedy_actions)
+                cand[step] = (int(vi), float(cfg))
+                cand_result = run_action_sequence(
+                    args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb, cand
+                )
+                if cand_result.score > best_score:
+                    best_score = cand_result.score
+                    best = (int(vi), float(cfg))
+        greedy_actions[step] = best
+    greedy_bank_result = run_action_sequence(
+        args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb, greedy_actions
+    )
+
+    # Current MCTS baseline with same banks.
+    old_cfg = list(args.cfg_scales)
+    args.cfg_scales = [float(c) for c in cfg_bank]
+    try:
+        mcts_result = run_mcts(args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb)
+    finally:
+        args.cfg_scales = old_cfg
+
+    # Save baseline images.
+    no_search_result.image.save(os.path.join(log_root, "baseline_no_search.png"))
+    random_best.image.save(os.path.join(log_root, "baseline_random.png"))
+    greedy_bank_result.image.save(os.path.join(log_root, "baseline_greedy.png"))
+    mcts_result.image.save(os.path.join(log_root, "baseline_mcts.png"))
+    final_result.image.save(os.path.join(log_root, "ga_best.png"))
+
+    diagnostics = {
+        "prompt_bank": [{"label": label, "text": text} for label, text in prompt_bank],
+        "cfg_bank": [float(c) for c in cfg_bank],
+        "history": history,
+        "best_genome": [int(x) for x in global_best["genome"]],
+        "baselines": {
+            "no_search": float(no_search_result.score),
+            "random": float(random_best.score),
+            "greedy": float(greedy_bank_result.score),
+            "mcts": float(mcts_result.score),
+            "ga": float(final_result.score),
+        },
+        "baseline_actions": {
+            "no_search": [[int(vi), float(cfg)] for vi, cfg in no_search_result.actions],
+            "random": [[int(vi), float(cfg)] for vi, cfg in random_best.actions],
+            "greedy": [[int(vi), float(cfg)] for vi, cfg in greedy_bank_result.actions],
+            "mcts": [[int(vi), float(cfg)] for vi, cfg in mcts_result.actions],
+            "ga": [[int(vi), float(cfg)] for vi, cfg in final_result.actions],
+        },
+    }
+    with open(os.path.join(log_root, "ga_diagnostics.json"), "w", encoding="utf-8") as f:
+        json.dump(diagnostics, f, indent=2)
+    return final_result, diagnostics
 
 
 def run_baseline(
@@ -1008,15 +1416,20 @@ def run(args: argparse.Namespace) -> None:
             rewrite_cache = json.load(f)
         print(f"Loaded rewrites cache for {len(rewrite_cache)} prompts from {args.rewrites_file}")
 
-    # Pre-generate prompt variants once per prompt.
-    variant_map: dict[int, list[str]] = {}
+    # Pre-generate prompt banks once per prompt.
+    bank_map: dict[int, list[tuple[str, str]]] = {}
     for entry in entries:
-        variants = generate_variants(args, entry["prompt"], rewrite_cache)
-        variant_map[entry["index"]] = variants
+        if args.search_method == "ga":
+            bank = build_ga_prompt_bank(entry["prompt"])
+        else:
+            variants = generate_variants(args, entry["prompt"], rewrite_cache)
+            bank = [(f"v{i}", text) for i, text in enumerate(variants)]
+        bank_map[entry["index"]] = bank
+
         variants_path = os.path.join(args.out_dir, f"{entry['slug']}_variants.txt")
-        with open(variants_path, "w") as f:
-            for idx, variant in enumerate(variants):
-                f.write(f"v{idx}: {variant}\n")
+        with open(variants_path, "w", encoding="utf-8") as f:
+            for idx, (label, variant) in enumerate(bank):
+                f.write(f"v{idx}[{label}]: {variant}\n")
 
     summary: list[dict[str, Any]] = []
     geneval_root = os.path.join(args.out_dir, "geneval_images")
@@ -1028,7 +1441,8 @@ def run(args: argparse.Namespace) -> None:
         metadata = entry["metadata"]
         slug = entry["slug"]
         index = entry["index"]
-        variants = variant_map[index]
+        bank = bank_map[index]
+        variants = [text for _, text in bank]
         print(f"\n{'=' * 72}\n[{slug}] {prompt}\n{'=' * 72}")
 
         orig_h, orig_w = args.height, args.width
@@ -1044,6 +1458,7 @@ def run(args: argparse.Namespace) -> None:
                 args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb
             )
 
+            ga_diag = None
             if args.search_method == "greedy":
                 search_result = run_greedy(
                     args,
@@ -1059,9 +1474,27 @@ def run(args: argparse.Namespace) -> None:
                     emb,
                     variants,
                 )
-            else:
+            elif args.search_method == "mcts":
                 search_result = run_mcts(
                     args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb
+                )
+            else:
+                ga_log_root = os.path.join(args.out_dir, f"{slug}_s{sample_i}_ga")
+                search_result, ga_diag = run_ga(
+                    args,
+                    ctx,
+                    reward_ctx,
+                    prompt,
+                    metadata,
+                    seed,
+                    h,
+                    w,
+                    orig_h,
+                    orig_w,
+                    emb,
+                    prompt_bank=bank,
+                    cfg_bank=[float(v) for v in args.ga_cfg_scales],
+                    log_root=ga_log_root,
                 )
 
             search_name = args.search_method
@@ -1094,6 +1527,9 @@ def run(args: argparse.Namespace) -> None:
                 "delta_score": search_result.score - baseline_score,
                 "actions": [[int(vi), float(cfg)] for vi, cfg in search_result.actions],
             }
+            if ga_diag is not None:
+                sample_payload["ga_baselines"] = ga_diag["baselines"]
+                sample_payload["ga_log_dir"] = os.path.join(args.out_dir, f"{slug}_s{sample_i}_ga")
             if args.reward_type == "geneval":
                 sample_payload["baseline_pass"] = baseline_score >= 0.99
                 sample_payload["search_pass"] = search_result.score >= 0.99
@@ -1107,6 +1543,7 @@ def run(args: argparse.Namespace) -> None:
                 "reward_type": args.reward_type,
                 "search_method": args.search_method,
                 "variants": variants,
+                "variant_bank": [{"label": label, "text": text} for label, text in bank],
                 "samples": prompt_samples,
             }
         )

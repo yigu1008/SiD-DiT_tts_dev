@@ -52,6 +52,29 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--n_sims", type=int, default=50)
     parser.add_argument("--ucb_c", type=float, default=1.41)
+    parser.add_argument("--reward_model", default="CodeGoat24/UnifiedReward-qwen-7b")
+    parser.add_argument(
+        "--reward_backend",
+        choices=["auto", "unifiedreward", "unified", "imagereward", "hpsv2", "blend"],
+        default="unifiedreward",
+    )
+    parser.add_argument(
+        "--reward_weights",
+        nargs=2,
+        type=float,
+        default=[1.0, 1.0],
+        help="Blend backend weights: imagereward hpsv2",
+    )
+    parser.add_argument("--reward_api_base", default=None, help="Optional OpenAI-compatible API base for UnifiedReward.")
+    parser.add_argument("--reward_api_key", default="unifiedreward")
+    parser.add_argument("--reward_api_model", default="UnifiedReward-7b-v1.5")
+    parser.add_argument("--reward_max_new_tokens", type=int, default=512)
+    parser.add_argument(
+        "--reward_prompt_mode",
+        choices=["standard", "strict"],
+        default="standard",
+        help="UnifiedReward prompt template mode.",
+    )
 
     parser.add_argument("--save_images", action="store_true")
     parser.add_argument("--save_variants", action="store_true")
@@ -215,7 +238,7 @@ def main() -> None:
         rewrite_cache = json.load(open(args.rewrites_file, encoding="utf-8"))
 
     ctx = load_pipeline(args)
-    reward_model = load_reward_model(ctx.device)
+    reward_model = load_reward_model(args, ctx.device)
 
     rank_rows: List[Dict[str, Any]] = []
     for prompt_index, prompt in my_entries:

@@ -12,6 +12,14 @@ PY
 
 PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/parti_prompts.txt}"
 OUT_DIR="${OUT_DIR:-./sd35_ddp_out}"
+REWARD_BACKEND="${REWARD_BACKEND:-unifiedreward}"
+REWARD_MODEL="${REWARD_MODEL:-CodeGoat24/UnifiedReward-qwen-7b}"
+REWARD_WEIGHTS="${REWARD_WEIGHTS:-1.0 1.0}"
+REWARD_API_BASE="${REWARD_API_BASE:-}"
+REWARD_API_KEY="${REWARD_API_KEY:-unifiedreward}"
+REWARD_API_MODEL="${REWARD_API_MODEL:-UnifiedReward-7b-v1.5}"
+REWARD_MAX_NEW_TOKENS="${REWARD_MAX_NEW_TOKENS:-512}"
+REWARD_PROMPT_MODE="${REWARD_PROMPT_MODE:-standard}"
 
 if [[ ! -f "${PROMPT_FILE}" ]]; then
   echo "Error: PROMPT_FILE does not exist: ${PROMPT_FILE}" >&2
@@ -48,6 +56,9 @@ fi
 if [[ -n "${REWRITES_FILE:-}" ]]; then
   EXTRA_ARGS+=(--rewrites_file "${REWRITES_FILE}")
 fi
+if [[ -n "${REWARD_API_BASE}" ]]; then
+  EXTRA_ARGS+=(--reward_api_base "${REWARD_API_BASE}")
+fi
 
 torchrun --standalone --nproc_per_node "${NUM_GPUS}" "${SCRIPT_DIR}/sd35_ddp_experiment.py" \
   --prompt_file "${PROMPT_FILE_ABS}" \
@@ -60,6 +71,13 @@ torchrun --standalone --nproc_per_node "${NUM_GPUS}" "${SCRIPT_DIR}/sd35_ddp_exp
   --n_variants "${N_VARIANTS:-3}" \
   --n_sims "${N_SIMS:-50}" \
   --ucb_c "${UCB_C:-1.41}" \
+  --reward_backend "${REWARD_BACKEND}" \
+  --reward_model "${REWARD_MODEL}" \
+  --reward_weights ${REWARD_WEIGHTS} \
+  --reward_api_key "${REWARD_API_KEY}" \
+  --reward_api_model "${REWARD_API_MODEL}" \
+  --reward_max_new_tokens "${REWARD_MAX_NEW_TOKENS}" \
+  --reward_prompt_mode "${REWARD_PROMPT_MODE}" \
   --seed "${SEED:-42}" \
   --out_dir "${OUT_DIR_ABS}" \
   "${EXTRA_ARGS[@]}" \

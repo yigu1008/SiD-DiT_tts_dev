@@ -70,7 +70,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--reward_device",
         choices=["auto", "cuda", "cpu"],
-        default="auto",
+        default="cpu",
         help="Device for ImageReward backend.",
     )
 
@@ -88,6 +88,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--width", type=int, default=512)
     parser.add_argument("--height", type=int, default=512)
+    parser.add_argument(
+        "--resolution_binning",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Map requested resolution to model aspect-ratio bin.",
+    )
     parser.add_argument("--time_scale", type=float, default=1000.0)
     parser.add_argument("--out_dir", default="./sampling_unified_out")
     parser.add_argument(
@@ -815,7 +821,14 @@ def decode_to_pil(
     return pil
 
 
-def maybe_resize_to_bin(ctx: PipelineContext, height: int, width: int) -> tuple[int, int]:
+def maybe_resize_to_bin(
+    ctx: PipelineContext,
+    height: int,
+    width: int,
+    use_binning: bool,
+) -> tuple[int, int]:
+    if not use_binning:
+        return height, width
     sample_size = ctx.pipe.transformer.config.sample_size
     if sample_size in ctx.aspect_ratio_bins:
         return ctx.pipe.image_processor.classify_height_width_bin(
@@ -1531,6 +1544,23 @@ def save_geneval_layout(image: Image.Image, metadata: dict[str, Any], prompt_ind
 
 def run(args: argparse.Namespace) -> None:
     os.makedirs(args.out_dir, exist_ok=True)
+    try:
+        import accelerate
+        import diffusers
+        import huggingface_hub
+        import transformers
+
+        print(
+            "Runtime versions: "
+            f"torch={torch.__version__} "
+            f"diffusers={diffusers.__version__} "
+            f"transformers={transformers.__version__} "
+            f"accelerate={accelerate.__version__} "
+            f"huggingface_hub={huggingface_hub.__version__}"
+        )
+    except Exception as exc:
+        print(f"Warning: unable to print runtime versions: {exc}")
+
     entries = _load_prompt_entries(args)
     if not entries:
         raise RuntimeError("No prompts found to evaluate.")
@@ -1577,7 +1607,18 @@ def run(args: argparse.Namespace) -> None:
         print(f"\n{'=' * 72}\n[{slug}] {prompt}\n{'=' * 72}")
 
         orig_h, orig_w = args.height, args.width
-        h, w = maybe_resize_to_bin(ctx, orig_h, orig_w)
+        h, w = maybe_resize_to_bin(ctx, orig_h, orig_w, args.resolution_binning)
+        requested_px = int(orig_h) * int(orig_w)
+        effective_px = int(h) * int(w)
+        sample_size = getattr(ctx.pipe.transformer.config, "sample_size", "unknown")
+        print(
+            f"  resolution requested={orig_h}x{orig_w}, "
+            f"effective={h}x{w}, binning={'on' if args.resolution_binning else 'off'}, "
+            f"sample_size={sample_size}"
+        )
+        if effective_px > requested_px:
+            ratio = effective_px / max(1, requested_px)
+            print(f"  Warning: effective decode area is {ratio:.2f}x requested area.")
 
         prompt_samples: list[dict[str, Any]] = []
         for sample_i in range(args.n_samples):

@@ -5,6 +5,7 @@ set -euo pipefail
 # Usage:
 #   ./fix_cudnn_stack.sh
 #   PYTHON_BIN=/home/ygu/miniconda3/envs/sid_dit/bin/python ./fix_cudnn_stack.sh
+#   TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128 ./fix_cudnn_stack.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/shell_env.sh"
@@ -17,6 +18,7 @@ echo "[env] force no-user install mode"
 export PYTHONNOUSERSITE=1
 unset PYTHONPATH || true
 export PIP_USER=0
+TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}"
 
 echo "[env] purge conflicting user-site packages"
 USER_SITE="$("${PY}" -c 'import site; print(site.getusersitepackages())' 2>/dev/null || true)"
@@ -33,6 +35,8 @@ fi
 echo "[env] remove conflicting wheels first"
 "${PY}" -m pip uninstall -y \
   torch torchvision torchaudio xformers \
+  accelerate diffusers transformers tokenizers huggingface-hub datasets fsspec \
+  safetensors numpy pillow imageio python-dotenv PyWavelets \
   nvidia-cudnn-cu12 nvidia-cublas-cu12 nvidia-cuda-runtime-cu12 || true
 
 echo "[env] purge broken torch leftovers in env site-packages"
@@ -41,15 +45,20 @@ if [[ -n "${ENV_SITE}" && -d "${ENV_SITE}" ]]; then
   rm -rf "${ENV_SITE}/torch" "${ENV_SITE}/torch-"*".dist-info" "${ENV_SITE}/torchgen" || true
   rm -rf "${ENV_SITE}/torchvision" "${ENV_SITE}/torchvision-"*".dist-info" || true
   rm -rf "${ENV_SITE}/torchaudio" "${ENV_SITE}/torchaudio-"*".dist-info" || true
+  rm -rf "${ENV_SITE}/accelerate" "${ENV_SITE}/accelerate-"*".dist-info" || true
+  rm -rf "${ENV_SITE}/diffusers" "${ENV_SITE}/diffusers-"*".dist-info" || true
+  rm -rf "${ENV_SITE}/transformers" "${ENV_SITE}/transformers-"*".dist-info" || true
+  rm -rf "${ENV_SITE}/tokenizers" "${ENV_SITE}/tokenizers-"*".dist-info" || true
+  rm -rf "${ENV_SITE}/huggingface_hub" "${ENV_SITE}/huggingface_hub-"*".dist-info" || true
 fi
 
-echo "[env] install torch/cu126 bundle (includes matching cuDNN)"
-"${PY}" -m pip install --no-cache-dir \
+echo "[env] install torch bundle from ${TORCH_INDEX_URL} (includes matching cuDNN)"
+"${PY}" -m pip install --no-cache-dir --force-reinstall \
   torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 \
-  --index-url https://download.pytorch.org/whl/cu126
+  --index-url "${TORCH_INDEX_URL}"
 
 echo "[env] install model stack pins"
-"${PY}" -m pip install --no-cache-dir \
+"${PY}" -m pip install --no-cache-dir --force-reinstall \
   accelerate==1.8.1 \
   diffusers==0.33.1 \
   transformers==4.52.4 \
@@ -63,6 +72,9 @@ echo "[env] install model stack pins"
   imageio==2.34.2 \
   python-dotenv==1.0.1 \
   PyWavelets==1.6.0
+
+echo "[env] pip check"
+"${PY}" -m pip check || true
 
 echo "[env] verify runtime versions"
 "${PY}" - <<'PY'
@@ -87,6 +99,7 @@ print("datasets", datasets.__version__)
 print("fsspec", fsspec.__version__)
 print("cuda_available", torch.cuda.is_available())
 print("torch_file", getattr(torch, "__file__", "n/a"))
+print("diffusers_file", getattr(diffusers, "__file__", "n/a"))
 if torch.cuda.is_available():
     print("device", torch.cuda.get_device_name(0))
 PY

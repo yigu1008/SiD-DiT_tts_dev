@@ -70,8 +70,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--reward_device",
         type=str,
-        default="cpu",
-        help="ImageReward device: auto | cpu | cuda | cuda:N.",
+        default="same",
+        help="ImageReward device: same | auto | cpu | cuda | cuda:N.",
     )
 
     # Model + generation
@@ -137,6 +137,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Move text encoder to CPU after prompt embeddings are computed.",
+    )
+    parser.add_argument(
+        "--decode_device",
+        type=str,
+        default="auto",
+        help="VAE decode device: auto | cpu | cuda.",
+    )
+    parser.add_argument(
+        "--decode_cpu_if_free_below_gb",
+        type=float,
+        default=20.0,
+        help="In auto mode, use CPU decode if selected GPU free memory is below this value.",
     )
 
     # Prompt sources (regular)
@@ -300,6 +312,38 @@ def _select_cuda_device(args: argparse.Namespace) -> str:
     return f"cuda:{chosen_idx}"
 
 
+def _resolve_decode_device(args: argparse.Namespace, model_device: str) -> str:
+    req = str(args.decode_device).strip().lower()
+    if req == "auto":
+        if not str(model_device).startswith("cuda"):
+            return "cpu"
+        try:
+            dev_idx = int(str(model_device).split(":", 1)[1])
+        except Exception:
+            dev_idx = 0
+        try:
+            free_bytes, _ = torch.cuda.mem_get_info(dev_idx)
+            free_gb = free_bytes / (1024 ** 3)
+            if free_gb < float(args.decode_cpu_if_free_below_gb):
+                print(
+                    f"Auto decode device: free_gb={free_gb:.2f} < "
+                    f"decode_cpu_if_free_below_gb={args.decode_cpu_if_free_below_gb:.2f}; using CPU decode."
+                )
+                return "cpu"
+        except Exception:
+            pass
+        return model_device
+
+    if req == "cpu":
+        return "cpu"
+    if req == "cuda":
+        if str(model_device).startswith("cuda"):
+            return model_device
+        raise RuntimeError("decode_device=cuda requested but model device is not CUDA.")
+
+    raise RuntimeError("Unsupported decode_device. Use auto/cpu/cuda.")
+
+
 @dataclass
 class PipelineContext:
     pipe: Any
@@ -310,6 +354,7 @@ class PipelineContext:
     aspect_ratio_bins: dict[int, dict[str, Any]]
     empty_cache_after_decode: bool
     decode_counts: dict[str, int]
+    decode_device: str
 
 
 def load_pipeline(args: argparse.Namespace) -> PipelineContext:
@@ -367,6 +412,16 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
 
     pipe.transformer.eval()
 
+    decode_device = _resolve_decode_device(args, device)
+    if decode_device == "cpu":
+        try:
+            pipe.vae.to("cpu")
+            if device.startswith("cuda"):
+                torch.cuda.empty_cache()
+        except Exception as exc:
+            print(f"Warning: failed to move VAE to CPU for decode: {exc}")
+            decode_device = device
+
     if args.vae_slicing and hasattr(pipe, "enable_vae_slicing"):
         try:
             pipe.enable_vae_slicing()
@@ -385,7 +440,7 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
     variance_split = (out_c // 2 == latent_c)
     bins = {16: ASPECT_RATIO_512_BIN, 32: ASPECT_RATIO_1024_BIN, 64: ASPECT_RATIO_2048_BIN}
 
-    print(f"Loaded. device={device} variance_split={variance_split}")
+    print(f"Loaded. device={device} decode_device={decode_device} variance_split={variance_split}")
     return PipelineContext(
         pipe=pipe,
         device=device,
@@ -395,6 +450,7 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
         aspect_ratio_bins=bins,
         empty_cache_after_decode=args.empty_cache_after_decode,
         decode_counts={},
+        decode_device=decode_device,
     )
 
 
@@ -536,17 +592,8 @@ def load_reward(args: argparse.Namespace, ctx: PipelineContext) -> RewardContext
         import ImageReward as RM
 
         reward_device = str(args.reward_device).strip().lower()
-        if reward_device == "auto":
-            if ctx.device == "cuda":
-                free_gb = None
-                try:
-                    free_bytes, _ = torch.cuda.mem_get_info()
-                    free_gb = free_bytes / (1024 ** 3)
-                except Exception:
-                    pass
-                reward_device = "cpu" if free_gb is not None and free_gb < 14.0 else "cuda"
-            else:
-                reward_device = "cpu"
+        if reward_device in {"same", "model", "auto"}:
+            reward_device = ctx.device if str(ctx.device).startswith("cuda") else "cpu"
         elif reward_device == "cuda":
             reward_device = ctx.device if str(ctx.device).startswith("cuda") else "cuda"
         elif reward_device.startswith("cuda:"):
@@ -576,7 +623,7 @@ def load_reward(args: argparse.Namespace, ctx: PipelineContext) -> RewardContext
                     reward_device = f"cuda:{req_idx}"
         elif reward_device != "cpu":
             raise RuntimeError(
-                f"Unsupported reward_device='{args.reward_device}'. Use auto/cpu/cuda/cuda:N."
+                f"Unsupported reward_device='{args.reward_device}'. Use same/auto/cpu/cuda/cuda:N."
             )
         print(f"  ImageReward device={reward_device}")
 
@@ -910,8 +957,13 @@ def decode_to_pil(
     tag: str = "generic",
 ) -> Image.Image:
     ctx.decode_counts[tag] = ctx.decode_counts.get(tag, 0) + 1
-    scaled = (dx / ctx.pipe.vae.config.scaling_factor).to(dtype=ctx.dtype)
-    image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
+    scaled = dx / ctx.pipe.vae.config.scaling_factor
+    if ctx.decode_device == "cpu":
+        scaled = scaled.to(device="cpu", dtype=torch.float32)
+        image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
+    else:
+        scaled = scaled.to(device=ctx.device, dtype=ctx.dtype)
+        image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
     image = ctx.pipe.image_processor.resize_and_crop_tensor(image, orig_h, orig_w)
     pil = ctx.pipe.image_processor.postprocess(image, output_type="pil")[0]
     if ctx.empty_cache_after_decode and ctx.device == "cuda":
@@ -1722,7 +1774,7 @@ def run(args: argparse.Namespace) -> None:
         print(
             f"  resolution requested={orig_h}x{orig_w}, "
             f"effective={h}x{w}, binning={'on' if args.resolution_binning else 'off'}, "
-            f"sample_size={sample_size}"
+            f"sample_size={sample_size}, decode_device={ctx.decode_device}"
         )
         if effective_px > requested_px:
             ratio = effective_px / max(1, requested_px)

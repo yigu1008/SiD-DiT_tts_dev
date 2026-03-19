@@ -5,7 +5,7 @@ set -euo pipefail
 # Usage:
 #   ./fix_cudnn_stack.sh
 #   PYTHON_BIN=/home/ygu/miniconda3/envs/sid_dit/bin/python ./fix_cudnn_stack.sh
-#   TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128 ./fix_cudnn_stack.sh
+#   TORCH_INDEX_URL=https://download.pytorch.org/whl/cu126 ./fix_cudnn_stack.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/shell_env.sh"
@@ -18,7 +18,8 @@ echo "[env] force no-user install mode"
 export PYTHONNOUSERSITE=1
 unset PYTHONPATH || true
 export PIP_USER=0
-TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}"
+TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu126}"
+PYPI_INDEX_URL="${PYPI_INDEX_URL:-https://pypi.org/simple}"
 
 echo "[env] purge conflicting user-site packages"
 USER_SITE="$("${PY}" -c 'import site; print(site.getusersitepackages())' 2>/dev/null || true)"
@@ -57,8 +58,14 @@ echo "[env] install torch bundle from ${TORCH_INDEX_URL} (includes matching cuDN
   torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 \
   --index-url "${TORCH_INDEX_URL}"
 
+echo "[env] pin cuDNN for CUDA 12.6"
+"${PY}" -m pip install --no-cache-dir --force-reinstall \
+  --index-url "${PYPI_INDEX_URL}" \
+  nvidia-cudnn-cu12==9.5.1.17
+
 echo "[env] install model stack pins"
 "${PY}" -m pip install --no-cache-dir --force-reinstall \
+  --index-url "${PYPI_INDEX_URL}" \
   accelerate==1.8.1 \
   diffusers==0.33.1 \
   transformers==4.52.4 \
@@ -72,6 +79,14 @@ echo "[env] install model stack pins"
   imageio==2.34.2 \
   python-dotenv==1.0.1 \
   PyWavelets==1.6.0
+
+echo "[env] install reward package (with fallback)"
+if ! "${PY}" -m pip install --no-cache-dir --force-reinstall \
+  --index-url "${PYPI_INDEX_URL}" ImageReward; then
+  echo "[env] PyPI ImageReward unavailable, falling back to GitHub"
+  "${PY}" -m pip install --no-cache-dir --force-reinstall \
+    "git+https://github.com/THUDM/ImageReward.git"
+fi
 
 echo "[env] pip check"
 "${PY}" -m pip check || true

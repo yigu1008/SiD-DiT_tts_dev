@@ -177,6 +177,19 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
+    # Compatibility shim for mixed huggingface_hub versions.
+    try:
+        import huggingface_hub.constants as hhc
+
+        if not hasattr(hhc, "HF_HOME"):
+            cache_root = getattr(hhc, "HUGGINGFACE_HUB_CACHE", None)
+            if cache_root:
+                hhc.HF_HOME = str(Path(cache_root).expanduser().parent)
+            else:
+                hhc.HF_HOME = str(Path.home() / ".cache" / "huggingface")
+    except Exception:
+        pass
+
     from sid import SiDSD3Pipeline
 
     device = "cuda" if torch.cuda.is_available() else "cpu"

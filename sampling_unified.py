@@ -138,7 +138,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # Legacy compatibility knobs (ignored by unified logic where not needed)
     parser.add_argument("--max_batch", type=int, default=28)
     parser.add_argument("--neg_prompt", default="")
-
     return parser.parse_args(argv)
 
 
@@ -207,6 +206,21 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
     repo_root = _repo_root()
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
+
+    # Compatibility shim:
+    # Some dependency combos (older huggingface_hub + newer imports) expect HF_HOME.
+    # Define it dynamically when missing to avoid import-time failures.
+    try:
+        import huggingface_hub.constants as hhc
+
+        if not hasattr(hhc, "HF_HOME"):
+            cache_root = getattr(hhc, "HUGGINGFACE_HUB_CACHE", None)
+            if cache_root:
+                hhc.HF_HOME = str(Path(cache_root).expanduser().parent)
+            else:
+                hhc.HF_HOME = str(Path.home() / ".cache" / "huggingface")
+    except Exception:
+        pass
 
     try:
         from sid import SiDSanaPipeline
@@ -378,6 +392,22 @@ print(json.dumps(results))
 def load_reward(args: argparse.Namespace, ctx: PipelineContext) -> RewardContext:
     if args.reward_type == "imagereward":
         print("Loading ImageReward ...")
+        # Compatibility shim:
+        # Some ImageReward releases expect BertModel.all_tied_weights_keys,
+        # while newer transformers expose _tied_weights_keys instead.
+        try:
+            import transformers
+
+            bert_cls = getattr(transformers, "BertModel", None)
+            if bert_cls is not None and not hasattr(bert_cls, "all_tied_weights_keys"):
+                def _all_tied_keys(self):
+                    return getattr(self, "_tied_weights_keys", None)
+
+                bert_cls.all_tied_weights_keys = property(_all_tied_keys)  # type: ignore[attr-defined]
+                print("  Applied transformers/ImageReward BertModel compatibility shim.")
+        except Exception as exc:
+            print(f"  Warning: could not apply ImageReward compatibility shim: {exc}")
+
         import ImageReward as RM
 
         reward_model = RM.load("ImageReward-v1.0", device=ctx.device)

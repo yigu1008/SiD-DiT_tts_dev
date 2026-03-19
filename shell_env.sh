@@ -34,3 +34,16 @@ if [[ -z "${PYTHON_BIN:-}" ]]; then
     export PYTHON_BIN="python"
   fi
 fi
+
+# Prefer the CUDA/cuDNN libraries bundled with the active torch install.
+# This avoids pulling incompatible system cuDNN from stale LD_LIBRARY_PATH entries.
+if [[ "${SID_PREFER_TORCH_LIBS:-1}" == "1" ]]; then
+  TORCH_LIB_DIR="$("${PYTHON_BIN}" -c 'import os, torch; print(os.path.join(os.path.dirname(torch.__file__), "lib"))' 2>/dev/null || true)"
+  if [[ -n "${TORCH_LIB_DIR}" && -d "${TORCH_LIB_DIR}" ]]; then
+    if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
+      export LD_LIBRARY_PATH="${TORCH_LIB_DIR}:${LD_LIBRARY_PATH}"
+    else
+      export LD_LIBRARY_PATH="${TORCH_LIB_DIR}"
+    fi
+  fi
+fi

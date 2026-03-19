@@ -24,7 +24,14 @@ from transformers import Gemma2PreTrainedModel, GemmaTokenizer, GemmaTokenizerFa
 
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
 from diffusers.image_processor import PixArtImageProcessor
-from diffusers.loaders import SanaLoraLoaderMixin
+try:
+    from diffusers.loaders import SanaLoraLoaderMixin
+except Exception:
+    # Fallback for environments where LoRA loader dependencies (e.g. accelerate CustomDtype)
+    # are unavailable. Core sampling does not require LoRA mixin behavior.
+    class SanaLoraLoaderMixin:  # type: ignore[no-redef]
+        pass
+
 from diffusers.models import AutoencoderDC, SanaTransformer2DModel
 from diffusers.schedulers import DPMSolverMultistepScheduler
 from diffusers.utils import (

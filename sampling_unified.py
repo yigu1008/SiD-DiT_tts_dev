@@ -69,13 +69,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--reward_type", choices=["imagereward", "geneval"], default="imagereward")
     parser.add_argument(
         "--reward_device",
-        choices=["auto", "cuda", "cpu"],
+        type=str,
         default="cpu",
-        help="Device for ImageReward backend.",
+        help="ImageReward device: auto | cpu | cuda | cuda:N.",
     )
 
     # Model + generation
     parser.add_argument("--model_id", default="YGu1998/SiD-DiT-SANA-0.6B-RectifiedFlow")
+    parser.add_argument("--gpu_id", type=int, default=-1, help="CUDA device index among visible GPUs; -1 selects automatically.")
+    parser.add_argument(
+        "--auto_select_gpu",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Pick the visible GPU with most free memory when --gpu_id is -1.",
+    )
+    parser.add_argument(
+        "--min_free_gb",
+        type=float,
+        default=12.0,
+        help="Warn when selected GPU has less free memory than this threshold.",
+    )
     parser.add_argument("--ckpt", default=None)
     parser.add_argument("--neg_embed", default=None)
     parser.add_argument("--steps", type=int, default=4)
@@ -163,6 +176,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ga_random_trials", type=int, default=32)
     parser.add_argument("--ga_phase_constraints", action="store_true")
     parser.add_argument(
+        "--ga_run_baselines",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Run extra no-search/random/greedy/mcts baselines after GA (slow).",
+    )
+    parser.add_argument(
         "--ga_cfg_scales",
         nargs="+",
         type=float,
@@ -233,6 +252,54 @@ def _load_prompt_entries(args: argparse.Namespace) -> list[dict[str, Any]]:
     return entries
 
 
+def _select_cuda_device(args: argparse.Namespace) -> str:
+    if not torch.cuda.is_available():
+        return "cpu"
+
+    n_devices = torch.cuda.device_count()
+    if n_devices <= 0:
+        return "cpu"
+
+    free_info: list[tuple[int, int, int]] = []
+    for i in range(n_devices):
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info(i)
+            free_info.append((i, int(free_bytes), int(total_bytes)))
+        except Exception:
+            free_info.append((i, -1, -1))
+
+    def _fmt_gb(num_bytes: int) -> str:
+        if num_bytes < 0:
+            return "unknown"
+        return f"{num_bytes / (1024 ** 3):.2f}GB"
+
+    msg = ", ".join(
+        f"cuda:{idx} free={_fmt_gb(free)} total={_fmt_gb(total)}" for idx, free, total in free_info
+    )
+    print(f"Visible GPU memory: {msg}")
+
+    if args.gpu_id >= 0:
+        if args.gpu_id >= n_devices:
+            raise RuntimeError(
+                f"--gpu_id={args.gpu_id} is out of range for visible GPUs (count={n_devices})."
+            )
+        chosen_idx = int(args.gpu_id)
+    elif args.auto_select_gpu:
+        valid = [row for row in free_info if row[1] >= 0]
+        chosen_idx = max(valid, key=lambda row: row[1])[0] if valid else 0
+    else:
+        chosen_idx = 0
+
+    chosen_free = next((free for idx, free, _ in free_info if idx == chosen_idx), -1)
+    if chosen_free >= 0 and chosen_free < int(args.min_free_gb * (1024 ** 3)):
+        print(
+            f"Warning: selected cuda:{chosen_idx} free memory is "
+            f"{chosen_free / (1024 ** 3):.2f}GB < min_free_gb={args.min_free_gb:.2f}."
+        )
+
+    return f"cuda:{chosen_idx}"
+
+
 @dataclass
 class PipelineContext:
     pipe: Any
@@ -280,7 +347,7 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
         ASPECT_RATIO_2048_BIN = ASPECT_RATIO_1024_BIN
 
     os.makedirs(args.out_dir, exist_ok=True)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = _select_cuda_device(args)
     dtype = torch.float16
 
     print("Loading SiD pipeline ...")
@@ -468,7 +535,7 @@ def load_reward(args: argparse.Namespace, ctx: PipelineContext) -> RewardContext
 
         import ImageReward as RM
 
-        reward_device = args.reward_device
+        reward_device = str(args.reward_device).strip().lower()
         if reward_device == "auto":
             if ctx.device == "cuda":
                 free_gb = None
@@ -480,6 +547,37 @@ def load_reward(args: argparse.Namespace, ctx: PipelineContext) -> RewardContext
                 reward_device = "cpu" if free_gb is not None and free_gb < 14.0 else "cuda"
             else:
                 reward_device = "cpu"
+        elif reward_device == "cuda":
+            reward_device = ctx.device if str(ctx.device).startswith("cuda") else "cuda"
+        elif reward_device.startswith("cuda:"):
+            if not torch.cuda.is_available():
+                print("  Warning: reward_device requests CUDA but CUDA is unavailable; using CPU.")
+                reward_device = "cpu"
+            else:
+                try:
+                    req_idx = int(reward_device.split(":", 1)[1])
+                except Exception:
+                    req_idx = 0
+                visible_count = torch.cuda.device_count()
+                if visible_count <= 0:
+                    reward_device = "cpu"
+                elif req_idx >= visible_count:
+                    if visible_count == 1 and str(ctx.device).startswith("cuda"):
+                        print(
+                            f"  Warning: reward_device={args.reward_device} is out of visible range; "
+                            f"using {ctx.device} (CUDA_VISIBLE_DEVICES remap)."
+                        )
+                        reward_device = ctx.device
+                    else:
+                        raise RuntimeError(
+                            f"reward_device={args.reward_device} invalid for visible CUDA device count={visible_count}."
+                        )
+                else:
+                    reward_device = f"cuda:{req_idx}"
+        elif reward_device != "cpu":
+            raise RuntimeError(
+                f"Unsupported reward_device='{args.reward_device}'. Use auto/cpu/cuda/cuda:N."
+            )
         print(f"  ImageReward device={reward_device}")
 
         reward_model = RM.load("ImageReward-v1.0", device=reward_device)
@@ -1153,75 +1251,85 @@ def run_ga(
     best_actions = [(int(vi), float(cfg)) for vi, cfg in global_best["actions"]]
     final_result = SearchResult(image=global_best["image"], score=float(global_best["score"]), actions=best_actions)
 
-    # Baselines against the same action banks.
-    no_search_result = run_action_sequence(
-        args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb, default_actions
-    )
-    random_best = no_search_result
-    for _ in range(max(1, int(args.ga_random_trials))):
-        genome = _ga_random_genome(rng, args.steps, prompt_bank, cfg_bank, args.ga_phase_constraints)
-        row = _eval(genome, need_image=False)
-        if row["score"] > random_best.score:
-            random_best = run_action_sequence(
-                args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb, row["actions"]
-            )
-
-    # Greedy baseline over GA banks (step-wise with full rollout scoring).
-    greedy_actions = list(default_actions)
-    for step in range(args.steps):
-        best_score = -float("inf")
-        best = greedy_actions[step]
-        prompt_ids = _ga_allowed_prompt_indices(step, args.steps, prompt_bank, args.ga_phase_constraints)
-        for vi in prompt_ids:
-            for cfg in cfg_bank:
-                cand = list(greedy_actions)
-                cand[step] = (int(vi), float(cfg))
-                cand_result = run_action_sequence(
-                    args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb, cand
-                )
-                if cand_result.score > best_score:
-                    best_score = cand_result.score
-                    best = (int(vi), float(cfg))
-        greedy_actions[step] = best
-    greedy_bank_result = run_action_sequence(
-        args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb, greedy_actions
-    )
-
-    # Current MCTS baseline with same banks.
-    old_cfg = list(args.cfg_scales)
-    args.cfg_scales = [float(c) for c in cfg_bank]
-    try:
-        mcts_result = run_mcts(args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb)
-    finally:
-        args.cfg_scales = old_cfg
-
-    # Save baseline images.
-    no_search_result.image.save(os.path.join(log_root, "baseline_no_search.png"))
-    random_best.image.save(os.path.join(log_root, "baseline_random.png"))
-    greedy_bank_result.image.save(os.path.join(log_root, "baseline_greedy.png"))
-    mcts_result.image.save(os.path.join(log_root, "baseline_mcts.png"))
-    final_result.image.save(os.path.join(log_root, "ga_best.png"))
-
-    diagnostics = {
+    diagnostics: dict[str, Any] = {
         "prompt_bank": [{"label": label, "text": text} for label, text in prompt_bank],
         "cfg_bank": [float(c) for c in cfg_bank],
         "history": history,
         "best_genome": [int(x) for x in global_best["genome"]],
-        "baselines": {
+        "baselines": {},
+        "baseline_actions": {"ga": [[int(vi), float(cfg)] for vi, cfg in final_result.actions]},
+    }
+
+    if args.ga_run_baselines:
+        print("    [ga] running extra baselines (no_search/random/greedy/mcts)")
+        # Baselines against the same action banks.
+        no_search_result = run_action_sequence(
+            args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb, default_actions
+        )
+        random_best = no_search_result
+        for _ in range(max(1, int(args.ga_random_trials))):
+            genome = _ga_random_genome(rng, args.steps, prompt_bank, cfg_bank, args.ga_phase_constraints)
+            row = _eval(genome, need_image=False)
+            if row["score"] > random_best.score:
+                random_best = run_action_sequence(
+                    args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb, row["actions"]
+                )
+
+        # Greedy baseline over GA banks (step-wise with full rollout scoring).
+        greedy_actions = list(default_actions)
+        for step in range(args.steps):
+            best_score = -float("inf")
+            best = greedy_actions[step]
+            prompt_ids = _ga_allowed_prompt_indices(step, args.steps, prompt_bank, args.ga_phase_constraints)
+            for vi in prompt_ids:
+                for cfg in cfg_bank:
+                    cand = list(greedy_actions)
+                    cand[step] = (int(vi), float(cfg))
+                    cand_result = run_action_sequence(
+                        args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb, cand
+                    )
+                    if cand_result.score > best_score:
+                        best_score = cand_result.score
+                        best = (int(vi), float(cfg))
+            greedy_actions[step] = best
+        greedy_bank_result = run_action_sequence(
+            args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb, greedy_actions
+        )
+
+        # Current MCTS baseline with same banks.
+        old_cfg = list(args.cfg_scales)
+        args.cfg_scales = [float(c) for c in cfg_bank]
+        try:
+            mcts_result = run_mcts(args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb)
+        finally:
+            args.cfg_scales = old_cfg
+
+        # Save baseline images.
+        no_search_result.image.save(os.path.join(log_root, "baseline_no_search.png"))
+        random_best.image.save(os.path.join(log_root, "baseline_random.png"))
+        greedy_bank_result.image.save(os.path.join(log_root, "baseline_greedy.png"))
+        mcts_result.image.save(os.path.join(log_root, "baseline_mcts.png"))
+
+        diagnostics["baselines"] = {
             "no_search": float(no_search_result.score),
             "random": float(random_best.score),
             "greedy": float(greedy_bank_result.score),
             "mcts": float(mcts_result.score),
             "ga": float(final_result.score),
-        },
-        "baseline_actions": {
-            "no_search": [[int(vi), float(cfg)] for vi, cfg in no_search_result.actions],
-            "random": [[int(vi), float(cfg)] for vi, cfg in random_best.actions],
-            "greedy": [[int(vi), float(cfg)] for vi, cfg in greedy_bank_result.actions],
-            "mcts": [[int(vi), float(cfg)] for vi, cfg in mcts_result.actions],
-            "ga": [[int(vi), float(cfg)] for vi, cfg in final_result.actions],
-        },
-    }
+        }
+        diagnostics["baseline_actions"].update(
+            {
+                "no_search": [[int(vi), float(cfg)] for vi, cfg in no_search_result.actions],
+                "random": [[int(vi), float(cfg)] for vi, cfg in random_best.actions],
+                "greedy": [[int(vi), float(cfg)] for vi, cfg in greedy_bank_result.actions],
+                "mcts": [[int(vi), float(cfg)] for vi, cfg in mcts_result.actions],
+            }
+        )
+    else:
+        print("    [ga] skipping extra baselines (default; use --ga_run_baselines to enable)")
+        diagnostics["baselines"] = {"ga": float(final_result.score)}
+
+    final_result.image.save(os.path.join(log_root, "ga_best.png"))
     with open(os.path.join(log_root, "ga_diagnostics.json"), "w", encoding="utf-8") as f:
         json.dump(diagnostics, f, indent=2)
     return final_result, diagnostics

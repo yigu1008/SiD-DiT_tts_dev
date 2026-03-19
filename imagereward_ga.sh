@@ -8,6 +8,9 @@ source "${SCRIPT_DIR}/shell_env.sh"
   --search_method ga \
   --reward_type imagereward \
   --reward_device cpu \
+  --no-resolution_binning \
+  --min_free_gb 16 \
+  --no-ga_run_baselines \
   --prompt_file "${SCRIPT_DIR}/prompts.txt" \
   --steps 4 \
   --seed 42 \

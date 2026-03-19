@@ -7,9 +7,11 @@ source "${SCRIPT_DIR}/shell_env.sh"
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified.py" \
   --search_method mcts \
   --reward_type imagereward \
+  --dtype bf16 \
   --reward_device same \
   --sana_no_fp32_attn \
   --decode_device auto \
+  --decode_cpu_dtype fp32 \
   --decode_cpu_if_free_below_gb 20 \
   --no-resolution_binning \
   --min_free_gb 16 \

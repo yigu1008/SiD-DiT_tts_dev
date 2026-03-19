@@ -93,6 +93,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--ckpt", default=None)
     parser.add_argument("--neg_embed", default=None)
+    parser.add_argument("--dtype", choices=["fp16", "bf16", "fp32"], default="bf16")
     parser.add_argument("--steps", type=int, default=4)
     parser.add_argument(
         "--cfg_scales",
@@ -151,6 +152,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=str,
         default="auto",
         help="VAE decode device: auto | cpu | cuda.",
+    )
+    parser.add_argument(
+        "--decode_cpu_dtype",
+        choices=["fp16", "bf16", "fp32"],
+        default="fp32",
+        help="VAE dtype when decoding on CPU.",
     )
     parser.add_argument(
         "--decode_cpu_if_free_below_gb",
@@ -352,6 +359,15 @@ def _resolve_decode_device(args: argparse.Namespace, model_device: str) -> str:
     raise RuntimeError("Unsupported decode_device. Use auto/cpu/cuda.")
 
 
+def _torch_dtype_from_name(name: str) -> torch.dtype:
+    key = str(name).strip().lower()
+    if key == "bf16":
+        return torch.bfloat16
+    if key == "fp32":
+        return torch.float32
+    return torch.float16
+
+
 def _patch_sana_no_fp32_attn(pipe: Any) -> int:
     def _linear_no_upcast(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
         value = F.pad(value, (0, 0, 0, 1), mode="constant", value=1)
@@ -380,6 +396,7 @@ class PipelineContext:
     pipe: Any
     device: str
     dtype: torch.dtype
+    decode_cpu_dtype: torch.dtype
     latent_c: int
     variance_split: bool
     aspect_ratio_bins: dict[int, dict[str, Any]]
@@ -426,7 +443,8 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
 
     os.makedirs(args.out_dir, exist_ok=True)
     device = _select_cuda_device(args)
-    dtype = torch.float16
+    dtype = _torch_dtype_from_name(args.dtype)
+    decode_cpu_dtype = _torch_dtype_from_name(args.decode_cpu_dtype)
 
     print("Loading SiD pipeline ...")
     pipe = SiDSanaPipeline.from_pretrained(args.model_id, torch_dtype=dtype).to(device)
@@ -452,7 +470,7 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
     decode_device = _resolve_decode_device(args, device)
     if decode_device == "cpu":
         try:
-            pipe.vae.to("cpu")
+            pipe.vae.to(device="cpu", dtype=decode_cpu_dtype)
             if device.startswith("cuda"):
                 torch.cuda.empty_cache()
         except Exception as exc:
@@ -477,11 +495,16 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
     variance_split = (out_c // 2 == latent_c)
     bins = {16: ASPECT_RATIO_512_BIN, 32: ASPECT_RATIO_1024_BIN, 64: ASPECT_RATIO_2048_BIN}
 
-    print(f"Loaded. device={device} decode_device={decode_device} variance_split={variance_split}")
+    print(
+        f"Loaded. device={device} dtype={args.dtype} "
+        f"decode_device={decode_device} decode_cpu_dtype={args.decode_cpu_dtype} "
+        f"variance_split={variance_split}"
+    )
     return PipelineContext(
         pipe=pipe,
         device=device,
         dtype=dtype,
+        decode_cpu_dtype=decode_cpu_dtype,
         latent_c=latent_c,
         variance_split=variance_split,
         aspect_ratio_bins=bins,
@@ -1013,7 +1036,7 @@ def _switch_decode_to_cpu(ctx: PipelineContext, reason: str) -> None:
     if ctx.decode_device == "cpu":
         return
     print(f"Decode fallback: switching VAE decode to CPU ({reason}).")
-    ctx.pipe.vae.to("cpu")
+    ctx.pipe.vae.to(device="cpu", dtype=ctx.decode_cpu_dtype)
     ctx.decode_device = "cpu"
     if ctx.device.startswith("cuda"):
         torch.cuda.empty_cache()
@@ -1042,7 +1065,8 @@ def decode_to_pil(
 
     scaled = dx / ctx.pipe.vae.config.scaling_factor
     if ctx.decode_device == "cpu":
-        scaled = scaled.to(device="cpu", dtype=torch.float32)
+        vae_dtype = next(ctx.pipe.vae.parameters()).dtype
+        scaled = scaled.to(device="cpu", dtype=vae_dtype)
         image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
     else:
         scaled = scaled.to(device=ctx.device, dtype=ctx.dtype)
@@ -1051,7 +1075,8 @@ def decode_to_pil(
         except RuntimeError as exc:
             if ctx.decode_device_request == "auto" and _is_cuda_oom(exc):
                 _switch_decode_to_cpu(ctx, reason="CUDA OOM during decode")
-                scaled = scaled.to(device="cpu", dtype=torch.float32)
+                vae_dtype = next(ctx.pipe.vae.parameters()).dtype
+                scaled = scaled.to(device="cpu", dtype=vae_dtype)
                 image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
             else:
                 raise

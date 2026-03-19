@@ -11,6 +11,10 @@ mkdir -p "${HF_HOME}"
 # Follow G-OPD style: always include user local bin.
 export PATH="$HOME/.local/bin:$PATH"
 
+# Prevent ~/.local site-packages from shadowing conda env packages.
+export PYTHONNOUSERSITE=1
+unset PYTHONPATH || true
+
 # Optional explicit override.
 if [[ -n "${SID_ENV_PATH:-}" ]]; then
   export PATH="${SID_ENV_PATH}:$PATH"

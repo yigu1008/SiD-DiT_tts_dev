@@ -7,6 +7,7 @@ source "${SCRIPT_DIR}/shell_env.sh"
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified.py" \
   --search_method ga \
   --reward_type imagereward \
+  --reward_device cpu \
   --prompt_file "${SCRIPT_DIR}/prompts.txt" \
   --steps 4 \
   --seed 42 \

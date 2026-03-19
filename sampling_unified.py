@@ -67,6 +67,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # High-level mode
     parser.add_argument("--search_method", choices=["greedy", "mcts", "ga"], default="greedy")
     parser.add_argument("--reward_type", choices=["imagereward", "geneval"], default="imagereward")
+    parser.add_argument(
+        "--reward_device",
+        choices=["auto", "cuda", "cpu"],
+        default="auto",
+        help="Device for ImageReward backend.",
+    )
 
     # Model + generation
     parser.add_argument("--model_id", default="YGu1998/SiD-DiT-SANA-0.6B-RectifiedFlow")
@@ -84,6 +90,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--height", type=int, default=512)
     parser.add_argument("--time_scale", type=float, default=1000.0)
     parser.add_argument("--out_dir", default="./sampling_unified_out")
+    parser.add_argument(
+        "--cuda_alloc_conf",
+        default="expandable_segments:True",
+        help="Set PYTORCH_CUDA_ALLOC_CONF when not already defined.",
+    )
+    parser.add_argument(
+        "--vae_slicing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable VAE sliced decode for lower peak memory.",
+    )
+    parser.add_argument(
+        "--vae_tiling",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable VAE tiled decode for lower peak memory.",
+    )
+    parser.add_argument(
+        "--empty_cache_after_decode",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Call torch.cuda.empty_cache() after each decode.",
+    )
+    parser.add_argument(
+        "--offload_text_encoder_after_encode",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Move text encoder to CPU after prompt embeddings are computed.",
+    )
 
     # Prompt sources (regular)
     parser.add_argument(
@@ -200,6 +235,8 @@ class PipelineContext:
     latent_c: int
     variance_split: bool
     aspect_ratio_bins: dict[int, dict[str, Any]]
+    empty_cache_after_decode: bool
+    decode_counts: dict[str, int]
 
 
 def load_pipeline(args: argparse.Namespace) -> PipelineContext:
@@ -257,6 +294,19 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
 
     pipe.transformer.eval()
 
+    if args.vae_slicing and hasattr(pipe, "enable_vae_slicing"):
+        try:
+            pipe.enable_vae_slicing()
+            print("Enabled VAE slicing.")
+        except Exception as exc:
+            print(f"Warning: could not enable VAE slicing: {exc}")
+    if args.vae_tiling and hasattr(pipe, "enable_vae_tiling"):
+        try:
+            pipe.enable_vae_tiling()
+            print("Enabled VAE tiling.")
+        except Exception as exc:
+            print(f"Warning: could not enable VAE tiling: {exc}")
+
     latent_c = pipe.transformer.config.in_channels
     out_c = pipe.transformer.config.out_channels
     variance_split = (out_c // 2 == latent_c)
@@ -270,6 +320,8 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
         latent_c=latent_c,
         variance_split=variance_split,
         aspect_ratio_bins=bins,
+        empty_cache_after_decode=args.empty_cache_after_decode,
+        decode_counts={},
     )
 
 
@@ -410,7 +462,21 @@ def load_reward(args: argparse.Namespace, ctx: PipelineContext) -> RewardContext
 
         import ImageReward as RM
 
-        reward_model = RM.load("ImageReward-v1.0", device=ctx.device)
+        reward_device = args.reward_device
+        if reward_device == "auto":
+            if ctx.device == "cuda":
+                free_gb = None
+                try:
+                    free_bytes, _ = torch.cuda.mem_get_info()
+                    free_gb = free_bytes / (1024 ** 3)
+                except Exception:
+                    pass
+                reward_device = "cpu" if free_gb is not None and free_gb < 14.0 else "cuda"
+            else:
+                reward_device = "cpu"
+        print(f"  ImageReward device={reward_device}")
+
+        reward_model = RM.load("ImageReward-v1.0", device=reward_device)
         reward_model.eval()
 
         def score_images(prompt: str, images: list[Image.Image], metadata: dict[str, Any] | None = None) -> list[float]:
@@ -606,22 +672,35 @@ def encode_variants(
     neg_mask: torch.Tensor | None,
     max_seq: int = 256,
 ) -> EmbeddingContext:
+    text_encoder = getattr(ctx.pipe, "text_encoder", None)
+    if (
+        args.offload_text_encoder_after_encode
+        and text_encoder is not None
+        and ctx.device == "cuda"
+    ):
+        try:
+            text_encoder.to(ctx.device)
+            torch.cuda.empty_cache()
+        except Exception as exc:
+            print(f"Warning: could not move text encoder to CUDA before encode: {exc}")
+
     pe_list: list[tuple[torch.Tensor, torch.Tensor]] = []
     ue = None
     um = None
-    for i, variant in enumerate(variants):
-        pe, pm, ne, nm = ctx.pipe.encode_prompt(
-            prompt=variant,
-            do_classifier_free_guidance=True,
-            negative_prompt="",
-            device=ctx.device,
-            num_images_per_prompt=1,
-            max_sequence_length=max_seq,
-        )
-        pe_list.append((pe.detach(), pm.detach()))
-        if i == 0:
-            ue = ne.detach()
-            um = nm.detach()
+    with torch.inference_mode():
+        for i, variant in enumerate(variants):
+            pe, pm, ne, nm = ctx.pipe.encode_prompt(
+                prompt=variant,
+                do_classifier_free_guidance=True,
+                negative_prompt="",
+                device=ctx.device,
+                num_images_per_prompt=1,
+                max_sequence_length=max_seq,
+            )
+            pe_list.append((pe.detach(), pm.detach()))
+            if i == 0:
+                ue = ne.detach()
+                um = nm.detach()
 
     assert ue is not None
     assert um is not None
@@ -657,6 +736,17 @@ def encode_variants(
             cur_nm = cur_nm[:, :cond_len]
         ue = cur_ne.to(dtype=pe_list[0][0].dtype, device=ctx.device)
         um = cur_nm.to(device=ctx.device)
+
+    if (
+        args.offload_text_encoder_after_encode
+        and text_encoder is not None
+        and ctx.device == "cuda"
+    ):
+        try:
+            text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+        except Exception as exc:
+            print(f"Warning: could not offload text encoder after encode: {exc}")
 
     return EmbeddingContext(pe_list=pe_list, ue=ue, um=um)
 
@@ -708,10 +798,21 @@ def transformer_step(
 
 
 @torch.no_grad()
-def decode_to_pil(ctx: PipelineContext, dx: torch.Tensor, orig_h: int, orig_w: int) -> Image.Image:
-    image = ctx.pipe.vae.decode(dx / ctx.pipe.vae.config.scaling_factor, return_dict=False)[0]
+def decode_to_pil(
+    ctx: PipelineContext,
+    dx: torch.Tensor,
+    orig_h: int,
+    orig_w: int,
+    tag: str = "generic",
+) -> Image.Image:
+    ctx.decode_counts[tag] = ctx.decode_counts.get(tag, 0) + 1
+    scaled = (dx / ctx.pipe.vae.config.scaling_factor).to(dtype=ctx.dtype)
+    image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
     image = ctx.pipe.image_processor.resize_and_crop_tensor(image, orig_h, orig_w)
-    return ctx.pipe.image_processor.postprocess(image, output_type="pil")[0]
+    pil = ctx.pipe.image_processor.postprocess(image, output_type="pil")[0]
+    if ctx.empty_cache_after_decode and ctx.device == "cuda":
+        torch.cuda.empty_cache()
+    return pil
 
 
 def maybe_resize_to_bin(ctx: PipelineContext, height: int, width: int) -> tuple[int, int]:
@@ -776,7 +877,7 @@ def run_action_sequence(
         velocity = transformer_step(args, ctx, latents, pe, pm, emb.ue, emb.um, t_flat, cfg)
         dx = latents - t_4d * velocity
 
-    image = decode_to_pil(ctx, dx, orig_h, orig_w)
+    image = decode_to_pil(ctx, dx, orig_h, orig_w, tag="action_sequence_final")
     score = float(reward_ctx.score_images(prompt, [image], metadata)[0])
     return SearchResult(image=image, score=score, actions=list(actions))
 
@@ -1137,7 +1238,7 @@ def run_baseline(
         velocity = transformer_step(args, ctx, latents, pe, pm, emb.ue, emb.um, t_flat, 1.0)
         dx = latents - t_4d * velocity
 
-    image = decode_to_pil(ctx, dx, orig_h, orig_w)
+    image = decode_to_pil(ctx, dx, orig_h, orig_w, tag="baseline_final")
     score = reward_ctx.score_images(prompt, [image], metadata)[0]
     return image, float(score)
 
@@ -1175,7 +1276,7 @@ def run_greedy(
             pe, pm = emb.pe_list[variant_idx]
             velocity = transformer_step(args, ctx, latents, pe, pm, emb.ue, emb.um, t_flat, cfg)
             candidate_dx = latents - t_4d * velocity
-            candidate_img = decode_to_pil(ctx, candidate_dx, orig_h, orig_w)
+            candidate_img = decode_to_pil(ctx, candidate_dx, orig_h, orig_w, tag="greedy_candidate")
             score = float(reward_ctx.score_images(prompt, [candidate_img], metadata)[0])
             mark = ""
             if score > best_score:
@@ -1194,7 +1295,7 @@ def run_greedy(
             f"prompt='{preview_prompt}' score={best_score:.4f}"
         )
 
-    final_image = decode_to_pil(ctx, dx, orig_h, orig_w)
+    final_image = decode_to_pil(ctx, dx, orig_h, orig_w, tag="greedy_final")
     final_score = float(reward_ctx.score_images(prompt, [final_image], metadata)[0])
     return SearchResult(image=final_image, score=final_score, actions=chosen)
 
@@ -1332,7 +1433,7 @@ def run_mcts(
                 noise = torch.randn_like(rollout_dx)
                 rollout_latents = (1.0 - next_t_4d) * rollout_dx + next_t_4d * noise
 
-        rollout_img = decode_to_pil(ctx, rollout_dx, orig_h, orig_w)
+        rollout_img = decode_to_pil(ctx, rollout_dx, orig_h, orig_w, tag="mcts_rollout")
         rollout_score = float(reward_ctx.score_images(prompt, [rollout_img], metadata)[0])
 
         if rollout_score > best_global_score:
@@ -1373,14 +1474,14 @@ def run_mcts(
             noise = torch.randn_like(replay_dx)
             replay_latents = (1.0 - next_t_4d) * replay_dx + next_t_4d * noise
 
-    exploit_img = decode_to_pil(ctx, replay_dx, orig_h, orig_w)
+    exploit_img = decode_to_pil(ctx, replay_dx, orig_h, orig_w, tag="mcts_exploit")
     exploit_score = float(reward_ctx.score_images(prompt, [exploit_img], metadata)[0])
 
     if exploit_score >= best_global_score:
         return SearchResult(image=exploit_img, score=exploit_score, actions=exploit_path)
     if best_global_dx is None:
         return SearchResult(image=exploit_img, score=exploit_score, actions=exploit_path)
-    best_global_img = decode_to_pil(ctx, best_global_dx, orig_h, orig_w)
+    best_global_img = decode_to_pil(ctx, best_global_dx, orig_h, orig_w, tag="mcts_best_global")
     return SearchResult(image=best_global_img, score=best_global_score, actions=best_global_path)
 
 
@@ -1582,6 +1683,10 @@ def run(args: argparse.Namespace) -> None:
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
 
+    decode_counts_path = os.path.join(args.out_dir, "decode_counts.json")
+    with open(decode_counts_path, "w", encoding="utf-8") as f:
+        json.dump(ctx.decode_counts, f, indent=2, sort_keys=True)
+
     print(f"\n{'=' * 72}\nSUMMARY\n{'=' * 72}")
     deltas = []
     for row in summary:
@@ -1592,12 +1697,17 @@ def run(args: argparse.Namespace) -> None:
     if deltas:
         print(f"overall mean delta: {float(np.mean(deltas)):+.4f}")
     print(f"summary json: {summary_path}")
+    print(f"decode counts: {ctx.decode_counts}")
+    print(f"decode counts json: {decode_counts_path}")
     if args.reward_type == "geneval":
         print(f"geneval images: {os.path.abspath(geneval_root)}/")
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    if args.cuda_alloc_conf and "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = args.cuda_alloc_conf
+        print(f"Set PYTORCH_CUDA_ALLOC_CONF={args.cuda_alloc_conf}")
     run(args)
 
 

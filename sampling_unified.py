@@ -510,6 +510,9 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
 
     print("Loading SiD pipeline ...")
     pipe = SiDSanaPipeline.from_pretrained(args.model_id, torch_dtype=dtype).to(device)
+    use_cache_changes = _disable_text_encoder_use_cache(pipe)
+    if use_cache_changes > 0:
+        print(f"Disabled text-encoder use_cache entries: {use_cache_changes}")
 
     if args.ckpt:
         print(f"Loading checkpoint {args.ckpt} ...")
@@ -996,6 +999,28 @@ def _move_text_encoders(pipe: Any, dst: str) -> int:
             module.to(dst)
             moved += 1
     return moved
+
+
+def _disable_text_encoder_use_cache(pipe: Any) -> int:
+    changed = 0
+    for module in _iter_text_encoders(pipe):
+        cfg = getattr(module, "config", None)
+        if cfg is not None and hasattr(cfg, "use_cache"):
+            try:
+                if bool(getattr(cfg, "use_cache")):
+                    cfg.use_cache = False
+                    changed += 1
+            except Exception:
+                pass
+        gen_cfg = getattr(module, "generation_config", None)
+        if gen_cfg is not None and hasattr(gen_cfg, "use_cache"):
+            try:
+                if bool(getattr(gen_cfg, "use_cache")):
+                    gen_cfg.use_cache = False
+                    changed += 1
+            except Exception:
+                pass
+    return changed
 
 
 def build_ga_prompt_bank(prompt: str) -> list[tuple[str, str]]:

@@ -10,15 +10,16 @@ source "${SCRIPT_DIR}/shell_env.sh"
   --dtype bf16 \
   --reward_device cpu \
   --sana_no_fp32_attn \
-  --decode_device auto \
-  --decode_cpu_dtype fp32 \
-  --decode_cpu_if_free_below_gb 20 \
+  --offload_text_encoder_after_encode \
+  --decode_device cuda \
+  --empty_cache_after_decode \
   --no-resolution_binning \
   --min_free_gb 16 \
   --no-ga_run_baselines \
   --prompt_file "${SCRIPT_DIR}/prompts.txt" \
   --steps 4 \
   --seed 42 \
+  --time_scale 1000.0 \
   --n_samples 1 \
   --ga_population 24 \
   --ga_generations 12 \

@@ -320,9 +320,18 @@ class SiDSanaPipeline(DiffusionPipeline, SanaLoraLoaderMixin):
         prompt_attention_mask = text_inputs.attention_mask
         prompt_attention_mask = prompt_attention_mask.to(device)
 
-        prompt_embeds = self.text_encoder(
-            text_input_ids.to(device), attention_mask=prompt_attention_mask
-        )
+        # Keep encoder KV cache disabled to avoid large transient/retained memory spikes.
+        try:
+            prompt_embeds = self.text_encoder(
+                text_input_ids.to(device),
+                attention_mask=prompt_attention_mask,
+                use_cache=False,
+            )
+        except TypeError:
+            # Backward compatibility with text encoders that do not accept use_cache.
+            prompt_embeds = self.text_encoder(
+                text_input_ids.to(device), attention_mask=prompt_attention_mask
+            )
         prompt_embeds = prompt_embeds[0].to(dtype=dtype, device=device)
 
         return prompt_embeds, prompt_attention_mask

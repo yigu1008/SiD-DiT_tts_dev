@@ -371,10 +371,13 @@ def _torch_dtype_from_name(name: str) -> torch.dtype:
 
 def _patch_sana_no_fp32_attn(pipe: Any) -> tuple[int, int]:
     def _linear_no_upcast(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
-        value = F.pad(value, (0, 0, 0, 1), mode="constant", value=1)
-        scores = torch.matmul(value, key.transpose(-1, -2))
-        hidden_states = torch.matmul(scores, query)
-        hidden_states = hidden_states[:, :, :-1] / (hidden_states[:, :, -1:] + self.eps)
+        # Equivalent to the pad-based formula, but lower peak memory:
+        # out = (V K^T Q) / ((sum(K)^T Q) + eps)
+        kv = torch.matmul(value, key.transpose(-1, -2))
+        hidden_states = torch.matmul(kv, query)
+        denom = torch.matmul(key.sum(dim=-1, keepdim=True).transpose(-1, -2), query)
+        denom = denom.add(self.eps)
+        hidden_states.div_(denom)
         return hidden_states
 
     def _quadratic_no_upcast(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
@@ -1239,8 +1242,14 @@ def decode_to_pil(
         try:
             image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
         except RuntimeError as exc:
-            if ctx.decode_device_request == "auto" and _is_cuda_oom(exc):
-                _switch_decode_to_cpu(ctx, reason="CUDA OOM during decode")
+            if _is_cuda_oom(exc):
+                _switch_decode_to_cpu(
+                    ctx,
+                    reason=(
+                        "CUDA OOM during decode "
+                        f"(decode_device_request={ctx.decode_device_request})"
+                    ),
+                )
                 vae_dtype = next(ctx.pipe.vae.parameters()).dtype
                 scaled = scaled.to(device="cpu", dtype=vae_dtype)
                 image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
@@ -2009,8 +2018,31 @@ def run(args: argparse.Namespace) -> None:
     if args.reward_type == "geneval" and args.geneval_prompts is None:
         raise RuntimeError("Geneval mode requires --geneval_prompts metadata jsonl input.")
 
+    def _debug_cuda_alloc(tag: str) -> None:
+        if not torch.cuda.is_available():
+            return
+        dev = "cuda:0"
+        if "ctx" in locals():
+            try:
+                dev = str(locals()["ctx"].device)
+            except Exception:
+                pass
+        if not str(dev).startswith("cuda"):
+            return
+        try:
+            dev_idx = int(str(dev).split(":", 1)[1]) if ":" in str(dev) else 0
+        except Exception:
+            dev_idx = 0
+        try:
+            alloc_gb = torch.cuda.memory_allocated(dev_idx) / 1e9
+        except Exception:
+            return
+        print(f"[debug] {tag}: {alloc_gb:.1f}GB")
+
     ctx = load_pipeline(args)
+    _debug_cuda_alloc("after load_pipeline")
     reward_ctx = load_reward(args, ctx)
+    _debug_cuda_alloc("after load_reward")
     setattr(ctx, "pre_decode_hook", reward_ctx.before_decode)
     neg_embeds, neg_mask = load_neg_embed(args, ctx)
 
@@ -2065,9 +2097,11 @@ def run(args: argparse.Namespace) -> None:
 
         prompt_samples: list[dict[str, Any]] = []
         emb = encode_variants(args, ctx, variants, neg_embeds, neg_mask)
+        _debug_cuda_alloc("after encode_variants")
         for sample_i in range(args.n_samples):
             seed = args.seed + sample_i
             print(f"\n  sample {sample_i + 1}/{args.n_samples} seed={seed}")
+            _debug_cuda_alloc("before run_baseline")
             baseline_img, baseline_score = run_baseline(
                 args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb
             )

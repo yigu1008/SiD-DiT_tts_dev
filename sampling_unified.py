@@ -416,12 +416,16 @@ def _patch_sana_no_fp32_attn(pipe: Any) -> tuple[int, int]:
         hidden_states = torch.reshape(hidden_states, (batch_size, -1, height, width))
         hidden_states = attn.to_out(hidden_states.movedim(1, -1)).movedim(-1, 1)
 
-        if attn.norm_type == "rms_norm":
+        norm_type = getattr(attn, "norm_type", None)
+        if norm_type == "rms_norm" and hasattr(attn, "norm_out"):
             hidden_states = attn.norm_out(hidden_states.movedim(1, -1)).movedim(-1, 1)
-        if attn.residual_connection:
+
+        if bool(getattr(attn, "residual_connection", False)):
             hidden_states = hidden_states + residual
-        if attn.rescale_output_factor != 1.0:
-            hidden_states = hidden_states / attn.rescale_output_factor
+
+        rescale_output_factor = float(getattr(attn, "rescale_output_factor", 1.0) or 1.0)
+        if rescale_output_factor != 1.0:
+            hidden_states = hidden_states / rescale_output_factor
         return hidden_states
 
     patched_attn = 0

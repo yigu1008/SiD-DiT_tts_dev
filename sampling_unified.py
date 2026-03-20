@@ -525,6 +525,16 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
 
     pipe.transformer.eval()
 
+    if args.offload_text_encoder_after_encode and device.startswith("cuda"):
+        try:
+            _move_text_encoders(pipe, "cpu")
+            torch.cuda.empty_cache()
+            gc.collect()
+            torch.cuda.empty_cache()
+            print("Pre-offloaded text encoder(s) to CPU.")
+        except Exception as exc:
+            print(f"Warning: could not pre-offload text encoder(s): {exc}")
+
     if args.sana_no_fp32_attn:
         patched_attn, patched_proc = _patch_sana_no_fp32_attn(pipe)
         print(
@@ -961,6 +971,33 @@ def generate_variants(args: argparse.Namespace, prompt: str, cache: dict[str, li
     return variants
 
 
+def _iter_text_encoders(pipe: Any) -> list[Any]:
+    encoders: list[Any] = []
+    for name in ("text_encoder", "text_encoder_2", "text_encoder_3"):
+        module = getattr(pipe, name, None)
+        if module is not None:
+            encoders.append(module)
+    return encoders
+
+
+def _module_device(module: Any) -> str | None:
+    try:
+        param = next(module.parameters())
+        return str(param.device)
+    except Exception:
+        return None
+
+
+def _move_text_encoders(pipe: Any, dst: str) -> int:
+    moved = 0
+    for module in _iter_text_encoders(pipe):
+        cur = _module_device(module)
+        if cur != dst:
+            module.to(dst)
+            moved += 1
+    return moved
+
+
 def build_ga_prompt_bank(prompt: str) -> list[tuple[str, str]]:
     bank: list[tuple[str, str]] = []
     for label in ("balanced", "subject", "prop", "background", "detail"):
@@ -978,24 +1015,15 @@ def encode_variants(
     neg_mask: torch.Tensor | None,
     max_seq: int = 256,
 ) -> EmbeddingContext:
-    text_encoder = getattr(ctx.pipe, "text_encoder", None)
-
-    def _module_device(module: Any) -> str | None:
-        try:
-            param = next(module.parameters())
-            return str(param.device)
-        except Exception:
-            return None
+    text_encoders = _iter_text_encoders(ctx.pipe)
 
     if (
         args.offload_text_encoder_after_encode
-        and text_encoder is not None
+        and len(text_encoders) > 0
         and ctx.device.startswith("cuda")
     ):
         try:
-            cur = _module_device(text_encoder)
-            if cur is None or not cur.startswith("cuda"):
-                text_encoder.to(ctx.device)
+            _move_text_encoders(ctx.pipe, ctx.device)
             torch.cuda.empty_cache()
         except Exception as exc:
             print(f"Warning: could not move text encoder to CUDA before encode: {exc}")
@@ -1055,13 +1083,11 @@ def encode_variants(
 
     if (
         args.offload_text_encoder_after_encode
-        and text_encoder is not None
+        and len(text_encoders) > 0
         and ctx.device.startswith("cuda")
     ):
         try:
-            cur = _module_device(text_encoder)
-            if cur is None or cur != "cpu":
-                text_encoder.to("cpu")
+            _move_text_encoders(ctx.pipe, "cpu")
             torch.cuda.empty_cache()
             gc.collect()
             torch.cuda.empty_cache()
@@ -1163,6 +1189,8 @@ def decode_to_pil(
     if callable(pre_decode_hook):
         pre_decode_hook()
     if ctx.device.startswith("cuda"):
+        torch.cuda.empty_cache()
+        gc.collect()
         torch.cuda.empty_cache()
 
     if ctx.decode_device_request == "auto" and ctx.decode_device != "cpu":
@@ -2095,6 +2123,18 @@ def run(args: argparse.Namespace) -> None:
                 sample_payload["baseline_pass"] = baseline_score >= 0.99
                 sample_payload["search_pass"] = search_result.score >= 0.99
             prompt_samples.append(sample_payload)
+
+            # Aggressive per-sample cleanup to prevent CUDA memory drift.
+            del baseline_img
+            del search_result
+            gc.collect()
+            if ctx.device.startswith("cuda"):
+                torch.cuda.empty_cache()
+
+        del emb
+        gc.collect()
+        if ctx.device.startswith("cuda"):
+            torch.cuda.empty_cache()
 
         summary.append(
             {

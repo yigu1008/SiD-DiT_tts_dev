@@ -9,6 +9,7 @@ source "${SCRIPT_DIR}/shell_env.sh"
   --reward_type imagereward \
   --dtype bf16 \
   --reward_device cpu \
+  --sana_no_fp32_attn \
   --decode_device auto \
   --decode_cpu_dtype fp32 \
   --decode_cpu_if_free_below_gb 20 \

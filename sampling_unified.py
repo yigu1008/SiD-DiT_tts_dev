@@ -1213,6 +1213,20 @@ def decode_to_pil(
 ) -> Image.Image:
     ctx.decode_counts[tag] = ctx.decode_counts.get(tag, 0) + 1
 
+    def _print_decode_state(tensor: torch.Tensor) -> None:
+        if not torch.cuda.is_available():
+            return
+        try:
+            free_gb = torch.cuda.mem_get_info(0)[0] / 1e9
+            alloc_gb = torch.cuda.memory_allocated() / 1e9
+            print(
+                f"[debug] RIGHT BEFORE vae.decode: free={free_gb:.1f}GB "
+                f"alloc={alloc_gb:.1f}GB scaled.shape={tuple(tensor.shape)} "
+                f"scaled.dtype={tensor.dtype}"
+            )
+        except Exception:
+            return
+
     pre_decode_hook = getattr(ctx, "pre_decode_hook", None)
     if callable(pre_decode_hook):
         pre_decode_hook()
@@ -1236,10 +1250,12 @@ def decode_to_pil(
     if ctx.decode_device == "cpu":
         vae_dtype = next(ctx.pipe.vae.parameters()).dtype
         scaled = scaled.to(device="cpu", dtype=vae_dtype)
+        _print_decode_state(scaled)
         image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
     else:
         scaled = scaled.to(device=ctx.device, dtype=ctx.dtype)
         try:
+            _print_decode_state(scaled)
             image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
         except RuntimeError as exc:
             if _is_cuda_oom(exc):
@@ -1252,6 +1268,7 @@ def decode_to_pil(
                 )
                 vae_dtype = next(ctx.pipe.vae.parameters()).dtype
                 scaled = scaled.to(device="cpu", dtype=vae_dtype)
+                _print_decode_state(scaled)
                 image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
             else:
                 raise

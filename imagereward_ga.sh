@@ -8,8 +8,7 @@ source "${SCRIPT_DIR}/shell_env.sh"
   --search_method ga \
   --reward_type imagereward \
   --dtype bf16 \
-  --reward_device same \
-  --sana_no_fp32_attn \
+  --reward_device cpu \
   --decode_device auto \
   --decode_cpu_dtype fp32 \
   --decode_cpu_if_free_below_gb 20 \

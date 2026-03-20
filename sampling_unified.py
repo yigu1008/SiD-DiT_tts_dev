@@ -72,8 +72,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--reward_device",
         type=str,
-        default="same",
-        help="ImageReward device: same | auto | cpu | cuda | cuda:N.",
+        default="cpu",
+        help="ImageReward device: cpu (recommended) | same | auto | cuda | cuda:N.",
     )
 
     # Model + generation
@@ -144,8 +144,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--sana_no_fp32_attn",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Disable fp32 upcast in Sana multiscale attention (lower memory, possible minor numeric drift).",
+        default=False,
+        help="Disable fp32 upcast in Sana multiscale attention (memory fallback mode).",
     )
     parser.add_argument(
         "--decode_device",
@@ -586,6 +586,7 @@ class RewardContext:
     score_images: Any
     geneval_mode: str | None = None
     scorer_path: str | None = None
+    before_decode: Any | None = None
 
 
 GENEVAL_SCORER_SCRIPT = r'''
@@ -756,10 +757,37 @@ def load_reward(args: argparse.Namespace, ctx: PipelineContext) -> RewardContext
         reward_model = RM.load("ImageReward-v1.0", device=reward_device)
         reward_model.eval()
 
+        runtime_device = str(reward_device)
+
+        def _move_reward(to_device: str) -> None:
+            nonlocal runtime_device
+            target = str(to_device)
+            if target == runtime_device:
+                return
+            reward_model.to(target)
+            if hasattr(reward_model, "device"):
+                try:
+                    reward_model.device = target
+                except Exception:
+                    pass
+            runtime_device = target
+            if ctx.device.startswith("cuda"):
+                torch.cuda.empty_cache()
+
+        def _before_decode() -> None:
+            if runtime_device.startswith("cuda"):
+                _move_reward("cpu")
+
+        def _before_score() -> None:
+            if reward_device.startswith("cuda") and runtime_device != reward_device:
+                _move_reward(reward_device)
+
         def score_images(prompt: str, images: list[Image.Image], metadata: dict[str, Any] | None = None) -> list[float]:
+            _before_score()
             return [float(reward_model.score(prompt, img)) for img in images]
 
-        return RewardContext(kind="imagereward", score_images=score_images)
+        before_decode = _before_decode if reward_device.startswith("cuda") else None
+        return RewardContext(kind="imagereward", score_images=score_images, before_decode=before_decode)
 
     # Geneval
     geneval_mode = None
@@ -1115,6 +1143,12 @@ def decode_to_pil(
     tag: str = "generic",
 ) -> Image.Image:
     ctx.decode_counts[tag] = ctx.decode_counts.get(tag, 0) + 1
+
+    pre_decode_hook = getattr(ctx, "pre_decode_hook", None)
+    if callable(pre_decode_hook):
+        pre_decode_hook()
+    if ctx.device.startswith("cuda"):
+        torch.cuda.empty_cache()
 
     if ctx.decode_device_request == "auto" and ctx.decode_device != "cpu":
         free_gb = _cuda_free_gb(ctx.device)
@@ -1909,6 +1943,7 @@ def run(args: argparse.Namespace) -> None:
 
     ctx = load_pipeline(args)
     reward_ctx = load_reward(args, ctx)
+    setattr(ctx, "pre_decode_hook", reward_ctx.before_decode)
     neg_embeds, neg_mask = load_neg_embed(args, ctx)
 
     rewrite_cache: dict[str, list[str]] = {}

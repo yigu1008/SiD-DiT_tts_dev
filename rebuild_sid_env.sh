@@ -37,6 +37,11 @@ conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
   torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 \
   --index-url "${TORCH_INDEX_URL}"
 
+echo "[env] installing xformers from ${TORCH_INDEX_URL}"
+conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
+  xformers \
+  --index-url "${TORCH_INDEX_URL}"
+
 echo "[env] pinning cuDNN for CUDA 12.6"
 conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
   --index-url "${PYPI_INDEX_URL}" \

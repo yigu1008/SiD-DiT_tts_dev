@@ -58,6 +58,11 @@ echo "[env] install torch bundle from ${TORCH_INDEX_URL} (includes matching cuDN
   torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 \
   --index-url "${TORCH_INDEX_URL}"
 
+echo "[env] install xformers from ${TORCH_INDEX_URL}"
+"${PY}" -m pip install --no-cache-dir --force-reinstall \
+  xformers \
+  --index-url "${TORCH_INDEX_URL}"
+
 echo "[env] pin cuDNN for CUDA 12.6"
 "${PY}" -m pip install --no-cache-dir --force-reinstall \
   --index-url "${PYPI_INDEX_URL}" \

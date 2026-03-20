@@ -216,6 +216,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=[1.0, 1.25, 1.5],
         help="Small CFG bank for GA genomes.",
     )
+    parser.add_argument(
+        "--save_first_k",
+        type=int,
+        default=-1,
+        help="Save per-prompt artifacts only for first K prompts; -1 saves all.",
+    )
 
     # GenEval reward backends
     parser.add_argument("--reward_url", default=None)
@@ -1504,9 +1510,11 @@ def run_ga(
     emb: EmbeddingContext,
     prompt_bank: list[tuple[str, str]],
     cfg_bank: list[float],
-    log_root: str,
+    log_root: str | None,
+    save_logs: bool = True,
 ) -> tuple[SearchResult, dict[str, Any]]:
-    os.makedirs(log_root, exist_ok=True)
+    if save_logs and log_root is not None:
+        os.makedirs(log_root, exist_ok=True)
     rng = np.random.default_rng(seed + 9001)
     pop_size = max(4, int(args.ga_population))
     elites = min(max(1, int(args.ga_elites)), pop_size)
@@ -1558,13 +1566,17 @@ def run_ga(
         if global_best is None or float(best["score"]) > float(global_best["score"]):
             global_best = _eval(best["genome"], need_image=True)
 
-        gen_dir = os.path.join(log_root, f"gen_{gen:03d}")
-        os.makedirs(gen_dir, exist_ok=True)
         top_records: list[dict[str, Any]] = []
+        gen_dir = os.path.join(log_root, f"gen_{gen:03d}") if (save_logs and log_root is not None) else None
+        if gen_dir is not None:
+            os.makedirs(gen_dir, exist_ok=True)
         for rank, row in enumerate(scored[:topk]):
-            with_img = _eval(row["genome"], need_image=True)
-            img_path = os.path.join(gen_dir, f"rank_{rank:02d}.png")
-            with_img["image"].save(img_path)
+            with_img = _eval(row["genome"], need_image=(gen_dir is not None))
+            img_name = None
+            if gen_dir is not None:
+                img_path = os.path.join(gen_dir, f"rank_{rank:02d}.png")
+                with_img["image"].save(img_path)
+                img_name = os.path.basename(img_path)
             decoded = []
             for step_i, (vi, cfg) in enumerate(with_img["actions"]):
                 label = prompt_bank[vi][0]
@@ -1582,7 +1594,7 @@ def run_ga(
                     "score": float(with_img["score"]),
                     "genome": [int(x) for x in with_img["genome"]],
                     "actions": decoded,
-                    "image": os.path.basename(img_path),
+                    "image": img_name,
                 }
             )
 
@@ -1595,8 +1607,9 @@ def run_ga(
             "top": top_records,
         }
         history.append(gen_summary)
-        with open(os.path.join(gen_dir, "summary.json"), "w", encoding="utf-8") as f:
-            json.dump(gen_summary, f, indent=2)
+        if gen_dir is not None:
+            with open(os.path.join(gen_dir, "summary.json"), "w", encoding="utf-8") as f:
+                json.dump(gen_summary, f, indent=2)
         print(
             f"    [ga] gen={gen + 1:02d}/{args.ga_generations} "
             f"best={gen_summary['best']:.4f} mean={gen_summary['mean']:.4f}"
@@ -1675,10 +1688,11 @@ def run_ga(
             args.cfg_scales = old_cfg
 
         # Save baseline images.
-        no_search_result.image.save(os.path.join(log_root, "baseline_no_search.png"))
-        random_best.image.save(os.path.join(log_root, "baseline_random.png"))
-        greedy_bank_result.image.save(os.path.join(log_root, "baseline_greedy.png"))
-        mcts_result.image.save(os.path.join(log_root, "baseline_mcts.png"))
+        if save_logs and log_root is not None:
+            no_search_result.image.save(os.path.join(log_root, "baseline_no_search.png"))
+            random_best.image.save(os.path.join(log_root, "baseline_random.png"))
+            greedy_bank_result.image.save(os.path.join(log_root, "baseline_greedy.png"))
+            mcts_result.image.save(os.path.join(log_root, "baseline_mcts.png"))
 
         diagnostics["baselines"] = {
             "no_search": float(no_search_result.score),
@@ -1699,9 +1713,10 @@ def run_ga(
         print("    [ga] skipping extra baselines (default; use --ga_run_baselines to enable)")
         diagnostics["baselines"] = {"ga": float(final_result.score)}
 
-    final_result.image.save(os.path.join(log_root, "ga_best.png"))
-    with open(os.path.join(log_root, "ga_diagnostics.json"), "w", encoding="utf-8") as f:
-        json.dump(diagnostics, f, indent=2)
+    if save_logs and log_root is not None:
+        final_result.image.save(os.path.join(log_root, "ga_best.png"))
+        with open(os.path.join(log_root, "ga_diagnostics.json"), "w", encoding="utf-8") as f:
+            json.dump(diagnostics, f, indent=2)
     return final_result, diagnostics
 
 
@@ -2058,7 +2073,7 @@ def run(args: argparse.Namespace) -> None:
 
     # Pre-generate prompt banks once per prompt.
     bank_map: dict[int, list[tuple[str, str]]] = {}
-    for entry in entries:
+    for entry_pos, entry in enumerate(entries):
         if args.search_method == "ga":
             bank = build_ga_prompt_bank(entry["prompt"])
         else:
@@ -2066,23 +2081,26 @@ def run(args: argparse.Namespace) -> None:
             bank = [(f"v{i}", text) for i, text in enumerate(variants)]
         bank_map[entry["index"]] = bank
 
-        variants_path = os.path.join(args.out_dir, f"{entry['slug']}_variants.txt")
-        with open(variants_path, "w", encoding="utf-8") as f:
-            for idx, (label, variant) in enumerate(bank):
-                f.write(f"v{idx}[{label}]: {variant}\n")
+        save_entry_artifacts = args.save_first_k < 0 or entry_pos < int(args.save_first_k)
+        if save_entry_artifacts:
+            variants_path = os.path.join(args.out_dir, f"{entry['slug']}_variants.txt")
+            with open(variants_path, "w", encoding="utf-8") as f:
+                for idx, (label, variant) in enumerate(bank):
+                    f.write(f"v{idx}[{label}]: {variant}\n")
 
     summary: list[dict[str, Any]] = []
     geneval_root = os.path.join(args.out_dir, "geneval_images")
     if args.reward_type == "geneval":
         os.makedirs(geneval_root, exist_ok=True)
 
-    for entry in entries:
+    for entry_pos, entry in enumerate(entries):
         prompt = entry["prompt"]
         metadata = entry["metadata"]
         slug = entry["slug"]
         index = entry["index"]
         bank = bank_map[index]
         variants = [text for _, text in bank]
+        save_entry_artifacts = args.save_first_k < 0 or entry_pos < int(args.save_first_k)
         print(f"\n{'=' * 72}\n[{slug}] {prompt}\n{'=' * 72}")
 
         orig_h, orig_w = args.height, args.width
@@ -2129,7 +2147,11 @@ def run(args: argparse.Namespace) -> None:
                     args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb
                 )
             else:
-                ga_log_root = os.path.join(args.out_dir, f"{slug}_s{sample_i}_ga")
+                ga_log_root = (
+                    os.path.join(args.out_dir, f"{slug}_s{sample_i}_ga")
+                    if save_entry_artifacts
+                    else None
+                )
                 search_result, ga_diag = run_ga(
                     args,
                     ctx,
@@ -2145,22 +2167,24 @@ def run(args: argparse.Namespace) -> None:
                     prompt_bank=bank,
                     cfg_bank=[float(v) for v in args.ga_cfg_scales],
                     log_root=ga_log_root,
+                    save_logs=save_entry_artifacts,
                 )
 
             search_name = args.search_method
-            baseline_path = os.path.join(args.out_dir, f"{slug}_s{sample_i}_baseline.png")
-            search_path = os.path.join(args.out_dir, f"{slug}_s{sample_i}_{search_name}.png")
-            comparison_path = os.path.join(args.out_dir, f"{slug}_s{sample_i}_comparison.png")
-            baseline_img.save(baseline_path)
-            search_result.image.save(search_path)
-            save_comparison(
-                comparison_path,
-                baseline_img,
-                search_result.image,
-                baseline_score,
-                search_result.score,
-                search_result.actions,
-            )
+            if save_entry_artifacts:
+                baseline_path = os.path.join(args.out_dir, f"{slug}_s{sample_i}_baseline.png")
+                search_path = os.path.join(args.out_dir, f"{slug}_s{sample_i}_{search_name}.png")
+                comparison_path = os.path.join(args.out_dir, f"{slug}_s{sample_i}_comparison.png")
+                baseline_img.save(baseline_path)
+                search_result.image.save(search_path)
+                save_comparison(
+                    comparison_path,
+                    baseline_img,
+                    search_result.image,
+                    baseline_score,
+                    search_result.score,
+                    search_result.actions,
+                )
 
             if args.reward_type == "geneval" and metadata is not None:
                 save_geneval_layout(search_result.image, metadata, index, geneval_root, sample_i)
@@ -2179,10 +2203,12 @@ def run(args: argparse.Namespace) -> None:
             }
             if ga_diag is not None:
                 sample_payload["ga_baselines"] = ga_diag["baselines"]
-                sample_payload["ga_log_dir"] = os.path.join(args.out_dir, f"{slug}_s{sample_i}_ga")
+                if save_entry_artifacts:
+                    sample_payload["ga_log_dir"] = os.path.join(args.out_dir, f"{slug}_s{sample_i}_ga")
             if args.reward_type == "geneval":
                 sample_payload["baseline_pass"] = baseline_score >= 0.99
                 sample_payload["search_pass"] = search_result.score >= 0.99
+            sample_payload["artifacts_saved"] = bool(save_entry_artifacts)
             prompt_samples.append(sample_payload)
 
             # Aggressive per-sample cleanup to prevent CUDA memory drift.
@@ -2206,6 +2232,7 @@ def run(args: argparse.Namespace) -> None:
                 "search_method": args.search_method,
                 "variants": variants,
                 "variant_bank": [{"label": label, "text": text} for label, text in bank],
+                "artifacts_saved": bool(save_entry_artifacts),
                 "samples": prompt_samples,
             }
         )
@@ -2219,15 +2246,40 @@ def run(args: argparse.Namespace) -> None:
         json.dump(ctx.decode_counts, f, indent=2, sort_keys=True)
 
     print(f"\n{'=' * 72}\nSUMMARY\n{'=' * 72}")
+    baseline_scores: list[float] = []
+    search_scores: list[float] = []
     deltas = []
     for row in summary:
-        sample_deltas = [sample["delta_score"] for sample in row["samples"]]
+        sample_baseline = [float(sample["baseline_score"]) for sample in row["samples"]]
+        sample_search = [float(sample["search_score"]) for sample in row["samples"]]
+        sample_deltas = [float(sample["delta_score"]) for sample in row["samples"]]
+        baseline_scores.extend(sample_baseline)
+        search_scores.extend(sample_search)
         mean_delta = float(np.mean(sample_deltas)) if sample_deltas else 0.0
         deltas.extend(sample_deltas)
         print(f"{row['slug']}: mean_delta={mean_delta:+.4f} n_samples={len(row['samples'])}")
+    mean_baseline = float(np.mean(baseline_scores)) if baseline_scores else 0.0
+    mean_search = float(np.mean(search_scores)) if search_scores else 0.0
+    mean_delta = float(np.mean(deltas)) if deltas else 0.0
+    aggregate_payload = {
+        "reward_type": args.reward_type,
+        "search_method": args.search_method,
+        "num_prompts": len(summary),
+        "num_samples": len(search_scores),
+        "mean_baseline_score": mean_baseline,
+        "mean_search_score": mean_search,
+        "mean_delta_score": mean_delta,
+        "save_first_k": int(args.save_first_k),
+    }
+    aggregate_path = os.path.join(args.out_dir, "aggregate_summary.json")
+    with open(aggregate_path, "w", encoding="utf-8") as f:
+        json.dump(aggregate_payload, f, indent=2)
+    print(f"overall mean baseline: {mean_baseline:.4f}")
+    print(f"overall mean search:   {mean_search:.4f}")
     if deltas:
-        print(f"overall mean delta: {float(np.mean(deltas)):+.4f}")
+        print(f"overall mean delta: {mean_delta:+.4f}")
     print(f"summary json: {summary_path}")
+    print(f"aggregate summary: {aggregate_path}")
     print(f"decode counts: {ctx.decode_counts}")
     print(f"decode counts json: {decode_counts_path}")
     if args.reward_type == "geneval":

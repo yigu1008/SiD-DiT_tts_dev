@@ -87,21 +87,32 @@ dlogging.set_verbosity_error()
 # Reward model
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_reward_model(device):
-    try:
-        import hpsv2 as hm
-        m = hm.utils.initialize_model().to(device).eval()
-        for p in m.parameters(): p.requires_grad_(False)
-        return m, "hpsv2"
-    except ImportError:
-        pass
-    try:
-        import ImageReward as RM
-        m = RM.load("ImageReward-v1.0", device=str(device)).eval()
-        for p in m.parameters(): p.requires_grad_(False)
-        return m, "imagereward"
-    except ImportError:
-        pass
+def load_reward_model(device, preferred="auto"):
+    pref = str(preferred).strip().lower()
+    if pref not in {"auto", "hpsv2", "imagereward"}:
+        raise ValueError(f"Unsupported reward backend: {preferred}")
+
+    backends = ["hpsv2", "imagereward"] if pref == "auto" else [pref]
+    for backend in backends:
+        if backend == "hpsv2":
+            try:
+                import hpsv2 as hm
+                m = hm.utils.initialize_model().to(device).eval()
+                for p in m.parameters():
+                    p.requires_grad_(False)
+                return m, "hpsv2"
+            except ImportError:
+                continue
+        if backend == "imagereward":
+            try:
+                import ImageReward as RM
+
+                m = RM.load("ImageReward-v1.0", device=str(device)).eval()
+                for p in m.parameters():
+                    p.requires_grad_(False)
+                return m, "imagereward"
+            except ImportError:
+                continue
     return None, None
 
 
@@ -568,7 +579,7 @@ def main(args):
     pipe.text_encoder.eval().requires_grad_(False)
 
     print(f"Loading reward model ...")
-    reward_model, reward_backend = load_reward_model(device)
+    reward_model, reward_backend = load_reward_model(device, preferred=args.reward_backend)
     if reward_model is None:
         raise RuntimeError("No reward model found. Install hpsv2 or ImageReward.")
     print(f"  → {reward_backend}")
@@ -585,8 +596,12 @@ def main(args):
     else:
         with open(args.prompt_file) as f:
             all_prompts = [l.strip() for l in f if l.strip()]
-        rng     = random.Random(args.seed)
-        prompts = rng.sample(all_prompts, min(args.n_prompts, len(all_prompts)))
+        n_take = len(all_prompts) if args.n_prompts < 0 else min(args.n_prompts, len(all_prompts))
+        if args.shuffle_prompts:
+            rng = random.Random(args.seed)
+            prompts = rng.sample(all_prompts, n_take)
+        else:
+            prompts = all_prompts[:n_take]
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -686,7 +701,8 @@ def main(args):
             all_results.append(result_row)
 
             # ── Save comparison grid ───────────────────────────────────────
-            if entries:
+            save_grid = args.save_first_k < 0 or p_idx < args.save_first_k
+            if entries and save_grid:
                 grid = make_comparison_grid(entries, prompt,
                                             img_size=args.img_size)
                 safe  = "".join(c if c.isalnum() or c in " -_" else "_"
@@ -721,6 +737,35 @@ def main(args):
                   f"n={len(vals)}")
     print("──────────────────────────────────────────────────────\n")
 
+    aggregate = {
+        "reward_backend": reward_backend,
+        "methods": methods,
+        "num_prompts": len(prompts),
+        "n_seeds": args.n_seeds,
+        "save_first_k": args.save_first_k,
+        "means": {},
+    }
+    for method in ["baseline", "best_of_n", "svdd_pm", "smc"]:
+        if method not in methods and method != "baseline":
+            continue
+        vals = []
+        for row in all_results:
+            v = row.get(method)
+            if v is None:
+                continue
+            if isinstance(v, dict):
+                v = v.get("reward_best") or v.get("reward_final")
+            if v is not None:
+                vals.append(float(v))
+        if vals:
+            aggregate["means"][method] = float(sum(vals) / len(vals))
+            aggregate["means"][f"{method}_n"] = int(len(vals))
+
+    aggregate_path = out_dir / "aggregate_summary.json"
+    with open(aggregate_path, "w") as f:
+        json.dump(aggregate, f, indent=2)
+    print(f"Aggregate saved to {aggregate_path}")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Args
@@ -735,6 +780,7 @@ def parse_args():
     p.add_argument("--neg_ckpt",    default=None,
                    help="Optional ReNeg checkpoint for neg embedding.")
     p.add_argument("--device",      default="cuda")
+    p.add_argument("--reward_backend", choices=["auto", "hpsv2", "imagereward"], default="auto")
 
     # Prompts
     p.add_argument("--prompt",      default=None)
@@ -742,6 +788,9 @@ def parse_args():
     p.add_argument("--n_prompts",   type=int, default=32)
     p.add_argument("--n_seeds",     type=int, default=1)
     p.add_argument("--seed",        type=int, default=0)
+    p.add_argument("--shuffle_prompts", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--save_first_k", type=int, default=-1,
+                   help="Save image grids only for first K prompts; -1 saves all.")
 
     # Methods to run
     p.add_argument("--methods",     nargs="+",

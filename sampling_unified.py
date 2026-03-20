@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import gc
 import io
 import json
 import math
@@ -1061,6 +1062,8 @@ def encode_variants(
             cur = _module_device(text_encoder)
             if cur is None or cur != "cpu":
                 text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+            gc.collect()
             torch.cuda.empty_cache()
         except Exception as exc:
             print(f"Warning: could not offload text encoder after encode: {exc}")

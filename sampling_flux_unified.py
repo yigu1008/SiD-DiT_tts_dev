@@ -148,7 +148,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--ga_mutation_prob", type=float, default=0.10)
     p.add_argument("--ga_tournament_k", type=int, default=3)
     p.add_argument("--ga_crossover", choices=["uniform", "one_point"], default="uniform")
+    p.add_argument(
+        "--ga_init_mode",
+        choices=["random", "bayes", "hybrid"],
+        default="random",
+        help="Population init: random, bayes-prior, or hybrid mixture.",
+    )
+    p.add_argument(
+        "--ga_bayes_init_frac",
+        type=float,
+        default=0.7,
+        help="In hybrid mode, fraction of non-anchor population sampled from Bayesian prior.",
+    )
+    p.add_argument(
+        "--ga_prior_strength",
+        type=float,
+        default=2.0,
+        help="Sharpening factor for prior-guided sampling; higher means stronger prior.",
+    )
+    p.add_argument(
+        "--ga_prior_cfg_center",
+        type=float,
+        default=1.0,
+        help="Reference guidance center for prior-guided initialization.",
+    )
     p.add_argument("--ga_log_topk", type=int, default=3)
+    p.add_argument(
+        "--ga_log_evals",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Reserved for detailed GA trace logging (JSONL).",
+    )
     p.add_argument(
         "--ga_phase_constraints",
         action=argparse.BooleanOptionalAction,
@@ -636,6 +666,125 @@ def _ga_decode_genome(
     return repaired, actions
 
 
+def _ga_actions_to_genome(
+    actions: list[tuple[int, float]],
+    guidance_bank: list[float],
+) -> list[int]:
+    genome: list[int] = []
+    for vi, g in actions:
+        g_idx = min(range(len(guidance_bank)), key=lambda i: abs(float(guidance_bank[i]) - float(g)))
+        genome.extend([int(vi), int(g_idx)])
+    return genome
+
+
+def _ga_step_phase3(step_idx: int, steps: int) -> str:
+    if steps <= 1:
+        return "late"
+    pos = float(step_idx) / float(max(1, steps - 1))
+    if pos < 0.34:
+        return "early"
+    if pos < 0.67:
+        return "mid"
+    return "late"
+
+
+def _normalize_probs(values: list[float]) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.size == 0:
+        return arr
+    arr = np.clip(arr, 0.0, None)
+    s = float(arr.sum())
+    if s <= 0.0 or not np.isfinite(s):
+        return np.full_like(arr, 1.0 / float(arr.size))
+    return arr / s
+
+
+def _ga_prior_prompt_probs(
+    step_idx: int,
+    steps: int,
+    prompt_bank: list[tuple[str, str]],
+    allowed: list[int],
+    prior_strength: float,
+) -> np.ndarray:
+    phase = _ga_step_phase3(step_idx, steps)
+    phase_weights: dict[str, dict[str, float]] = {
+        "early": {"balanced": 0.45, "background": 0.30, "subject": 0.20, "prop": 0.03, "detail": 0.02},
+        "mid": {"balanced": 0.25, "subject": 0.28, "prop": 0.25, "background": 0.17, "detail": 0.05},
+        "late": {"detail": 0.35, "balanced": 0.25, "prop": 0.20, "subject": 0.15, "background": 0.05},
+    }
+    table = phase_weights.get(phase, phase_weights["mid"])
+    raw = []
+    for idx in allowed:
+        label = str(prompt_bank[idx][0])
+        raw.append(float(table.get(label, 0.05)))
+    probs = _normalize_probs(raw)
+    sharp = max(0.0, float(prior_strength))
+    if sharp > 0.0 and probs.size > 0:
+        probs = _normalize_probs(list(np.power(probs, sharp)))
+    return probs
+
+
+def _ga_prior_guidance_probs(
+    step_idx: int,
+    steps: int,
+    guidance_bank: list[float],
+    prior_strength: float,
+    center_value: float,
+) -> np.ndarray:
+    if len(guidance_bank) == 0:
+        return np.asarray([], dtype=np.float64)
+    lo = float(min(guidance_bank))
+    hi = float(max(guidance_bank))
+    phase = _ga_step_phase3(step_idx, steps)
+    if phase == "early":
+        center = float(center_value)
+    elif phase == "mid":
+        center = float(center_value) + 0.15
+    else:
+        center = float(center_value) + 0.25
+    center = max(lo, min(hi, center))
+    spread = max(0.08, (hi - lo) / 3.0)
+    raw = [math.exp(-0.5 * ((float(cfg) - center) / spread) ** 2) for cfg in guidance_bank]
+    probs = _normalize_probs(raw)
+    sharp = max(0.0, float(prior_strength))
+    if sharp > 0.0 and probs.size > 0:
+        probs = _normalize_probs(list(np.power(probs, sharp)))
+    return probs
+
+
+def _ga_prior_genome(
+    rng: np.random.Generator,
+    args: argparse.Namespace,
+    steps: int,
+    prompt_bank: list[tuple[str, str]],
+    guidance_bank: list[float],
+    use_constraints: bool,
+) -> list[int]:
+    genome: list[int] = []
+    for step in range(steps):
+        allowed = _ga_allowed_prompt_indices(step, steps, prompt_bank, use_constraints)
+        if not allowed:
+            allowed = list(range(len(prompt_bank)))
+        p_probs = _ga_prior_prompt_probs(
+            step_idx=step,
+            steps=steps,
+            prompt_bank=prompt_bank,
+            allowed=allowed,
+            prior_strength=float(args.ga_prior_strength),
+        )
+        g_probs = _ga_prior_guidance_probs(
+            step_idx=step,
+            steps=steps,
+            guidance_bank=guidance_bank,
+            prior_strength=float(args.ga_prior_strength),
+            center_value=float(args.ga_prior_cfg_center),
+        )
+        p_gene = int(rng.choice(np.asarray(allowed, dtype=np.int64), p=p_probs))
+        g_gene = int(rng.choice(np.arange(len(guidance_bank), dtype=np.int64), p=g_probs))
+        genome.extend([p_gene, g_gene])
+    return genome
+
+
 def _ga_mutate(
     genome: list[int],
     rng: np.random.Generator,
@@ -710,10 +859,75 @@ def run_ga(
     elites = min(max(1, int(args.ga_elites)), pop_size)
     rng = np.random.default_rng(seed + 9103)
 
-    population = [
-        _ga_random_genome(rng, int(args.steps), prompt_bank, guidance_bank, args.ga_phase_constraints)
-        for _ in range(pop_size)
-    ]
+    baseline_actions = [(0, 1.0) for _ in range(int(args.steps))]
+    baseline_genome = _ga_actions_to_genome(baseline_actions, guidance_bank)
+    population: list[list[int]] = []
+    seen_genomes: set[tuple[int, ...]] = set()
+
+    def _try_add_unique(genome: list[int]) -> bool:
+        key = tuple(int(x) for x in genome)
+        if key in seen_genomes:
+            return False
+        seen_genomes.add(key)
+        population.append([int(x) for x in genome])
+        return True
+
+    _try_add_unique(list(baseline_genome))
+
+    slots = max(0, pop_size - len(population))
+    mode = str(args.ga_init_mode)
+    frac = max(0.0, min(1.0, float(args.ga_bayes_init_frac)))
+    if mode == "random":
+        prior_target = 0
+    elif mode == "bayes":
+        prior_target = slots
+    else:
+        prior_target = int(round(float(slots) * frac))
+    prior_added = 0
+    random_added = 0
+
+    prior_attempts = 0
+    prior_attempt_limit = max(20, 20 * max(1, prior_target))
+    while len(population) < pop_size and prior_added < prior_target and prior_attempts < prior_attempt_limit:
+        g = _ga_prior_genome(rng, args, int(args.steps), prompt_bank, guidance_bank, args.ga_phase_constraints)
+        prior_attempts += 1
+        if _try_add_unique(g):
+            prior_added += 1
+
+    random_target = max(0, pop_size - len(population))
+    random_attempts = 0
+    random_attempt_limit = max(20, 20 * max(1, random_target))
+    while len(population) < pop_size and random_attempts < random_attempt_limit:
+        g = _ga_random_genome(rng, int(args.steps), prompt_bank, guidance_bank, args.ga_phase_constraints)
+        random_attempts += 1
+        if _try_add_unique(g):
+            random_added += 1
+
+    while len(population) < pop_size:
+        if mode != "random" and prior_added < prior_target:
+            g = _ga_prior_genome(rng, args, int(args.steps), prompt_bank, guidance_bank, args.ga_phase_constraints)
+            prior_added += 1
+        else:
+            g = _ga_random_genome(rng, int(args.steps), prompt_bank, guidance_bank, args.ga_phase_constraints)
+            random_added += 1
+        population.append([int(x) for x in g])
+
+    init_stats = {
+        "mode": mode,
+        "population": int(pop_size),
+        "anchor_added": 1,
+        "prior_target": int(prior_target),
+        "prior_added": int(prior_added),
+        "random_added": int(random_added),
+        "unique_after_init": int(len({tuple(g) for g in population})),
+        "prior_attempts": int(prior_attempts),
+        "random_attempts": int(random_attempts),
+    }
+    print(
+        f"    [ga:init] mode={mode} pop={pop_size} "
+        f"anchor=1 prior={prior_added}/{prior_target} random={random_added} "
+        f"unique={init_stats['unique_after_init']}"
+    )
     cache: dict[tuple[int, ...], dict[str, Any]] = {}
     history: list[dict[str, Any]] = []
     best_global: dict[str, Any] | None = None
@@ -796,6 +1010,8 @@ def run_ga(
         diagnostics={
             "history": history,
             "best_genome": [int(x) for x in best_global["genome"]],
+            "baseline_genome": [int(x) for x in baseline_genome],
+            "initialization": init_stats,
             "guidance_bank": [float(v) for v in guidance_bank],
             "prompt_bank": [{"label": lbl, "text": txt} for lbl, txt in prompt_bank],
         },

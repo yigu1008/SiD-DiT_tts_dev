@@ -14,6 +14,11 @@ fi
 
 mkdir -p "${OUT_DIR}"
 
+GA_EVAL_LOG_ARGS=()
+if [[ "${GA_LOG_EVALS:-0}" == "1" ]]; then
+  GA_EVAL_LOG_ARGS+=(--ga_log_evals)
+fi
+
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified.py" \
   --search_method ga \
   --reward_type imagereward \
@@ -37,10 +42,12 @@ mkdir -p "${OUT_DIR}"
   --ga_mutation_prob 0.15 \
   --ga_tournament_k 4 \
   --ga_crossover uniform \
+  --ga_init_mode random \
   --ga_log_topk 5 \
   --ga_random_trials 128 \
   --ga_phase_constraints \
   --ga_cfg_scales 1.0 1.25 1.5 \
+  "${GA_EVAL_LOG_ARGS[@]}" \
   --save_first_k 10 \
   --out_dir "${OUT_DIR}" \
   "$@"

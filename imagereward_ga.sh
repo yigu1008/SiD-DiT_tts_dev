@@ -4,6 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/shell_env.sh"
 
+GA_EVAL_LOG_ARGS=()
+if [[ "${GA_LOG_EVALS:-0}" == "1" ]]; then
+  GA_EVAL_LOG_ARGS+=(--ga_log_evals)
+fi
+
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified.py" \
   --search_method ga \
   --reward_type imagereward \
@@ -27,9 +32,11 @@ source "${SCRIPT_DIR}/shell_env.sh"
   --ga_mutation_prob 0.15 \
   --ga_tournament_k 4 \
   --ga_crossover uniform \
+  --ga_init_mode random \
   --ga_log_topk 5 \
   --ga_random_trials 128 \
   --ga_phase_constraints \
   --ga_cfg_scales 1.0 1.25 1.5 \
+  "${GA_EVAL_LOG_ARGS[@]}" \
   --out_dir ./imagereward_ga_out \
   "$@"

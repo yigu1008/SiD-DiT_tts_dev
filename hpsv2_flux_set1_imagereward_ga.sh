@@ -15,6 +15,11 @@ fi
 
 mkdir -p "${OUT_DIR}"
 
+GA_EVAL_LOG_ARGS=()
+if [[ "${GA_LOG_EVALS:-0}" == "1" ]]; then
+  GA_EVAL_LOG_ARGS+=(--ga_log_evals)
+fi
+
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_flux_unified.py" \
   --search_method ga \
   --model_id "${MODEL_ID}" \
@@ -41,10 +46,11 @@ mkdir -p "${OUT_DIR}"
   --ga_mutation_prob 0.10 \
   --ga_tournament_k 3 \
   --ga_crossover uniform \
+  --ga_init_mode random \
   --ga_log_topk 3 \
   --ga_phase_constraints \
   --ga_guidance_scales 1.0 1.25 1.5 \
+  "${GA_EVAL_LOG_ARGS[@]}" \
   --save_first_k 10 \
   --out_dir "${OUT_DIR}" \
   "$@"
-

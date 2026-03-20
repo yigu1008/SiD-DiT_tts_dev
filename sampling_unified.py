@@ -200,9 +200,39 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ga_mutation_prob", type=float, default=0.10)
     parser.add_argument("--ga_tournament_k", type=int, default=3)
     parser.add_argument("--ga_crossover", choices=["uniform", "one_point"], default="uniform")
+    parser.add_argument(
+        "--ga_init_mode",
+        choices=["random", "bayes", "hybrid"],
+        default="random",
+        help="Population init: random, bayes-prior, or hybrid mixture.",
+    )
+    parser.add_argument(
+        "--ga_bayes_init_frac",
+        type=float,
+        default=0.7,
+        help="In hybrid mode, fraction of non-anchor population sampled from Bayesian prior.",
+    )
+    parser.add_argument(
+        "--ga_prior_strength",
+        type=float,
+        default=2.0,
+        help="Sharpening factor for prior-guided sampling; higher means stronger prior.",
+    )
+    parser.add_argument(
+        "--ga_prior_cfg_center",
+        type=float,
+        default=1.0,
+        help="Reference CFG center for prior-guided initialization.",
+    )
     parser.add_argument("--ga_log_topk", type=int, default=3)
     parser.add_argument("--ga_random_trials", type=int, default=32)
     parser.add_argument("--ga_phase_constraints", action="store_true")
+    parser.add_argument(
+        "--ga_log_evals",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Write per-evaluation GA traces (JSONL) for debugging.",
+    )
     parser.add_argument(
         "--ga_run_baselines",
         action=argparse.BooleanOptionalAction,
@@ -1404,6 +1434,125 @@ def _ga_default_actions(
     return [(pidx, float(cfg)) for _ in range(args.steps)]
 
 
+def _ga_actions_to_genome(
+    actions: list[tuple[int, float]],
+    cfg_bank: list[float],
+) -> list[int]:
+    genome: list[int] = []
+    for vi, cfg in actions:
+        cfg_idx = min(range(len(cfg_bank)), key=lambda i: abs(float(cfg_bank[i]) - float(cfg)))
+        genome.extend([int(vi), int(cfg_idx)])
+    return genome
+
+
+def _ga_step_phase3(step_idx: int, steps: int) -> str:
+    if steps <= 1:
+        return "late"
+    pos = float(step_idx) / float(max(1, steps - 1))
+    if pos < 0.34:
+        return "early"
+    if pos < 0.67:
+        return "mid"
+    return "late"
+
+
+def _normalize_probs(values: list[float]) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.size == 0:
+        return arr
+    arr = np.clip(arr, 0.0, None)
+    s = float(arr.sum())
+    if s <= 0.0 or not np.isfinite(s):
+        return np.full_like(arr, 1.0 / float(arr.size))
+    return arr / s
+
+
+def _ga_prior_prompt_probs(
+    step_idx: int,
+    steps: int,
+    prompt_bank: list[tuple[str, str]],
+    allowed: list[int],
+    prior_strength: float,
+) -> np.ndarray:
+    phase = _ga_step_phase3(step_idx, steps)
+    phase_weights: dict[str, dict[str, float]] = {
+        "early": {"balanced": 0.45, "background": 0.30, "subject": 0.20, "prop": 0.03, "detail": 0.02},
+        "mid": {"balanced": 0.25, "subject": 0.28, "prop": 0.25, "background": 0.17, "detail": 0.05},
+        "late": {"detail": 0.35, "balanced": 0.25, "prop": 0.20, "subject": 0.15, "background": 0.05},
+    }
+    table = phase_weights.get(phase, phase_weights["mid"])
+    raw = []
+    for idx in allowed:
+        label = str(prompt_bank[idx][0])
+        raw.append(float(table.get(label, 0.05)))
+    probs = _normalize_probs(raw)
+    sharp = max(0.0, float(prior_strength))
+    if sharp > 0.0 and probs.size > 0:
+        probs = _normalize_probs(list(np.power(probs, sharp)))
+    return probs
+
+
+def _ga_prior_cfg_probs(
+    step_idx: int,
+    steps: int,
+    cfg_bank: list[float],
+    prior_strength: float,
+    cfg_center: float,
+) -> np.ndarray:
+    if len(cfg_bank) == 0:
+        return np.asarray([], dtype=np.float64)
+    lo = float(min(cfg_bank))
+    hi = float(max(cfg_bank))
+    phase = _ga_step_phase3(step_idx, steps)
+    if phase == "early":
+        center = float(cfg_center)
+    elif phase == "mid":
+        center = float(cfg_center) + 0.15
+    else:
+        center = float(cfg_center) + 0.25
+    center = max(lo, min(hi, center))
+    spread = max(0.08, (hi - lo) / 3.0)
+    raw = [math.exp(-0.5 * ((float(cfg) - center) / spread) ** 2) for cfg in cfg_bank]
+    probs = _normalize_probs(raw)
+    sharp = max(0.0, float(prior_strength))
+    if sharp > 0.0 and probs.size > 0:
+        probs = _normalize_probs(list(np.power(probs, sharp)))
+    return probs
+
+
+def _ga_prior_genome(
+    rng: np.random.Generator,
+    args: argparse.Namespace,
+    steps: int,
+    prompt_bank: list[tuple[str, str]],
+    cfg_bank: list[float],
+    use_constraints: bool,
+) -> list[int]:
+    genome: list[int] = []
+    for step in range(steps):
+        allowed = _ga_allowed_prompt_indices(step, steps, prompt_bank, use_constraints)
+        if not allowed:
+            allowed = list(range(len(prompt_bank)))
+        p_probs = _ga_prior_prompt_probs(
+            step_idx=step,
+            steps=steps,
+            prompt_bank=prompt_bank,
+            allowed=allowed,
+            prior_strength=float(args.ga_prior_strength),
+        )
+        c_probs = _ga_prior_cfg_probs(
+            step_idx=step,
+            steps=steps,
+            cfg_bank=cfg_bank,
+            prior_strength=float(args.ga_prior_strength),
+            cfg_center=float(args.ga_prior_cfg_center),
+        )
+        p_gene = int(rng.choice(np.asarray(allowed, dtype=np.int64), p=p_probs))
+        c_gene = int(rng.choice(np.arange(len(cfg_bank), dtype=np.int64), p=c_probs))
+        genome.extend([p_gene, c_gene])
+    return genome
+
+
 def _ga_random_genome(
     rng: np.random.Generator,
     steps: int,
@@ -1500,6 +1649,24 @@ def _ga_tournament_select(
     return list(best["genome"])
 
 
+def _ga_mean_hamming(genomes: list[list[int]]) -> float:
+    n = len(genomes)
+    if n < 2:
+        return 0.0
+    g_len = len(genomes[0])
+    if g_len == 0:
+        return 0.0
+    total = 0
+    pairs = 0
+    for i in range(n):
+        gi = genomes[i]
+        for j in range(i + 1, n):
+            gj = genomes[j]
+            total += sum(1 for a, b in zip(gi, gj) if a != b)
+            pairs += 1
+    return float(total) / float(pairs * g_len)
+
+
 def run_ga(
     args: argparse.Namespace,
     ctx: PipelineContext,
@@ -1524,22 +1691,125 @@ def run_ga(
     elites = min(max(1, int(args.ga_elites)), pop_size)
     topk = max(1, int(args.ga_log_topk))
     cfg_bank = [float(c) for c in cfg_bank]
+    population_rng_seed = int(seed + 9001)
+    rollout_seed = int(seed)
+    rollout_noise_seed_offset = 2048
 
-    population = [
-        _ga_random_genome(rng, args.steps, prompt_bank, cfg_bank, args.ga_phase_constraints)
-        for _ in range(pop_size)
-    ]
+    eval_log_path: str | None = None
+    eval_log_f = None
+    if save_logs and log_root is not None and args.ga_log_evals:
+        eval_log_path = os.path.join(log_root, "ga_eval_trace.jsonl")
+        eval_log_f = open(eval_log_path, "w", encoding="utf-8")
+
     default_actions = _ga_default_actions(args, prompt_bank, cfg_bank)
+    baseline_genome = _ga_actions_to_genome(default_actions, cfg_bank)
+    population: list[list[int]] = []
+    seen_genomes: set[tuple[int, ...]] = set()
+
+    def _try_add_unique(genome: list[int]) -> bool:
+        key = tuple(int(x) for x in genome)
+        if key in seen_genomes:
+            return False
+        seen_genomes.add(key)
+        population.append([int(x) for x in genome])
+        return True
+
+    _try_add_unique(list(baseline_genome))
+
+    slots = max(0, pop_size - len(population))
+    mode = str(args.ga_init_mode)
+    frac = max(0.0, min(1.0, float(args.ga_bayes_init_frac)))
+    if mode == "random":
+        prior_target = 0
+    elif mode == "bayes":
+        prior_target = slots
+    else:
+        prior_target = int(round(float(slots) * frac))
+    prior_added = 0
+    random_added = 0
+
+    prior_attempts = 0
+    prior_attempt_limit = max(20, 20 * max(1, prior_target))
+    while len(population) < pop_size and prior_added < prior_target and prior_attempts < prior_attempt_limit:
+        g = _ga_prior_genome(rng, args, args.steps, prompt_bank, cfg_bank, args.ga_phase_constraints)
+        prior_attempts += 1
+        if _try_add_unique(g):
+            prior_added += 1
+
+    random_target = max(0, pop_size - len(population))
+    random_attempts = 0
+    random_attempt_limit = max(20, 20 * max(1, random_target))
+    while len(population) < pop_size and random_attempts < random_attempt_limit:
+        g = _ga_random_genome(rng, args.steps, prompt_bank, cfg_bank, args.ga_phase_constraints)
+        random_attempts += 1
+        if _try_add_unique(g):
+            random_added += 1
+
+    # If space is exhausted due to small search space, allow duplicates to reach pop_size.
+    while len(population) < pop_size:
+        if mode != "random" and prior_added < prior_target:
+            g = _ga_prior_genome(rng, args, args.steps, prompt_bank, cfg_bank, args.ga_phase_constraints)
+            prior_added += 1
+        else:
+            g = _ga_random_genome(rng, args.steps, prompt_bank, cfg_bank, args.ga_phase_constraints)
+            random_added += 1
+        population.append([int(x) for x in g])
+
+    init_stats = {
+        "mode": mode,
+        "population": int(pop_size),
+        "anchor_added": 1,
+        "prior_target": int(prior_target),
+        "prior_added": int(prior_added),
+        "random_added": int(random_added),
+        "unique_after_init": int(len({tuple(g) for g in population})),
+        "prior_attempts": int(prior_attempts),
+        "random_attempts": int(random_attempts),
+    }
+    print(
+        f"    [ga:init] mode={mode} pop={pop_size} "
+        f"anchor=1 prior={prior_added}/{prior_target} random={random_added} "
+        f"unique={init_stats['unique_after_init']}"
+    )
     cache: dict[tuple[int, ...], dict[str, Any]] = {}
     history: list[dict[str, Any]] = []
     global_best: dict[str, Any] | None = None
+    eval_calls = 0
+    cache_hits = 0
+    cache_misses = 0
 
-    def _eval(genome: list[int], need_image: bool = False) -> dict[str, Any]:
+    def _log_eval(payload: dict[str, Any]) -> None:
+        if eval_log_f is None:
+            return
+        eval_log_f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+    def _eval(
+        genome: list[int],
+        need_image: bool = False,
+        generation: int = -1,
+        phase: str = "unknown",
+    ) -> dict[str, Any]:
+        nonlocal eval_calls, cache_hits, cache_misses
+        eval_calls += 1
         repaired, actions = _ga_decode_genome(genome, args, prompt_bank, cfg_bank)
         key = tuple(repaired)
         cached = cache.get(key)
         if cached is not None and (not need_image or cached.get("image") is not None):
+            cache_hits += 1
+            _log_eval(
+                {
+                    "eval_call": int(eval_calls),
+                    "generation": int(generation),
+                    "phase": phase,
+                    "cache_hit": True,
+                    "need_image": bool(need_image),
+                    "score": float(cached["score"]),
+                    "genome": [int(x) for x in repaired],
+                    "actions": [[int(vi), float(cfg)] for vi, cfg in actions],
+                }
+            )
             return cached
+        cache_misses += 1
         result = run_action_sequence(
             args,
             ctx,
@@ -1561,21 +1831,33 @@ def run_ga(
             "image": result.image if need_image else None,
         }
         cache[key] = payload
+        _log_eval(
+            {
+                "eval_call": int(eval_calls),
+                "generation": int(generation),
+                "phase": phase,
+                "cache_hit": False,
+                "need_image": bool(need_image),
+                "score": float(payload["score"]),
+                "genome": [int(x) for x in repaired],
+                "actions": [[int(vi), float(cfg)] for vi, cfg in actions],
+            }
+        )
         return payload
 
     for gen in range(int(args.ga_generations)):
-        scored = [_eval(genome, need_image=False) for genome in population]
+        scored = [_eval(genome, need_image=False, generation=gen, phase="population") for genome in population]
         scored.sort(key=lambda row: float(row["score"]), reverse=True)
         best = scored[0]
         if global_best is None or float(best["score"]) > float(global_best["score"]):
-            global_best = _eval(best["genome"], need_image=True)
+            global_best = _eval(best["genome"], need_image=True, generation=gen, phase="best_refresh")
 
         top_records: list[dict[str, Any]] = []
         gen_dir = os.path.join(log_root, f"gen_{gen:03d}") if (save_logs and log_root is not None) else None
         if gen_dir is not None:
             os.makedirs(gen_dir, exist_ok=True)
         for rank, row in enumerate(scored[:topk]):
-            with_img = _eval(row["genome"], need_image=(gen_dir is not None))
+            with_img = _eval(row["genome"], need_image=(gen_dir is not None), generation=gen, phase="topk")
             img_name = None
             if gen_dir is not None:
                 img_path = os.path.join(gen_dir, f"rank_{rank:02d}.png")
@@ -1602,12 +1884,26 @@ def run_ga(
                 }
             )
 
+        scored_genomes = [list(row["genome"]) for row in scored]
+        unique_genomes = len({tuple(g) for g in scored_genomes})
+        duplicate_genomes = max(0, len(scored_genomes) - unique_genomes)
+        diversity_hamming = _ga_mean_hamming(scored_genomes)
+        cache_hit_rate = float(cache_hits) / float(max(1, eval_calls))
         gen_summary = {
             "generation": gen,
             "best": float(scored[0]["score"]),
             "mean": float(np.mean([float(row["score"]) for row in scored])),
             "median": float(np.median([float(row["score"]) for row in scored])),
             "worst": float(scored[-1]["score"]),
+            "population_size": int(len(scored)),
+            "unique_genomes": int(unique_genomes),
+            "duplicate_genomes": int(duplicate_genomes),
+            "mean_hamming": float(diversity_hamming),
+            "eval_calls_total": int(eval_calls),
+            "cache_entries": int(len(cache)),
+            "cache_hits_total": int(cache_hits),
+            "cache_misses_total": int(cache_misses),
+            "cache_hit_rate": float(cache_hit_rate),
             "top": top_records,
         }
         history.append(gen_summary)
@@ -1616,7 +1912,9 @@ def run_ga(
                 json.dump(gen_summary, f, indent=2)
         print(
             f"    [ga] gen={gen + 1:02d}/{args.ga_generations} "
-            f"best={gen_summary['best']:.4f} mean={gen_summary['mean']:.4f}"
+            f"best={gen_summary['best']:.4f} mean={gen_summary['mean']:.4f} "
+            f"uniq={gen_summary['unique_genomes']}/{gen_summary['population_size']} "
+            f"ham={gen_summary['mean_hamming']:.3f} cache={gen_summary['cache_hit_rate']:.2f}"
         )
 
         if gen == int(args.ga_generations) - 1:
@@ -1641,11 +1939,28 @@ def run_ga(
     diagnostics: dict[str, Any] = {
         "prompt_bank": [{"label": label, "text": text} for label, text in prompt_bank],
         "cfg_bank": [float(c) for c in cfg_bank],
+        "initialization": init_stats,
         "history": history,
         "best_genome": [int(x) for x in global_best["genome"]],
+        "determinism": {
+            "rollout_seed": int(rollout_seed),
+            "rollout_noise_seed_offset": int(rollout_noise_seed_offset),
+            "population_rng_seed": int(population_rng_seed),
+            "fixed_seed_across_genomes": True,
+        },
+        "baseline_genome": [int(x) for x in baseline_genome],
+        "cache_stats": {
+            "eval_calls_total": int(eval_calls),
+            "cache_entries": int(len(cache)),
+            "cache_hits_total": int(cache_hits),
+            "cache_misses_total": int(cache_misses),
+            "cache_hit_rate": float(cache_hits) / float(max(1, eval_calls)),
+        },
         "baselines": {},
         "baseline_actions": {"ga": [[int(vi), float(cfg)] for vi, cfg in final_result.actions]},
     }
+    if eval_log_path is not None:
+        diagnostics["eval_trace_path"] = eval_log_path
 
     if args.ga_run_baselines:
         print("    [ga] running extra baselines (no_search/random/greedy/mcts)")
@@ -1656,7 +1971,7 @@ def run_ga(
         random_best = no_search_result
         for _ in range(max(1, int(args.ga_random_trials))):
             genome = _ga_random_genome(rng, args.steps, prompt_bank, cfg_bank, args.ga_phase_constraints)
-            row = _eval(genome, need_image=False)
+            row = _eval(genome, need_image=False, generation=-1, phase="baseline_random")
             if row["score"] > random_best.score:
                 random_best = run_action_sequence(
                     args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb, row["actions"]
@@ -1719,8 +2034,26 @@ def run_ga(
 
     if save_logs and log_root is not None:
         final_result.image.save(os.path.join(log_root, "ga_best.png"))
+        progress_csv = os.path.join(log_root, "ga_progress.csv")
+        with open(progress_csv, "w", encoding="utf-8") as f:
+            f.write(
+                "generation,best,mean,median,worst,population_size,unique_genomes,"
+                "duplicate_genomes,mean_hamming,eval_calls_total,cache_entries,"
+                "cache_hits_total,cache_misses_total,cache_hit_rate\n"
+            )
+            for row in history:
+                f.write(
+                    f"{row['generation']},{row['best']:.8f},{row['mean']:.8f},"
+                    f"{row['median']:.8f},{row['worst']:.8f},{row['population_size']},"
+                    f"{row['unique_genomes']},{row['duplicate_genomes']},"
+                    f"{row['mean_hamming']:.8f},{row['eval_calls_total']},"
+                    f"{row['cache_entries']},{row['cache_hits_total']},"
+                    f"{row['cache_misses_total']},{row['cache_hit_rate']:.8f}\n"
+                )
         with open(os.path.join(log_root, "ga_diagnostics.json"), "w", encoding="utf-8") as f:
             json.dump(diagnostics, f, indent=2)
+    if eval_log_f is not None:
+        eval_log_f.close()
     return final_result, diagnostics
 
 

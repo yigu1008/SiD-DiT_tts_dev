@@ -978,13 +978,23 @@ def encode_variants(
     max_seq: int = 256,
 ) -> EmbeddingContext:
     text_encoder = getattr(ctx.pipe, "text_encoder", None)
+
+    def _module_device(module: Any) -> str | None:
+        try:
+            param = next(module.parameters())
+            return str(param.device)
+        except Exception:
+            return None
+
     if (
         args.offload_text_encoder_after_encode
         and text_encoder is not None
         and ctx.device.startswith("cuda")
     ):
         try:
-            text_encoder.to(ctx.device)
+            cur = _module_device(text_encoder)
+            if cur is None or not cur.startswith("cuda"):
+                text_encoder.to(ctx.device)
             torch.cuda.empty_cache()
         except Exception as exc:
             print(f"Warning: could not move text encoder to CUDA before encode: {exc}")
@@ -1048,7 +1058,9 @@ def encode_variants(
         and ctx.device.startswith("cuda")
     ):
         try:
-            text_encoder.to("cpu")
+            cur = _module_device(text_encoder)
+            if cur is None or cur != "cpu":
+                text_encoder.to("cpu")
             torch.cuda.empty_cache()
         except Exception as exc:
             print(f"Warning: could not offload text encoder after encode: {exc}")
@@ -1996,11 +2008,10 @@ def run(args: argparse.Namespace) -> None:
             print(f"  Warning: effective decode area is {ratio:.2f}x requested area.")
 
         prompt_samples: list[dict[str, Any]] = []
+        emb = encode_variants(args, ctx, variants, neg_embeds, neg_mask)
         for sample_i in range(args.n_samples):
             seed = args.seed + sample_i
             print(f"\n  sample {sample_i + 1}/{args.n_samples} seed={seed}")
-
-            emb = encode_variants(args, ctx, variants, neg_embeds, neg_mask)
             baseline_img, baseline_score = run_baseline(
                 args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb
             )

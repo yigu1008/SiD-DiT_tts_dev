@@ -1004,6 +1004,20 @@ def _move_text_encoders(pipe: Any, dst: str) -> int:
     return moved
 
 
+def _infer_latent_hw(pipe: Any, height: int, width: int) -> tuple[int, int, int]:
+    scale = int(getattr(pipe, "vae_scale_factor", 0) or 0)
+    if scale <= 1:
+        try:
+            enc_ch = getattr(pipe.vae.config, "encoder_block_out_channels", None)
+            if enc_ch is not None and len(enc_ch) > 1:
+                scale = int(2 ** (len(enc_ch) - 1))
+        except Exception:
+            pass
+    if scale <= 1:
+        scale = 32
+    return max(1, int(height) // scale), max(1, int(width) // scale), scale
+
+
 def _disable_text_encoder_use_cache(pipe: Any) -> int:
     changed = 0
     for module in _iter_text_encoders(pipe):
@@ -1126,12 +1140,25 @@ def encode_variants(
 
 
 def make_latents(ctx: PipelineContext, seed: int, h: int, w: int, dtype: torch.dtype) -> torch.Tensor:
+    exp_h, exp_w, scale = _infer_latent_hw(ctx.pipe, h, w)
+    generator = torch.Generator(device=ctx.device).manual_seed(seed)
     try:
-        generator = torch.Generator(device=ctx.device).manual_seed(seed)
-        return ctx.pipe.prepare_latents(1, ctx.latent_c, h, w, dtype, ctx.device, generator)
-    except Exception:
-        torch.manual_seed(seed)
-        return torch.randn(1, ctx.latent_c, h, w, device=ctx.device, dtype=dtype)
+        latents = ctx.pipe.prepare_latents(1, ctx.latent_c, h, w, dtype, ctx.device, generator)
+    except Exception as exc:
+        print(
+            "Warning: prepare_latents failed; using manual latent-space randn "
+            f"(scale={scale}, latent={exp_h}x{exp_w}): {type(exc).__name__}: {exc}"
+        )
+        return torch.randn((1, ctx.latent_c, exp_h, exp_w), device=ctx.device, dtype=dtype, generator=generator)
+
+    got_h, got_w = int(latents.shape[-2]), int(latents.shape[-1])
+    if (got_h, got_w) == (int(h), int(w)) and (exp_h, exp_w) != (int(h), int(w)):
+        print(
+            "Warning: prepare_latents returned pixel-space latent "
+            f"{got_h}x{got_w}; forcing latent-space {exp_h}x{exp_w} (scale={scale})."
+        )
+        return torch.randn((1, ctx.latent_c, exp_h, exp_w), device=ctx.device, dtype=dtype, generator=generator)
+    return latents
 
 
 @torch.no_grad()

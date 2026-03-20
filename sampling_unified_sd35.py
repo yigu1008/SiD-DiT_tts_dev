@@ -330,9 +330,24 @@ def encode_variants(ctx: PipelineContext, variants: list[str], max_sequence_leng
     )
 
 
+def _infer_latent_hw(pipe: Any, height: int, width: int) -> tuple[int, int, int]:
+    scale = int(getattr(pipe, "vae_scale_factor", 0) or 0)
+    if scale <= 1:
+        try:
+            enc_ch = getattr(pipe.vae.config, "encoder_block_out_channels", None)
+            if enc_ch is not None and len(enc_ch) > 1:
+                scale = int(2 ** (len(enc_ch) - 1))
+        except Exception:
+            pass
+    if scale <= 1:
+        scale = 8
+    return max(1, int(height) // scale), max(1, int(width) // scale), scale
+
+
 def make_latents(ctx: PipelineContext, seed: int, height: int, width: int, dtype: torch.dtype) -> torch.Tensor:
+    exp_h, exp_w, scale = _infer_latent_hw(ctx.pipe, height, width)
     generator = torch.Generator(device=ctx.device).manual_seed(seed)
-    return ctx.pipe.prepare_latents(
+    latents = ctx.pipe.prepare_latents(
         1,
         ctx.latent_c,
         height,
@@ -341,6 +356,19 @@ def make_latents(ctx: PipelineContext, seed: int, height: int, width: int, dtype
         ctx.device,
         generator,
     )
+    got_h, got_w = int(latents.shape[-2]), int(latents.shape[-1])
+    if (got_h, got_w) == (int(height), int(width)) and (exp_h, exp_w) != (int(height), int(width)):
+        print(
+            "Warning: prepare_latents returned pixel-space latent "
+            f"{got_h}x{got_w}; forcing latent-space {exp_h}x{exp_w} (scale={scale})."
+        )
+        latents = torch.randn(
+            (1, ctx.latent_c, exp_h, exp_w),
+            device=ctx.device,
+            dtype=dtype,
+            generator=generator,
+        )
+    return latents
 
 
 @torch.no_grad()

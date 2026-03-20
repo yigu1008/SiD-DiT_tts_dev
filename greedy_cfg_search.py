@@ -136,6 +136,34 @@ def move_text_encoders(pipe: Any, dst: str) -> None:
             module.to(dst)
 
 
+def infer_latent_hw(pipe: Any, height: int, width: int) -> tuple[int, int, int]:
+    scale = int(getattr(pipe, "vae_scale_factor", 0) or 0)
+    if scale <= 1:
+        try:
+            enc_ch = getattr(pipe.vae.config, "encoder_block_out_channels", None)
+            if enc_ch is not None and len(enc_ch) > 1:
+                scale = int(2 ** (len(enc_ch) - 1))
+        except Exception:
+            pass
+    if scale <= 1:
+        scale = 32
+    return max(1, int(height) // scale), max(1, int(width) // scale), scale
+
+
+def make_latents(pipe: Any, device: str, latent_c: int, seed: int, h: int, w: int, dtype: torch.dtype) -> torch.Tensor:
+    exp_h, exp_w, scale = infer_latent_hw(pipe, h, w)
+    generator = torch.Generator(device=device).manual_seed(seed)
+    latents = pipe.prepare_latents(1, latent_c, h, w, dtype, device, generator)
+    got_h, got_w = int(latents.shape[-2]), int(latents.shape[-1])
+    if (got_h, got_w) == (int(h), int(w)) and (exp_h, exp_w) != (int(h), int(w)):
+        print(
+            "Warning: prepare_latents returned pixel-space latent "
+            f"{got_h}x{got_w}; forcing latent-space {exp_h}x{exp_w} (scale={scale})."
+        )
+        latents = torch.randn((1, latent_c, exp_h, exp_w), device=device, dtype=dtype, generator=generator)
+    return latents
+
+
 def main() -> None:
     args = parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
@@ -316,9 +344,8 @@ def main() -> None:
         if sample_size in aspect_bins:
             h, w = pipe.image_processor.classify_height_width_bin(h, w, ratios=aspect_bins[sample_size])
 
-        g = torch.Generator(device=device).manual_seed(seed)
         noise_g = torch.Generator(device=device).manual_seed(seed + 1001)
-        latents = pipe.prepare_latents(1, latent_c, h, w, pe.dtype, device, g)
+        latents = make_latents(pipe, device, latent_c, seed, h, w, pe.dtype)
         dx = torch.zeros_like(latents)
 
         for i in range(args.steps):
@@ -351,9 +378,8 @@ def main() -> None:
         if sample_size in aspect_bins:
             h, w = pipe.image_processor.classify_height_width_bin(h, w, ratios=aspect_bins[sample_size])
 
-        g = torch.Generator(device=device).manual_seed(seed)
         noise_g = torch.Generator(device=device).manual_seed(seed + 2001)
-        latents = pipe.prepare_latents(1, latent_c, h, w, pe.dtype, device, g)
+        latents = make_latents(pipe, device, latent_c, seed, h, w, pe.dtype)
         dx = torch.zeros_like(latents)
         chosen: list[tuple[tuple[float, bool], float]] = []
 

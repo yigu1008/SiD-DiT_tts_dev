@@ -21,14 +21,14 @@ source "${SCRIPT_DIR}/shell_env.sh"
   --seed 42 \
   --time_scale 1000.0 \
   --n_samples 1 \
-  --ga_population 24 \
-  --ga_generations 12 \
-  --ga_elites 3 \
-  --ga_mutation_prob 0.10 \
-  --ga_tournament_k 3 \
+  --ga_population 48 \
+  --ga_generations 30 \
+  --ga_elites 4 \
+  --ga_mutation_prob 0.15 \
+  --ga_tournament_k 4 \
   --ga_crossover uniform \
-  --ga_log_topk 3 \
-  --ga_random_trials 32 \
+  --ga_log_topk 5 \
+  --ga_random_trials 128 \
   --ga_phase_constraints \
   --ga_cfg_scales 1.0 1.25 1.5 \
   --out_dir ./imagereward_ga_out \

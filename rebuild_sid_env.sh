@@ -81,6 +81,14 @@ if ! conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
     "git+https://github.com/THUDM/ImageReward.git"
 fi
 
+echo "[env] installing clip module required by ImageReward"
+if ! conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
+  "git+https://github.com/openai/CLIP.git"; then
+  echo "[env] openai/CLIP install failed, trying clip-anytorch fallback"
+  conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
+    --index-url "${PYPI_INDEX_URL}" clip-anytorch
+fi
+
 echo "[env] pip check (informational)"
 conda run -n "${ENV_NAME}" python -m pip check || true
 

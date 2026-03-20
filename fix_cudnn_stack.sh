@@ -91,6 +91,14 @@ if ! "${PY}" -m pip install --no-cache-dir --force-reinstall \
     "git+https://github.com/THUDM/ImageReward.git"
 fi
 
+echo "[env] install clip module required by ImageReward"
+if ! "${PY}" -m pip install --no-cache-dir --force-reinstall \
+  "git+https://github.com/openai/CLIP.git"; then
+  echo "[env] openai/CLIP install failed, trying clip-anytorch fallback"
+  "${PY}" -m pip install --no-cache-dir --force-reinstall \
+    --index-url "${PYPI_INDEX_URL}" clip-anytorch
+fi
+
 echo "[env] pip check"
 "${PY}" -m pip check || true
 

@@ -981,7 +981,7 @@ def encode_variants(
     if (
         args.offload_text_encoder_after_encode
         and text_encoder is not None
-        and ctx.device == "cuda"
+        and ctx.device.startswith("cuda")
     ):
         try:
             text_encoder.to(ctx.device)
@@ -1045,7 +1045,7 @@ def encode_variants(
     if (
         args.offload_text_encoder_after_encode
         and text_encoder is not None
-        and ctx.device == "cuda"
+        and ctx.device.startswith("cuda")
     ):
         try:
             text_encoder.to("cpu")
@@ -1180,7 +1180,7 @@ def decode_to_pil(
                 raise
     image = ctx.pipe.image_processor.resize_and_crop_tensor(image, orig_h, orig_w)
     pil = ctx.pipe.image_processor.postprocess(image, output_type="pil")[0]
-    if ctx.empty_cache_after_decode and ctx.device == "cuda":
+    if ctx.empty_cache_after_decode and ctx.device.startswith("cuda"):
         torch.cuda.empty_cache()
     return pil
 

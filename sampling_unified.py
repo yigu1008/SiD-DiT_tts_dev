@@ -1240,20 +1240,6 @@ def decode_to_pil(
 ) -> Image.Image:
     ctx.decode_counts[tag] = ctx.decode_counts.get(tag, 0) + 1
 
-    def _print_decode_state(tensor: torch.Tensor) -> None:
-        if not torch.cuda.is_available():
-            return
-        try:
-            free_gb = torch.cuda.mem_get_info(0)[0] / 1e9
-            alloc_gb = torch.cuda.memory_allocated() / 1e9
-            print(
-                f"[debug] RIGHT BEFORE vae.decode: free={free_gb:.1f}GB "
-                f"alloc={alloc_gb:.1f}GB scaled.shape={tuple(tensor.shape)} "
-                f"scaled.dtype={tensor.dtype}"
-            )
-        except Exception:
-            return
-
     pre_decode_hook = getattr(ctx, "pre_decode_hook", None)
     if callable(pre_decode_hook):
         pre_decode_hook()
@@ -1277,12 +1263,10 @@ def decode_to_pil(
     if ctx.decode_device == "cpu":
         vae_dtype = next(ctx.pipe.vae.parameters()).dtype
         scaled = scaled.to(device="cpu", dtype=vae_dtype)
-        _print_decode_state(scaled)
         image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
     else:
         scaled = scaled.to(device=ctx.device, dtype=ctx.dtype)
         try:
-            _print_decode_state(scaled)
             image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
         except RuntimeError as exc:
             if _is_cuda_oom(exc):
@@ -1295,7 +1279,6 @@ def decode_to_pil(
                 )
                 vae_dtype = next(ctx.pipe.vae.parameters()).dtype
                 scaled = scaled.to(device="cpu", dtype=vae_dtype)
-                _print_decode_state(scaled)
                 image = ctx.pipe.vae.decode(scaled, return_dict=False)[0]
             else:
                 raise
@@ -2062,31 +2045,8 @@ def run(args: argparse.Namespace) -> None:
     if args.reward_type == "geneval" and args.geneval_prompts is None:
         raise RuntimeError("Geneval mode requires --geneval_prompts metadata jsonl input.")
 
-    def _debug_cuda_alloc(tag: str) -> None:
-        if not torch.cuda.is_available():
-            return
-        dev = "cuda:0"
-        if "ctx" in locals():
-            try:
-                dev = str(locals()["ctx"].device)
-            except Exception:
-                pass
-        if not str(dev).startswith("cuda"):
-            return
-        try:
-            dev_idx = int(str(dev).split(":", 1)[1]) if ":" in str(dev) else 0
-        except Exception:
-            dev_idx = 0
-        try:
-            alloc_gb = torch.cuda.memory_allocated(dev_idx) / 1e9
-        except Exception:
-            return
-        print(f"[debug] {tag}: {alloc_gb:.1f}GB")
-
     ctx = load_pipeline(args)
-    _debug_cuda_alloc("after load_pipeline")
     reward_ctx = load_reward(args, ctx)
-    _debug_cuda_alloc("after load_reward")
     setattr(ctx, "pre_decode_hook", reward_ctx.before_decode)
     neg_embeds, neg_mask = load_neg_embed(args, ctx)
 
@@ -2141,11 +2101,9 @@ def run(args: argparse.Namespace) -> None:
 
         prompt_samples: list[dict[str, Any]] = []
         emb = encode_variants(args, ctx, variants, neg_embeds, neg_mask)
-        _debug_cuda_alloc("after encode_variants")
         for sample_i in range(args.n_samples):
             seed = args.seed + sample_i
             print(f"\n  sample {sample_i + 1}/{args.n_samples} seed={seed}")
-            _debug_cuda_alloc("before run_baseline")
             baseline_img, baseline_score = run_baseline(
                 args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb
             )

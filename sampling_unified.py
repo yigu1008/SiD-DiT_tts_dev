@@ -1177,15 +1177,16 @@ def encode_variants(
 
 def make_latents(ctx: PipelineContext, seed: int, h: int, w: int, dtype: torch.dtype) -> torch.Tensor:
     exp_h, exp_w, scale = _infer_latent_hw(ctx.pipe, h, w)
-    generator = torch.Generator(device=ctx.device).manual_seed(seed)
+    exec_device = torch.device(ctx.device) if isinstance(ctx.device, str) else ctx.device
+    generator = torch.Generator(device=exec_device).manual_seed(seed)
     try:
-        latents = ctx.pipe.prepare_latents(1, ctx.latent_c, h, w, dtype, ctx.device, generator)
+        latents = ctx.pipe.prepare_latents(1, ctx.latent_c, h, w, dtype, exec_device, generator)
     except Exception as exc:
         print(
             "Warning: prepare_latents failed; using manual latent-space randn "
             f"(scale={scale}, latent={exp_h}x{exp_w}): {type(exc).__name__}: {exc}"
         )
-        return torch.randn((1, ctx.latent_c, exp_h, exp_w), device=ctx.device, dtype=dtype, generator=generator)
+        return torch.randn((1, ctx.latent_c, exp_h, exp_w), device=exec_device, dtype=dtype, generator=generator)
 
     got_h, got_w = int(latents.shape[-2]), int(latents.shape[-1])
     if (got_h, got_w) == (int(h), int(w)) and (exp_h, exp_w) != (int(h), int(w)):
@@ -1193,7 +1194,7 @@ def make_latents(ctx: PipelineContext, seed: int, h: int, w: int, dtype: torch.d
             "Warning: prepare_latents returned pixel-space latent "
             f"{got_h}x{got_w}; forcing latent-space {exp_h}x{exp_w} (scale={scale})."
         )
-        return torch.randn((1, ctx.latent_c, exp_h, exp_w), device=ctx.device, dtype=dtype, generator=generator)
+        return torch.randn((1, ctx.latent_c, exp_h, exp_w), device=exec_device, dtype=dtype, generator=generator)
     return latents
 
 

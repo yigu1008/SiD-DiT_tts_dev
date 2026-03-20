@@ -387,7 +387,8 @@ def make_initial_latents(
     width: int,
     batch_size: int,
 ) -> torch.Tensor:
-    generator = torch.Generator(device=ctx.device).manual_seed(seed)
+    exec_device = torch.device(ctx.device) if isinstance(ctx.device, str) else ctx.device
+    generator = torch.Generator(device=exec_device).manual_seed(seed)
     num_channels_latents = int(ctx.pipe.transformer.config.in_channels) // 4
     packed, _ = ctx.pipe.prepare_latents(
         batch_size=batch_size,
@@ -395,7 +396,7 @@ def make_initial_latents(
         height=height,
         width=width,
         dtype=ctx.dtype,
-        device=ctx.device,
+        device=exec_device,
         generator=generator,
     )
     return ctx.pipe._unpack_latents(

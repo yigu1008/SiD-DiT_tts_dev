@@ -346,14 +346,15 @@ def _infer_latent_hw(pipe: Any, height: int, width: int) -> tuple[int, int, int]
 
 def make_latents(ctx: PipelineContext, seed: int, height: int, width: int, dtype: torch.dtype) -> torch.Tensor:
     exp_h, exp_w, scale = _infer_latent_hw(ctx.pipe, height, width)
-    generator = torch.Generator(device=ctx.device).manual_seed(seed)
+    exec_device = torch.device(ctx.device) if isinstance(ctx.device, str) else ctx.device
+    generator = torch.Generator(device=exec_device).manual_seed(seed)
     latents = ctx.pipe.prepare_latents(
         1,
         ctx.latent_c,
         height,
         width,
         dtype,
-        ctx.device,
+        exec_device,
         generator,
     )
     got_h, got_w = int(latents.shape[-2]), int(latents.shape[-1])
@@ -364,7 +365,7 @@ def make_latents(ctx: PipelineContext, seed: int, height: int, width: int, dtype
         )
         latents = torch.randn(
             (1, ctx.latent_c, exp_h, exp_w),
-            device=ctx.device,
+            device=exec_device,
             dtype=dtype,
             generator=generator,
         )

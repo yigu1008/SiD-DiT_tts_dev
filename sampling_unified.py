@@ -1432,7 +1432,11 @@ def _ga_decode_genome(
         p_raw = int(repaired[2 * step])
         c_raw = int(repaired[2 * step + 1])
         allowed = _ga_allowed_prompt_indices(step, args.steps, prompt_bank, args.ga_phase_constraints)
-        p_idx = allowed[abs(p_raw) % len(allowed)]
+        allowed_set = set(allowed)
+        if p_raw in allowed_set:
+            p_idx = p_raw
+        else:
+            p_idx = allowed[abs(p_raw) % len(allowed)]
         c_idx = abs(c_raw) % len(cfg_bank)
         repaired[2 * step] = int(p_idx)
         repaired[2 * step + 1] = int(c_idx)

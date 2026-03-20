@@ -29,7 +29,8 @@ echo "[env] creating clean conda env: ${ENV_NAME} (python=${PYTHON_VERSION})"
 conda create -n "${ENV_NAME}" -y "python=${PYTHON_VERSION}" pip
 
 echo "[env] upgrading pip tooling"
-conda run -n "${ENV_NAME}" python -m pip install --upgrade pip setuptools wheel
+conda run -n "${ENV_NAME}" python -m pip install --upgrade \
+  pip "setuptools==75.8.0" wheel
 
 echo "[env] installing torch stack from ${TORCH_INDEX_URL}"
 conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
@@ -71,9 +72,12 @@ conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
 
 echo "[env] installing reward packages"
 if ! conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
-  --index-url "${PYPI_INDEX_URL}" ImageReward; then
-  echo "[env] PyPI ImageReward unavailable, falling back to GitHub"
+  --index-url "${PYPI_INDEX_URL}" "image-reward==1.5"; then
+  echo "[env] PyPI image-reward unavailable, falling back to GitHub"
   conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
+    --index-url "${PYPI_INDEX_URL}" "setuptools==75.8.0"
+  conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
+    --no-build-isolation \
     "git+https://github.com/THUDM/ImageReward.git"
 fi
 
@@ -98,6 +102,11 @@ print("huggingface_hub", huggingface_hub.__version__)
 print("cuda_available", torch.cuda.is_available())
 if torch.cuda.is_available():
     print("gpu0", torch.cuda.get_device_name(0))
+try:
+    import ImageReward as RM
+    print("ImageReward", getattr(RM, "__file__", "ok"))
+except Exception as exc:
+    print("ImageReward import failed:", exc)
 PY
 
 echo "[done] rebuilt env '${ENV_NAME}'"

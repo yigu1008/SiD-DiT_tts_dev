@@ -82,9 +82,12 @@ echo "[env] install model stack pins"
 
 echo "[env] install reward package (with fallback)"
 if ! "${PY}" -m pip install --no-cache-dir --force-reinstall \
-  --index-url "${PYPI_INDEX_URL}" ImageReward; then
-  echo "[env] PyPI ImageReward unavailable, falling back to GitHub"
+  --index-url "${PYPI_INDEX_URL}" "image-reward==1.5"; then
+  echo "[env] PyPI image-reward unavailable, falling back to GitHub"
   "${PY}" -m pip install --no-cache-dir --force-reinstall \
+    --index-url "${PYPI_INDEX_URL}" "setuptools==75.8.0"
+  "${PY}" -m pip install --no-cache-dir --force-reinstall \
+    --no-build-isolation \
     "git+https://github.com/THUDM/ImageReward.git"
 fi
 
@@ -117,6 +120,11 @@ print("torch_file", getattr(torch, "__file__", "n/a"))
 print("diffusers_file", getattr(diffusers, "__file__", "n/a"))
 if torch.cuda.is_available():
     print("device", torch.cuda.get_device_name(0))
+try:
+    import ImageReward as RM
+    print("ImageReward", getattr(RM, "__file__", "ok"))
+except Exception as exc:
+    print("ImageReward import failed:", exc)
 PY
 
 echo "[done] stack rebuilt"

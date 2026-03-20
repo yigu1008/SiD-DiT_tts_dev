@@ -368,7 +368,7 @@ def _torch_dtype_from_name(name: str) -> torch.dtype:
     return torch.float16
 
 
-def _patch_sana_no_fp32_attn(pipe: Any) -> int:
+def _patch_sana_no_fp32_attn(pipe: Any) -> tuple[int, int]:
     def _linear_no_upcast(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
         value = F.pad(value, (0, 0, 0, 1), mode="constant", value=1)
         scores = torch.matmul(value, key.transpose(-1, -2))
@@ -382,13 +382,70 @@ def _patch_sana_no_fp32_attn(pipe: Any) -> int:
         hidden_states = torch.matmul(value, scores.to(value.dtype))
         return hidden_states
 
-    patched = 0
+    def _processor_call_no_upcast(self, attn: Any, hidden_states: torch.Tensor) -> torch.Tensor:
+        height, width = hidden_states.shape[-2:]
+        use_linear_attention = bool(height * width > attn.attention_head_dim)
+
+        residual = hidden_states
+        batch_size, _, height, width = list(hidden_states.size())
+        original_dtype = hidden_states.dtype
+
+        hidden_states = hidden_states.movedim(1, -1)
+        query = attn.to_q(hidden_states)
+        key = attn.to_k(hidden_states)
+        value = attn.to_v(hidden_states)
+        hidden_states = torch.cat([query, key, value], dim=3)
+        hidden_states = hidden_states.movedim(-1, 1)
+
+        multi_scale_qkv = [hidden_states]
+        for block in attn.to_qkv_multiscale:
+            multi_scale_qkv.append(block(hidden_states))
+        hidden_states = torch.cat(multi_scale_qkv, dim=1)
+
+        # Keep native dtype (bf16/fp16) to avoid large fp32 decode spikes.
+        hidden_states = hidden_states.reshape(batch_size, -1, 3 * attn.attention_head_dim, height * width)
+        query, key, value = hidden_states.chunk(3, dim=2)
+        query = attn.nonlinearity(query)
+        key = attn.nonlinearity(key)
+
+        if use_linear_attention:
+            hidden_states = attn.apply_linear_attention(query, key, value).to(dtype=original_dtype)
+        else:
+            hidden_states = attn.apply_quadratic_attention(query, key, value)
+
+        hidden_states = torch.reshape(hidden_states, (batch_size, -1, height, width))
+        hidden_states = attn.to_out(hidden_states.movedim(1, -1)).movedim(-1, 1)
+
+        if attn.norm_type == "rms_norm":
+            hidden_states = attn.norm_out(hidden_states.movedim(1, -1)).movedim(-1, 1)
+        if attn.residual_connection:
+            hidden_states = hidden_states + residual
+        if attn.rescale_output_factor != 1.0:
+            hidden_states = hidden_states / attn.rescale_output_factor
+        return hidden_states
+
+    patched_attn = 0
     for mod in pipe.vae.modules():
         if mod.__class__.__name__ == "SanaMultiscaleLinearAttention":
             mod.apply_linear_attention = MethodType(_linear_no_upcast, mod)
             mod.apply_quadratic_attention = MethodType(_quadratic_no_upcast, mod)
-            patched += 1
-    return patched
+            patched_attn += 1
+
+    patched_proc = 0
+    try:
+        from diffusers.models.attention_processor import SanaMultiscaleAttnProcessor2_0
+
+        if not getattr(SanaMultiscaleAttnProcessor2_0, "_sid_no_fp32_patch", False):
+            SanaMultiscaleAttnProcessor2_0.__call__ = _processor_call_no_upcast  # type: ignore[assignment]
+            SanaMultiscaleAttnProcessor2_0._sid_no_fp32_patch = True  # type: ignore[attr-defined]
+        for mod in pipe.vae.modules():
+            processor = getattr(mod, "processor", None)
+            if processor is not None and processor.__class__.__name__ == "SanaMultiscaleAttnProcessor2_0":
+                patched_proc += 1
+    except Exception as exc:
+        print(f"Warning: failed to patch SanaMultiscaleAttnProcessor2_0: {exc}")
+
+    return patched_attn, patched_proc
 
 
 @dataclass
@@ -464,8 +521,11 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
     pipe.transformer.eval()
 
     if args.sana_no_fp32_attn:
-        patched = _patch_sana_no_fp32_attn(pipe)
-        print(f"Patched Sana multiscale attention (no fp32 upcast): {patched} modules")
+        patched_attn, patched_proc = _patch_sana_no_fp32_attn(pipe)
+        print(
+            "Patched Sana multiscale attention (no fp32 upcast): "
+            f"attn_modules={patched_attn} processor_sites={patched_proc}"
+        )
 
     decode_device = _resolve_decode_device(args, device)
     if decode_device == "cpu":

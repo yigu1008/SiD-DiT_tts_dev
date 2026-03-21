@@ -31,12 +31,16 @@ fi
   --ga_elites 4 \
   --ga_mutation_prob 0.15 \
   --ga_tournament_k 4 \
+  --ga_selection rank \
+  --ga_rank_pressure 1.7 \
   --ga_crossover uniform \
   --ga_init_mode random \
   --ga_log_topk 5 \
   --ga_random_trials 128 \
   --ga_phase_constraints \
   --ga_cfg_scales 1.0 1.25 1.5 \
+  --baseline_noise_mode fresh \
+  --ga_noise_modes fresh fixed \
   "${GA_EVAL_LOG_ARGS[@]}" \
   --out_dir ./imagereward_ga_out \
   "$@"

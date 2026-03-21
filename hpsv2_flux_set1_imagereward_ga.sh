@@ -45,6 +45,8 @@ fi
   --ga_elites 3 \
   --ga_mutation_prob 0.10 \
   --ga_tournament_k 3 \
+  --ga_selection rank \
+  --ga_rank_pressure 1.7 \
   --ga_crossover uniform \
   --ga_init_mode random \
   --ga_log_topk 3 \

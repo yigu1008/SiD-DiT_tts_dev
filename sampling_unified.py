@@ -199,6 +199,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ga_elites", type=int, default=3)
     parser.add_argument("--ga_mutation_prob", type=float, default=0.10)
     parser.add_argument("--ga_tournament_k", type=int, default=3)
+    parser.add_argument(
+        "--ga_selection",
+        choices=["tournament", "rank"],
+        default="rank",
+        help="Parent selection strategy for GA reproduction.",
+    )
+    parser.add_argument(
+        "--ga_rank_pressure",
+        type=float,
+        default=1.7,
+        help="Linear-ranking selection pressure in [1,2]; higher favors top ranks.",
+    )
     parser.add_argument("--ga_crossover", choices=["uniform", "one_point"], default="uniform")
     parser.add_argument(
         "--ga_init_mode",
@@ -245,6 +257,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=[1.0, 1.25, 1.5],
         help="Small CFG bank for GA genomes.",
+    )
+    parser.add_argument(
+        "--baseline_noise_mode",
+        choices=["fresh", "fixed", "consistent"],
+        default="fresh",
+        help="Noise mode used for baseline/no-search trajectories.",
+    )
+    parser.add_argument(
+        "--ga_noise_modes",
+        nargs="+",
+        type=str,
+        default=["fresh", "fixed", "consistent"],
+        help="GA noise-mode bank per step.",
     )
     parser.add_argument(
         "--save_first_k",
@@ -1347,6 +1372,7 @@ class SearchResult:
     image: Image.Image
     score: float
     actions: list[tuple[int, float]]
+    noise_schedule: list[str] | None = None
 
 
 def _step_tensors(ctx: PipelineContext, steps: int, dtype: torch.dtype) -> list[tuple[torch.Tensor, torch.Tensor]]:
@@ -1357,6 +1383,46 @@ def _step_tensors(ctx: PipelineContext, steps: int, dtype: torch.dtype) -> list[
         t_4d = t_flat.view(1, 1, 1, 1)
         schedule.append((t_flat, t_4d))
     return schedule
+
+
+def _normalize_noise_mode(mode: str) -> str:
+    key = str(mode).strip().lower()
+    if key not in {"fresh", "fixed", "consistent"}:
+        raise ValueError(f"Unsupported noise mode: {mode}")
+    return key
+
+
+def _resolve_noise_schedule(noise_schedule: list[str] | None, steps: int, default_mode: str = "fresh") -> list[str]:
+    if noise_schedule is None:
+        return [_normalize_noise_mode(default_mode) for _ in range(steps)]
+    if len(noise_schedule) != steps:
+        raise ValueError(f"Expected {steps} noise modes, got {len(noise_schedule)}")
+    return [_normalize_noise_mode(m) for m in noise_schedule]
+
+
+def _sample_step_noise(
+    mode: str,
+    step_idx: int,
+    latents_prev: torch.Tensor,
+    dx_prev: torch.Tensor,
+    t_4d: torch.Tensor,
+    fixed_noise: torch.Tensor,
+    rng: torch.Generator,
+) -> torch.Tensor:
+    if step_idx == 0:
+        return latents_prev
+    mode_key = _normalize_noise_mode(mode)
+    if mode_key == "fresh":
+        return torch.randn(
+            latents_prev.shape,
+            device=latents_prev.device,
+            dtype=latents_prev.dtype,
+            generator=rng,
+        )
+    if mode_key == "fixed":
+        return fixed_noise
+    denom = t_4d.clamp_min(1e-6)
+    return ((latents_prev - (1.0 - t_4d) * dx_prev) / denom).detach()
 
 
 def run_action_sequence(
@@ -1372,24 +1438,27 @@ def run_action_sequence(
     orig_w: int,
     emb: EmbeddingContext,
     actions: list[tuple[int, float]],
+    noise_schedule: list[str] | None = None,
 ) -> SearchResult:
     if len(actions) != args.steps:
         raise ValueError(f"Expected {args.steps} actions, got {len(actions)}")
+    resolved_noise = _resolve_noise_schedule(noise_schedule, args.steps, default_mode=args.baseline_noise_mode)
     latents = make_latents(ctx, seed, h, w, emb.pe_list[0][0].dtype)
     schedule = _step_tensors(ctx, args.steps, latents.dtype)
     rng = torch.Generator(device=ctx.device).manual_seed(seed + 2048)
     dx = torch.zeros_like(latents)
+    fixed_noise = latents.clone()
 
     for step_idx, ((t_flat, t_4d), (variant_idx, cfg)) in enumerate(zip(schedule, actions)):
-        if step_idx == 0:
-            noise = latents
-        else:
-            noise = torch.randn(
-                latents.shape,
-                device=latents.device,
-                dtype=latents.dtype,
-                generator=rng,
-            )
+        noise = _sample_step_noise(
+            mode=resolved_noise[step_idx],
+            step_idx=step_idx,
+            latents_prev=latents,
+            dx_prev=dx,
+            t_4d=t_4d,
+            fixed_noise=fixed_noise,
+            rng=rng,
+        )
         latents = (1.0 - t_4d) * dx + t_4d * noise
         pe, pm = emb.pe_list[variant_idx]
         velocity = transformer_step(args, ctx, latents, pe, pm, emb.ue, emb.um, t_flat, cfg)
@@ -1397,7 +1466,7 @@ def run_action_sequence(
 
     image = decode_to_pil(ctx, dx, orig_h, orig_w, tag="action_sequence_final")
     score = float(reward_ctx.score_images(prompt, [image], metadata)[0])
-    return SearchResult(image=image, score=score, actions=list(actions))
+    return SearchResult(image=image, score=score, actions=list(actions), noise_schedule=list(resolved_noise))
 
 
 def _ga_step_phase(step_idx: int, steps: int) -> str:
@@ -1435,14 +1504,33 @@ def _ga_default_actions(
     return [(pidx, float(cfg)) for _ in range(args.steps)]
 
 
+def _ga_default_noise_schedule(args: argparse.Namespace, noise_bank: list[str]) -> list[str]:
+    if len(noise_bank) == 0:
+        raise ValueError("noise_bank cannot be empty")
+    base = _normalize_noise_mode(args.baseline_noise_mode)
+    if base not in noise_bank:
+        base = noise_bank[0]
+    return [base for _ in range(args.steps)]
+
+
 def _ga_actions_to_genome(
     actions: list[tuple[int, float]],
+    noise_schedule: list[str],
     cfg_bank: list[float],
+    noise_bank: list[str],
 ) -> list[int]:
+    if len(actions) != len(noise_schedule):
+        raise ValueError(f"actions/noise_schedule length mismatch: {len(actions)} vs {len(noise_schedule)}")
     genome: list[int] = []
-    for vi, cfg in actions:
+    for (vi, cfg), noise_mode in zip(actions, noise_schedule):
         cfg_idx = min(range(len(cfg_bank)), key=lambda i: abs(float(cfg_bank[i]) - float(cfg)))
-        genome.extend([int(vi), int(cfg_idx)])
+        if len(noise_bank) == 0:
+            raise ValueError("noise_bank cannot be empty")
+        if noise_mode in noise_bank:
+            noise_idx = int(noise_bank.index(noise_mode))
+        else:
+            noise_idx = 0
+        genome.extend([int(vi), int(cfg_idx), int(noise_idx)])
     return genome
 
 
@@ -1527,6 +1615,7 @@ def _ga_prior_genome(
     steps: int,
     prompt_bank: list[tuple[str, str]],
     cfg_bank: list[float],
+    noise_bank: list[str],
     use_constraints: bool,
 ) -> list[int]:
     genome: list[int] = []
@@ -1548,9 +1637,22 @@ def _ga_prior_genome(
             prior_strength=float(args.ga_prior_strength),
             cfg_center=float(args.ga_prior_cfg_center),
         )
+        phase = _ga_step_phase3(step, steps)
+        noise_phase_weights: dict[str, dict[str, float]] = {
+            "early": {"fresh": 0.70, "fixed": 0.20, "consistent": 0.10},
+            "mid": {"fresh": 0.35, "fixed": 0.20, "consistent": 0.45},
+            "late": {"fresh": 0.15, "fixed": 0.25, "consistent": 0.60},
+        }
+        n_table = noise_phase_weights.get(phase, noise_phase_weights["mid"])
+        n_raw = [float(n_table.get(_normalize_noise_mode(m), 0.1)) for m in noise_bank]
+        n_probs = _normalize_probs(n_raw)
+        sharp = max(0.0, float(args.ga_prior_strength))
+        if sharp > 0.0 and n_probs.size > 0:
+            n_probs = _normalize_probs(list(np.power(n_probs, sharp)))
         p_gene = int(rng.choice(np.asarray(allowed, dtype=np.int64), p=p_probs))
         c_gene = int(rng.choice(np.arange(len(cfg_bank), dtype=np.int64), p=c_probs))
-        genome.extend([p_gene, c_gene])
+        n_gene = int(rng.choice(np.arange(len(noise_bank), dtype=np.int64), p=n_probs))
+        genome.extend([p_gene, c_gene, n_gene])
     return genome
 
 
@@ -1559,6 +1661,7 @@ def _ga_random_genome(
     steps: int,
     prompt_bank: list[tuple[str, str]],
     cfg_bank: list[float],
+    noise_bank: list[str],
     use_constraints: bool,
 ) -> list[int]:
     genome: list[int] = []
@@ -1566,7 +1669,8 @@ def _ga_random_genome(
         allowed = _ga_allowed_prompt_indices(step, steps, prompt_bank, use_constraints)
         p_gene = int(allowed[int(rng.integers(0, len(allowed)))])
         c_gene = int(rng.integers(0, len(cfg_bank)))
-        genome.extend([p_gene, c_gene])
+        n_gene = int(rng.integers(0, len(noise_bank)))
+        genome.extend([p_gene, c_gene, n_gene])
     return genome
 
 
@@ -1575,12 +1679,20 @@ def _ga_decode_genome(
     args: argparse.Namespace,
     prompt_bank: list[tuple[str, str]],
     cfg_bank: list[float],
-) -> tuple[list[int], list[tuple[int, float]]]:
+) -> tuple[list[int], list[tuple[int, float]], list[str]]:
+    noise_bank = [_normalize_noise_mode(m) for m in args.ga_noise_modes]
+    if len(noise_bank) == 0:
+        noise_bank = ["fresh"]
+    expected_len = 3 * int(args.steps)
+    if len(genome) != expected_len:
+        raise ValueError(f"Expected genome length={expected_len}, got {len(genome)}")
     repaired = list(genome)
     actions: list[tuple[int, float]] = []
+    noise_schedule: list[str] = []
     for step in range(args.steps):
-        p_raw = int(repaired[2 * step])
-        c_raw = int(repaired[2 * step + 1])
+        p_raw = int(repaired[3 * step])
+        c_raw = int(repaired[3 * step + 1])
+        n_raw = int(repaired[3 * step + 2])
         allowed = _ga_allowed_prompt_indices(step, args.steps, prompt_bank, args.ga_phase_constraints)
         allowed_set = set(allowed)
         if p_raw in allowed_set:
@@ -1588,10 +1700,13 @@ def _ga_decode_genome(
         else:
             p_idx = allowed[abs(p_raw) % len(allowed)]
         c_idx = abs(c_raw) % len(cfg_bank)
-        repaired[2 * step] = int(p_idx)
-        repaired[2 * step + 1] = int(c_idx)
+        n_idx = abs(n_raw) % len(noise_bank)
+        repaired[3 * step] = int(p_idx)
+        repaired[3 * step + 1] = int(c_idx)
+        repaired[3 * step + 2] = int(n_idx)
         actions.append((int(p_idx), float(cfg_bank[c_idx])))
-    return repaired, actions
+        noise_schedule.append(str(noise_bank[n_idx]))
+    return repaired, actions, noise_schedule
 
 
 def _ga_mutate(
@@ -1601,13 +1716,18 @@ def _ga_mutate(
     prompt_bank: list[tuple[str, str]],
     cfg_bank: list[float],
 ) -> list[int]:
+    noise_bank = [_normalize_noise_mode(m) for m in args.ga_noise_modes]
+    if len(noise_bank) == 0:
+        noise_bank = ["fresh"]
     out = list(genome)
     for step in range(args.steps):
         if rng.random() < args.ga_mutation_prob:
             allowed = _ga_allowed_prompt_indices(step, args.steps, prompt_bank, args.ga_phase_constraints)
-            out[2 * step] = int(allowed[int(rng.integers(0, len(allowed)))])
+            out[3 * step] = int(allowed[int(rng.integers(0, len(allowed)))])
         if rng.random() < args.ga_mutation_prob:
-            out[2 * step + 1] = int(rng.integers(0, len(cfg_bank)))
+            out[3 * step + 1] = int(rng.integers(0, len(cfg_bank)))
+        if rng.random() < args.ga_mutation_prob:
+            out[3 * step + 2] = int(rng.integers(0, len(noise_bank)))
     return out
 
 
@@ -1648,6 +1768,29 @@ def _ga_tournament_select(
     picks = [scored[int(rng.integers(0, len(scored)))] for _ in range(max(1, k))]
     best = max(picks, key=lambda row: float(row["score"]))
     return list(best["genome"])
+
+
+def _ga_rank_select(
+    scored: list[dict[str, Any]],
+    rng: np.random.Generator,
+    rank_pressure: float,
+) -> list[int]:
+    if not scored:
+        raise RuntimeError("Rank selection received empty population.")
+    n = len(scored)
+    if n == 1:
+        return list(scored[0]["genome"])
+
+    # Linear ranking (Baker): pressure s in [1, 2].
+    # scored is sorted best->worst, while formula uses worst->best rank i.
+    s = float(max(1.0, min(2.0, rank_pressure)))
+    probs = np.empty(n, dtype=np.float64)
+    for idx_desc in range(n):
+        rank_worst_first = n - 1 - idx_desc
+        probs[idx_desc] = ((2.0 - s) / n) + (2.0 * rank_worst_first * (s - 1.0) / (n * (n - 1)))
+    probs = probs / probs.sum()
+    chosen = int(rng.choice(np.arange(n, dtype=np.int64), p=probs))
+    return list(scored[chosen]["genome"])
 
 
 def _ga_mean_hamming(genomes: list[list[int]]) -> float:
@@ -1692,6 +1835,9 @@ def run_ga(
     elites = min(max(1, int(args.ga_elites)), pop_size)
     topk = max(1, int(args.ga_log_topk))
     cfg_bank = [float(c) for c in cfg_bank]
+    noise_bank = [_normalize_noise_mode(m) for m in args.ga_noise_modes]
+    if len(noise_bank) == 0:
+        noise_bank = ["fresh"]
     population_rng_seed = int(seed + 9001)
     rollout_seed = int(seed)
     rollout_noise_seed_offset = 2048
@@ -1703,7 +1849,8 @@ def run_ga(
         eval_log_f = open(eval_log_path, "w", encoding="utf-8")
 
     default_actions = _ga_default_actions(args, prompt_bank, cfg_bank)
-    baseline_genome = _ga_actions_to_genome(default_actions, cfg_bank)
+    default_noise_schedule = _ga_default_noise_schedule(args, noise_bank)
+    baseline_genome = _ga_actions_to_genome(default_actions, default_noise_schedule, cfg_bank, noise_bank)
     population: list[list[int]] = []
     seen_genomes: set[tuple[int, ...]] = set()
 
@@ -1732,7 +1879,7 @@ def run_ga(
     prior_attempts = 0
     prior_attempt_limit = max(20, 20 * max(1, prior_target))
     while len(population) < pop_size and prior_added < prior_target and prior_attempts < prior_attempt_limit:
-        g = _ga_prior_genome(rng, args, args.steps, prompt_bank, cfg_bank, args.ga_phase_constraints)
+        g = _ga_prior_genome(rng, args, args.steps, prompt_bank, cfg_bank, noise_bank, args.ga_phase_constraints)
         prior_attempts += 1
         if _try_add_unique(g):
             prior_added += 1
@@ -1741,7 +1888,7 @@ def run_ga(
     random_attempts = 0
     random_attempt_limit = max(20, 20 * max(1, random_target))
     while len(population) < pop_size and random_attempts < random_attempt_limit:
-        g = _ga_random_genome(rng, args.steps, prompt_bank, cfg_bank, args.ga_phase_constraints)
+        g = _ga_random_genome(rng, args.steps, prompt_bank, cfg_bank, noise_bank, args.ga_phase_constraints)
         random_attempts += 1
         if _try_add_unique(g):
             random_added += 1
@@ -1749,10 +1896,10 @@ def run_ga(
     # If space is exhausted due to small search space, allow duplicates to reach pop_size.
     while len(population) < pop_size:
         if mode != "random" and prior_added < prior_target:
-            g = _ga_prior_genome(rng, args, args.steps, prompt_bank, cfg_bank, args.ga_phase_constraints)
+            g = _ga_prior_genome(rng, args, args.steps, prompt_bank, cfg_bank, noise_bank, args.ga_phase_constraints)
             prior_added += 1
         else:
-            g = _ga_random_genome(rng, args.steps, prompt_bank, cfg_bank, args.ga_phase_constraints)
+            g = _ga_random_genome(rng, args.steps, prompt_bank, cfg_bank, noise_bank, args.ga_phase_constraints)
             random_added += 1
         population.append([int(x) for x in g])
 
@@ -1792,7 +1939,7 @@ def run_ga(
     ) -> dict[str, Any]:
         nonlocal eval_calls, cache_hits, cache_misses
         eval_calls += 1
-        repaired, actions = _ga_decode_genome(genome, args, prompt_bank, cfg_bank)
+        repaired, actions, noise_schedule = _ga_decode_genome(genome, args, prompt_bank, cfg_bank)
         key = tuple(repaired)
         cached = cache.get(key)
         if cached is not None and (not need_image or cached.get("image") is not None):
@@ -1807,6 +1954,7 @@ def run_ga(
                     "score": float(cached["score"]),
                     "genome": [int(x) for x in repaired],
                     "actions": [[int(vi), float(cfg)] for vi, cfg in actions],
+                    "noise_schedule": list(noise_schedule),
                 }
             )
             return cached
@@ -1824,11 +1972,13 @@ def run_ga(
             orig_w,
             emb,
             actions,
+            noise_schedule=noise_schedule,
         )
         payload = {
             "genome": repaired,
             "score": float(result.score),
             "actions": actions,
+            "noise_schedule": list(noise_schedule),
             "image": result.image if need_image else None,
         }
         cache[key] = payload
@@ -1842,6 +1992,7 @@ def run_ga(
                 "score": float(payload["score"]),
                 "genome": [int(x) for x in repaired],
                 "actions": [[int(vi), float(cfg)] for vi, cfg in actions],
+                "noise_schedule": list(noise_schedule),
             }
         )
         return payload
@@ -1865,7 +2016,9 @@ def run_ga(
                 with_img["image"].save(img_path)
                 img_name = os.path.basename(img_path)
             decoded = []
-            for step_i, (vi, cfg) in enumerate(with_img["actions"]):
+            for step_i, ((vi, cfg), noise_mode) in enumerate(
+                zip(with_img["actions"], with_img.get("noise_schedule", ["fresh"] * args.steps))
+            ):
                 label = prompt_bank[vi][0]
                 decoded.append(
                     {
@@ -1873,6 +2026,7 @@ def run_ga(
                         "prompt_idx": int(vi),
                         "prompt_label": label,
                         "cfg": float(cfg),
+                        "noise_mode": str(noise_mode),
                     }
                 )
             top_records.append(
@@ -1922,9 +2076,14 @@ def run_ga(
             break
 
         next_population: list[list[int]] = [list(row["genome"]) for row in scored[:elites]]
+        use_rank_selection = str(args.ga_selection).lower() == "rank"
         while len(next_population) < pop_size:
-            p1 = _ga_tournament_select(scored, rng, args.ga_tournament_k)
-            p2 = _ga_tournament_select(scored, rng, args.ga_tournament_k)
+            if use_rank_selection:
+                p1 = _ga_rank_select(scored, rng, args.ga_rank_pressure)
+                p2 = _ga_rank_select(scored, rng, args.ga_rank_pressure)
+            else:
+                p1 = _ga_tournament_select(scored, rng, args.ga_tournament_k)
+                p2 = _ga_tournament_select(scored, rng, args.ga_tournament_k)
             c1, c2 = _ga_crossover(p1, p2, rng, args.ga_crossover)
             c1 = _ga_mutate(c1, rng, args, prompt_bank, cfg_bank)
             c2 = _ga_mutate(c2, rng, args, prompt_bank, cfg_bank)
@@ -1935,14 +2094,27 @@ def run_ga(
 
     assert global_best is not None
     best_actions = [(int(vi), float(cfg)) for vi, cfg in global_best["actions"]]
-    final_result = SearchResult(image=global_best["image"], score=float(global_best["score"]), actions=best_actions)
+    final_noise_schedule = [str(m) for m in global_best.get("noise_schedule", default_noise_schedule)]
+    final_result = SearchResult(
+        image=global_best["image"],
+        score=float(global_best["score"]),
+        actions=best_actions,
+        noise_schedule=final_noise_schedule,
+    )
 
     diagnostics: dict[str, Any] = {
         "prompt_bank": [{"label": label, "text": text} for label, text in prompt_bank],
         "cfg_bank": [float(c) for c in cfg_bank],
+        "noise_bank": [str(m) for m in noise_bank],
+        "selection": {
+            "mode": str(args.ga_selection),
+            "tournament_k": int(args.ga_tournament_k),
+            "rank_pressure": float(args.ga_rank_pressure),
+        },
         "initialization": init_stats,
         "history": history,
         "best_genome": [int(x) for x in global_best["genome"]],
+        "best_noise_schedule": list(final_result.noise_schedule or []),
         "determinism": {
             "rollout_seed": int(rollout_seed),
             "rollout_noise_seed_offset": int(rollout_noise_seed_offset),
@@ -1959,6 +2131,7 @@ def run_ga(
         },
         "baselines": {},
         "baseline_actions": {"ga": [[int(vi), float(cfg)] for vi, cfg in final_result.actions]},
+        "baseline_noise_schedules": {"ga": list(final_result.noise_schedule or [])},
     }
     if eval_log_path is not None:
         diagnostics["eval_trace_path"] = eval_log_path
@@ -1967,15 +2140,39 @@ def run_ga(
         print("    [ga] running extra baselines (no_search/random/greedy/mcts)")
         # Baselines against the same action banks.
         no_search_result = run_action_sequence(
-            args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb, default_actions
+            args,
+            ctx,
+            reward_ctx,
+            prompt,
+            metadata,
+            seed,
+            h,
+            w,
+            orig_h,
+            orig_w,
+            emb,
+            default_actions,
+            noise_schedule=default_noise_schedule,
         )
         random_best = no_search_result
         for _ in range(max(1, int(args.ga_random_trials))):
-            genome = _ga_random_genome(rng, args.steps, prompt_bank, cfg_bank, args.ga_phase_constraints)
+            genome = _ga_random_genome(rng, args.steps, prompt_bank, cfg_bank, noise_bank, args.ga_phase_constraints)
             row = _eval(genome, need_image=False, generation=-1, phase="baseline_random")
             if row["score"] > random_best.score:
                 random_best = run_action_sequence(
-                    args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb, row["actions"]
+                    args,
+                    ctx,
+                    reward_ctx,
+                    prompt,
+                    metadata,
+                    seed,
+                    h,
+                    w,
+                    orig_h,
+                    orig_w,
+                    emb,
+                    row["actions"],
+                    noise_schedule=row.get("noise_schedule"),
                 )
 
         # Greedy baseline over GA banks (step-wise with full rollout scoring).
@@ -1989,14 +2186,38 @@ def run_ga(
                     cand = list(greedy_actions)
                     cand[step] = (int(vi), float(cfg))
                     cand_result = run_action_sequence(
-                        args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb, cand
+                        args,
+                        ctx,
+                        reward_ctx,
+                        prompt,
+                        metadata,
+                        seed,
+                        h,
+                        w,
+                        orig_h,
+                        orig_w,
+                        emb,
+                        cand,
+                        noise_schedule=default_noise_schedule,
                     )
                     if cand_result.score > best_score:
                         best_score = cand_result.score
                         best = (int(vi), float(cfg))
             greedy_actions[step] = best
         greedy_bank_result = run_action_sequence(
-            args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w, emb, greedy_actions
+            args,
+            ctx,
+            reward_ctx,
+            prompt,
+            metadata,
+            seed,
+            h,
+            w,
+            orig_h,
+            orig_w,
+            emb,
+            greedy_actions,
+            noise_schedule=default_noise_schedule,
         )
 
         # Current MCTS baseline with same banks.
@@ -2027,6 +2248,14 @@ def run_ga(
                 "random": [[int(vi), float(cfg)] for vi, cfg in random_best.actions],
                 "greedy": [[int(vi), float(cfg)] for vi, cfg in greedy_bank_result.actions],
                 "mcts": [[int(vi), float(cfg)] for vi, cfg in mcts_result.actions],
+            }
+        )
+        diagnostics["baseline_noise_schedules"].update(
+            {
+                "no_search": list(no_search_result.noise_schedule or []),
+                "random": list(random_best.noise_schedule or []),
+                "greedy": list(greedy_bank_result.noise_schedule or []),
+                "mcts": [],
             }
         )
     else:
@@ -2074,10 +2303,21 @@ def run_baseline(
     pe, pm = emb.pe_list[0]
     latents = make_latents(ctx, seed, h, w, pe.dtype)
     schedule = _step_tensors(ctx, args.steps, latents.dtype)
+    noise_schedule = _resolve_noise_schedule(None, args.steps, default_mode=args.baseline_noise_mode)
+    rng = torch.Generator(device=ctx.device).manual_seed(seed + 2048)
 
     dx = torch.zeros_like(latents)
+    fixed_noise = latents.clone()
     for step_idx, (t_flat, t_4d) in enumerate(schedule):
-        noise = latents if step_idx == 0 else torch.randn_like(latents)
+        noise = _sample_step_noise(
+            mode=noise_schedule[step_idx],
+            step_idx=step_idx,
+            latents_prev=latents,
+            dx_prev=dx,
+            t_4d=t_4d,
+            fixed_noise=fixed_noise,
+            rng=rng,
+        )
         latents = (1.0 - t_4d) * dx + t_4d * noise
         velocity = transformer_step(args, ctx, latents, pe, pm, emb.ue, emb.um, t_flat, 1.0)
         dx = latents - t_4d * velocity
@@ -2343,6 +2583,7 @@ def save_comparison(
     baseline_score: float,
     search_score: float,
     actions: list[tuple[int, float]],
+    noise_schedule: list[str] | None = None,
 ) -> None:
     width, height = baseline_img.size
     header_h = 54
@@ -2359,7 +2600,13 @@ def save_comparison(
         fill=score_col,
         font=_font(15),
     )
-    path_text = " ".join(f"s{idx + 1}:v{vi}/cfg{cfg:.2f}" for idx, (vi, cfg) in enumerate(actions))
+    if noise_schedule is None or len(noise_schedule) != len(actions):
+        path_text = " ".join(f"s{idx + 1}:v{vi}/cfg{cfg:.2f}" for idx, (vi, cfg) in enumerate(actions))
+    else:
+        path_text = " ".join(
+            f"s{idx + 1}:v{vi}/cfg{cfg:.2f}/{str(noise_schedule[idx])[:4]}"
+            for idx, (vi, cfg) in enumerate(actions)
+        )
     draw.text((width + 4, 28), path_text[:96], fill=(255, 220, 50), font=_font(11))
     grid.save(out_path)
 
@@ -2522,6 +2769,7 @@ def run(args: argparse.Namespace) -> None:
                     baseline_score,
                     search_result.score,
                     search_result.actions,
+                    noise_schedule=search_result.noise_schedule,
                 )
 
             if args.reward_type == "geneval" and metadata is not None:
@@ -2539,6 +2787,8 @@ def run(args: argparse.Namespace) -> None:
                 "delta_score": search_result.score - baseline_score,
                 "actions": [[int(vi), float(cfg)] for vi, cfg in search_result.actions],
             }
+            if search_result.noise_schedule is not None:
+                sample_payload["noise_schedule"] = [str(m) for m in search_result.noise_schedule]
             if ga_diag is not None:
                 sample_payload["ga_baselines"] = ga_diag["baselines"]
                 if save_entry_artifacts:

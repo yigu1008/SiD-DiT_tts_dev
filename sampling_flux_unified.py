@@ -147,6 +147,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--ga_elites", type=int, default=3)
     p.add_argument("--ga_mutation_prob", type=float, default=0.10)
     p.add_argument("--ga_tournament_k", type=int, default=3)
+    p.add_argument(
+        "--ga_selection",
+        choices=["tournament", "rank"],
+        default="rank",
+        help="Parent selection strategy for GA reproduction.",
+    )
+    p.add_argument(
+        "--ga_rank_pressure",
+        type=float,
+        default=1.7,
+        help="Linear-ranking selection pressure in [1,2]; higher favors top ranks.",
+    )
     p.add_argument("--ga_crossover", choices=["uniform", "one_point"], default="uniform")
     p.add_argument(
         "--ga_init_mode",
@@ -845,6 +857,26 @@ def _ga_tournament_select(
     return list(best["genome"])
 
 
+def _ga_rank_select(
+    scored: list[dict[str, Any]],
+    rng: np.random.Generator,
+    rank_pressure: float,
+) -> list[int]:
+    if not scored:
+        raise RuntimeError("Rank selection received empty population.")
+    n = len(scored)
+    if n == 1:
+        return list(scored[0]["genome"])
+    s = float(max(1.0, min(2.0, rank_pressure)))
+    probs = np.empty(n, dtype=np.float64)
+    for idx_desc in range(n):
+        rank_worst_first = n - 1 - idx_desc
+        probs[idx_desc] = ((2.0 - s) / n) + (2.0 * rank_worst_first * (s - 1.0) / (n * (n - 1)))
+    probs = probs / probs.sum()
+    chosen = int(rng.choice(np.arange(n, dtype=np.int64), p=probs))
+    return list(scored[chosen]["genome"])
+
+
 @torch.no_grad()
 def run_ga(
     args: argparse.Namespace,
@@ -994,9 +1026,14 @@ def run_ga(
             break
 
         next_pop: list[list[int]] = [list(row["genome"]) for row in scored[:elites]]
+        use_rank_selection = str(args.ga_selection).lower() == "rank"
         while len(next_pop) < pop_size:
-            p1 = _ga_tournament_select(scored, rng, int(args.ga_tournament_k))
-            p2 = _ga_tournament_select(scored, rng, int(args.ga_tournament_k))
+            if use_rank_selection:
+                p1 = _ga_rank_select(scored, rng, float(args.ga_rank_pressure))
+                p2 = _ga_rank_select(scored, rng, float(args.ga_rank_pressure))
+            else:
+                p1 = _ga_tournament_select(scored, rng, int(args.ga_tournament_k))
+                p2 = _ga_tournament_select(scored, rng, int(args.ga_tournament_k))
             c1, c2 = _ga_crossover(p1, p2, rng, args.ga_crossover)
             next_pop.append(_ga_mutate(c1, rng, args, prompt_bank, guidance_bank))
             if len(next_pop) < pop_size:
@@ -1013,6 +1050,11 @@ def run_ga(
             "best_genome": [int(x) for x in best_global["genome"]],
             "baseline_genome": [int(x) for x in baseline_genome],
             "initialization": init_stats,
+            "selection": {
+                "mode": str(args.ga_selection),
+                "tournament_k": int(args.ga_tournament_k),
+                "rank_pressure": float(args.ga_rank_pressure),
+            },
             "guidance_bank": [float(v) for v in guidance_bank],
             "prompt_bank": [{"label": lbl, "text": txt} for lbl, txt in prompt_bank],
         },

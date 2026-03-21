@@ -43,6 +43,21 @@ fi
 if [[ "${NO_IMAGE_REWARD:-0}" == "1" ]]; then
   EXTRA_ARGS+=(--no_image_reward)
 fi
+if [[ -n "${S_CHURN:-}" || -n "${S_TMIN:-}" || -n "${S_TMAX:-}" || -n "${S_NOISE:-}" ]]; then
+  EXTRA_ARGS+=(--enable_scheduler_step_kwargs)
+  if [[ -n "${S_CHURN:-}" ]]; then
+    EXTRA_ARGS+=(--s_churn "${S_CHURN}")
+  fi
+  if [[ -n "${S_TMIN:-}" ]]; then
+    EXTRA_ARGS+=(--s_tmin "${S_TMIN}")
+  fi
+  if [[ -n "${S_TMAX:-}" ]]; then
+    EXTRA_ARGS+=(--s_tmax "${S_TMAX}")
+  fi
+  if [[ -n "${S_NOISE:-}" ]]; then
+    EXTRA_ARGS+=(--s_noise "${S_NOISE}")
+  fi
+fi
 
 "${PYTHON_BIN}" "${SCRIPT_DIR}/Z_image_test.py" \
   --model "${MODEL}" \

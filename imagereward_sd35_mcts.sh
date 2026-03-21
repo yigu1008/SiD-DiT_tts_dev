@@ -6,7 +6,8 @@ source "${SCRIPT_DIR}/shell_env.sh"
 
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified_sd35.py" \
   --search_method mcts \
-  --reward_backend unifiedreward \
+  --reward_backend imagereward \
+  --image_reward_model ImageReward-v1.0 \
   --prompt_file "${SCRIPT_DIR}/prompts.txt" \
   --n_variants 3 \
   --cfg_scales 1.0 1.25 1.5 1.75 2.0 2.25 2.5 2.75 3.0 3.25 3.5 \

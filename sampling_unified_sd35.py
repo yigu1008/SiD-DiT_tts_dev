@@ -78,7 +78,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument("--n_sims", type=int, default=50)
     parser.add_argument("--ucb_c", type=float, default=1.41)
-    parser.add_argument("--reward_model", default="CodeGoat24/UnifiedReward-qwen-7b")
+    parser.add_argument(
+        "--reward_model",
+        default="CodeGoat24/UnifiedReward-qwen-7b",
+        help="Legacy alias for UnifiedReward model id (kept for compatibility).",
+    )
+    parser.add_argument(
+        "--unifiedreward_model",
+        default=None,
+        help="UnifiedReward model id override. Defaults to --reward_model when unset.",
+    )
+    parser.add_argument(
+        "--image_reward_model",
+        default="ImageReward-v1.0",
+        help="ImageReward model id/checkpoint name.",
+    )
     parser.add_argument(
         "--reward_backend",
         choices=["auto", "unifiedreward", "unified", "imagereward", "hpsv2", "blend"],
@@ -215,11 +229,12 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
 
 
 def load_reward_model(args: argparse.Namespace, device: str) -> UnifiedRewardScorer:
+    unified_model = args.unifiedreward_model if args.unifiedreward_model else args.reward_model
     scorer = UnifiedRewardScorer(
         device=device,
         backend=args.reward_backend,
-        image_reward_model=args.reward_model,
-        unifiedreward_model=args.reward_model,
+        image_reward_model=args.image_reward_model,
+        unifiedreward_model=unified_model,
         unified_weights=(float(args.reward_weights[0]), float(args.reward_weights[1])),
         unifiedreward_api_base=args.reward_api_base,
         unifiedreward_api_key=args.reward_api_key,

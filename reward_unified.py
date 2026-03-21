@@ -73,6 +73,13 @@ class UnifiedRewardScorer:
         "Install/update dependencies for local UnifiedReward, e.g.:\n"
         "  pip install -U \"transformers>=4.51.0\" accelerate \"qwen-vl-utils>=0.0.14\""
     )
+    _imagereward_install_hint = (
+        "Install ImageReward dependencies, e.g.:\n"
+        "  pip install -U setuptools\n"
+        "  pip install -U git+https://github.com/THUDM/ImageReward.git\n"
+        "  pip install -U ftfy regex tqdm\n"
+        "  pip install -U git+https://github.com/openai/CLIP.git"
+    )
 
     def __init__(
         self,
@@ -107,6 +114,7 @@ class UnifiedRewardScorer:
         self.state = _BackendState()
         self.available: List[str] = []
         self.unifiedreward_last_error: Optional[str] = None
+        self.imagereward_last_error: Optional[str] = None
         self.debug = str(os.environ.get("UNIFIEDREWARD_DEBUG", "")).strip().lower() in {"1", "true", "yes", "on"}
         self._load_backends()
 
@@ -136,7 +144,11 @@ class UnifiedRewardScorer:
                 f"{detail}\n{self._unifiedreward_install_hint}"
             )
         if target == "imagereward" and "imagereward" not in self.available:
-            raise RuntimeError("Requested backend=imagereward, but ImageReward is unavailable.")
+            detail = f" Last error: {self.imagereward_last_error}" if self.imagereward_last_error else ""
+            raise RuntimeError(
+                "Requested backend=imagereward, but ImageReward is unavailable."
+                f"{detail}\n{self._imagereward_install_hint}"
+            )
         if target == "hpsv2" and "hpsv2" not in self.available:
             raise RuntimeError("Requested backend=hpsv2, but HPSv2 is unavailable.")
         if target == "blend":
@@ -218,13 +230,54 @@ class UnifiedRewardScorer:
 
     def _try_load_imagereward(self) -> None:
         try:
+            # Compatibility shim:
+            # Some ImageReward releases expect BertModel.all_tied_weights_keys,
+            # while newer transformers expose _tied_weights_keys instead.
+            try:
+                import transformers
+
+                bert_cls = getattr(transformers, "BertModel", None)
+                if bert_cls is not None and not hasattr(bert_cls, "all_tied_weights_keys"):
+
+                    def _all_tied_keys(self):
+                        return getattr(self, "_tied_weights_keys", None)
+
+                    bert_cls.all_tied_weights_keys = property(_all_tied_keys)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
             import ImageReward as RM
 
-            model = RM.load(self.image_reward_model, device=self.device)
+            tried_errors: List[str] = []
+            candidates = [self.image_reward_model]
+            if self.image_reward_model != "ImageReward-v1.0":
+                candidates.append("ImageReward-v1.0")
+
+            model = None
+            selected = None
+            for candidate in candidates:
+                try:
+                    model = RM.load(candidate, device=self.device)
+                    selected = candidate
+                    break
+                except Exception as exc:
+                    tried_errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+
+            if model is None:
+                joined = " | ".join(tried_errors) if tried_errors else "unknown error"
+                raise RuntimeError(f"Unable to load ImageReward model. {joined}")
+
             model.eval()
             self.state.imagereward = model
             self.available.append("imagereward")
+            self.imagereward_last_error = None
+            if selected is not None and selected != self.image_reward_model:
+                print(
+                    f"[Reward] ImageReward fallback loaded '{selected}' "
+                    f"(requested '{self.image_reward_model}')."
+                )
         except Exception as exc:
+            self.imagereward_last_error = str(exc)
             print(f"[Reward] ImageReward unavailable: {exc}")
 
     def _try_load_hpsv2(self) -> None:

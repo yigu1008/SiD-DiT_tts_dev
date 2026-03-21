@@ -156,6 +156,35 @@ def parse_args() -> argparse.Namespace:
         help="Sigma schedule family sweep for FlowMatchEuler.",
     )
     parser.add_argument(
+        "--enable_scheduler_step_kwargs",
+        action="store_true",
+        help="Pass FlowMatch step kwargs (s_churn/s_tmin/s_tmax/s_noise) to pipeline call.",
+    )
+    parser.add_argument(
+        "--s_churn",
+        type=float,
+        default=0.0,
+        help="FlowMatch step kwarg: churn amount (higher injects more stochasticity).",
+    )
+    parser.add_argument(
+        "--s_tmin",
+        type=float,
+        default=0.0,
+        help="FlowMatch step kwarg: minimum sigma region for churn.",
+    )
+    parser.add_argument(
+        "--s_tmax",
+        type=float,
+        default=float("inf"),
+        help="FlowMatch step kwarg: maximum sigma region for churn.",
+    )
+    parser.add_argument(
+        "--s_noise",
+        type=float,
+        default=1.0,
+        help="FlowMatch step kwarg: stochastic noise scale.",
+    )
+    parser.add_argument(
         "--log_intermediates",
         action="store_true",
         help="Try to log intermediate states via callback_on_step_end.",
@@ -463,6 +492,17 @@ def load_zimage_pipeline(model_id: str, dtype: torch.dtype, device: str) -> Tupl
     )
 
 
+def maybe_add_step_kwargs(args: argparse.Namespace, kwargs: Dict[str, Any]) -> List[str]:
+    if not args.enable_scheduler_step_kwargs:
+        return []
+    step_keys = ["s_churn", "s_tmin", "s_tmax", "s_noise"]
+    kwargs["s_churn"] = float(args.s_churn)
+    kwargs["s_tmin"] = float(args.s_tmin)
+    kwargs["s_tmax"] = float(args.s_tmax)
+    kwargs["s_noise"] = float(args.s_noise)
+    return step_keys
+
+
 def main() -> None:
     args = parse_args()
     os.makedirs(args.outdir, exist_ok=True)
@@ -542,6 +582,7 @@ def main() -> None:
                 guidance_scale=float(gs),
                 generator=generator,
             )
+            step_kwarg_keys = maybe_add_step_kwargs(args, kwargs)
             if args.negative_prompt:
                 kwargs["negative_prompt"] = args.negative_prompt
 
@@ -598,6 +639,12 @@ def main() -> None:
                         kwargs.pop("callback_on_step_end_tensor_inputs", None)
                         result = pipe(**kwargs)
                         callback_supported = False
+                    elif step_kwarg_keys and any(k in str(exc) for k in step_kwarg_keys):
+                        print("This pipeline build does not accept FlowMatch step kwargs; rerunning without s_* kwargs.")
+                        for key in step_kwarg_keys:
+                            kwargs.pop(key, None)
+                        result = pipe(**kwargs)
+                        callback_supported = args.log_intermediates
                     else:
                         raise
 

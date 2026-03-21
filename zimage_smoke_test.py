@@ -78,16 +78,59 @@ def make_grid(images: List[Image.Image], cols: int = 2) -> Image.Image:
     return canvas
 
 
+def load_zimage_pipeline(model_id: str, dtype, device: str):
+    load_errors = []
+    try:
+        from diffusers import ZImagePipeline
+
+        pipe = ZImagePipeline.from_pretrained(model_id, torch_dtype=dtype, low_cpu_mem_usage=False).to(device)
+        return pipe, "ZImagePipeline"
+    except Exception as exc:
+        load_errors.append(f"ZImagePipeline: {exc}")
+
+    try:
+        from diffusers import DiffusionPipeline
+
+        pipe = DiffusionPipeline.from_pretrained(
+            model_id,
+            torch_dtype=dtype,
+            trust_remote_code=True,
+            low_cpu_mem_usage=False,
+        ).to(device)
+        return pipe, "DiffusionPipeline(trust_remote_code=True)"
+    except Exception as exc:
+        load_errors.append(f"DiffusionPipeline: {exc}")
+
+    try:
+        from diffusers import AutoPipelineForText2Image
+
+        pipe = AutoPipelineForText2Image.from_pretrained(
+            model_id,
+            torch_dtype=dtype,
+            trust_remote_code=True,
+            low_cpu_mem_usage=False,
+        ).to(device)
+        return pipe, "AutoPipelineForText2Image(trust_remote_code=True)"
+    except Exception as exc:
+        load_errors.append(f"AutoPipelineForText2Image: {exc}")
+
+    joined = "\n  - ".join(load_errors)
+    raise RuntimeError(
+        "Unable to load Z-Image pipeline with current diffusers build.\n"
+        "Tried:\n"
+        f"  - {joined}"
+    )
+
+
 def main() -> None:
     args = parse_args()
     os.makedirs(args.outdir, exist_ok=True)
 
-    from diffusers import ZImagePipeline
-
     device = "cuda"
     dtype = get_dtype(args.dtype)
     print(f"Loading pipeline: {args.model}")
-    pipe = ZImagePipeline.from_pretrained(args.model, torch_dtype=dtype, low_cpu_mem_usage=False).to(device)
+    pipe, loader_name = load_zimage_pipeline(args.model, dtype, device)
+    print(f"Pipeline loader: {loader_name}")
     if args.attention:
         pipe.transformer.set_attention_backend(args.attention)
     if args.compile_transformer:

@@ -10,18 +10,8 @@ print(max(torch.cuda.device_count(), 1))
 PY
 )}"
 
-PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/parti_prompts.txt}"
-OUT_DIR="${OUT_DIR:-./sd35_ddp_out}"
-REWARD_BACKEND="${REWARD_BACKEND:-unifiedreward}"
-REWARD_MODEL="${REWARD_MODEL:-CodeGoat24/UnifiedReward-qwen-7b}"
-UNIFIEDREWARD_MODEL="${UNIFIEDREWARD_MODEL:-${REWARD_MODEL}}"
-IMAGE_REWARD_MODEL="${IMAGE_REWARD_MODEL:-ImageReward-v1.0}"
-REWARD_WEIGHTS="${REWARD_WEIGHTS:-1.0 1.0}"
-REWARD_API_BASE="${REWARD_API_BASE:-}"
-REWARD_API_KEY="${REWARD_API_KEY:-unifiedreward}"
-REWARD_API_MODEL="${REWARD_API_MODEL:-UnifiedReward-7b-v1.5}"
-REWARD_MAX_NEW_TOKENS="${REWARD_MAX_NEW_TOKENS:-512}"
-REWARD_PROMPT_MODE="${REWARD_PROMPT_MODE:-standard}"
+PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/prompts.txt}"
+OUT_DIR="${OUT_DIR:-./imagereward_sd35_ga_ddp_out}"
 
 if [[ ! -f "${PROMPT_FILE}" ]]; then
   echo "Error: PROMPT_FILE does not exist: ${PROMPT_FILE}" >&2
@@ -58,31 +48,29 @@ fi
 if [[ -n "${REWRITES_FILE:-}" ]]; then
   EXTRA_ARGS+=(--rewrites_file "${REWRITES_FILE}")
 fi
-if [[ -n "${REWARD_API_BASE}" ]]; then
-  EXTRA_ARGS+=(--reward_api_base "${REWARD_API_BASE}")
-fi
 
 torchrun --standalone --nproc_per_node "${NUM_GPUS}" "${SCRIPT_DIR}/sd35_ddp_experiment.py" \
   --prompt_file "${PROMPT_FILE_ABS}" \
   --start_index "${START_INDEX:-0}" \
   --end_index "${END_INDEX:--1}" \
-  --modes ${MODES:-base greedy mcts} \
+  --modes base ga \
   --cfg_scales ${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5} \
   --baseline_cfg "${BASELINE_CFG:-1.0}" \
   --steps "${STEPS:-4}" \
   --n_variants "${N_VARIANTS:-3}" \
-  --n_sims "${N_SIMS:-50}" \
-  --ucb_c "${UCB_C:-1.41}" \
-  --reward_backend "${REWARD_BACKEND}" \
-  --reward_model "${REWARD_MODEL}" \
-  --unifiedreward_model "${UNIFIEDREWARD_MODEL}" \
-  --image_reward_model "${IMAGE_REWARD_MODEL}" \
-  --reward_weights ${REWARD_WEIGHTS} \
-  --reward_api_key "${REWARD_API_KEY}" \
-  --reward_api_model "${REWARD_API_MODEL}" \
-  --reward_max_new_tokens "${REWARD_MAX_NEW_TOKENS}" \
-  --reward_prompt_mode "${REWARD_PROMPT_MODE}" \
+  --reward_backend imagereward \
+  --image_reward_model "${IMAGE_REWARD_MODEL:-ImageReward-v1.0}" \
   --seed "${SEED:-42}" \
+  --ga_population "${GA_POPULATION:-24}" \
+  --ga_generations "${GA_GENERATIONS:-12}" \
+  --ga_elites "${GA_ELITES:-3}" \
+  --ga_mutation_prob "${GA_MUTATION_PROB:-0.10}" \
+  --ga_tournament_k "${GA_TOURNAMENT_K:-3}" \
+  --ga_selection "${GA_SELECTION:-rank}" \
+  --ga_rank_pressure "${GA_RANK_PRESSURE:-1.7}" \
+  --ga_crossover "${GA_CROSSOVER:-uniform}" \
+  --ga_log_topk "${GA_LOG_TOPK:-3}" \
+  --ga_phase_constraints \
   --out_dir "${OUT_DIR_ABS}" \
   "${EXTRA_ARGS[@]}" \
   "$@"

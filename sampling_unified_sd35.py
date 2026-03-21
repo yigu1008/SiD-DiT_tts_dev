@@ -7,6 +7,7 @@ Search space per denoising step:
 Supports:
   - greedy search
   - MCTS search
+  - GA search
   - paper UnifiedReward scoring (with blend fallback)
 """
 
@@ -48,7 +49,7 @@ REWRITE_STYLES = [
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified SD3.5 sampling/search with unified reward.")
-    parser.add_argument("--search_method", choices=["greedy", "mcts"], default="greedy")
+    parser.add_argument("--search_method", choices=["greedy", "mcts", "ga"], default="greedy")
 
     parser.add_argument("--model_id", default="YGu1998/SiD-DiT-SD3.5-large")
     parser.add_argument("--ckpt", default=None)
@@ -78,6 +79,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument("--n_sims", type=int, default=50)
     parser.add_argument("--ucb_c", type=float, default=1.41)
+    parser.add_argument("--ga_population", type=int, default=24)
+    parser.add_argument("--ga_generations", type=int, default=12)
+    parser.add_argument("--ga_elites", type=int, default=3)
+    parser.add_argument("--ga_mutation_prob", type=float, default=0.10)
+    parser.add_argument("--ga_tournament_k", type=int, default=3)
+    parser.add_argument("--ga_crossover", choices=["uniform", "one_point"], default="uniform")
+    parser.add_argument("--ga_selection", choices=["rank", "tournament"], default="rank")
+    parser.add_argument("--ga_rank_pressure", type=float, default=1.7)
+    parser.add_argument("--ga_log_topk", type=int, default=3)
+    parser.add_argument("--ga_phase_constraints", action="store_true")
     parser.add_argument(
         "--reward_model",
         default="CodeGoat24/UnifiedReward-qwen-7b",
@@ -516,6 +527,356 @@ def run_greedy(
     return SearchResult(image=final_img, score=final_score, actions=chosen)
 
 
+def run_schedule_actions(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    emb: EmbeddingContext,
+    reward_model: UnifiedRewardScorer,
+    prompt: str,
+    seed: int,
+    actions: list[tuple[int, float]],
+    deterministic_noise: bool = False,
+) -> SearchResult:
+    if len(actions) != args.steps:
+        raise RuntimeError(f"Schedule length {len(actions)} does not match steps={args.steps}")
+    if deterministic_noise:
+        torch.manual_seed(int(seed))
+        if str(ctx.device).startswith("cuda"):
+            torch.cuda.manual_seed_all(int(seed))
+
+    latents = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
+    dx = torch.zeros_like(latents)
+    sched = step_schedule(ctx.device, latents.dtype, args.steps)
+    for step_idx, ((t_flat, t_4d), (variant_idx, cfg)) in enumerate(zip(sched, actions)):
+        noise = latents if step_idx == 0 else torch.randn_like(latents)
+        latents = (1.0 - t_4d) * dx + t_4d * noise
+        flow = transformer_step(args, ctx, latents, emb, int(variant_idx), t_flat, float(cfg))
+        dx = latents - t_4d * flow
+    image = decode_to_pil(ctx, dx)
+    score = score_image(reward_model, prompt, image)
+    return SearchResult(image=image, score=score, actions=[(int(v), float(c)) for v, c in actions])
+
+
+def _decode_genome(genome: list[int], cfg_scales: list[float], steps: int) -> list[tuple[int, float]]:
+    actions: list[tuple[int, float]] = []
+    for step in range(steps):
+        vi = int(genome[2 * step])
+        ci = int(genome[2 * step + 1])
+        actions.append((vi, float(cfg_scales[ci])))
+    return actions
+
+
+def _actions_brief(actions: list[tuple[int, float]]) -> str:
+    return " ".join(f"s{i+1}:v{vi}/cfg{cfg:.2f}" for i, (vi, cfg) in enumerate(actions))
+
+
+def _closest_cfg_index(cfg_scales: list[float], target: float) -> int:
+    return int(min(range(len(cfg_scales)), key=lambda idx: abs(float(cfg_scales[idx]) - float(target))))
+
+
+def _phase_variant_choices(steps: int, n_variants: int) -> tuple[list[int], list[int]]:
+    if n_variants <= 1:
+        return [0], [0]
+    split = max(1, n_variants // 2)
+    early = list(range(split))
+    late = list(range(max(0, n_variants - split), n_variants))
+    if not early:
+        early = list(range(n_variants))
+    if not late:
+        late = list(range(n_variants))
+    return early, late
+
+
+def _repair_genome(
+    genome: list[int],
+    steps: int,
+    n_variants: int,
+    n_cfg: int,
+    phase_constraints: bool,
+) -> list[int]:
+    out = list(genome[: 2 * steps])
+    if len(out) < 2 * steps:
+        out.extend([0] * (2 * steps - len(out)))
+    early_choices, late_choices = _phase_variant_choices(steps, n_variants)
+    for step in range(steps):
+        v_pos = 2 * step
+        c_pos = v_pos + 1
+        vi = int(out[v_pos]) % max(n_variants, 1)
+        ci = int(out[c_pos]) % max(n_cfg, 1)
+        if phase_constraints and n_variants > 1:
+            choices = early_choices if step < max(1, steps // 2) else late_choices
+            if vi not in choices:
+                vi = choices[vi % len(choices)]
+        out[v_pos] = vi
+        out[c_pos] = ci
+    return out
+
+
+def _random_genome(
+    steps: int,
+    n_variants: int,
+    n_cfg: int,
+    phase_constraints: bool,
+) -> list[int]:
+    early_choices, late_choices = _phase_variant_choices(steps, n_variants)
+    genome: list[int] = []
+    for step in range(steps):
+        if phase_constraints and n_variants > 1:
+            choices = early_choices if step < max(1, steps // 2) else late_choices
+        else:
+            choices = list(range(n_variants))
+        vi = int(choices[np.random.randint(len(choices))])
+        ci = int(np.random.randint(n_cfg))
+        genome.extend([vi, ci])
+    return genome
+
+
+def _select_parent_rank(ranked_genomes: list[list[int]], rank_pressure: float) -> list[int]:
+    n = len(ranked_genomes)
+    if n == 1:
+        return list(ranked_genomes[0])
+    rp = max(0.0, float(rank_pressure))
+    if rp == 0.0:
+        probs = np.full((n,), 1.0 / n, dtype=np.float64)
+    else:
+        ranks = np.arange(n, dtype=np.float64)
+        probs = np.exp(-rp * ranks / max(1.0, float(n - 1)))
+        probs /= probs.sum()
+    idx = int(np.random.choice(n, p=probs))
+    return list(ranked_genomes[idx])
+
+
+def _select_parent_tournament(ranked_genomes: list[list[int]], k: int) -> list[int]:
+    n = len(ranked_genomes)
+    if n == 1:
+        return list(ranked_genomes[0])
+    kk = max(2, min(int(k), n))
+    picks = [int(np.random.randint(n)) for _ in range(kk)]
+    best_idx = min(picks)
+    return list(ranked_genomes[best_idx])
+
+
+def _crossover(parent_a: list[int], parent_b: list[int], mode: str) -> list[int]:
+    if len(parent_a) != len(parent_b):
+        raise RuntimeError("Parents have mismatched genome length.")
+    if len(parent_a) <= 1:
+        return list(parent_a)
+    if mode == "one_point":
+        cut = int(np.random.randint(1, len(parent_a)))
+        return list(parent_a[:cut] + parent_b[cut:])
+    child = []
+    for i in range(len(parent_a)):
+        child.append(parent_a[i] if float(np.random.rand()) < 0.5 else parent_b[i])
+    return child
+
+
+def _mutate_genome(
+    genome: list[int],
+    steps: int,
+    n_variants: int,
+    n_cfg: int,
+    mutation_prob: float,
+    phase_constraints: bool,
+) -> list[int]:
+    out = list(genome)
+    p = max(0.0, min(1.0, float(mutation_prob)))
+    early_choices, late_choices = _phase_variant_choices(steps, n_variants)
+    for step in range(steps):
+        v_pos = 2 * step
+        c_pos = v_pos + 1
+        if float(np.random.rand()) < p:
+            if phase_constraints and n_variants > 1:
+                choices = early_choices if step < max(1, steps // 2) else late_choices
+            else:
+                choices = list(range(n_variants))
+            out[v_pos] = int(choices[np.random.randint(len(choices))])
+        if float(np.random.rand()) < p:
+            out[c_pos] = int(np.random.randint(n_cfg))
+    return out
+
+
+def run_ga(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    emb: EmbeddingContext,
+    reward_model: UnifiedRewardScorer,
+    prompt: str,
+    variants: list[str],
+    seed: int,
+    log_dir: str | None = None,
+    log_prefix: str = "",
+) -> SearchResult:
+    n_variants = len(variants)
+    n_cfg = len(args.cfg_scales)
+    if n_variants <= 0 or n_cfg <= 0:
+        raise RuntimeError("GA requires non-empty variants and cfg_scales.")
+
+    pop_size = max(2, int(args.ga_population))
+    generations = max(1, int(args.ga_generations))
+    elites = max(1, min(int(args.ga_elites), pop_size))
+    steps = int(args.steps)
+    genome_len = 2 * steps
+
+    baseline_cfg_idx = _closest_cfg_index(list(args.cfg_scales), float(args.baseline_cfg))
+    baseline_genome: list[int] = []
+    for _ in range(steps):
+        baseline_genome.extend([0, baseline_cfg_idx])
+
+    population: list[list[int]] = [_repair_genome(baseline_genome, steps, n_variants, n_cfg, args.ga_phase_constraints)]
+    while len(population) < pop_size:
+        g = _random_genome(steps, n_variants, n_cfg, args.ga_phase_constraints)
+        population.append(_repair_genome(g, steps, n_variants, n_cfg, args.ga_phase_constraints))
+
+    score_cache: dict[tuple[int, ...], float] = {}
+    best_score = -float("inf")
+    best_genome = list(population[0])
+    history: list[dict[str, Any]] = []
+
+    def eval_genome(genome: list[int]) -> float:
+        repaired = _repair_genome(genome, steps, n_variants, n_cfg, args.ga_phase_constraints)
+        key = tuple(repaired)
+        if key in score_cache:
+            return score_cache[key]
+        actions = _decode_genome(repaired, list(args.cfg_scales), steps)
+        result = run_schedule_actions(
+            args,
+            ctx,
+            emb,
+            reward_model,
+            prompt,
+            seed,
+            actions,
+            deterministic_noise=True,
+        )
+        score_cache[key] = float(result.score)
+        return score_cache[key]
+
+    print(
+        f"  ga: pop={pop_size} gens={generations} elites={elites} "
+        f"selection={args.ga_selection} crossover={args.ga_crossover}"
+    )
+    for gen in range(generations):
+        scored: list[tuple[float, list[int]]] = []
+        for genome in population:
+            score = eval_genome(genome)
+            scored.append((score, _repair_genome(genome, steps, n_variants, n_cfg, args.ga_phase_constraints)))
+        scored.sort(key=lambda item: item[0], reverse=True)
+
+        gen_best_score, gen_best_genome = scored[0]
+        gen_mean = float(np.mean([item[0] for item in scored])) if scored else 0.0
+        if gen_best_score > best_score:
+            best_score = float(gen_best_score)
+            best_genome = list(gen_best_genome)
+
+        topk = max(1, int(args.ga_log_topk))
+        gen_top = scored[:topk]
+        print(f"    gen {gen + 1:02d}/{generations} best={gen_best_score:.4f} mean={gen_mean:.4f}")
+        for rank, (score, genome) in enumerate(gen_top, start=1):
+            actions = _decode_genome(genome, list(args.cfg_scales), steps)
+            print(f"      #{rank} score={score:.4f} {_actions_brief(actions)}")
+
+        history.append(
+            {
+                "generation": int(gen),
+                "best_score": float(gen_best_score),
+                "mean_score": float(gen_mean),
+                "top": [
+                    {
+                        "rank": int(rank),
+                        "score": float(score),
+                        "genome": [int(x) for x in genome],
+                        "actions": [[int(v), float(c)] for v, c in _decode_genome(genome, list(args.cfg_scales), steps)],
+                    }
+                    for rank, (score, genome) in enumerate(gen_top, start=1)
+                ],
+            }
+        )
+
+        if gen + 1 >= generations:
+            break
+
+        ranked_genomes = [list(genome) for _, genome in scored]
+        next_population: list[list[int]] = [list(genome) for _, genome in scored[:elites]]
+        while len(next_population) < pop_size:
+            if args.ga_selection == "tournament":
+                parent_a = _select_parent_tournament(ranked_genomes, int(args.ga_tournament_k))
+                parent_b = _select_parent_tournament(ranked_genomes, int(args.ga_tournament_k))
+            else:
+                parent_a = _select_parent_rank(ranked_genomes, float(args.ga_rank_pressure))
+                parent_b = _select_parent_rank(ranked_genomes, float(args.ga_rank_pressure))
+            child = _crossover(parent_a, parent_b, args.ga_crossover)
+            child = _mutate_genome(
+                child,
+                steps,
+                n_variants,
+                n_cfg,
+                float(args.ga_mutation_prob),
+                args.ga_phase_constraints,
+            )
+            child = _repair_genome(child, steps, n_variants, n_cfg, args.ga_phase_constraints)
+            if len(child) != genome_len:
+                child = child[:genome_len]
+            next_population.append(child)
+        population = next_population
+
+    best_actions = _decode_genome(best_genome, list(args.cfg_scales), steps)
+    best_result = run_schedule_actions(
+        args,
+        ctx,
+        emb,
+        reward_model,
+        prompt,
+        seed,
+        best_actions,
+        deterministic_noise=True,
+    )
+
+    if log_dir is not None:
+        os.makedirs(log_dir, exist_ok=True)
+        prefix = f"{log_prefix}_" if log_prefix else ""
+        history_json = os.path.join(log_dir, f"{prefix}ga_history.json")
+        history_txt = os.path.join(log_dir, f"{prefix}ga_history.txt")
+        payload = {
+            "prompt": prompt,
+            "seed": int(seed),
+            "ga_population": int(pop_size),
+            "ga_generations": int(generations),
+            "ga_elites": int(elites),
+            "ga_mutation_prob": float(args.ga_mutation_prob),
+            "ga_selection": args.ga_selection,
+            "ga_crossover": args.ga_crossover,
+            "ga_rank_pressure": float(args.ga_rank_pressure),
+            "ga_tournament_k": int(args.ga_tournament_k),
+            "ga_phase_constraints": bool(args.ga_phase_constraints),
+            "best_score": float(best_result.score),
+            "best_genome": [int(x) for x in best_genome],
+            "best_actions": [[int(v), float(c)] for v, c in best_actions],
+            "history": history,
+        }
+        with open(history_json, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        with open(history_txt, "w", encoding="utf-8") as f:
+            f.write(
+                "gen\tbest\tmean\ttop_actions\n"
+            )
+            for row in history:
+                top_actions = ""
+                if row["top"]:
+                    top_actions = _actions_brief(
+                        [(int(v), float(c)) for v, c in row["top"][0]["actions"]]
+                    )
+                f.write(
+                    f"{row['generation'] + 1}\t{row['best_score']:.6f}\t"
+                    f"{row['mean_score']:.6f}\t{top_actions}\n"
+                )
+
+    return SearchResult(
+        image=best_result.image,
+        score=float(best_result.score),
+        actions=[(int(v), float(c)) for v, c in best_actions],
+    )
+
+
 class MCTSNode:
     __slots__ = ("step", "dx", "latents", "children", "visits", "action_visits", "action_values")
 
@@ -748,8 +1109,20 @@ def run(args: argparse.Namespace) -> None:
         )
         if args.search_method == "greedy":
             search = run_greedy(args, ctx, emb, reward_model, prompt, variants, args.seed)
-        else:
+        elif args.search_method == "mcts":
             search = run_mcts(args, ctx, emb, reward_model, prompt, variants, args.seed)
+        else:
+            search = run_ga(
+                args,
+                ctx,
+                emb,
+                reward_model,
+                prompt,
+                variants,
+                args.seed,
+                log_dir=args.out_dir,
+                log_prefix=slug,
+            )
 
         base_path = os.path.join(args.out_dir, f"{slug}_baseline.png")
         search_path = os.path.join(args.out_dir, f"{slug}_{args.search_method}.png")

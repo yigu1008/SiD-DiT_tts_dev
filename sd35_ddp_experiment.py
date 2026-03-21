@@ -16,6 +16,7 @@ from sampling_unified_sd35 import (
     load_pipeline,
     load_reward_model,
     run_baseline,
+    run_ga,
     run_greedy,
     run_mcts,
     save_comparison,
@@ -31,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end_index", type=int, default=-1, help="Exclusive end index; -1 means all.")
     parser.add_argument("--out_dir", default="./sd35_ddp_out")
 
-    parser.add_argument("--modes", nargs="+", choices=["base", "greedy", "mcts"], default=["base", "greedy", "mcts"])
+    parser.add_argument("--modes", nargs="+", choices=["base", "greedy", "mcts", "ga"], default=["base", "greedy", "mcts", "ga"])
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--seed_per_prompt", action="store_true", help="Use seed + prompt_index for each prompt.")
 
@@ -52,7 +53,31 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--n_sims", type=int, default=50)
     parser.add_argument("--ucb_c", type=float, default=1.41)
-    parser.add_argument("--reward_model", default="CodeGoat24/UnifiedReward-qwen-7b")
+    parser.add_argument("--ga_population", type=int, default=24)
+    parser.add_argument("--ga_generations", type=int, default=12)
+    parser.add_argument("--ga_elites", type=int, default=3)
+    parser.add_argument("--ga_mutation_prob", type=float, default=0.10)
+    parser.add_argument("--ga_tournament_k", type=int, default=3)
+    parser.add_argument("--ga_crossover", choices=["uniform", "one_point"], default="uniform")
+    parser.add_argument("--ga_selection", choices=["rank", "tournament"], default="rank")
+    parser.add_argument("--ga_rank_pressure", type=float, default=1.7)
+    parser.add_argument("--ga_log_topk", type=int, default=3)
+    parser.add_argument("--ga_phase_constraints", action="store_true")
+    parser.add_argument(
+        "--reward_model",
+        default="CodeGoat24/UnifiedReward-qwen-7b",
+        help="Legacy alias for UnifiedReward model id (kept for compatibility).",
+    )
+    parser.add_argument(
+        "--unifiedreward_model",
+        default=None,
+        help="UnifiedReward model id override. Defaults to --reward_model when unset.",
+    )
+    parser.add_argument(
+        "--image_reward_model",
+        default="ImageReward-v1.0",
+        help="ImageReward model id/checkpoint name.",
+    )
     parser.add_argument(
         "--reward_backend",
         choices=["auto", "unifiedreward", "unified", "imagereward", "hpsv2", "blend"],
@@ -327,6 +352,41 @@ def main() -> None:
                     "delta_vs_base": float(mcts.score - base_score),
                     "baseline_score": float(base_score),
                     "actions": [[int(v), float(c)] for v, c in mcts.actions],
+                }
+            )
+
+        if "ga" in args.modes:
+            ga = run_ga(
+                args,
+                ctx,
+                emb,
+                reward_model,
+                prompt,
+                variants,
+                seed,
+                log_dir=os.path.join(args.out_dir, "ga_logs"),
+                log_prefix=slug,
+            )
+            if args.save_images:
+                ga.image.save(os.path.join(img_dir, f"{slug}_ga.png"))
+                save_comparison(
+                    os.path.join(img_dir, f"{slug}_ga_comp.png"),
+                    base_img,
+                    ga.image,
+                    base_score,
+                    ga.score,
+                    ga.actions,
+                )
+            rank_rows.append(
+                {
+                    "prompt_index": prompt_index,
+                    "prompt": prompt,
+                    "seed": seed,
+                    "mode": "ga",
+                    "score": float(ga.score),
+                    "delta_vs_base": float(ga.score - base_score),
+                    "baseline_score": float(base_score),
+                    "actions": [[int(v), float(c)] for v, c in ga.actions],
                 }
             )
 

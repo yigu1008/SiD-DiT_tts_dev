@@ -44,7 +44,16 @@ if ! "${PY}" -m pip install --no-cache-dir "git+https://github.com/openai/CLIP.g
 fi
 
 echo "[install] wandb (required by ImageReward import path)"
-"${PY}" -m pip install --no-cache-dir --force-reinstall "wandb"
+if ! "${PY}" -m pip install --no-cache-dir --force-reinstall "wandb"; then
+  echo "[install] warning: wandb reinstall failed (likely permissions)."
+  echo "[install] warning: trying user-writable overlay install for cluster ..."
+  if PYTHON_BIN="${PY}" SID_OVERLAY_DIR="${SID_OVERLAY_DIR:-$HOME/.sid_pydeps}" bash "${SCRIPT_DIR}/prepare_cluster_overlay_deps.sh"; then
+    echo "[install] overlay prepared. Set SID_EXTRA_PYTHONPATH to the printed path before launch."
+  else
+    echo "[install] warning: overlay install also failed."
+  fi
+  echo "[install] warning: continuing; reward_unified runtime can still use a wandb stub for ImageReward inference."
+fi
 
 echo "[install] UnifiedReward runtime deps (qwen-vl-utils, openai client)"
 "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" \
@@ -68,8 +77,11 @@ import qwen_vl_utils
 print("qwen_vl_utils", getattr(qwen_vl_utils, "__file__", "ok"))
 import openai
 print("openai", getattr(openai, "__version__", "ok"))
-import wandb
-print("wandb", getattr(wandb, "__version__", "ok"))
+try:
+    import wandb
+    print("wandb", getattr(wandb, "__version__", "ok"))
+except Exception as exc:
+    print("wandb import warning:", exc)
 import xxhash
 print("xxhash", getattr(xxhash, "__version__", "ok"))
 from reward_unified import UnifiedRewardScorer

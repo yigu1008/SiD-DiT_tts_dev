@@ -233,6 +233,44 @@ class UnifiedRewardScorer:
             print(f"[Reward] {self._unifiedreward_install_hint}")
 
     def _try_load_imagereward(self) -> None:
+        def _inject_wandb_stub(reason: str) -> None:
+            import types
+
+            if "wandb" in sys.modules and bool(getattr(sys.modules["wandb"], "__codex_stub__", False)):
+                return
+
+            def _noop(*args, **kwargs):
+                return None
+
+            class _DummyRun:
+                def log(self, *args, **kwargs):
+                    return None
+
+                def finish(self, *args, **kwargs):
+                    return None
+
+                def __getattr__(self, _name):
+                    return _noop
+
+            stub = types.ModuleType("wandb")
+            stub.__codex_stub__ = True
+            stub.init = lambda *args, **kwargs: _DummyRun()
+            stub.log = _noop
+            stub.finish = _noop
+            stub.login = _noop
+            stub.watch = _noop
+            stub.define_metric = _noop
+            stub.config = {}
+            stub.run = None
+            sys.modules["wandb"] = stub
+            print(f"[Reward] Using wandb stub for ImageReward inference ({reason}).")
+
+        def _ensure_wandb_importable() -> None:
+            try:
+                import wandb  # noqa: F401
+            except Exception as exc:
+                _inject_wandb_stub(str(exc))
+
         def _load() -> tuple[object, Optional[str]]:
             # Compatibility shim:
             # Some ImageReward releases expect BertModel.all_tied_weights_keys,
@@ -250,6 +288,7 @@ class UnifiedRewardScorer:
             except Exception:
                 pass
 
+            _ensure_wandb_importable()
             import ImageReward as RM
 
             tried_errors: List[str] = []
@@ -290,15 +329,7 @@ class UnifiedRewardScorer:
                 elif "wandb_telemetry_pb2" in msg or (
                     "cannot import name 'Imports'" in msg and "wandb" in msg
                 ):
-                    print("[Reward] Detected broken wandb install used by ImageReward. Reinstalling wandb and retrying once ...")
-                    try:
-                        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "wandb"], check=False)
-                        subprocess.run(
-                            [sys.executable, "-m", "pip", "install", "--no-cache-dir", "--force-reinstall", "wandb"],
-                            check=True,
-                        )
-                    except Exception as install_exc:
-                        raise RuntimeError(f"Failed to reinstall wandb automatically: {install_exc}") from exc
+                    _inject_wandb_stub(msg)
                     model, selected = _load()
                 else:
                     raise

@@ -11,9 +11,22 @@ mkdir -p "${HF_HOME}"
 # Follow G-OPD style: always include user local bin.
 export PATH="$HOME/.local/bin:$PATH"
 
-# Prevent ~/.local site-packages from shadowing conda env packages.
-export PYTHONNOUSERSITE=1
+# Prevent ~/.local site-packages from shadowing conda env packages by default.
+# Set SID_ALLOW_USER_SITE=1 to allow `pip install --user` packages at runtime.
+if [[ "${SID_ALLOW_USER_SITE:-0}" == "1" ]]; then
+  unset PYTHONNOUSERSITE || true
+else
+  export PYTHONNOUSERSITE=1
+fi
 unset PYTHONPATH || true
+
+# Optional overlay path for cluster/user-writable Python deps.
+# Example:
+#   export SID_EXTRA_PYTHONPATH="$HOME/.sid_pydeps/py3.10"
+# This keeps base env clean while allowing patched packages (e.g., wandb/xxhash).
+if [[ -n "${SID_EXTRA_PYTHONPATH:-}" ]]; then
+  export PYTHONPATH="${SID_EXTRA_PYTHONPATH}${PYTHONPATH:+:${PYTHONPATH}}"
+fi
 
 # Optional explicit override.
 if [[ -n "${SID_ENV_PATH:-}" ]]; then

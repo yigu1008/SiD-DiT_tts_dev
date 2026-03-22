@@ -89,7 +89,7 @@ search:
       - export RUN_SANA={run_sana}
       - export RUN_SD35={run_sd35}
       - export RUN_FLUX={run_flux}
-      - export USE_QWEN=0
+      - export USE_QWEN={use_qwen}
       - export SAVE_IMAGES={save_images}
       - export SAVE_VARIANTS=0
       - bash hpsv2_sd35_flux_allalgos.sh
@@ -165,4 +165,6 @@ search:
     - name: run_sd35
       values: [ 1 ]
     - name: run_flux
+      values: [ 1 ]
+    - name: use_qwen
       values: [ 1 ]

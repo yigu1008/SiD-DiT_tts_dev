@@ -24,7 +24,7 @@ if [[ "${RUN_SANA}" == "1" ]]; then
   NUM_GPUS="${NUM_GPUS}" \
   START_INDEX="${START_INDEX}" \
   END_INDEX="${END_INDEX}" \
-  "${SCRIPT_DIR}/hpsv2_sana_sid_ddp_suite.sh"
+  bash "${SCRIPT_DIR}/hpsv2_sana_sid_ddp_suite.sh"
 fi
 
 if [[ "${RUN_SD35}" == "1" ]]; then
@@ -34,7 +34,7 @@ if [[ "${RUN_SD35}" == "1" ]]; then
   NUM_GPUS="${NUM_GPUS}" \
   START_INDEX="${START_INDEX}" \
   END_INDEX="${END_INDEX}" \
-  "${SCRIPT_DIR}/hpsv2_sd35_sid_ddp_suite.sh"
+  bash "${SCRIPT_DIR}/hpsv2_sd35_sid_ddp_suite.sh"
 fi
 
 if [[ "${RUN_FLUX}" == "1" ]]; then
@@ -44,7 +44,7 @@ if [[ "${RUN_FLUX}" == "1" ]]; then
   NUM_GPUS="${NUM_GPUS}" \
   START_INDEX="${START_INDEX}" \
   END_INDEX="${END_INDEX}" \
-  "${SCRIPT_DIR}/hpsv2_flux_schnell_ddp_suite.sh"
+  bash "${SCRIPT_DIR}/hpsv2_flux_schnell_ddp_suite.sh"
 fi
 
 echo "All requested model suites finished. Root: ${OUT_ROOT}"

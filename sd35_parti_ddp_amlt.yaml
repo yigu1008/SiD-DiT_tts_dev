@@ -1,4 +1,4 @@
-description: sid-sd35-parti-ddp
+description: sid-sd35-hpsv2-ddp
 
 target:
   service: sing
@@ -17,7 +17,7 @@ environment:
   image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
   setup:
     - export PATH=/home/aiscuser/.local/bin:$$PATH
-    - pip install --user datasets huggingface_hub
+    - pip install --user datasets huggingface_hub hpsv2
     - pip list
 
 code:
@@ -31,7 +31,7 @@ storage:
 
 search:
   job_template:
-    name: sd35-parti-{run_tag}
+    name: sd35-hpsv2-{run_tag}
     sku: ${NODES}x${MEM}G${GPUS}-IB
     sla_tier: Standard
     process_count_per_node: 1
@@ -46,12 +46,17 @@ search:
       - export NCCL_P2P_LEVEL=NVL
       - source /opt/conda/etc/profile.d/conda.sh
       - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
-      - /opt/conda/envs/ptca/bin/pip install ImageReward huggingface_hub
+      - /opt/conda/envs/ptca/bin/pip install hpsv2 ImageReward huggingface_hub
       - export NUM_GPUS=${GPUS}
-      - export PROMPT_FILE={prompt_file}
+      - export HPSV2_PROMPT_DIR=/mnt/data/v-yigu/hpsv2_prompt_cache
+      - export PROMPT_STYLE={prompt_style}
+      - OUT_DIR="$$HPSV2_PROMPT_DIR" STYLE="$$PROMPT_STYLE" bash get_hpsv2_prompts.sh
+      - if [ "$$PROMPT_STYLE" = "all" ]; then export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts.txt"; else export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts_$$PROMPT_STYLE.txt"; fi
+      - export OUT_ROOT=/mnt/data/v-yigu/hpsv2_sd35_runs/{run_tag}
       - export START_INDEX={start_index}
       - export END_INDEX={end_index}
-      - export MODES="{modes}"
+      - export METHODS="{methods}"
+      - export REWARD_BACKEND={reward_backend}
       - export CFG_SCALES="{cfg_scales}"
       - export BASELINE_CFG={baseline_cfg}
       - export STEPS={steps}
@@ -64,11 +69,20 @@ search:
       - export RESAMPLE_START_FRAC={resample_start_frac}
       - export SMC_CFG_SCALE={smc_cfg_scale}
       - export SMC_VARIANT_IDX={smc_variant_idx}
+      - export GA_POPULATION={ga_population}
+      - export GA_GENERATIONS={ga_generations}
+      - export GA_ELITES={ga_elites}
+      - export GA_MUTATION_PROB={ga_mutation_prob}
+      - export GA_TOURNAMENT_K={ga_tournament_k}
+      - export GA_SELECTION={ga_selection}
+      - export GA_RANK_PRESSURE={ga_rank_pressure}
+      - export GA_CROSSOVER={ga_crossover}
+      - export GA_LOG_TOPK={ga_log_topk}
       - export SEED={seed}
-      - export OUT_DIR=/mnt/data/v-yigu/sd35_parti_runs/{run_tag}
-      # Optional toggles:
-      #   add --seed_per_prompt, --save_images, --save_variants as needed
-      - bash run_sd35_ddp.sh --seed_per_prompt --save_images
+      - export USE_QWEN=0
+      - export SAVE_IMAGES={save_images}
+      - export SAVE_VARIANTS=0
+      - bash hpsv2_sd35_sid_ddp_suite.sh
 
     submit_args:
       env:
@@ -78,19 +92,20 @@ search:
   max_trials: 100
   type: grid
   params:
-    # Example Parti shards/ranges. Replace with your real prompt file/ranges.
     - name: run_tag
-      values: [ "parti_00000_00100" ]
-    - name: prompt_file
-      values: [ "/mnt/data/v-yigu/parti_prompts/parti_prompts.txt" ]
+      values: [ "hpsv2_00000_00100" ]
+    - name: prompt_style
+      values: [ "all" ]
     - name: start_index
       values: [ 0 ]
     - name: end_index
       values: [ 100 ]
-    - name: modes
-      values: [ "base greedy mcts ga smc" ]
+    - name: methods
+      values: [ "baseline greedy mcts ga smc" ]
+    - name: reward_backend
+      values: [ "imagereward" ]
     - name: cfg_scales
-      values: [ "0.0 0.25 0.5 0.75 1.0 1.25 1.5 1.75 2.0" ]
+      values: [ "1.0 1.25 1.5" ]
     - name: baseline_cfg
       values: [ 1.0 ]
     - name: steps
@@ -112,6 +127,26 @@ search:
     - name: smc_cfg_scale
       values: [ 1.25 ]
     - name: smc_variant_idx
+      values: [ 0 ]
+    - name: ga_population
+      values: [ 24 ]
+    - name: ga_generations
+      values: [ 12 ]
+    - name: ga_elites
+      values: [ 3 ]
+    - name: ga_mutation_prob
+      values: [ 0.10 ]
+    - name: ga_tournament_k
+      values: [ 3 ]
+    - name: ga_selection
+      values: [ "rank" ]
+    - name: ga_rank_pressure
+      values: [ 1.7 ]
+    - name: ga_crossover
+      values: [ "uniform" ]
+    - name: ga_log_topk
+      values: [ 3 ]
+    - name: save_images
       values: [ 0 ]
     - name: seed
       values: [ 42 ]

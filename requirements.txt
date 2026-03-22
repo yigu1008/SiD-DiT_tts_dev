@@ -28,6 +28,6 @@ ml_collections
 peft
 wandb
 open_clip_torch
-image_reward
+# ImageReward is installed via install_reward_deps.sh (PyPI wheel + git fallback).
 xformers
 sentencepiece

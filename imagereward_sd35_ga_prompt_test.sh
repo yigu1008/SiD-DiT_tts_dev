@@ -25,5 +25,4 @@ source "${SCRIPT_DIR}/shell_env.sh"
   --ga_crossover uniform \
   --ga_log_topk 3 \
   --ga_phase_constraints \
-  --out_dir ./imagereward_sd35_ga_out \
-  "$@"
+  --out_dir ./imagereward_sd35_ga_out

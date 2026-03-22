@@ -79,6 +79,7 @@ class UnifiedRewardScorer:
         "Install ImageReward dependencies, e.g.:\n"
         "  pip install -U setuptools\n"
         "  pip install -U xxhash\n"
+        "  pip install -U --force-reinstall wandb\n"
         "  pip install -U git+https://github.com/THUDM/ImageReward.git\n"
         "  pip install -U ftfy regex tqdm\n"
         "  pip install -U git+https://github.com/openai/CLIP.git"
@@ -274,18 +275,33 @@ class UnifiedRewardScorer:
         try:
             try:
                 model, selected = _load()
-            except ModuleNotFoundError as exc:
-                if getattr(exc, "name", "") != "xxhash":
+            except Exception as exc:
+                msg = str(exc)
+                if isinstance(exc, ModuleNotFoundError) and getattr(exc, "name", "") == "xxhash":
+                    print("[Reward] ImageReward missing dependency 'xxhash'. Installing and retrying once ...")
+                    try:
+                        subprocess.run(
+                            [sys.executable, "-m", "pip", "install", "--no-cache-dir", "xxhash>=3.4.1"],
+                            check=True,
+                        )
+                    except Exception as install_exc:
+                        raise RuntimeError(f"Failed to install xxhash automatically: {install_exc}") from exc
+                    model, selected = _load()
+                elif "wandb_telemetry_pb2" in msg or (
+                    "cannot import name 'Imports'" in msg and "wandb" in msg
+                ):
+                    print("[Reward] Detected broken wandb install used by ImageReward. Reinstalling wandb and retrying once ...")
+                    try:
+                        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "wandb"], check=False)
+                        subprocess.run(
+                            [sys.executable, "-m", "pip", "install", "--no-cache-dir", "--force-reinstall", "wandb"],
+                            check=True,
+                        )
+                    except Exception as install_exc:
+                        raise RuntimeError(f"Failed to reinstall wandb automatically: {install_exc}") from exc
+                    model, selected = _load()
+                else:
                     raise
-                print("[Reward] ImageReward missing dependency 'xxhash'. Installing and retrying once ...")
-                try:
-                    subprocess.run(
-                        [sys.executable, "-m", "pip", "install", "--no-cache-dir", "xxhash>=3.4.1"],
-                        check=True,
-                    )
-                except Exception as install_exc:
-                    raise RuntimeError(f"Failed to install xxhash automatically: {install_exc}") from exc
-                model, selected = _load()
 
             model.eval()
             self.state.imagereward = model

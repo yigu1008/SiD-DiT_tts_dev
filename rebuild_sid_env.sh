@@ -71,6 +71,7 @@ conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
   wcwidth==0.2.13 \
   protobuf==6.31.1 \
   sentencepiece==0.2.0 \
+  wandb \
   fsspec==2024.3.1 \
   imageio==2.34.2 \
   python-dotenv==1.0.1 \

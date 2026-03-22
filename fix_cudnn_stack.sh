@@ -82,6 +82,7 @@ echo "[env] install model stack pins"
   safetensors==0.5.3 \
   numpy==1.26.4 \
   pillow==10.3.0 \
+  wandb \
   imageio==2.34.2 \
   python-dotenv==1.0.1 \
   PyWavelets==1.6.0

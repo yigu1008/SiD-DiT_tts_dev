@@ -43,6 +43,9 @@ if ! "${PY}" -m pip install --no-cache-dir "git+https://github.com/openai/CLIP.g
   "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "clip-anytorch"
 fi
 
+echo "[install] wandb (required by ImageReward import path)"
+"${PY}" -m pip install --no-cache-dir --force-reinstall "wandb"
+
 echo "[install] UnifiedReward runtime deps (qwen-vl-utils, openai client)"
 "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" \
   "qwen-vl-utils>=0.0.14" \
@@ -65,6 +68,8 @@ import qwen_vl_utils
 print("qwen_vl_utils", getattr(qwen_vl_utils, "__file__", "ok"))
 import openai
 print("openai", getattr(openai, "__version__", "ok"))
+import wandb
+print("wandb", getattr(wandb, "__version__", "ok"))
 import xxhash
 print("xxhash", getattr(xxhash, "__version__", "ok"))
 from reward_unified import UnifiedRewardScorer

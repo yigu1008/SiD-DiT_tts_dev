@@ -229,6 +229,15 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
     dtype = torch.float16
     print(f"Loading SD3.5 pipeline: {args.model_id}")
     pipe = SiDSD3Pipeline.from_pretrained(args.model_id, torch_dtype=dtype).to(device)
+    # Normalize text-encoder dtypes explicitly. On some cluster images (Apex fused RMSNorm),
+    # partially-fp32 encoder params can trigger Half/Float mismatch at prompt encoding time.
+    for name in ("text_encoder", "text_encoder_2", "text_encoder_3"):
+        enc = getattr(pipe, name, None)
+        if enc is not None:
+            try:
+                enc.to(device=device, dtype=dtype)
+            except Exception as exc:
+                print(f"[warn] unable to cast {name} to {dtype}: {exc}")
 
     if args.ckpt:
         print(f"Loading transformer weights from {args.ckpt}")

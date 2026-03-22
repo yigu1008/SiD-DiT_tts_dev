@@ -281,10 +281,32 @@ class SiDSD3Pipeline(
                 f" {max_sequence_length} tokens: {removed_text}"
             )
 
-        prompt_embeds = self.text_encoder_3(text_input_ids.to(device))[0]
+        # Keep output dtype stable for downstream transformer.
+        output_dtype = dtype
+        if output_dtype is None:
+            output_dtype = (
+                self.transformer.dtype
+                if hasattr(self, "transformer") and self.transformer is not None
+                else self.text_encoder_3.dtype
+            )
 
-        dtype = self.text_encoder_3.dtype
-        prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
+        try:
+            prompt_embeds = self.text_encoder_3(text_input_ids.to(device))[0]
+        except RuntimeError as exc:
+            msg = str(exc)
+            if (
+                "expected scalar type Float but found Half" in msg
+                or "expected scalar type Half but found Float" in msg
+            ):
+                logger.warning(
+                    "text_encoder_3 dtype mismatch detected; retrying T5 prompt encode in fp32 for compatibility."
+                )
+                self.text_encoder_3.to(device=device, dtype=torch.float32)
+                prompt_embeds = self.text_encoder_3(text_input_ids.to(device))[0]
+            else:
+                raise
+
+        prompt_embeds = prompt_embeds.to(dtype=output_dtype, device=device)
 
         _, seq_len, _ = prompt_embeds.shape
 

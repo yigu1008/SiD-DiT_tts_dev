@@ -1,0 +1,390 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/shell_env.sh"
+
+PROMPT_FILE="${PROMPT_FILE:-/data/ygu/hpsv2_prompts.txt}"
+OUT_ROOT="${OUT_ROOT:-/data/ygu/hpsv2_sana_sid_ddp}"
+METHODS="${METHODS:-baseline greedy mcts ga}"
+
+START_INDEX="${START_INDEX:-0}"
+END_INDEX="${END_INDEX:--1}"
+SAVE_FIRST_K="${SAVE_FIRST_K:-10}"
+
+STEPS="${STEPS:-4}"
+SEED="${SEED:-42}"
+N_SAMPLES="${N_SAMPLES:-1}"
+TIME_SCALE="${TIME_SCALE:-1000.0}"
+MIN_FREE_GB="${MIN_FREE_GB:-16}"
+
+REWARD_TYPE="${REWARD_TYPE:-imagereward}"
+REWARD_DEVICE="${REWARD_DEVICE:-cpu}"
+REWARD_MODEL="${REWARD_MODEL:-CodeGoat24/UnifiedReward-qwen-7b}"
+UNIFIEDREWARD_MODEL="${UNIFIEDREWARD_MODEL:-${REWARD_MODEL}}"
+IMAGE_REWARD_MODEL="${IMAGE_REWARD_MODEL:-ImageReward-v1.0}"
+REWARD_WEIGHTS="${REWARD_WEIGHTS:-1.0 1.0}"
+REWARD_API_BASE="${REWARD_API_BASE:-}"
+REWARD_API_KEY="${REWARD_API_KEY:-unifiedreward}"
+REWARD_API_MODEL="${REWARD_API_MODEL:-UnifiedReward-7b-v1.5}"
+REWARD_MAX_NEW_TOKENS="${REWARD_MAX_NEW_TOKENS:-512}"
+REWARD_PROMPT_MODE="${REWARD_PROMPT_MODE:-standard}"
+
+USE_QWEN="${USE_QWEN:-0}"
+N_VARIANTS="${N_VARIANTS:-3}"
+CFG_SCALES="${CFG_SCALES:-1.0 1.25 1.5}"
+N_SIMS="${N_SIMS:-48}"
+UCB_C="${UCB_C:-1.41}"
+SMC_K="${SMC_K:-8}"
+SMC_GAMMA="${SMC_GAMMA:-0.10}"
+ESS_THRESHOLD="${ESS_THRESHOLD:-0.5}"
+RESAMPLE_START_FRAC="${RESAMPLE_START_FRAC:-0.3}"
+SMC_CFG_SCALE="${SMC_CFG_SCALE:-1.25}"
+SMC_VARIANT_IDX="${SMC_VARIANT_IDX:-0}"
+
+GA_POPULATION="${GA_POPULATION:-48}"
+GA_GENERATIONS="${GA_GENERATIONS:-30}"
+GA_ELITES="${GA_ELITES:-4}"
+GA_MUTATION_PROB="${GA_MUTATION_PROB:-0.15}"
+GA_TOURNAMENT_K="${GA_TOURNAMENT_K:-4}"
+GA_SELECTION="${GA_SELECTION:-rank}"
+GA_RANK_PRESSURE="${GA_RANK_PRESSURE:-1.7}"
+GA_CROSSOVER="${GA_CROSSOVER:-uniform}"
+GA_INIT_MODE="${GA_INIT_MODE:-random}"
+GA_LOG_TOPK="${GA_LOG_TOPK:-5}"
+GA_RANDOM_TRIALS="${GA_RANDOM_TRIALS:-128}"
+GA_CFG_SCALES="${GA_CFG_SCALES:-1.0 1.25 1.5}"
+BASELINE_NOISE_MODE="${BASELINE_NOISE_MODE:-fresh}"
+GA_NOISE_MODES="${GA_NOISE_MODES:-fresh fixed}"
+
+NUM_GPUS="${NUM_GPUS:-0}"
+
+if [[ ! -f "${PROMPT_FILE}" ]]; then
+  echo "Error: PROMPT_FILE not found: ${PROMPT_FILE}" >&2
+  exit 1
+fi
+
+mkdir -p "${OUT_ROOT}"
+RUN_TS="$(date +%Y%m%d_%H%M%S)"
+RUN_DIR="${OUT_ROOT}/run_${RUN_TS}"
+mkdir -p "${RUN_DIR}"
+SUITE_TSV="${RUN_DIR}/suite_summary.tsv"
+
+GPU_IDS_STR="$("${PYTHON_BIN}" - <<'PY'
+import os
+import torch
+cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+if cvd:
+    ids = [x.strip() for x in cvd.split(",") if x.strip()]
+else:
+    ids = [str(i) for i in range(torch.cuda.device_count())]
+print(",".join(ids))
+PY
+)"
+IFS=',' read -r -a GPU_IDS <<< "${GPU_IDS_STR}"
+if [[ "${#GPU_IDS[@]}" -eq 0 ]]; then
+  echo "Error: no visible GPUs. Set CUDA_VISIBLE_DEVICES or check CUDA runtime." >&2
+  exit 1
+fi
+if (( NUM_GPUS <= 0 || NUM_GPUS > ${#GPU_IDS[@]} )); then
+  NUM_GPUS="${#GPU_IDS[@]}"
+fi
+GPU_IDS=("${GPU_IDS[@]:0:${NUM_GPUS}}")
+
+read -r TOTAL_PROMPTS EFFECTIVE_END <<EOF
+$("${PYTHON_BIN}" - <<'PY' "${PROMPT_FILE}" "${START_INDEX}" "${END_INDEX}"
+import sys
+path = sys.argv[1]
+start = int(sys.argv[2])
+end = int(sys.argv[3])
+with open(path, encoding="utf-8") as f:
+    prompts = [line.strip() for line in f if line.strip()]
+total = len(prompts)
+if end < 0:
+    end = total
+end = min(end, total)
+start = max(0, min(start, end))
+print(total, end)
+PY
+)
+EOF
+RANGE_TOTAL=$(( EFFECTIVE_END - START_INDEX ))
+if (( RANGE_TOTAL <= 0 )); then
+  echo "Error: empty prompt range start=${START_INDEX} end=${EFFECTIVE_END}" >&2
+  exit 1
+fi
+
+echo "SANA SiD DDP suite"
+echo "  prompt_file: ${PROMPT_FILE}"
+echo "  prompts_total: ${TOTAL_PROMPTS} selected: ${RANGE_TOTAL} range=[${START_INDEX},${EFFECTIVE_END})"
+echo "  gpus(${NUM_GPUS}): ${GPU_IDS[*]}"
+echo "  reward_type: ${REWARD_TYPE} reward_device: ${REWARD_DEVICE}"
+echo "  out: ${RUN_DIR}"
+
+append_method_summary() {
+  local method_out="$1"
+  local method_name="$2"
+  local elapsed_sec="$3"
+  "${PYTHON_BIN}" - <<'PY' "${method_out}" "${method_name}" "${elapsed_sec}" "${SUITE_TSV}" "${STEPS}"
+import csv
+import glob
+import json
+import os
+import statistics
+import sys
+from collections import defaultdict
+
+method_out = sys.argv[1]
+method = sys.argv[2]
+elapsed = int(sys.argv[3])
+suite_tsv = sys.argv[4]
+steps = int(sys.argv[5])
+
+baseline = []
+search = []
+deltas = []
+nfe_by_gen = defaultdict(list)
+
+for summary_path in glob.glob(os.path.join(method_out, "rank_*", "summary.json")):
+    with open(summary_path, encoding="utf-8") as f:
+        rows = json.load(f)
+    for row in rows:
+        for sample in row.get("samples", []):
+            b = sample.get("baseline_score")
+            s = sample.get("search_score")
+            d = sample.get("delta_score")
+            if b is not None:
+                baseline.append(float(b))
+            if s is not None:
+                search.append(float(s))
+            if d is not None:
+                deltas.append(float(d))
+            for gen_row in sample.get("ga_nfe_trace", []):
+                gen = int(gen_row.get("generation", 0)) + 1
+                nfe = float(gen_row.get("nfe_per_generation", 0))
+                nfe_by_gen[gen].append(nfe)
+
+if not baseline:
+    raise RuntimeError(f"No samples found under {method_out}")
+
+mean_baseline = float(statistics.fmean(baseline))
+mean_search = float(statistics.fmean(search)) if search else 0.0
+mean_delta = float(statistics.fmean(deltas)) if deltas else 0.0
+
+aggregate = {
+    "method": method,
+    "elapsed_sec": elapsed,
+    "num_samples": len(baseline),
+    "mean_baseline_score": mean_baseline,
+    "mean_search_score": mean_search,
+    "mean_delta_score": mean_delta,
+}
+with open(os.path.join(method_out, "aggregate_ddp.json"), "w", encoding="utf-8") as f:
+    json.dump(aggregate, f, indent=2)
+
+if nfe_by_gen:
+    nfe_rows = []
+    for gen in sorted(nfe_by_gen):
+        vals = nfe_by_gen[gen]
+        nfe_rows.append(
+            {
+                "generation": gen,
+                "mean_nfe_per_generation": float(statistics.fmean(vals)),
+                "num_samples": len(vals),
+                "steps": steps,
+            }
+        )
+    with open(os.path.join(method_out, "ga_nfe_per_generation.csv"), "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["generation", "mean_nfe_per_generation", "num_samples", "steps"],
+        )
+        writer.writeheader()
+        writer.writerows(nfe_rows)
+
+need_header = (not os.path.exists(suite_tsv)) or os.path.getsize(suite_tsv) == 0
+with open(suite_tsv, "a", encoding="utf-8", newline="") as f:
+    writer = csv.writer(f, delimiter="\t")
+    if need_header:
+        writer.writerow(
+            ["method", "elapsed_sec", "num_samples", "mean_baseline", "mean_search", "mean_delta"]
+        )
+    writer.writerow(
+        [method, elapsed, len(baseline), f"{mean_baseline:.6f}", f"{mean_search:.6f}", f"{mean_delta:+.6f}"]
+    )
+PY
+}
+
+run_method() {
+  local method="$1"
+  local method_out="${RUN_DIR}/${method}"
+  local method_logs="${method_out}/logs"
+  mkdir -p "${method_out}" "${method_logs}"
+  local -a reward_extra=()
+  if [[ -n "${REWARD_API_BASE}" ]]; then
+    reward_extra+=(--reward_api_base "${REWARD_API_BASE}")
+  fi
+
+  local -a method_args=()
+  case "${method}" in
+    baseline)
+      method_args=(
+        --search_method greedy
+        --cfg_scales 1.0
+        --n_variants 0
+        --no_qwen
+      )
+      ;;
+    greedy)
+      method_args=(
+        --search_method greedy
+        --n_variants "${N_VARIANTS}"
+        --cfg_scales ${CFG_SCALES}
+      )
+      if [[ "${USE_QWEN}" != "1" ]]; then
+        method_args+=(--no_qwen)
+      fi
+      ;;
+    mcts)
+      method_args=(
+        --search_method mcts
+        --n_variants "${N_VARIANTS}"
+        --cfg_scales ${CFG_SCALES}
+        --n_sims "${N_SIMS}"
+        --ucb_c "${UCB_C}"
+      )
+      if [[ "${USE_QWEN}" != "1" ]]; then
+        method_args+=(--no_qwen)
+      fi
+      ;;
+    smc)
+      method_args=(
+        --search_method smc
+        --n_variants "${N_VARIANTS}"
+        --smc_k "${SMC_K}"
+        --smc_gamma "${SMC_GAMMA}"
+        --ess_threshold "${ESS_THRESHOLD}"
+        --resample_start_frac "${RESAMPLE_START_FRAC}"
+        --smc_cfg_scale "${SMC_CFG_SCALE}"
+        --smc_variant_idx "${SMC_VARIANT_IDX}"
+      )
+      if [[ "${USE_QWEN}" != "1" ]]; then
+        method_args+=(--no_qwen)
+      fi
+      ;;
+    ga)
+      method_args=(
+        --search_method ga
+        --ga_population "${GA_POPULATION}"
+        --ga_generations "${GA_GENERATIONS}"
+        --ga_elites "${GA_ELITES}"
+        --ga_mutation_prob "${GA_MUTATION_PROB}"
+        --ga_tournament_k "${GA_TOURNAMENT_K}"
+        --ga_selection "${GA_SELECTION}"
+        --ga_rank_pressure "${GA_RANK_PRESSURE}"
+        --ga_crossover "${GA_CROSSOVER}"
+        --ga_init_mode "${GA_INIT_MODE}"
+        --ga_log_topk "${GA_LOG_TOPK}"
+        --ga_random_trials "${GA_RANDOM_TRIALS}"
+        --ga_phase_constraints
+        --ga_cfg_scales ${GA_CFG_SCALES}
+        --baseline_noise_mode "${BASELINE_NOISE_MODE}"
+        --ga_noise_modes ${GA_NOISE_MODES}
+        --no-ga_run_baselines
+      )
+      ;;
+    *)
+      echo "Error: unsupported method '${method}' for SANA suite." >&2
+      exit 1
+      ;;
+  esac
+
+  local begin_ts
+  begin_ts="$(date +%s)"
+  echo "[$(date '+%F %T')] method=${method} start"
+
+  local chunk_size=$(( (RANGE_TOTAL + NUM_GPUS - 1) / NUM_GPUS ))
+  local -a pids=()
+  local launched=0
+  for rank in "${!GPU_IDS[@]}"; do
+    local shard_start=$(( START_INDEX + rank * chunk_size ))
+    local shard_end=$(( shard_start + chunk_size ))
+    if (( shard_start >= EFFECTIVE_END )); then
+      continue
+    fi
+    if (( shard_end > EFFECTIVE_END )); then
+      shard_end="${EFFECTIVE_END}"
+    fi
+    local gpu="${GPU_IDS[$rank]}"
+    local rank_out="${method_out}/rank_${rank}"
+    mkdir -p "${rank_out}"
+    local log_file="${method_logs}/rank_${rank}.log"
+    launched=$((launched + 1))
+
+    CUDA_VISIBLE_DEVICES="${gpu}" "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified.py" \
+      --reward_type "${REWARD_TYPE}" \
+      --dtype bf16 \
+      --reward_device "${REWARD_DEVICE}" \
+      --reward_model "${REWARD_MODEL}" \
+      --unifiedreward_model "${UNIFIEDREWARD_MODEL}" \
+      --image_reward_model "${IMAGE_REWARD_MODEL}" \
+      --reward_weights ${REWARD_WEIGHTS} \
+      --reward_api_key "${REWARD_API_KEY}" \
+      --reward_api_model "${REWARD_API_MODEL}" \
+      --reward_max_new_tokens "${REWARD_MAX_NEW_TOKENS}" \
+      --reward_prompt_mode "${REWARD_PROMPT_MODE}" \
+      "${reward_extra[@]}" \
+      --sana_no_fp32_attn \
+      --offload_text_encoder_after_encode \
+      --decode_device cuda \
+      --empty_cache_after_decode \
+      --no-resolution_binning \
+      --min_free_gb "${MIN_FREE_GB}" \
+      --prompt_file "${PROMPT_FILE}" \
+      --start_index "${shard_start}" \
+      --end_index "${shard_end}" \
+      --steps "${STEPS}" \
+      --seed "${SEED}" \
+      --time_scale "${TIME_SCALE}" \
+      --n_samples "${N_SAMPLES}" \
+      --save_first_k "${SAVE_FIRST_K}" \
+      --out_dir "${rank_out}" \
+      "${method_args[@]}" \
+      >"${log_file}" 2>&1 &
+    pids+=("$!")
+    echo "  rank=${rank} gpu=${gpu} range=[${shard_start},${shard_end}) log=${log_file}"
+  done
+
+  if (( launched == 0 )); then
+    echo "Error: no shards launched for method=${method}." >&2
+    exit 1
+  fi
+
+  local failed=0
+  for pid in "${pids[@]}"; do
+    if ! wait "${pid}"; then
+      failed=1
+    fi
+  done
+  if (( failed != 0 )); then
+    echo "Error: method=${method} failed on at least one shard." >&2
+    exit 1
+  fi
+
+  local end_ts
+  end_ts="$(date +%s)"
+  local elapsed=$(( end_ts - begin_ts ))
+  echo "[$(date '+%F %T')] method=${method} done elapsed=${elapsed}s"
+
+  append_method_summary "${method_out}" "${method}" "${elapsed}"
+}
+
+for method in ${METHODS}; do
+  run_method "${method}"
+done
+
+echo
+echo "Suite summary: ${SUITE_TSV}"
+cat "${SUITE_TSV}"
+echo
+echo "Outputs: ${RUN_DIR}"

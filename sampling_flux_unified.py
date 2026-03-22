@@ -3,8 +3,10 @@
 Unified FLUX test-time search runner.
 
 Supported search modes:
-- ga   : prompt-bank + guidance-scale GA
-- smc  : reward-tilted SMC baseline
+- greedy: per-step greedy over prompt-bank + guidance-scale actions
+- mcts  : MCTS over prompt-bank + guidance-scale actions
+- ga    : prompt-bank + guidance-scale GA
+- smc   : reward-tilted SMC baseline
 
 For each prompt/seed, the script always runs:
 1) baseline (balanced prompt, fixed guidance)
@@ -28,6 +30,8 @@ from typing import Any
 import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
+
+from reward_unified import UnifiedRewardScorer
 
 
 PROMPT_FOCUS = {
@@ -69,8 +73,8 @@ class SearchResult:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Unified FLUX GA/SMC search with ImageReward.")
-    p.add_argument("--search_method", choices=["ga", "smc"], default="ga")
+    p = argparse.ArgumentParser(description="Unified FLUX search runner (greedy/mcts/ga/smc).")
+    p.add_argument("--search_method", choices=["greedy", "mcts", "ga", "smc"], default="ga")
     p.add_argument("--model_id", default="black-forest-labs/FLUX.1-schnell")
     p.add_argument("--prompt", default=None)
     p.add_argument("--prompt_file", default=None)
@@ -84,6 +88,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--n_samples", type=int, default=1)
     p.add_argument("--steps", type=int, default=4)
+    p.add_argument("--n_variants", type=int, default=-1, help="Prompt variants to keep from the bank; <=0 keeps all.")
+    p.add_argument(
+        "--cfg_scales",
+        nargs="+",
+        type=float,
+        default=None,
+        help="Guidance scales used by greedy/mcts. Defaults to --ga_guidance_scales when unset.",
+    )
     p.add_argument("--width", type=int, default=512)
     p.add_argument("--height", type=int, default=512)
     p.add_argument("--max_sequence_length", type=int, default=512)
@@ -103,11 +115,47 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Set PYTORCH_CUDA_ALLOC_CONF if not already set.",
     )
 
-    p.add_argument("--reward_backend", choices=["imagereward"], default="imagereward")
+    p.add_argument(
+        "--reward_backend",
+        choices=["auto", "unifiedreward", "unified", "imagereward", "hpsv2", "blend"],
+        default="imagereward",
+    )
     p.add_argument(
         "--reward_device",
         default="cpu",
         help="cpu | same | cuda | cuda:N",
+    )
+    p.add_argument(
+        "--reward_model",
+        default="CodeGoat24/UnifiedReward-qwen-7b",
+        help="Legacy alias for UnifiedReward model id (kept for compatibility).",
+    )
+    p.add_argument(
+        "--unifiedreward_model",
+        default=None,
+        help="UnifiedReward model id override. Defaults to --reward_model when unset.",
+    )
+    p.add_argument(
+        "--image_reward_model",
+        default="ImageReward-v1.0",
+        help="ImageReward model id/checkpoint name.",
+    )
+    p.add_argument(
+        "--reward_weights",
+        nargs=2,
+        type=float,
+        default=[1.0, 1.0],
+        help="Blend backend weights: imagereward hpsv2",
+    )
+    p.add_argument("--reward_api_base", default=None, help="Optional OpenAI-compatible API base for UnifiedReward.")
+    p.add_argument("--reward_api_key", default="unifiedreward")
+    p.add_argument("--reward_api_model", default="UnifiedReward-7b-v1.5")
+    p.add_argument("--reward_max_new_tokens", type=int, default=512)
+    p.add_argument(
+        "--reward_prompt_mode",
+        choices=["standard", "strict"],
+        default="standard",
+        help="UnifiedReward prompt template mode.",
     )
 
     p.add_argument(
@@ -202,6 +250,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=[1.0, 1.25, 1.5],
     )
+    p.add_argument("--n_sims", type=int, default=50, help="MCTS simulation budget per prompt/seed.")
+    p.add_argument("--ucb_c", type=float, default=1.41, help="MCTS UCB exploration constant.")
 
     # SMC
     p.add_argument("--smc_k", type=int, default=12)
@@ -314,15 +364,22 @@ def resolve_reward_device(args: argparse.Namespace, pipeline_device: str) -> str
 
 def load_reward(args: argparse.Namespace, pipeline_device: str):
     reward_device = resolve_reward_device(args, pipeline_device)
-    if args.reward_backend != "imagereward":
-        raise RuntimeError(f"Unsupported reward backend: {args.reward_backend}")
-    import ImageReward as RM
-
-    print(f"Loading ImageReward on {reward_device} ...")
-    model = RM.load("ImageReward-v1.0", device=reward_device).eval()
-    for p in model.parameters():
-        p.requires_grad_(False)
-    return model, reward_device
+    unified_model = args.unifiedreward_model if args.unifiedreward_model else args.reward_model
+    print(f"Loading reward backend={args.reward_backend} on {reward_device} ...")
+    scorer = UnifiedRewardScorer(
+        device=reward_device,
+        backend=args.reward_backend,
+        image_reward_model=args.image_reward_model,
+        unifiedreward_model=unified_model,
+        unified_weights=(float(args.reward_weights[0]), float(args.reward_weights[1])),
+        unifiedreward_api_base=args.reward_api_base,
+        unifiedreward_api_key=args.reward_api_key,
+        unifiedreward_api_model=args.reward_api_model,
+        max_new_tokens=int(args.reward_max_new_tokens),
+        unifiedreward_prompt_mode=args.reward_prompt_mode,
+    )
+    print(f"Reward: {scorer.describe()}")
+    return scorer, reward_device
 
 
 def load_prompts(args: argparse.Namespace) -> list[str]:
@@ -348,6 +405,30 @@ def build_prompt_bank(prompt: str) -> list[tuple[str, str]]:
         else:
             bank.append((label, prompt))
     return bank
+
+
+def select_prompt_bank(prompt: str, n_variants: int) -> list[tuple[str, str]]:
+    bank = build_prompt_bank(prompt)
+    if n_variants is None or int(n_variants) <= 0:
+        return bank
+    keep = max(1, min(int(n_variants), len(bank)))
+    return bank[:keep]
+
+
+def guidance_bank_for_search(args: argparse.Namespace) -> list[float]:
+    raw = args.cfg_scales if args.cfg_scales else args.ga_guidance_scales
+    bank = [float(v) for v in raw]
+    if len(bank) == 0:
+        bank = [1.0]
+    # Keep order while dropping duplicates.
+    out: list[float] = []
+    seen: set[float] = set()
+    for v in bank:
+        if v in seen:
+            continue
+        seen.add(v)
+        out.append(float(v))
+    return out if out else [1.0]
 
 
 def _move_text_encoders(pipe: Any, device: str) -> None:
@@ -562,6 +643,10 @@ def score_image(reward_model: Any, prompt: str, image: Image.Image) -> float:
     return float(reward_model.score(prompt, image))
 
 
+def build_action_space(num_variants: int, guidance_bank: list[float]) -> list[tuple[int, float]]:
+    return [(int(vi), float(g)) for vi in range(int(num_variants)) for g in guidance_bank]
+
+
 @torch.no_grad()
 def run_action_sequence(
     args: argparse.Namespace,
@@ -599,6 +684,285 @@ def run_action_sequence(
     image = decode_to_pil(ctx, dx)
     score = score_image(reward_model, prompt, image)
     return SearchResult(image=image, score=float(score), actions=list(actions), diagnostics=None)
+
+
+@torch.no_grad()
+def run_greedy(
+    args: argparse.Namespace,
+    ctx: FluxContext,
+    reward_model: Any,
+    prompt: str,
+    embeds: list[PromptEmbed],
+    guidance_bank: list[float],
+    seed: int,
+) -> SearchResult:
+    actions = build_action_space(len(embeds), guidance_bank)
+    if len(actions) == 0:
+        raise RuntimeError("Greedy search requires non-empty action space.")
+
+    init_latents = make_initial_latents(ctx, seed, args.height, args.width, batch_size=1)
+    dx = torch.zeros_like(init_latents)
+    rng = torch.Generator(device=ctx.device).manual_seed(seed + 2048)
+    t_values = build_t_schedule(int(args.steps))
+    chosen: list[tuple[int, float]] = []
+    history: list[dict[str, Any]] = []
+    nfe_total = 0
+
+    for step_idx, t_val in enumerate(t_values):
+        t_4d = torch.tensor(float(t_val), device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
+        if step_idx == 0:
+            noise = init_latents
+        else:
+            noise = torch.randn(
+                init_latents.shape,
+                device=ctx.device,
+                dtype=init_latents.dtype,
+                generator=rng,
+            )
+        latents = (1.0 - t_4d) * dx + t_4d * noise
+
+        best_score = -float("inf")
+        best_action = actions[0]
+        best_dx = None
+        print(f"  greedy step {step_idx + 1}/{args.steps} ({len(actions)} actions)")
+        for variant_idx, guidance in actions:
+            flow_pred = flux_transformer_step(ctx, latents, embeds[int(variant_idx)], float(t_val), float(guidance))
+            nfe_total += 1
+            cand_dx = latents - t_4d * flow_pred
+            cand_img = decode_to_pil(ctx, cand_dx)
+            cand_score = score_image(reward_model, prompt, cand_img)
+            del cand_img
+            if cand_score > best_score:
+                best_score = float(cand_score)
+                best_action = (int(variant_idx), float(guidance))
+                best_dx = cand_dx.clone()
+
+        assert best_dx is not None
+        dx = best_dx
+        chosen.append(best_action)
+        history.append(
+            {
+                "step": int(step_idx),
+                "chosen_variant": int(best_action[0]),
+                "chosen_guidance": float(best_action[1]),
+                "score": float(best_score),
+            }
+        )
+        print(
+            f"    selected step={step_idx + 1} v{best_action[0]} "
+            f"g={best_action[1]:.2f} score={best_score:.4f}"
+        )
+
+    final_img = decode_to_pil(ctx, dx)
+    final_score = score_image(reward_model, prompt, final_img)
+    diagnostics = {
+        "history": history,
+        "steps": int(args.steps),
+        "num_actions_per_step": int(len(actions)),
+        "nfe_total": int(nfe_total),
+        "guidance_bank": [float(v) for v in guidance_bank],
+    }
+    return SearchResult(
+        image=final_img,
+        score=float(final_score),
+        actions=[(int(v), float(g)) for v, g in chosen],
+        diagnostics=diagnostics,
+    )
+
+
+class MCTSNode:
+    __slots__ = ("step", "dx", "latents", "children", "visits", "action_visits", "action_values")
+
+    def __init__(self, step: int, dx: torch.Tensor, latents: torch.Tensor | None):
+        self.step = int(step)
+        self.dx = dx
+        self.latents = latents
+        self.children: dict[tuple[int, float], MCTSNode] = {}
+        self.visits = 0
+        self.action_visits: dict[tuple[int, float], int] = {}
+        self.action_values: dict[tuple[int, float], float] = {}
+
+    def is_leaf(self, max_steps: int) -> bool:
+        return self.step >= int(max_steps)
+
+    def untried_actions(self, actions: list[tuple[int, float]]) -> list[tuple[int, float]]:
+        return [a for a in actions if a not in self.action_visits]
+
+    def ucb(self, action: tuple[int, float], c: float) -> float:
+        n = self.action_visits.get(action, 0)
+        if n <= 0:
+            return float("inf")
+        mean = self.action_values[action] / float(n)
+        return mean + float(c) * math.sqrt(math.log(max(self.visits, 1)) / float(n))
+
+    def best_ucb(self, actions: list[tuple[int, float]], c: float) -> tuple[int, float]:
+        return max(actions, key=lambda a: self.ucb(a, c))
+
+    def best_exploit(self, actions: list[tuple[int, float]]) -> tuple[int, float] | None:
+        best = None
+        best_mean = -float("inf")
+        for action in actions:
+            n = self.action_visits.get(action, 0)
+            if n <= 0:
+                continue
+            mean = self.action_values[action] / float(n)
+            if mean > best_mean:
+                best_mean = mean
+                best = action
+        return best
+
+
+@torch.no_grad()
+def run_mcts(
+    args: argparse.Namespace,
+    ctx: FluxContext,
+    reward_model: Any,
+    prompt: str,
+    embeds: list[PromptEmbed],
+    guidance_bank: list[float],
+    seed: int,
+) -> SearchResult:
+    actions = build_action_space(len(embeds), guidance_bank)
+    if len(actions) == 0:
+        raise RuntimeError("MCTS requires non-empty action space.")
+
+    n_actions = len(actions)
+    t_values = build_t_schedule(int(args.steps))
+    init_latents = make_initial_latents(ctx, seed, args.height, args.width, batch_size=1)
+    dx0 = torch.zeros_like(init_latents)
+    t0_4d = torch.tensor(float(t_values[0]), device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
+    start_latents = (1.0 - t0_4d) * dx0 + t0_4d * init_latents
+    root = MCTSNode(step=0, dx=dx0, latents=start_latents)
+
+    np_rng = np.random.default_rng(seed + 1337)
+    noise_gen = torch.Generator(device=ctx.device).manual_seed(seed + 2048)
+    nfe_total = 0
+    best_global_score = -float("inf")
+    best_global_actions: list[tuple[int, float]] = []
+    best_global_image: Image.Image | None = None
+
+    def _step_forward(
+        current_latents: torch.Tensor,
+        step_idx: int,
+        action: tuple[int, float],
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        nonlocal nfe_total
+        variant_idx, guidance = action
+        t_val = float(t_values[step_idx])
+        t_4d = torch.tensor(t_val, device=ctx.device, dtype=current_latents.dtype).view(1, 1, 1, 1)
+        flow = flux_transformer_step(ctx, current_latents, embeds[int(variant_idx)], t_val, float(guidance))
+        nfe_total += 1
+        new_dx = current_latents - t_4d * flow
+        next_step = int(step_idx) + 1
+        if next_step >= int(args.steps):
+            return new_dx, None
+        next_t = float(t_values[next_step])
+        next_t_4d = torch.tensor(next_t, device=ctx.device, dtype=new_dx.dtype).view(1, 1, 1, 1)
+        noise = torch.randn(
+            new_dx.shape,
+            device=ctx.device,
+            dtype=new_dx.dtype,
+            generator=noise_gen,
+        )
+        new_latents = (1.0 - next_t_4d) * new_dx + next_t_4d * noise
+        return new_dx, new_latents
+
+    print(f"  mcts: sims={args.n_sims} actions={n_actions} steps={args.steps} c={args.ucb_c}")
+    for sim in range(int(args.n_sims)):
+        node = root
+        tree_path: list[tuple[MCTSNode, tuple[int, float]]] = []
+
+        while not node.is_leaf(int(args.steps)):
+            untried = node.untried_actions(actions)
+            if untried:
+                action = untried[int(np_rng.integers(0, len(untried)))]
+                break
+            action = node.best_ucb(actions, float(args.ucb_c))
+            tree_path.append((node, action))
+            node = node.children[action]
+
+        if not node.is_leaf(int(args.steps)):
+            if action not in node.children:
+                child_dx, child_latents = _step_forward(node.latents, node.step, action)
+                node.children[action] = MCTSNode(step=node.step + 1, dx=child_dx, latents=child_latents)
+            tree_path.append((node, action))
+            node = node.children[action]
+
+        rollout_dx = node.dx
+        rollout_latents = node.latents
+        rollout_step = int(node.step)
+        rollout_actions = [a for _, a in tree_path]
+        while rollout_step < int(args.steps):
+            rollout_action = actions[int(np_rng.integers(0, n_actions))]
+            rollout_actions.append(rollout_action)
+            rollout_dx, rollout_latents = _step_forward(rollout_latents, rollout_step, rollout_action)
+            rollout_step += 1
+
+        rollout_img = decode_to_pil(ctx, rollout_dx)
+        rollout_score = score_image(reward_model, prompt, rollout_img)
+        if rollout_score > best_global_score:
+            best_global_score = float(rollout_score)
+            best_global_actions = [(int(v), float(g)) for v, g in rollout_actions[: int(args.steps)]]
+            best_global_image = rollout_img
+        else:
+            del rollout_img
+
+        for pnode, paction in tree_path:
+            pnode.visits += 1
+            pnode.action_visits[paction] = pnode.action_visits.get(paction, 0) + 1
+            pnode.action_values[paction] = pnode.action_values.get(paction, 0.0) + float(rollout_score)
+
+        if (sim + 1) % 10 == 0 or sim == 0:
+            print(f"    sim {sim + 1:3d}/{args.n_sims} best={best_global_score:.4f}")
+
+    exploit_actions: list[tuple[int, float]] = []
+    node = root
+    for _ in range(int(args.steps)):
+        action = node.best_exploit(actions)
+        if action is None:
+            break
+        exploit_actions.append((int(action[0]), float(action[1])))
+        if action in node.children:
+            node = node.children[action]
+        else:
+            break
+    if len(exploit_actions) < int(args.steps):
+        fallback = (0, float(guidance_bank[0]))
+        exploit_actions.extend([fallback] * (int(args.steps) - len(exploit_actions)))
+
+    exploit_result = run_action_sequence(
+        args=args,
+        ctx=ctx,
+        reward_model=reward_model,
+        prompt=prompt,
+        embeds=embeds,
+        seed=seed,
+        actions=exploit_actions,
+    )
+    nfe_total += int(args.steps)
+
+    if best_global_image is not None and best_global_score >= float(exploit_result.score):
+        diagnostics = {
+            "nfe_total": int(nfe_total),
+            "n_sims": int(args.n_sims),
+            "n_actions": int(n_actions),
+            "best_source": "simulation",
+        }
+        return SearchResult(
+            image=best_global_image,
+            score=float(best_global_score),
+            actions=best_global_actions,
+            diagnostics=diagnostics,
+        )
+
+    diagnostics = {
+        "nfe_total": int(nfe_total),
+        "n_sims": int(args.n_sims),
+        "n_actions": int(n_actions),
+        "best_source": "exploit",
+    }
+    exploit_result.diagnostics = diagnostics
+    return exploit_result
 
 
 def _ga_step_phase(step_idx: int, steps: int) -> str:
@@ -964,13 +1328,21 @@ def run_ga(
     cache: dict[tuple[int, ...], dict[str, Any]] = {}
     history: list[dict[str, Any]] = []
     best_global: dict[str, Any] | None = None
+    eval_calls = 0
+    cache_hits = 0
+    cache_misses = 0
+    prev_eval_calls_total = 0
 
     def _eval(genome: list[int], need_image: bool = False) -> dict[str, Any]:
+        nonlocal eval_calls, cache_hits, cache_misses
+        eval_calls += 1
         repaired, actions = _ga_decode_genome(genome, args, prompt_bank, guidance_bank)
         key = tuple(repaired)
         cached = cache.get(key)
         if cached is not None and (not need_image or cached.get("image") is not None):
+            cache_hits += 1
             return cached
+        cache_misses += 1
         result = run_action_sequence(
             args=args,
             ctx=ctx,
@@ -1007,6 +1379,12 @@ def run_ga(
                     "actions": [[int(v), float(g)] for v, g in row["actions"]],
                 }
             )
+        eval_calls_total = int(eval_calls)
+        eval_calls_generation = int(eval_calls_total - prev_eval_calls_total)
+        prev_eval_calls_total = eval_calls_total
+        nfe_per_generation = int(eval_calls_generation * int(args.steps))
+        nfe_total = int(eval_calls_total * int(args.steps))
+        cache_hit_rate = float(cache_hits) / float(max(1, eval_calls_total))
         history.append(
             {
                 "generation": gen,
@@ -1014,6 +1392,14 @@ def run_ga(
                 "mean": float(np.mean(scores)),
                 "median": float(np.median(scores)),
                 "worst": float(scores[-1]),
+                "eval_calls_total": eval_calls_total,
+                "eval_calls_generation": eval_calls_generation,
+                "nfe_per_generation": nfe_per_generation,
+                "nfe_total": nfe_total,
+                "cache_entries": int(len(cache)),
+                "cache_hits_total": int(cache_hits),
+                "cache_misses_total": int(cache_misses),
+                "cache_hit_rate": float(cache_hit_rate),
                 "top": top_payload,
             }
         )
@@ -1054,6 +1440,14 @@ def run_ga(
                 "mode": str(args.ga_selection),
                 "tournament_k": int(args.ga_tournament_k),
                 "rank_pressure": float(args.ga_rank_pressure),
+            },
+            "cache_stats": {
+                "eval_calls_total": int(eval_calls),
+                "cache_entries": int(len(cache)),
+                "cache_hits_total": int(cache_hits),
+                "cache_misses_total": int(cache_misses),
+                "cache_hit_rate": float(cache_hits) / float(max(1, int(eval_calls))),
+                "nfe_total": int(eval_calls * int(args.steps)),
             },
             "guidance_bank": [float(v) for v in guidance_bank],
             "prompt_bank": [{"label": lbl, "text": txt} for lbl, txt in prompt_bank],
@@ -1244,7 +1638,7 @@ def run(args: argparse.Namespace) -> None:
         save_entry_artifacts = args.save_first_k < 0 or p_idx < int(args.save_first_k)
         print(f"\n{'=' * 72}\n[{slug}] {prompt}\n{'=' * 72}")
 
-        prompt_bank = build_prompt_bank(prompt)
+        prompt_bank = select_prompt_bank(prompt, int(args.n_variants))
         embeds = encode_prompt_bank(args, ctx, prompt_bank)
         if save_entry_artifacts:
             with open(os.path.join(args.out_dir, f"{slug}_variants.txt"), "w", encoding="utf-8") as f:
@@ -1276,6 +1670,26 @@ def run(args: argparse.Namespace) -> None:
                     embeds=embeds,
                     prompt_bank=prompt_bank,
                     guidance_bank=[float(v) for v in args.ga_guidance_scales],
+                    seed=seed,
+                )
+            elif args.search_method == "greedy":
+                search = run_greedy(
+                    args=args,
+                    ctx=ctx,
+                    reward_model=reward_model,
+                    prompt=prompt,
+                    embeds=embeds,
+                    guidance_bank=guidance_bank_for_search(args),
+                    seed=seed,
+                )
+            elif args.search_method == "mcts":
+                search = run_mcts(
+                    args=args,
+                    ctx=ctx,
+                    reward_model=reward_model,
+                    prompt=prompt,
+                    embeds=embeds,
+                    guidance_bank=guidance_bank_for_search(args),
                     seed=seed,
                 )
             else:

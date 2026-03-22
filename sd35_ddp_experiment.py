@@ -19,12 +19,13 @@ from sampling_unified_sd35 import (
     run_ga,
     run_greedy,
     run_mcts,
+    run_smc,
     save_comparison,
 )
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="DDP multi-GPU SD3.5 evaluation (base/greedy/mcts).")
+    parser = argparse.ArgumentParser(description="DDP multi-GPU SD3.5 evaluation (base/greedy/mcts/ga/smc).")
     parser.add_argument("--model_id", default="YGu1998/SiD-DiT-SD3.5-large")
     parser.add_argument("--ckpt", default=None)
     parser.add_argument("--prompt_file", required=True, help="Prompt txt file (one prompt per line).")
@@ -32,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end_index", type=int, default=-1, help="Exclusive end index; -1 means all.")
     parser.add_argument("--out_dir", default="./sd35_ddp_out")
 
-    parser.add_argument("--modes", nargs="+", choices=["base", "greedy", "mcts", "ga"], default=["base", "greedy", "mcts", "ga"])
+    parser.add_argument("--modes", nargs="+", choices=["base", "greedy", "mcts", "ga", "smc"], default=["base", "greedy", "mcts", "ga"])
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--seed_per_prompt", action="store_true", help="Use seed + prompt_index for each prompt.")
 
@@ -53,6 +54,12 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--n_sims", type=int, default=50)
     parser.add_argument("--ucb_c", type=float, default=1.41)
+    parser.add_argument("--smc_k", type=int, default=8)
+    parser.add_argument("--smc_gamma", type=float, default=0.10)
+    parser.add_argument("--ess_threshold", type=float, default=0.5)
+    parser.add_argument("--resample_start_frac", type=float, default=0.3)
+    parser.add_argument("--smc_cfg_scale", type=float, default=1.25)
+    parser.add_argument("--smc_variant_idx", type=int, default=0)
     parser.add_argument("--ga_population", type=int, default=24)
     parser.add_argument("--ga_generations", type=int, default=12)
     parser.add_argument("--ga_elites", type=int, default=3)
@@ -387,6 +394,32 @@ def main() -> None:
                     "delta_vs_base": float(ga.score - base_score),
                     "baseline_score": float(base_score),
                     "actions": [[int(v), float(c)] for v, c in ga.actions],
+                }
+            )
+
+        if "smc" in args.modes:
+            smc = run_smc(args, ctx, emb, reward_model, prompt, variants, seed)
+            if args.save_images:
+                smc.image.save(os.path.join(img_dir, f"{slug}_smc.png"))
+                save_comparison(
+                    os.path.join(img_dir, f"{slug}_smc_comp.png"),
+                    base_img,
+                    smc.image,
+                    base_score,
+                    smc.score,
+                    smc.actions,
+                )
+            rank_rows.append(
+                {
+                    "prompt_index": prompt_index,
+                    "prompt": prompt,
+                    "seed": seed,
+                    "mode": "smc",
+                    "score": float(smc.score),
+                    "delta_vs_base": float(smc.score - base_score),
+                    "baseline_score": float(base_score),
+                    "actions": [[int(v), float(c)] for v, c in smc.actions],
+                    "search_diagnostics": smc.diagnostics,
                 }
             )
 

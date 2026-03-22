@@ -8,6 +8,7 @@ Supports:
   - greedy search
   - MCTS search
   - GA search
+  - SMC search
   - paper UnifiedReward scoring (with blend fallback)
 """
 
@@ -49,7 +50,7 @@ REWRITE_STYLES = [
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified SD3.5 sampling/search with unified reward.")
-    parser.add_argument("--search_method", choices=["greedy", "mcts", "ga"], default="greedy")
+    parser.add_argument("--search_method", choices=["greedy", "mcts", "ga", "smc"], default="greedy")
 
     parser.add_argument("--model_id", default="YGu1998/SiD-DiT-SD3.5-large")
     parser.add_argument("--ckpt", default=None)
@@ -79,6 +80,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument("--n_sims", type=int, default=50)
     parser.add_argument("--ucb_c", type=float, default=1.41)
+    parser.add_argument("--smc_k", type=int, default=8)
+    parser.add_argument("--smc_gamma", type=float, default=0.10)
+    parser.add_argument("--ess_threshold", type=float, default=0.5)
+    parser.add_argument("--resample_start_frac", type=float, default=0.3)
+    parser.add_argument("--smc_cfg_scale", type=float, default=1.25)
+    parser.add_argument("--smc_variant_idx", type=int, default=0)
     parser.add_argument("--ga_population", type=int, default=24)
     parser.add_argument("--ga_generations", type=int, default=12)
     parser.add_argument("--ga_elites", type=int, default=3)
@@ -195,6 +202,7 @@ class SearchResult:
     image: Image.Image
     score: float
     actions: list[tuple[int, float]]
+    diagnostics: dict[str, Any] | None = None
 
 
 def load_pipeline(args: argparse.Namespace) -> PipelineContext:
@@ -570,6 +578,16 @@ def _actions_brief(actions: list[tuple[int, float]]) -> str:
     return " ".join(f"s{i+1}:v{vi}/cfg{cfg:.2f}" for i, (vi, cfg) in enumerate(actions))
 
 
+def _systematic_resample(weights: torch.Tensor) -> torch.Tensor:
+    k = int(weights.shape[0])
+    cdf = torch.cumsum(weights, dim=0)
+    u = (
+        torch.rand(1, device=weights.device, dtype=weights.dtype)
+        + torch.arange(k, device=weights.device, dtype=weights.dtype)
+    ) / float(k)
+    return torch.searchsorted(cdf, u).clamp(0, k - 1)
+
+
 def _closest_cfg_index(cfg_scales: list[float], target: float) -> int:
     return int(min(range(len(cfg_scales)), key=lambda idx: abs(float(cfg_scales[idx]) - float(target))))
 
@@ -731,12 +749,20 @@ def run_ga(
     best_score = -float("inf")
     best_genome = list(population[0])
     history: list[dict[str, Any]] = []
+    eval_calls = 0
+    cache_hits = 0
+    cache_misses = 0
+    prev_eval_calls_total = 0
 
     def eval_genome(genome: list[int]) -> float:
+        nonlocal eval_calls, cache_hits, cache_misses
+        eval_calls += 1
         repaired = _repair_genome(genome, steps, n_variants, n_cfg, args.ga_phase_constraints)
         key = tuple(repaired)
         if key in score_cache:
+            cache_hits += 1
             return score_cache[key]
+        cache_misses += 1
         actions = _decode_genome(repaired, list(args.cfg_scales), steps)
         result = run_schedule_actions(
             args,
@@ -770,6 +796,12 @@ def run_ga(
 
         topk = max(1, int(args.ga_log_topk))
         gen_top = scored[:topk]
+        eval_calls_total = int(eval_calls)
+        eval_calls_generation = int(eval_calls_total - prev_eval_calls_total)
+        prev_eval_calls_total = eval_calls_total
+        nfe_per_generation = int(eval_calls_generation * steps)
+        nfe_total = int(eval_calls_total * steps)
+        cache_hit_rate = float(cache_hits) / float(max(1, eval_calls_total))
         print(f"    gen {gen + 1:02d}/{generations} best={gen_best_score:.4f} mean={gen_mean:.4f}")
         for rank, (score, genome) in enumerate(gen_top, start=1):
             actions = _decode_genome(genome, list(args.cfg_scales), steps)
@@ -780,6 +812,14 @@ def run_ga(
                 "generation": int(gen),
                 "best_score": float(gen_best_score),
                 "mean_score": float(gen_mean),
+                "eval_calls_total": eval_calls_total,
+                "eval_calls_generation": eval_calls_generation,
+                "nfe_per_generation": nfe_per_generation,
+                "nfe_total": nfe_total,
+                "cache_entries": int(len(score_cache)),
+                "cache_hits_total": int(cache_hits),
+                "cache_misses_total": int(cache_misses),
+                "cache_hit_rate": float(cache_hit_rate),
                 "top": [
                     {
                         "rank": int(rank),
@@ -851,6 +891,14 @@ def run_ga(
             "best_score": float(best_result.score),
             "best_genome": [int(x) for x in best_genome],
             "best_actions": [[int(v), float(c)] for v, c in best_actions],
+            "cache_stats": {
+                "eval_calls_total": int(eval_calls),
+                "cache_entries": int(len(score_cache)),
+                "cache_hits_total": int(cache_hits),
+                "cache_misses_total": int(cache_misses),
+                "cache_hit_rate": float(cache_hits) / float(max(1, int(eval_calls))),
+                "nfe_total": int(eval_calls * steps),
+            },
             "history": history,
         }
         with open(history_json, "w", encoding="utf-8") as f:
@@ -1047,6 +1095,101 @@ def run_mcts(
     return SearchResult(image=best_img, score=best_global_score, actions=best_global_path)
 
 
+@torch.no_grad()
+def run_smc(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    emb: EmbeddingContext,
+    reward_model: UnifiedRewardScorer,
+    prompt: str,
+    variants: list[str],
+    seed: int,
+) -> SearchResult:
+    del variants
+    k = max(2, int(args.smc_k))
+    cfg = float(args.smc_cfg_scale)
+    variant_idx = int(max(0, min(len(emb.cond_text) - 1, int(args.smc_variant_idx))))
+
+    particle_latents = []
+    for pi in range(k):
+        particle_latents.append(make_latents(ctx, seed + pi, args.height, args.width, emb.cond_text[0].dtype))
+    latents = torch.cat(particle_latents, dim=0)
+    dx = torch.zeros_like(latents)
+    sched = step_schedule(ctx.device, latents.dtype, args.steps)
+    rng = torch.Generator(device=ctx.device).manual_seed(seed + 6001)
+
+    start_idx = int((1.0 - float(args.resample_start_frac)) * int(args.steps))
+    start_idx = max(0, min(int(args.steps) - 1, start_idx))
+    log_w = torch.zeros(k, device=ctx.device, dtype=torch.float32)
+    ess_hist: list[float] = []
+    score_hist: list[float] = []
+    resample_count = 0
+
+    print(
+        f"  smc: K={k} cfg={cfg:.2f} variant={variant_idx} "
+        f"gamma={float(args.smc_gamma):.3f} ess_thr={float(args.ess_threshold):.2f}"
+    )
+    for step_idx, (t_flat, t_4d) in enumerate(sched):
+        if step_idx == 0:
+            noise = latents
+        else:
+            noise = torch.randn(
+                latents.shape,
+                device=latents.device,
+                dtype=latents.dtype,
+                generator=rng,
+            )
+        latents = (1.0 - t_4d) * dx + t_4d * noise
+
+        next_dx_parts = []
+        for pi in range(k):
+            flow = transformer_step(args, ctx, latents[pi : pi + 1], emb, variant_idx, t_flat, cfg)
+            next_dx_parts.append(latents[pi : pi + 1] - t_4d * flow)
+        dx = torch.cat(next_dx_parts, dim=0)
+
+        if step_idx < start_idx:
+            continue
+
+        step_images = [decode_to_pil(ctx, dx[pi : pi + 1]) for pi in range(k)]
+        step_scores_list = [float(score_image(reward_model, prompt, img)) for img in step_images]
+        step_scores = torch.tensor(step_scores_list, device=dx.device, dtype=torch.float32)
+        score_hist.append(float(step_scores.mean().item()))
+
+        lam = (1.0 + float(args.smc_gamma)) ** (int(args.steps) - 1 - step_idx) - 1.0
+        log_w = log_w + float(lam) * step_scores
+        weights = torch.softmax(log_w, dim=0)
+        ess = float(1.0 / torch.sum(weights * weights).item())
+        ess_hist.append(ess)
+        if ess < float(args.ess_threshold) * float(k):
+            idx = _systematic_resample(weights)
+            dx = dx[idx].clone()
+            latents = latents[idx].clone()
+            log_w = torch.zeros_like(log_w)
+            resample_count += 1
+
+    final_images = [decode_to_pil(ctx, dx[pi : pi + 1]) for pi in range(k)]
+    final_scores = [float(score_image(reward_model, prompt, img)) for img in final_images]
+    best_idx = int(np.argmax(final_scores))
+    diagnostics = {
+        "smc_k": int(k),
+        "smc_cfg_scale": float(cfg),
+        "smc_variant_idx": int(variant_idx),
+        "smc_gamma": float(args.smc_gamma),
+        "resample_start_step": int(start_idx),
+        "resample_count": int(resample_count),
+        "ess_min": float(min(ess_hist)) if ess_hist else 0.0,
+        "ess_mean": float(sum(ess_hist) / len(ess_hist)) if ess_hist else 0.0,
+        "reward_traj_mean": [float(v) for v in score_hist],
+        "final_particle_scores": [float(v) for v in final_scores],
+    }
+    return SearchResult(
+        image=final_images[best_idx],
+        score=float(final_scores[best_idx]),
+        actions=[(variant_idx, cfg) for _ in range(int(args.steps))],
+        diagnostics=diagnostics,
+    )
+
+
 def _font(size: int = 16) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     try:
         return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size)
@@ -1111,7 +1254,9 @@ def run(args: argparse.Namespace) -> None:
             search = run_greedy(args, ctx, emb, reward_model, prompt, variants, args.seed)
         elif args.search_method == "mcts":
             search = run_mcts(args, ctx, emb, reward_model, prompt, variants, args.seed)
-        else:
+        elif args.search_method == "smc":
+            search = run_smc(args, ctx, emb, reward_model, prompt, variants, args.seed)
+        elif args.search_method == "ga":
             search = run_ga(
                 args,
                 ctx,
@@ -1123,6 +1268,8 @@ def run(args: argparse.Namespace) -> None:
                 log_dir=args.out_dir,
                 log_prefix=slug,
             )
+        else:
+            raise RuntimeError(f"Unsupported search_method: {args.search_method}")
 
         base_path = os.path.join(args.out_dir, f"{slug}_baseline.png")
         search_path = os.path.join(args.out_dir, f"{slug}_{args.search_method}.png")
@@ -1145,6 +1292,7 @@ def run(args: argparse.Namespace) -> None:
                 f"{args.search_method}_IR": search.score,
                 "delta_IR": search.score - base_score,
                 "actions": [[int(v), float(c)] for v, c in search.actions],
+                "search_diagnostics": search.diagnostics,
             }
         )
 

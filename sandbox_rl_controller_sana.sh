@@ -41,9 +41,13 @@ fi
   --openloop_population "${OPENLOOP_POP:-16}" \
   --openloop_generations "${OPENLOOP_GENS:-8}" \
   --openloop_elites "${OPENLOOP_ELITES:-2}" \
+  --openloop_selection "${OPENLOOP_SELECTION:-rank}" \
+  --openloop_rank_pressure "${OPENLOOP_RANK_PRESSURE:-1.7}" \
   --controller_population "${CTRL_POP:-16}" \
   --controller_generations "${CTRL_GENS:-8}" \
   --controller_elites "${CTRL_ELITES:-2}" \
+  --controller_selection "${CTRL_SELECTION:-rank}" \
+  --controller_rank_pressure "${CTRL_RANK_PRESSURE:-1.7}" \
   --trace_topk_per_gen "${TRACE_TOPK_PER_GEN:-2}" \
   --save_images \
   "$@"

@@ -279,6 +279,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--openloop_generations", type=int, default=12)
     p.add_argument("--openloop_elites", type=int, default=3)
     p.add_argument("--openloop_mutation_prob", type=float, default=0.15)
+    p.add_argument("--openloop_selection", choices=["rank", "tournament"], default="rank")
+    p.add_argument("--openloop_rank_pressure", type=float, default=1.7)
     p.add_argument("--openloop_tournament_k", type=int, default=3)
 
     # Closed-loop GA (policy search)
@@ -286,6 +288,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--controller_generations", type=int, default=12)
     p.add_argument("--controller_elites", type=int, default=3)
     p.add_argument("--controller_mutation_prob", type=float, default=0.20)
+    p.add_argument("--controller_selection", choices=["rank", "tournament"], default="rank")
+    p.add_argument("--controller_rank_pressure", type=float, default=1.7)
     p.add_argument("--controller_tournament_k", type=int, default=3)
 
     # Unused placeholders for load_reward(geneval path)
@@ -781,6 +785,8 @@ def default_fixed_schedule(steps: int, cfg: float) -> list[int]:
 
 def tournament_select(scored: list[tuple[float, list[int]]], k: int, rng: np.random.Generator) -> list[int]:
     n = len(scored)
+    if n == 0:
+        raise RuntimeError("Tournament selection received empty population.")
     kk = max(1, min(k, n))
     picks = [scored[int(rng.integers(0, n))] for _ in range(kk)]
     return list(max(picks, key=lambda x: x[0])[1])
@@ -788,9 +794,49 @@ def tournament_select(scored: list[tuple[float, list[int]]], k: int, rng: np.ran
 
 def tournament_select_float(scored: list[tuple[float, list[float]]], k: int, rng: np.random.Generator) -> list[float]:
     n = len(scored)
+    if n == 0:
+        raise RuntimeError("Tournament selection received empty population.")
     kk = max(1, min(k, n))
     picks = [scored[int(rng.integers(0, n))] for _ in range(kk)]
     return list(max(picks, key=lambda x: x[0])[1])
+
+
+def rank_select(scored: list[tuple[float, list[int]]], rng: np.random.Generator, rank_pressure: float) -> list[int]:
+    n = len(scored)
+    if n == 0:
+        raise RuntimeError("Rank selection received empty population.")
+    if n == 1:
+        return list(scored[0][1])
+
+    # Linear ranking (Baker): pressure s in [1, 2].
+    # scored is sorted best->worst, while formula uses worst->best rank i.
+    s = float(max(1.0, min(2.0, rank_pressure)))
+    probs = np.empty(n, dtype=np.float64)
+    for idx_desc in range(n):
+        rank_worst_first = n - 1 - idx_desc
+        probs[idx_desc] = ((2.0 - s) / n) + (2.0 * rank_worst_first * (s - 1.0) / (n * (n - 1)))
+    probs = probs / probs.sum()
+    chosen = int(rng.choice(np.arange(n, dtype=np.int64), p=probs))
+    return list(scored[chosen][1])
+
+
+def rank_select_float(scored: list[tuple[float, list[float]]], rng: np.random.Generator, rank_pressure: float) -> list[float]:
+    n = len(scored)
+    if n == 0:
+        raise RuntimeError("Rank selection received empty population.")
+    if n == 1:
+        return list(scored[0][1])
+
+    # Linear ranking (Baker): pressure s in [1, 2].
+    # scored is sorted best->worst, while formula uses worst->best rank i.
+    s = float(max(1.0, min(2.0, rank_pressure)))
+    probs = np.empty(n, dtype=np.float64)
+    for idx_desc in range(n):
+        rank_worst_first = n - 1 - idx_desc
+        probs[idx_desc] = ((2.0 - s) / n) + (2.0 * rank_worst_first * (s - 1.0) / (n * (n - 1)))
+    probs = probs / probs.sum()
+    chosen = int(rng.choice(np.arange(n, dtype=np.int64), p=probs))
+    return list(scored[chosen][1])
 
 
 def crossover_int(a: list[int], b: list[int], rng: np.random.Generator) -> list[int]:
@@ -894,10 +940,16 @@ def run_openloop_ga(
         if gen + 1 >= int(args.openloop_generations):
             break
 
+        use_rank_selection = str(args.openloop_selection).lower() == "rank"
         next_population: list[list[int]] = [list(g) for _, g, _ in scored[:elites]]
         while len(next_population) < pop:
-            pa = tournament_select([(s, g) for s, g, _ in scored], int(args.openloop_tournament_k), rng)
-            pb = tournament_select([(s, g) for s, g, _ in scored], int(args.openloop_tournament_k), rng)
+            scored_pairs = [(s, g) for s, g, _ in scored]
+            if use_rank_selection:
+                pa = rank_select(scored_pairs, rng, float(args.openloop_rank_pressure))
+                pb = rank_select(scored_pairs, rng, float(args.openloop_rank_pressure))
+            else:
+                pa = tournament_select(scored_pairs, int(args.openloop_tournament_k), rng)
+                pb = tournament_select(scored_pairs, int(args.openloop_tournament_k), rng)
             child = crossover_int(pa, pb, rng)
             child = mutate_int(child, n_actions, float(args.openloop_mutation_prob), rng)
             next_population.append(child)
@@ -910,6 +962,11 @@ def run_openloop_ga(
         "best_actions": [ACTION_BANK[int(a)].name for a in best_genome],
         "best_prompt_actions": [ACTION_BANK[int(a)].prompt_name for a in best_genome],
         "best_cfg_scales": [float(ACTION_BANK[int(a)].cfg) for a in best_genome],
+        "selection": {
+            "mode": str(args.openloop_selection),
+            "rank_pressure": float(args.openloop_rank_pressure),
+            "tournament_k": int(args.openloop_tournament_k),
+        },
         "eval_calls_total": int(eval_calls),
         "nfe_total": int(eval_calls * steps),
         "wallclock_total_sec": float(time.perf_counter() - ga_start),
@@ -1232,18 +1289,24 @@ def run_controller_ga(
         if gen + 1 >= int(args.controller_generations):
             break
 
+        use_rank_selection = str(args.controller_selection).lower() == "rank"
         next_population: list[list[float]] = [list(g) for _, g, _, _ in scored[:elites]]
         while len(next_population) < pop:
-            ga = tournament_select_float(
-                [(float(s), list(g)) for s, g, _, _ in scored],
-                int(args.controller_tournament_k),
-                rng,
-            )
-            gb = tournament_select_float(
-                [(float(s), list(g)) for s, g, _, _ in scored],
-                int(args.controller_tournament_k),
-                rng,
-            )
+            scored_pairs = [(float(s), list(g)) for s, g, _, _ in scored]
+            if use_rank_selection:
+                ga = rank_select_float(scored_pairs, rng, float(args.controller_rank_pressure))
+                gb = rank_select_float(scored_pairs, rng, float(args.controller_rank_pressure))
+            else:
+                ga = tournament_select_float(
+                    scored_pairs,
+                    int(args.controller_tournament_k),
+                    rng,
+                )
+                gb = tournament_select_float(
+                    scored_pairs,
+                    int(args.controller_tournament_k),
+                    rng,
+                )
             child = crossover_float(ga, gb, rng)
             child = mutate_float(child, float(args.controller_mutation_prob), rng)
             next_population.append(child)
@@ -1257,6 +1320,11 @@ def run_controller_ga(
         "best_actions": [str(x) for x in best_trace.action_names],
         "best_prompt_actions": [ACTION_BANK[int(a)].prompt_name for a in best_trace.actions],
         "best_cfg_scales": [float(ACTION_BANK[int(a)].cfg) for a in best_trace.actions],
+        "selection": {
+            "mode": str(args.controller_selection),
+            "rank_pressure": float(args.controller_rank_pressure),
+            "tournament_k": int(args.controller_tournament_k),
+        },
         "eval_calls_total": int(eval_calls),
         "nfe_total": int(eval_calls * args.steps),
         "wallclock_total_sec": float(time.perf_counter() - ga_start),

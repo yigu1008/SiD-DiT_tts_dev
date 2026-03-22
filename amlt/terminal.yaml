@@ -58,6 +58,12 @@ search:
       - export N_VARIANTS={n_variants}
       - export N_SIMS={n_sims}
       - export UCB_C={ucb_c}
+      - export SMC_K={smc_k}
+      - export SMC_GAMMA={smc_gamma}
+      - export ESS_THRESHOLD={ess_threshold}
+      - export RESAMPLE_START_FRAC={resample_start_frac}
+      - export SMC_CFG_SCALE={smc_cfg_scale}
+      - export SMC_VARIANT_IDX={smc_variant_idx}
       - export SEED={seed}
       - export OUT_DIR=/mnt/data/v-yigu/sd35_parti_runs/{run_tag}
       # Optional toggles:
@@ -82,7 +88,7 @@ search:
     - name: end_index
       values: [ 100 ]
     - name: modes
-      values: [ "base greedy mcts" ]
+      values: [ "base greedy mcts ga smc" ]
     - name: cfg_scales
       values: [ "0.0 0.25 0.5 0.75 1.0 1.25 1.5 1.75 2.0" ]
     - name: baseline_cfg
@@ -95,5 +101,17 @@ search:
       values: [ 50 ]
     - name: ucb_c
       values: [ 1.41 ]
+    - name: smc_k
+      values: [ 8 ]
+    - name: smc_gamma
+      values: [ 0.10 ]
+    - name: ess_threshold
+      values: [ 0.5 ]
+    - name: resample_start_frac
+      values: [ 0.3 ]
+    - name: smc_cfg_scale
+      values: [ 1.25 ]
+    - name: smc_variant_idx
+      values: [ 0 ]
     - name: seed
       values: [ 42 ]

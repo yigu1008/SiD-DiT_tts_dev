@@ -66,13 +66,19 @@ torchrun --standalone --nproc_per_node "${NUM_GPUS}" "${SCRIPT_DIR}/sd35_ddp_exp
   --prompt_file "${PROMPT_FILE_ABS}" \
   --start_index "${START_INDEX:-0}" \
   --end_index "${END_INDEX:--1}" \
-  --modes ${MODES:-base greedy mcts} \
+  --modes ${MODES:-base greedy mcts ga smc} \
   --cfg_scales ${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5} \
   --baseline_cfg "${BASELINE_CFG:-1.0}" \
   --steps "${STEPS:-4}" \
   --n_variants "${N_VARIANTS:-3}" \
   --n_sims "${N_SIMS:-50}" \
   --ucb_c "${UCB_C:-1.41}" \
+  --smc_k "${SMC_K:-8}" \
+  --smc_gamma "${SMC_GAMMA:-0.10}" \
+  --ess_threshold "${ESS_THRESHOLD:-0.5}" \
+  --resample_start_frac "${RESAMPLE_START_FRAC:-0.3}" \
+  --smc_cfg_scale "${SMC_CFG_SCALE:-1.25}" \
+  --smc_variant_idx "${SMC_VARIANT_IDX:-0}" \
   --reward_backend "${REWARD_BACKEND}" \
   --reward_model "${REWARD_MODEL}" \
   --unifiedreward_model "${UNIFIEDREWARD_MODEL}" \

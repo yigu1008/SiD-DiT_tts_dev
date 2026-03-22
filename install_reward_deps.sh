@@ -21,6 +21,13 @@ echo "[install] python: ${PY}"
 echo "[install] build tooling"
 "${PY}" -m pip install --no-cache-dir --upgrade "setuptools>=70,<76" wheel
 
+echo "[install] core runtime deps (ImageReward transitive deps)"
+"${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" \
+  "xxhash>=3.4.1" \
+  "ftfy>=6.2.3" \
+  "regex>=2024.11.6" \
+  "tqdm>=4.66.4"
+
 echo "[install] timm==0.9.16"
 "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "timm==0.9.16"
 
@@ -58,6 +65,8 @@ import qwen_vl_utils
 print("qwen_vl_utils", getattr(qwen_vl_utils, "__file__", "ok"))
 import openai
 print("openai", getattr(openai, "__version__", "ok"))
+import xxhash
+print("xxhash", getattr(xxhash, "__version__", "ok"))
 from reward_unified import UnifiedRewardScorer
 print("UnifiedRewardScorer", getattr(UnifiedRewardScorer, "__name__", "ok"))
 PY

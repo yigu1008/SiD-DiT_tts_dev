@@ -51,7 +51,7 @@ fi
   --ga_init_mode random \
   --ga_log_topk 3 \
   --ga_phase_constraints \
-  --ga_guidance_scales 1.0 1.25 1.5 \
+  --ga_guidance_scales 1.0 1.25 1.5 1.75 2.0 2.25 2.5 \
   "${GA_EVAL_LOG_ARGS[@]}" \
   --save_first_k 10 \
   --out_dir "${OUT_DIR}" \

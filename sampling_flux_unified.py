@@ -248,7 +248,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--ga_guidance_scales",
         nargs="+",
         type=float,
-        default=[1.0, 1.25, 1.5],
+        default=[1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5],
     )
     p.add_argument("--n_sims", type=int, default=50, help="MCTS simulation budget per prompt/seed.")
     p.add_argument("--ucb_c", type=float, default=1.41, help="MCTS UCB exploration constant.")

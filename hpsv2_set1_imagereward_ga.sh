@@ -48,7 +48,7 @@ fi
   --ga_log_topk 5 \
   --ga_random_trials 128 \
   --ga_phase_constraints \
-  --ga_cfg_scales 1.0 1.25 1.5 \
+  --ga_cfg_scales 1.0 1.25 1.5 1.75 2.0 2.25 2.5 \
   --baseline_noise_mode fresh \
   --ga_noise_modes fresh fixed \
   "${GA_EVAL_LOG_ARGS[@]}" \

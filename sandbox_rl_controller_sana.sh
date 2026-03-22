@@ -32,7 +32,6 @@ fi
   --width "${WIDTH:-512}" \
   --height "${HEIGHT:-512}" \
   --seed "${SEED:-42}" \
-  --guidance_scale "${GUIDANCE_SCALE:-1.0}" \
   --baseline_cfg "${BASELINE_CFG}" \
   --cfg_scales "${CFG_SCALES_ARR[@]}" \
   --preview_every "${PREVIEW_EVERY:-1}" \

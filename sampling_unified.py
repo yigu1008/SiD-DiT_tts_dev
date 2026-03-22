@@ -299,7 +299,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--ga_cfg_scales",
         nargs="+",
         type=float,
-        default=[1.0, 1.25, 1.5],
+        default=[1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5],
         help="Small CFG bank for GA genomes.",
     )
     parser.add_argument(

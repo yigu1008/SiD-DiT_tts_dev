@@ -92,18 +92,18 @@ search:
       - export USE_QWEN=0
       - export SAVE_IMAGES={save_images}
       - export SAVE_VARIANTS=0
-      - bash hpsv2_all_models_ddp_suite.sh
+      - bash hpsv2_sd35_flux_allalgos.sh
 
     submit_args:
       env:
         DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: True
         SHARED_MEMORY_PERCENT: 0.5
 
-  max_trials: 100
+  max_trials: 1
   type: grid
   params:
     - name: run_tag
-      values: [ "hpsv2_full_grid" ]
+      values: [ "hpsv2_sd35_flux_allalgos" ]
     - name: prompt_style
       values: [ "all" ]
     - name: start_index
@@ -123,9 +123,9 @@ search:
     - name: n_variants
       values: [ 3 ]
     - name: n_sims
-      values: [ 40, 80 ]
+      values: [ 50 ]
     - name: ucb_c
-      values: [ 1.2, 1.41 ]
+      values: [ 1.41 ]
     - name: smc_k
       values: [ 8 ]
     - name: smc_gamma
@@ -139,15 +139,15 @@ search:
     - name: smc_variant_idx
       values: [ 0 ]
     - name: ga_population
-      values: [ 24, 48 ]
+      values: [ 48 ]
     - name: ga_generations
-      values: [ 12, 20 ]
+      values: [ 30 ]
     - name: ga_elites
-      values: [ 3 ]
+      values: [ 4 ]
     - name: ga_mutation_prob
-      values: [ 0.10, 0.15 ]
+      values: [ 0.15 ]
     - name: ga_tournament_k
-      values: [ 3 ]
+      values: [ 4 ]
     - name: ga_selection
       values: [ "rank" ]
     - name: ga_rank_pressure
@@ -155,7 +155,7 @@ search:
     - name: ga_crossover
       values: [ "uniform" ]
     - name: ga_log_topk
-      values: [ 3 ]
+      values: [ 5 ]
     - name: save_images
       values: [ 0 ]
     - name: seed

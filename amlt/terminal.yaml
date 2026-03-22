@@ -50,6 +50,7 @@ search:
       - /opt/conda/envs/ptca/bin/pip install hpsv2 huggingface_hub
       - /opt/conda/envs/ptca/bin/pip install xxhash ftfy regex tqdm
       - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
+      - /opt/conda/envs/ptca/bin/python -c "import xxhash, clip, ImageReward as RM; print('reward deps ok', xxhash.__version__, getattr(RM, '__file__', 'ok'))"
       - export NUM_GPUS=${GPUS}
       - export HPSV2_PROMPT_DIR=/mnt/data/v-yigu/hpsv2_prompt_cache
       - export PROMPT_STYLE={prompt_style}

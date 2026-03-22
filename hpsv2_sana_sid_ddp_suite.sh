@@ -121,6 +121,27 @@ echo "  gpus(${NUM_GPUS}): ${GPU_IDS[*]}"
 echo "  reward_type: ${REWARD_TYPE} reward_device: ${REWARD_DEVICE}"
 echo "  out: ${RUN_DIR}"
 
+ensure_imagereward_runtime() {
+  local backend_lc
+  backend_lc="$(echo "${REWARD_TYPE}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${backend_lc}" != "imagereward" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]]; then
+    return 0
+  fi
+  if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import xxhash
+import clip
+import ImageReward as RM
+print(xxhash.__version__, getattr(RM, "__file__", "ok"))
+PY
+  then
+    return 0
+  fi
+  echo "[deps] ImageReward runtime deps missing. Installing with install_reward_deps.sh ..."
+  PYTHON_BIN="${PYTHON_BIN}" bash "${SCRIPT_DIR}/install_reward_deps.sh"
+}
+
+ensure_imagereward_runtime
+
 append_method_summary() {
   local method_out="$1"
   local method_name="$2"

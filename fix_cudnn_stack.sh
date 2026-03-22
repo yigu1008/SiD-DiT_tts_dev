@@ -77,6 +77,7 @@ echo "[env] install model stack pins"
   tokenizers==0.21.1 \
   huggingface-hub==0.33.0 \
   datasets==2.19.0 \
+  xxhash>=3.4.1 \
   fsspec==2024.3.1 \
   safetensors==0.5.3 \
   numpy==1.26.4 \

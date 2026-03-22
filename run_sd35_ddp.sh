@@ -29,6 +29,27 @@ if [[ ! -f "${PROMPT_FILE}" ]]; then
 fi
 mkdir -p "${OUT_DIR}"
 
+ensure_imagereward_runtime() {
+  local backend_lc
+  backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${backend_lc}" != "imagereward" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]]; then
+    return 0
+  fi
+  if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import xxhash
+import clip
+import ImageReward as RM
+print(xxhash.__version__, getattr(RM, "__file__", "ok"))
+PY
+  then
+    return 0
+  fi
+  echo "[deps] ImageReward runtime deps missing. Installing with install_reward_deps.sh ..."
+  PYTHON_BIN="${PYTHON_BIN}" bash "${SCRIPT_DIR}/install_reward_deps.sh"
+}
+
+ensure_imagereward_runtime
+
 PROMPT_FILE_ABS="$("${PYTHON_BIN}" - <<'PY' "${PROMPT_FILE}"
 import pathlib,sys
 print(pathlib.Path(sys.argv[1]).expanduser().resolve())

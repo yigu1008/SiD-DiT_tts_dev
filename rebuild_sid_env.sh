@@ -54,6 +54,7 @@ conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
   blobfile==3.0.0 \
   click==8.2.1 \
   datasets==2.19.0 \
+  xxhash>=3.4.1 \
   diffusers==0.33.1 \
   ftfy==6.3.1 \
   huggingface-hub==0.33.0 \

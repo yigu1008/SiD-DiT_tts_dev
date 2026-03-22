@@ -5,6 +5,8 @@ import io
 import json
 import os
 import re
+import subprocess
+import sys
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -76,6 +78,7 @@ class UnifiedRewardScorer:
     _imagereward_install_hint = (
         "Install ImageReward dependencies, e.g.:\n"
         "  pip install -U setuptools\n"
+        "  pip install -U xxhash\n"
         "  pip install -U git+https://github.com/THUDM/ImageReward.git\n"
         "  pip install -U ftfy regex tqdm\n"
         "  pip install -U git+https://github.com/openai/CLIP.git"
@@ -229,7 +232,7 @@ class UnifiedRewardScorer:
             print(f"[Reward] {self._unifiedreward_install_hint}")
 
     def _try_load_imagereward(self) -> None:
-        try:
+        def _load() -> tuple[object, Optional[str]]:
             # Compatibility shim:
             # Some ImageReward releases expect BertModel.all_tied_weights_keys,
             # while newer transformers expose _tied_weights_keys instead.
@@ -266,6 +269,23 @@ class UnifiedRewardScorer:
             if model is None:
                 joined = " | ".join(tried_errors) if tried_errors else "unknown error"
                 raise RuntimeError(f"Unable to load ImageReward model. {joined}")
+            return model, selected
+
+        try:
+            try:
+                model, selected = _load()
+            except ModuleNotFoundError as exc:
+                if getattr(exc, "name", "") != "xxhash":
+                    raise
+                print("[Reward] ImageReward missing dependency 'xxhash'. Installing and retrying once ...")
+                try:
+                    subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "--no-cache-dir", "xxhash>=3.4.1"],
+                        check=True,
+                    )
+                except Exception as install_exc:
+                    raise RuntimeError(f"Failed to install xxhash automatically: {install_exc}") from exc
+                model, selected = _load()
 
             model.eval()
             self.state.imagereward = model

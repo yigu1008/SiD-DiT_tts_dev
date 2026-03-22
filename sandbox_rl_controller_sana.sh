@@ -8,7 +8,7 @@ PROMPT_STYLE="${PROMPT_STYLE:-all}"
 PROMPT_DIR="${PROMPT_DIR:-/data/ygu}"
 PROMPT_FILE="${PROMPT_FILE:-${PROMPT_DIR}/hpsv2_prompts.txt}"
 OUT_DIR="${OUT_DIR:-/data/ygu/sandbox_rl_controller_sana}"
-CFG_SCALES_STR="${CFG_SCALES:-1.0 1.25 1.5}"
+CFG_SCALES_STR="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5}"
 read -r -a CFG_SCALES_ARR <<< "${CFG_SCALES_STR}"
 BASELINE_CFG="${BASELINE_CFG:-1.0}"
 
@@ -24,7 +24,7 @@ fi
 
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sandbox_rl_controller_sana.py" \
   --prompt_file "${PROMPT_FILE}" \
-  --max_prompts "${MAX_PROMPTS:-1}" \
+  --max_prompts "${MAX_PROMPTS:-0}" \
   --out_dir "${OUT_DIR}" \
   --model_id "${MODEL_ID:-YGu1998/SiD-DiT-SANA-0.6B-RectifiedFlow}" \
   --dtype "${DTYPE:-bf16}" \
@@ -38,16 +38,21 @@ fi
   --preview_every "${PREVIEW_EVERY:-1}" \
   --reward_type "${REWARD_TYPE:-imagereward}" \
   --reward_device "${REWARD_DEVICE:-cpu}" \
-  --openloop_population "${OPENLOOP_POP:-16}" \
-  --openloop_generations "${OPENLOOP_GENS:-8}" \
-  --openloop_elites "${OPENLOOP_ELITES:-2}" \
+  --image_reward_model "${IMAGE_REWARD_MODEL:-ImageReward-v1.0}" \
+  --openloop_population "${OPENLOOP_POP:-24}" \
+  --openloop_generations "${OPENLOOP_GENS:-12}" \
+  --openloop_elites "${OPENLOOP_ELITES:-3}" \
+  --openloop_mutation_prob "${OPENLOOP_MUTATION_PROB:-0.10}" \
+  --openloop_tournament_k "${OPENLOOP_TOURNAMENT_K:-3}" \
   --openloop_selection "${OPENLOOP_SELECTION:-rank}" \
   --openloop_rank_pressure "${OPENLOOP_RANK_PRESSURE:-1.7}" \
-  --controller_population "${CTRL_POP:-16}" \
-  --controller_generations "${CTRL_GENS:-8}" \
-  --controller_elites "${CTRL_ELITES:-2}" \
+  --controller_population "${CTRL_POP:-24}" \
+  --controller_generations "${CTRL_GENS:-12}" \
+  --controller_elites "${CTRL_ELITES:-3}" \
+  --controller_mutation_prob "${CTRL_MUTATION_PROB:-0.10}" \
+  --controller_tournament_k "${CTRL_TOURNAMENT_K:-3}" \
   --controller_selection "${CTRL_SELECTION:-rank}" \
   --controller_rank_pressure "${CTRL_RANK_PRESSURE:-1.7}" \
-  --trace_topk_per_gen "${TRACE_TOPK_PER_GEN:-2}" \
+  --trace_topk_per_gen "${TRACE_TOPK_PER_GEN:-3}" \
   --save_images \
   "$@"

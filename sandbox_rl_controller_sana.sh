@@ -8,6 +8,9 @@ PROMPT_STYLE="${PROMPT_STYLE:-all}"
 PROMPT_DIR="${PROMPT_DIR:-/data/ygu}"
 PROMPT_FILE="${PROMPT_FILE:-${PROMPT_DIR}/hpsv2_prompts.txt}"
 OUT_DIR="${OUT_DIR:-/data/ygu/sandbox_rl_controller_sana}"
+CFG_SCALES_STR="${CFG_SCALES:-1.0 1.25 1.5}"
+read -r -a CFG_SCALES_ARR <<< "${CFG_SCALES_STR}"
+BASELINE_CFG="${BASELINE_CFG:-1.0}"
 
 if [[ ! -f "${PROMPT_FILE}" ]]; then
   echo "[sandbox] prompt file not found, exporting HPSv2 prompts first ..."
@@ -30,6 +33,8 @@ fi
   --height "${HEIGHT:-512}" \
   --seed "${SEED:-42}" \
   --guidance_scale "${GUIDANCE_SCALE:-1.0}" \
+  --baseline_cfg "${BASELINE_CFG}" \
+  --cfg_scales "${CFG_SCALES_ARR[@]}" \
   --preview_every "${PREVIEW_EVERY:-1}" \
   --reward_type "${REWARD_TYPE:-imagereward}" \
   --reward_device "${REWARD_DEVICE:-cpu}" \
@@ -42,4 +47,3 @@ fi
   --trace_topk_per_gen "${TRACE_TOPK_PER_GEN:-2}" \
   --save_images \
   "$@"
-

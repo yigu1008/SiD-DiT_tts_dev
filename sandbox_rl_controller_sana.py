@@ -477,6 +477,7 @@ def encode_hierarchy(
 
     return HierarchyEmbeddingCache(
         prompts=prompts,
+        action_bank=list(ACTION_BANK),
         action_embeds=action_embeds,
         action_names=action_names,
         ue=emb.ue,
@@ -826,7 +827,7 @@ def run_openloop_ga(
     elites = max(1, min(int(args.openloop_elites), pop))
     n_actions = len(ACTION_BANK)
     steps = int(args.steps)
-    fixed = default_fixed_schedule(steps)
+    fixed = default_fixed_schedule(steps, float(args.baseline_cfg))
 
     population: list[list[int]] = [list(fixed)]
     while len(population) < pop:
@@ -862,6 +863,8 @@ def run_openloop_ga(
                     "score": float(score),
                     "genome": [int(x) for x in genome],
                     "actions": [ACTION_BANK[int(a)].name for a in genome],
+                    "prompt_actions": [ACTION_BANK[int(a)].prompt_name for a in genome],
+                    "cfg_scales": [float(ACTION_BANK[int(a)].cfg) for a in genome],
                     "preview_rewards": [float(x) for x in trace.preview_rewards],
                 }
             )
@@ -905,6 +908,8 @@ def run_openloop_ga(
         "best_score": float(best_trace.final_score),
         "best_genome": [int(x) for x in best_genome],
         "best_actions": [ACTION_BANK[int(a)].name for a in best_genome],
+        "best_prompt_actions": [ACTION_BANK[int(a)].prompt_name for a in best_genome],
+        "best_cfg_scales": [float(ACTION_BANK[int(a)].cfg) for a in best_genome],
         "eval_calls_total": int(eval_calls),
         "nfe_total": int(eval_calls * steps),
         "wallclock_total_sec": float(time.perf_counter() - ga_start),
@@ -1004,12 +1009,12 @@ def policy_select_action(params: PolicyParams, progress: float, prev_delta: floa
 
         # Reactive rules from reward delta.
         if prev_delta < params.delta_down:
-            if spec.name == "mid_only":
+            if spec.prompt_name == "mid_only":
                 s += 0.35
-            if spec.name in {"fine_only", "mid_fine_50"}:
+            if spec.prompt_name in {"fine_only", "mid_fine_50"}:
                 s -= 0.20
         elif prev_delta < params.delta_up:
-            if spec.name in {"mid_fine_50", "fine_only"}:
+            if spec.prompt_name in {"mid_fine_50", "fine_only"}:
                 s += 0.25
 
         # Blend-bias terms.
@@ -1197,6 +1202,8 @@ def run_controller_ga(
                     "genome": [float(x) for x in genome],
                     "params": asdict(params),
                     "actions": [str(x) for x in trace.action_names],
+                    "prompt_actions": [ACTION_BANK[int(a)].prompt_name for a in trace.actions],
+                    "cfg_scales": [float(ACTION_BANK[int(a)].cfg) for a in trace.actions],
                     "preview_rewards": [float(x) for x in trace.preview_rewards],
                 }
             )
@@ -1247,6 +1254,9 @@ def run_controller_ga(
         "best_score": float(best_trace.final_score),
         "best_genome": [float(x) for x in best_genome],
         "best_params": asdict(decode_policy_genome(best_genome)),
+        "best_actions": [str(x) for x in best_trace.action_names],
+        "best_prompt_actions": [ACTION_BANK[int(a)].prompt_name for a in best_trace.actions],
+        "best_cfg_scales": [float(ACTION_BANK[int(a)].cfg) for a in best_trace.actions],
         "eval_calls_total": int(eval_calls),
         "nfe_total": int(eval_calls * args.steps),
         "wallclock_total_sec": float(time.perf_counter() - ga_start),
@@ -1261,6 +1271,7 @@ def save_trace_json(path: str, trace: RolloutTrace) -> None:
         "actions": [int(a) for a in trace.actions],
         "action_names": [str(a) for a in trace.action_names],
         "preview_rewards": [float(x) for x in trace.preview_rewards],
+        "preview_reward_changes": [float(x.delta_reward) for x in trace.step_records],
         "step_records": [asdict(x) for x in trace.step_records],
         "final_image_path": trace.final_image_path,
     }
@@ -1297,6 +1308,13 @@ def run(args: argparse.Namespace) -> None:
     if args.cuda_alloc_conf and "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = args.cuda_alloc_conf
         print(f"Set PYTORCH_CUDA_ALLOC_CONF={args.cuda_alloc_conf}")
+
+    cfg_scales = _unique_cfg_scales(args.cfg_scales, args.guidance_scale)
+    init_action_bank(cfg_scales)
+    print(
+        f"Action space: {len(PROMPT_BLEND_BANK)} prompt actions x {len(cfg_scales)} cfg = {len(ACTION_BANK)}"
+    )
+    print(f"  cfg_scales={cfg_scales} baseline_cfg={float(args.baseline_cfg):.3f}")
 
     prompts = load_prompts(args)
     cache_path = args.hierarchy_cache_json if args.hierarchy_cache_json else os.path.join(args.out_dir, "hierarchy_cache.json")
@@ -1346,7 +1364,7 @@ def run(args: argparse.Namespace) -> None:
         save_trace_json(os.path.join(prompt_dir, "trace_baseline_original.json"), trace_original)
 
         # 2) one-shot rewrite (mid only)
-        one_shot_actions = [ACTION_NAME_TO_ID["mid_only"] for _ in range(args.steps)]
+        one_shot_actions = [action_id_for("mid_only", float(args.baseline_cfg)) for _ in range(args.steps)]
         trace_one_shot = run_rollout_action_sequence(
             args,
             ctx,
@@ -1387,7 +1405,7 @@ def run(args: argparse.Namespace) -> None:
             option_rewards_paths["oneshot_mid"] = op_path
 
         # 3) fixed coarse->mid->fine
-        fixed_actions = default_fixed_schedule(args.steps)
+        fixed_actions = default_fixed_schedule(args.steps, float(args.baseline_cfg))
         trace_fixed = run_rollout_action_sequence(
             args,
             ctx,
@@ -1512,12 +1530,20 @@ def run(args: argparse.Namespace) -> None:
             ("controller_ga_best", float(trace_controller.final_score)),
         ]
         save_score_board(os.path.join(prompt_dir, "score_board.png"), score_rows)
+        baseline_score = float(trace_original.final_score)
 
         prompt_summary = {
             "slug": slug,
             "prompt": prompt,
             "hierarchy": asdict(hierarchy),
+            "search_space": {
+                "cfg_scales": [float(x) for x in cfg_scales],
+                "n_prompt_actions": int(len(PROMPT_BLEND_BANK)),
+                "n_total_actions": int(len(ACTION_BANK)),
+                "baseline_cfg": float(args.baseline_cfg),
+            },
             "scores": {name: score for name, score in score_rows},
+            "score_deltas_vs_baseline": {name: float(score - baseline_score) for name, score in score_rows},
             "option_reward_logs": option_rewards_paths,
             "openloop_ga": openloop_payload,
             "controller_ga": controller_payload,

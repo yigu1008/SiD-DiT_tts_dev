@@ -14,7 +14,8 @@ Baselines:
   1) original prompt only
   2) one-shot Qwen (balanced candidate)
   3) fixed equal-weight blending
-  4) GA(prompt structure) + CEM(weights)
+  4) naive equal-weight blend ablation (nlerp vs slerp, optional)
+  5) GA(prompt structure) + CEM(weights)
 """
 
 from __future__ import annotations
@@ -106,6 +107,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # Fixed baseline blend
     p.add_argument("--basis_k", type=int, default=3, help="How many prompts are selected in each basis subset.")
     p.add_argument("--fixed_family", choices=["nlerp", "slerp"], default="nlerp")
+    p.add_argument("--run_naive_blend_ablation", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--naive_blend_k", type=int, default=2, help="Prompt count for naive nlerp/slerp equal-weight test.")
 
     # CEM (inner)
     p.add_argument("--cem_iters", type=int, default=4)
@@ -269,6 +272,60 @@ def run_prompt(
         tag=f"{slug}_fixed",
     )
 
+    naive_blend_payload: dict[str, Any] | None = None
+    naive_blend_rollouts: dict[str, Any] = {}
+    if bool(args.run_naive_blend_ablation):
+        naive_subset = _subset_indices(len(basis_emb.pe_list), int(args.naive_blend_k))
+        nk = len(naive_subset)
+        theta_naive = WeightParams(a=np.zeros((nk,), dtype=np.float64), b=np.zeros((nk,), dtype=np.float64))
+        for fam in ("nlerp", "slerp"):
+            naive_path = (
+                os.path.join(prompt_dir, f"naive_equal_{fam}.png")
+                if save_images and args.save_images
+                else None
+            )
+            naive_roll = run_dynamic_rollout(
+                args=args,
+                ctx=ctx,
+                reward_ctx=reward_ctx,
+                prompt=prompt,
+                metadata=None,
+                seed=int(args.seed),
+                h=h,
+                w=w,
+                orig_h=orig_h,
+                orig_w=orig_w,
+                basis_emb=basis_emb,
+                basis_indices=naive_subset,
+                blend_family=fam,
+                weight_params=theta_naive,
+                preview_every=int(args.preview_every),
+                save_path=naive_path,
+                tag=f"{slug}_naive_equal_{fam}",
+            )
+            naive_blend_rollouts[fam] = naive_roll
+        naive_blend_payload = {
+            "subset_indices": [int(x) for x in naive_subset],
+            "subset_labels": [str(basis_emb.labels[int(x)]) for x in naive_subset],
+            "equal_theta": [0.0 for _ in range(2 * nk)],
+            "scores": {
+                "nlerp": float(naive_blend_rollouts["nlerp"].final_score),
+                "slerp": float(naive_blend_rollouts["slerp"].final_score),
+                "delta_slerp_minus_nlerp": float(
+                    naive_blend_rollouts["slerp"].final_score - naive_blend_rollouts["nlerp"].final_score
+                ),
+            },
+            "nlerp": {
+                "preview_rewards": [float(x) for x in naive_blend_rollouts["nlerp"].preview_rewards],
+                "step_weight_evolution": _rollout_weight_evolution(naive_blend_rollouts["nlerp"]),
+            },
+            "slerp": {
+                "preview_rewards": [float(x) for x in naive_blend_rollouts["slerp"].preview_rewards],
+                "step_weight_evolution": _rollout_weight_evolution(naive_blend_rollouts["slerp"]),
+            },
+        }
+        save_json(os.path.join(prompt_dir, "naive_blend_ablation.json"), naive_blend_payload)
+
     # 4) GA(prompt subset/family) + CEM(weights)
     path_hybrid = os.path.join(prompt_dir, "hybrid_ga_cem_best.png") if save_images and args.save_images else None
     ga_res: PromptGASearchResult = run_ga_prompt_search(
@@ -336,6 +393,7 @@ def run_prompt(
             "fixed_equal_blend": float(fixed.final_score),
             "ga_cem_hybrid_best": float(ga_res.best.score),
         },
+        "naive_blend_ablation": naive_blend_payload,
         "hybrid": {
             "best_score": float(ga_res.best.score),
             "best_genome": [int(x) for x in ga_res.best.genome],
@@ -352,6 +410,12 @@ def run_prompt(
             "weight_evolution_file": weight_path,
         },
     }
+    if naive_blend_payload is not None:
+        result["scores"]["naive_equal_nlerp"] = float(naive_blend_rollouts["nlerp"].final_score)
+        result["scores"]["naive_equal_slerp"] = float(naive_blend_rollouts["slerp"].final_score)
+        result["scores"]["naive_delta_slerp_minus_nlerp"] = float(
+            naive_blend_rollouts["slerp"].final_score - naive_blend_rollouts["nlerp"].final_score
+        )
     save_json(os.path.join(prompt_dir, "result.json"), result)
     return result
 
@@ -400,6 +464,13 @@ def main(argv: list[str] | None = None) -> None:
             f"fixed={scores['fixed_equal_blend']:.4f} "
             f"hybrid={scores['ga_cem_hybrid_best']:.4f}"
         )
+        if "naive_equal_nlerp" in scores and "naive_equal_slerp" in scores:
+            print(
+                "  naive-blend: "
+                f"nlerp={scores['naive_equal_nlerp']:.4f} "
+                f"slerp={scores['naive_equal_slerp']:.4f} "
+                f"delta={scores['naive_delta_slerp_minus_nlerp']:+.4f}"
+            )
         all_rows.append(row)
 
     save_basis_cache(args.basis_cache_json, basis_cache)

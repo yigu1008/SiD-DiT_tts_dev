@@ -188,10 +188,10 @@ def main() -> None:
     print(
         f"[rewrites] prompts_total={len(prompts)} pending={len(pending)} "
         f"cached={len(prompts)-len(pending)} device={target_device} dtype={args.qwen_dtype}"
-    )
+    , flush=True)
     if len(pending) == 0:
         save_cache(args.rewrites_file, cache)
-        print(f"[rewrites] nothing to do. cache={args.rewrites_file}")
+        print(f"[rewrites] nothing to do. cache={args.rewrites_file}", flush=True)
         return
 
     t0 = time.perf_counter()
@@ -235,11 +235,11 @@ def main() -> None:
             gc.collect()
             torch.cuda.empty_cache()
 
-        print(f"[rewrites] batch {bi}/{len(batches)} done ({len(batch_prompts)} prompts)")
+        print(f"[rewrites] batch {bi}/{len(batches)} done ({len(batch_prompts)} prompts)", flush=True)
 
     save_cache(args.rewrites_file, cache)
     elapsed = time.perf_counter() - t0
-    print(f"[rewrites] done. cache={args.rewrites_file} prompts={len(pending)} elapsed_sec={elapsed:.2f}")
+    print(f"[rewrites] done. cache={args.rewrites_file} prompts={len(pending)} elapsed_sec={elapsed:.2f}", flush=True)
 
 
 if __name__ == "__main__":

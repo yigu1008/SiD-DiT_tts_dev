@@ -38,7 +38,7 @@ PRECOMPUTE_REWRITES="${PRECOMPUTE_REWRITES:-1}"
 REWRITES_FILE="${REWRITES_FILE:-}"
 REWRITES_OVERWRITE="${REWRITES_OVERWRITE:-0}"
 QWEN_PRECOMPUTE_DEVICE="${QWEN_PRECOMPUTE_DEVICE:-auto}"
-QWEN_PRECOMPUTE_BATCH_SIZE="${QWEN_PRECOMPUTE_BATCH_SIZE:-16}"
+QWEN_PRECOMPUTE_BATCH_SIZE="${QWEN_PRECOMPUTE_BATCH_SIZE:-4}"
 QWEN_PRECOMPUTE_SAVE_EVERY="${QWEN_PRECOMPUTE_SAVE_EVERY:-1}"
 QWEN_PRECOMPUTE_CLEAR_CACHE="${QWEN_PRECOMPUTE_CLEAR_CACHE:-1}"
 QWEN_PRECOMPUTE_MAX_NEW_TOKENS="${QWEN_PRECOMPUTE_MAX_NEW_TOKENS:-120}"
@@ -120,7 +120,7 @@ precompute_rewrites_cache() {
   fi
   echo "[rewrites] precomputing Qwen rewrites cache ..."
   local -a cmd=(
-    "${PYTHON_BIN}" "${SCRIPT_DIR}/precompute_sd35_rewrites.py"
+    "${PYTHON_BIN}" "-u" "${SCRIPT_DIR}/precompute_sd35_rewrites.py"
     --prompt_file "${PROMPT_FILE}"
     --rewrites_file "${REWRITES_FILE}"
     --start_index "${START_INDEX}"
@@ -145,6 +145,11 @@ precompute_rewrites_cache() {
   fi
   env -u RANK -u LOCAL_RANK -u WORLD_SIZE -u LOCAL_WORLD_SIZE -u NODE_RANK -u MASTER_ADDR -u MASTER_PORT \
     "${cmd[@]}"
+  if [[ ! -s "${REWRITES_FILE}" ]]; then
+    echo "Error: rewrite precompute finished but cache missing/empty: ${REWRITES_FILE}" >&2
+    exit 1
+  fi
+  echo "[rewrites] cache ready: ${REWRITES_FILE}"
 }
 
 append_method_summary() {
@@ -258,6 +263,9 @@ run_method() {
     if [[ "${PRECOMPUTE_REWRITES}" == "1" && -f "${REWRITES_FILE}" ]]; then
       # Cache-only variant path: avoid loading Qwen in each DDP rank.
       extra+=(--no_qwen)
+    elif [[ "${PRECOMPUTE_REWRITES}" == "1" && ! -f "${REWRITES_FILE}" ]]; then
+      echo "Error: USE_QWEN=1 with PRECOMPUTE_REWRITES=1 requires rewrites cache file, but not found: ${REWRITES_FILE}" >&2
+      exit 1
     fi
   else
     extra+=(--no_qwen)

@@ -19,6 +19,11 @@ if [[ ! -f "${PROMPT_FILE}" ]]; then
   exit 1
 fi
 
+extra_args=()
+if [[ "${RUN_NAIVE_BLEND_ABLATION:-0}" == "1" ]]; then
+  extra_args+=(--run_naive_blend_ablation --naive_blend_k "${NAIVE_BLEND_K:-2}")
+fi
+
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sandbox_prompt_basis_ga_cem_sana.py" \
   --prompt_file "${PROMPT_FILE}" \
   --max_prompts "${MAX_PROMPTS:-0}" \
@@ -54,4 +59,5 @@ fi
   --ga_anchor_family "${GA_ANCHOR_FAMILY:-nlerp}" \
   --save_first_k "${SAVE_FIRST_K:-10}" \
   --save_images \
+  "${extra_args[@]}" \
   "$@"

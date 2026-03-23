@@ -14,6 +14,10 @@ class CEMIteration:
     elite_mean_score: float
     eval_calls_total: int
     std_mean: float
+    best_x: list[float]
+    mean_x: list[float]
+    elite_mean_x: list[float]
+    std_x: list[float]
 
 
 @dataclass
@@ -86,6 +90,10 @@ def optimize_cem(
                 elite_mean_score=float(elite_scores.mean()),
                 eval_calls_total=int(eval_calls),
                 std_mean=float(std.mean()),
+                best_x=[float(v) for v in scored[0][1].tolist()],
+                mean_x=[float(v) for v in mean.tolist()],
+                elite_mean_x=[float(v) for v in elite.mean(axis=0).tolist()],
+                std_x=[float(v) for v in std.tolist()],
             )
         )
 

@@ -143,7 +143,8 @@ precompute_rewrites_cache() {
   if [[ "${REWRITES_OVERWRITE}" == "1" ]]; then
     cmd+=(--overwrite)
   fi
-  "${cmd[@]}"
+  env -u RANK -u LOCAL_RANK -u WORLD_SIZE -u LOCAL_WORLD_SIZE -u NODE_RANK -u MASTER_ADDR -u MASTER_PORT \
+    "${cmd[@]}"
 }
 
 append_method_summary() {

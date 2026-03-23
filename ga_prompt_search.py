@@ -29,6 +29,7 @@ class PromptGAEval:
 class PromptGASearchResult:
     best: PromptGAEval
     history: list[dict[str, Any]]
+    evaluation_log: list[dict[str, Any]]
     eval_calls_total: int
     nfe_total: int
     wallclock_total_sec: float
@@ -134,6 +135,24 @@ def mutate_prompt_genome(genome: list[int], pool_size: int, fam_count: int, p: f
     return out
 
 
+def _weight_evolution(rollout: RolloutResult) -> list[dict[str, Any]]:
+    return [
+        {
+            "step": int(st.step),
+            "sigma": float(st.sigma),
+            "progress": float(st.progress),
+            "blend_family": str(st.blend_family),
+            "selected_indices": [int(x) for x in st.selected_indices],
+            "selected_labels": [str(x) for x in st.selected_labels],
+            "selected_weights": [float(x) for x in st.selected_weights],
+            "weights_by_label": {str(k): float(v) for k, v in st.weights_by_label.items()},
+            "preview_reward": float(st.preview_reward),
+            "delta_reward": float(st.delta_reward),
+        }
+        for st in rollout.step_traces
+    ]
+
+
 def run_ga_prompt_search(
     args: Any,
     ctx: su.PipelineContext,
@@ -175,6 +194,7 @@ def run_ga_prompt_search(
     eval_calls_total = 0
     nfe_total = 0
     history: list[dict[str, Any]] = []
+    evaluation_log: list[dict[str, Any]] = []
 
     best_eval: PromptGAEval | None = None
     search_start = time.perf_counter()
@@ -246,6 +266,20 @@ def run_ga_prompt_search(
             rollout=rollout,
             cem=cem,
         )
+        evaluation_log.append(
+            {
+                "tag": str(tag_prefix),
+                "score": float(result.score),
+                "genome": [int(x) for x in result.genome],
+                "subset_indices": [int(x) for x in result.subset_indices],
+                "subset_labels": [str(x) for x in result.subset_labels],
+                "blend_family": str(result.blend_family),
+                "theta": [float(x) for x in result.theta],
+                "preview_rewards": [float(x) for x in result.rollout.preview_rewards],
+                "step_weight_evolution": _weight_evolution(result.rollout),
+                "cem_history": list(result.cem.history),
+            }
+        )
         if bool(args.ga_eval_cache):
             eval_cache[key] = result
         return result
@@ -302,6 +336,8 @@ def run_ga_prompt_search(
                         "blend_family": str(row.blend_family),
                         "theta": [float(x) for x in row.theta],
                         "preview_rewards": [float(x) for x in row.rollout.preview_rewards],
+                        "step_weight_evolution": _weight_evolution(row.rollout),
+                        "cem_history": list(row.cem.history),
                     }
                     for r, row in enumerate(evaluated[:topk])
                 ],
@@ -330,6 +366,7 @@ def run_ga_prompt_search(
     return PromptGASearchResult(
         best=best_eval,
         history=history,
+        evaluation_log=evaluation_log,
         eval_calls_total=int(eval_calls_total),
         nfe_total=int(nfe_total),
         wallclock_total_sec=float(time.perf_counter() - search_start),

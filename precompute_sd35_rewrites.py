@@ -104,7 +104,7 @@ def resolve_device(req: str) -> tuple[Any, str]:
     key = str(req).strip().lower()
     if key == "auto":
         target = "cuda:0" if torch.cuda.is_available() else "cpu"
-        return "auto", target
+        return {"": target}, target
     if key == "cuda":
         target = "cuda:0"
         return {"": target}, target
@@ -195,11 +195,16 @@ def main() -> None:
         return
 
     t0 = time.perf_counter()
+    # Guard against launcher-injected distributed env; this script must stay single-process.
+    for key in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "LOCAL_WORLD_SIZE", "NODE_RANK"):
+        if key in os.environ:
+            os.environ.pop(key, None)
     tokenizer = AutoTokenizer.from_pretrained(args.qwen_id)
     model = AutoModelForCausalLM.from_pretrained(
         args.qwen_id,
         torch_dtype=dtype,
         device_map=device_map,
+        low_cpu_mem_usage=True,
     )
     model.eval()
 

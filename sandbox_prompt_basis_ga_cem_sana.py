@@ -162,6 +162,24 @@ def _subset_indices(pool_size: int, basis_k: int) -> list[int]:
     return list(range(k))
 
 
+def _rollout_weight_evolution(rollout: Any) -> list[dict[str, Any]]:
+    return [
+        {
+            "step": int(st.step),
+            "sigma": float(st.sigma),
+            "progress": float(st.progress),
+            "blend_family": str(st.blend_family),
+            "selected_indices": [int(x) for x in st.selected_indices],
+            "selected_labels": [str(x) for x in st.selected_labels],
+            "selected_weights": [float(x) for x in st.selected_weights],
+            "weights_by_label": {str(k): float(v) for k, v in st.weights_by_label.items()},
+            "preview_reward": float(st.preview_reward),
+            "delta_reward": float(st.delta_reward),
+        }
+        for st in rollout.step_traces
+    ]
+
+
 def run_prompt(
     args: argparse.Namespace,
     ctx: su.PipelineContext,
@@ -268,6 +286,33 @@ def run_prompt(
         save_best_image_path=path_hybrid,
     )
 
+    weight_evolution = {
+        "baseline_original": _rollout_weight_evolution(baseline),
+        "oneshot_balanced": _rollout_weight_evolution(oneshot),
+        "fixed_equal_blend": _rollout_weight_evolution(fixed),
+        "ga_cem_hybrid_best": _rollout_weight_evolution(ga_res.best.rollout),
+        "ga_cem_generation_topk": [
+            {
+                "generation": int(gen_row.get("generation", 0)),
+                "top": [
+                    {
+                        "rank": int(top_row.get("rank", 0)),
+                        "score": float(top_row.get("score", 0.0)),
+                        "subset_labels": [str(x) for x in top_row.get("subset_labels", [])],
+                        "blend_family": str(top_row.get("blend_family", "")),
+                        "theta": [float(x) for x in top_row.get("theta", [])],
+                        "step_weight_evolution": top_row.get("step_weight_evolution", []),
+                    }
+                    for top_row in gen_row.get("top", [])
+                ],
+            }
+            for gen_row in ga_res.history
+        ],
+        "ga_cem_all_evaluations": to_jsonable(ga_res.evaluation_log),
+    }
+    weight_path = os.path.join(prompt_dir, "weight_evolution.json")
+    save_json(weight_path, weight_evolution)
+
     if save_images and args.save_images:
         panel_path = os.path.join(prompt_dir, "comparison_panel.png")
         make_score_panel(
@@ -302,7 +347,9 @@ def run_prompt(
             "nfe_total": int(ga_res.nfe_total),
             "wallclock_total_sec": float(ga_res.wallclock_total_sec),
             "history": to_jsonable(ga_res.history),
+            "evaluation_log": to_jsonable(ga_res.evaluation_log),
             "best_rollout": to_jsonable(ga_res.best.rollout),
+            "weight_evolution_file": weight_path,
         },
     }
     save_json(os.path.join(prompt_dir, "result.json"), result)

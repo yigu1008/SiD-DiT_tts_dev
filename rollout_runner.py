@@ -46,6 +46,8 @@ def resolve_resolution(
 
 
 def _should_preview(step_idx: int, steps: int, every: int) -> bool:
+    if every < 0:
+        return False
     if every <= 0:
         return step_idx == steps - 1
     return ((step_idx + 1) % every == 0) or (step_idx == steps - 1)

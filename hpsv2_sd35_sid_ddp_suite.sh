@@ -30,8 +30,20 @@ RESAMPLE_START_FRAC="${RESAMPLE_START_FRAC:-0.3}"
 SMC_CFG_SCALE="${SMC_CFG_SCALE:-1.25}"
 SMC_VARIANT_IDX="${SMC_VARIANT_IDX:-0}"
 USE_QWEN="${USE_QWEN:-0}"
+QWEN_ID="${QWEN_ID:-Qwen/Qwen3-4B}"
+QWEN_DTYPE="${QWEN_DTYPE:-bfloat16}"
 SAVE_IMAGES="${SAVE_IMAGES:-0}"
 SAVE_VARIANTS="${SAVE_VARIANTS:-0}"
+PRECOMPUTE_REWRITES="${PRECOMPUTE_REWRITES:-1}"
+REWRITES_FILE="${REWRITES_FILE:-}"
+REWRITES_OVERWRITE="${REWRITES_OVERWRITE:-0}"
+QWEN_PRECOMPUTE_DEVICE="${QWEN_PRECOMPUTE_DEVICE:-auto}"
+QWEN_PRECOMPUTE_BATCH_SIZE="${QWEN_PRECOMPUTE_BATCH_SIZE:-16}"
+QWEN_PRECOMPUTE_SAVE_EVERY="${QWEN_PRECOMPUTE_SAVE_EVERY:-1}"
+QWEN_PRECOMPUTE_CLEAR_CACHE="${QWEN_PRECOMPUTE_CLEAR_CACHE:-1}"
+QWEN_PRECOMPUTE_MAX_NEW_TOKENS="${QWEN_PRECOMPUTE_MAX_NEW_TOKENS:-120}"
+QWEN_PRECOMPUTE_TEMPERATURE="${QWEN_PRECOMPUTE_TEMPERATURE:-0.6}"
+QWEN_PRECOMPUTE_TOP_P="${QWEN_PRECOMPUTE_TOP_P:-0.9}"
 
 REWARD_BACKEND="${REWARD_BACKEND:-imagereward}"
 REWARD_MODEL="${REWARD_MODEL:-CodeGoat24/UnifiedReward-qwen-7b}"
@@ -65,12 +77,17 @@ RUN_TS="$(date +%Y%m%d_%H%M%S)"
 RUN_DIR="${OUT_ROOT}/run_${RUN_TS}"
 mkdir -p "${RUN_DIR}"
 SUITE_TSV="${RUN_DIR}/suite_summary.tsv"
+if [[ -z "${REWRITES_FILE}" ]]; then
+  REWRITES_FILE="${RUN_DIR}/rewrites_cache.json"
+fi
 
 echo "SD3.5L SiD DDP suite"
 echo "  prompt_file: ${PROMPT_FILE}"
 echo "  modes: ${METHODS}"
 echo "  nproc_per_node: ${NUM_GPUS}"
 echo "  reward_backend: ${REWARD_BACKEND}"
+echo "  use_qwen: ${USE_QWEN} (precompute=${PRECOMPUTE_REWRITES})"
+echo "  rewrites_file: ${REWRITES_FILE}"
 echo "  out: ${RUN_DIR}"
 
 ensure_imagereward_runtime() {
@@ -93,6 +110,41 @@ PY
 }
 
 ensure_imagereward_runtime
+
+precompute_rewrites_cache() {
+  if [[ "${USE_QWEN}" != "1" ]]; then
+    return 0
+  fi
+  if [[ "${PRECOMPUTE_REWRITES}" != "1" ]]; then
+    return 0
+  fi
+  echo "[rewrites] precomputing Qwen rewrites cache ..."
+  local -a cmd=(
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/precompute_sd35_rewrites.py"
+    --prompt_file "${PROMPT_FILE}"
+    --rewrites_file "${REWRITES_FILE}"
+    --start_index "${START_INDEX}"
+    --end_index "${END_INDEX}"
+    --n_variants "${N_VARIANTS}"
+    --qwen_id "${QWEN_ID}"
+    --qwen_dtype "${QWEN_DTYPE}"
+    --device "${QWEN_PRECOMPUTE_DEVICE}"
+    --batch_size "${QWEN_PRECOMPUTE_BATCH_SIZE}"
+    --save_every_batches "${QWEN_PRECOMPUTE_SAVE_EVERY}"
+    --max_new_tokens "${QWEN_PRECOMPUTE_MAX_NEW_TOKENS}"
+    --temperature "${QWEN_PRECOMPUTE_TEMPERATURE}"
+    --top_p "${QWEN_PRECOMPUTE_TOP_P}"
+  )
+  if [[ "${QWEN_PRECOMPUTE_CLEAR_CACHE}" == "1" ]]; then
+    cmd+=(--clear_cache_each_batch)
+  else
+    cmd+=(--no-clear_cache_each_batch)
+  fi
+  if [[ "${REWRITES_OVERWRITE}" == "1" ]]; then
+    cmd+=(--overwrite)
+  fi
+  "${cmd[@]}"
+}
 
 append_method_summary() {
   local method_out="$1"
@@ -198,7 +250,15 @@ run_method() {
   esac
 
   local -a extra=()
-  if [[ "${USE_QWEN}" != "1" ]]; then
+  if [[ -f "${REWRITES_FILE}" ]]; then
+    extra+=(--rewrites_file "${REWRITES_FILE}")
+  fi
+  if [[ "${USE_QWEN}" == "1" ]]; then
+    if [[ "${PRECOMPUTE_REWRITES}" == "1" && -f "${REWRITES_FILE}" ]]; then
+      # Cache-only variant path: avoid loading Qwen in each DDP rank.
+      extra+=(--no_qwen)
+    fi
+  else
     extra+=(--no_qwen)
   fi
   if [[ "${SAVE_IMAGES}" == "1" ]]; then
@@ -227,6 +287,8 @@ run_method() {
     --cfg_scales ${CFG_SCALES} \
     --baseline_cfg "${BASELINE_CFG}" \
     --n_variants "${N_VARIANTS}" \
+    --qwen_id "${QWEN_ID}" \
+    --qwen_dtype "${QWEN_DTYPE}" \
     --n_sims "${N_SIMS}" \
     --ucb_c "${UCB_C}" \
     --smc_k "${SMC_K}" \
@@ -264,6 +326,8 @@ run_method() {
 
   append_method_summary "${method_out}" "${method}" "${elapsed}"
 }
+
+precompute_rewrites_cache
 
 for method in ${METHODS}; do
   run_method "${method}"

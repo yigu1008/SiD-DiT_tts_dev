@@ -100,13 +100,19 @@ def clean_generation(text: str, fallback: str) -> str:
     return fallback
 
 
-def pick_device(req: str) -> str:
+def resolve_device(req: str) -> tuple[Any, str]:
     key = str(req).strip().lower()
     if key == "auto":
-        return "cuda:0" if torch.cuda.is_available() else "cpu"
+        target = "cuda:0" if torch.cuda.is_available() else "cpu"
+        return "auto", target
     if key == "cuda":
-        return "cuda:0"
-    return str(req)
+        target = "cuda:0"
+        return {"": target}, target
+    if key.startswith("cuda:"):
+        target = str(req)
+        return {"": target}, target
+    target = str(req)
+    return {"": target}, target
 
 
 def build_chat_prompts(tokenizer: Any, prompts: list[str], instruction: str) -> list[str]:
@@ -134,12 +140,19 @@ def rewrite_batch(
     if len(prompts) == 0:
         return []
     texts = build_chat_prompts(tokenizer, prompts, instruction)
+    model_device = None
+    for param in model.parameters():
+        if param.device.type != "meta":
+            model_device = param.device
+            break
+    if model_device is None:
+        model_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     inputs = tokenizer(
         texts,
         return_tensors="pt",
         padding=True,
         truncation=True,
-    ).to(model.device)
+    ).to(model_device)
     out = model.generate(
         **inputs,
         max_new_tokens=int(max_new_tokens),
@@ -166,7 +179,7 @@ def main() -> None:
     args = parse_args()
     args.prompt_file = resolve_path(args.prompt_file)
     args.rewrites_file = resolve_path(args.rewrites_file)
-    device = pick_device(args.device)
+    device_map, target_device = resolve_device(args.device)
     dtype = torch.bfloat16 if args.qwen_dtype == "bfloat16" else torch.float16
 
     prompts = load_prompts(args.prompt_file, args.start_index, args.end_index)
@@ -174,7 +187,7 @@ def main() -> None:
     pending = [p for p in prompts if p not in cache]
     print(
         f"[rewrites] prompts_total={len(prompts)} pending={len(pending)} "
-        f"cached={len(prompts)-len(pending)} device={device} dtype={args.qwen_dtype}"
+        f"cached={len(prompts)-len(pending)} device={target_device} dtype={args.qwen_dtype}"
     )
     if len(pending) == 0:
         save_cache(args.rewrites_file, cache)
@@ -186,7 +199,7 @@ def main() -> None:
     model = AutoModelForCausalLM.from_pretrained(
         args.qwen_id,
         torch_dtype=dtype,
-        device_map=device,
+        device_map=device_map,
     )
     model.eval()
 

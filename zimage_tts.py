@@ -306,12 +306,11 @@ def build_structured_variants(args: argparse.Namespace, prompt: str, cache: Dict
     labels = list(PROMPT_VARIANT_LABELS)
     variants = [f"{prompt} {PROMPT_FOCUS_SUFFIX[label]}" if label != "balanced" else prompt for label in labels]
 
-    if not args.use_qwen_variants or args.no_qwen or args.n_variants <= 0:
-        return labels, variants
-
     if prompt in cache:
         qwen_variants = cache[prompt][: args.n_variants]
     else:
+        if not args.use_qwen_variants or args.no_qwen or args.n_variants <= 0:
+            return labels, variants
         styles = (REWRITE_STYLES * ((args.n_variants // len(REWRITE_STYLES)) + 1))[: args.n_variants]
         qwen_variants = [qwen_rewrite(args, prompt, style) for style in styles]
 

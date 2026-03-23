@@ -1105,12 +1105,11 @@ print({repr(marker)} + sys.argv[2])
 
 
 def generate_variants(args: argparse.Namespace, prompt: str, cache: dict[str, list[str]]) -> list[str]:
-    if args.n_variants <= 0 or args.no_qwen:
-        return [prompt]
-
     if prompt in cache:
         variants = cache[prompt][: args.n_variants + 1]
         return variants if variants else [prompt]
+    if args.n_variants <= 0 or args.no_qwen:
+        return [prompt]
 
     variants = [prompt]
     styles = (REWRITE_STYLES * ((args.n_variants // len(REWRITE_STYLES)) + 1))[: args.n_variants]

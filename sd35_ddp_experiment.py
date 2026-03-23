@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
 import os
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -110,6 +112,18 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--save_images", action="store_true")
     parser.add_argument("--save_variants", action="store_true")
+    parser.add_argument(
+        "--rank_log_wait_sec",
+        type=int,
+        default=7200,
+        help="Rank0 wait timeout for all rank logs before aggregation (seconds).",
+    )
+    parser.add_argument(
+        "--rank_log_poll_sec",
+        type=float,
+        default=2.0,
+        help="Rank0 polling interval while waiting for rank logs.",
+    )
     return parser.parse_args()
 
 
@@ -144,26 +158,36 @@ def normalize_paths(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
-def init_dist() -> Tuple[int, int, int, bool]:
+def init_runtime() -> Tuple[int, int, int, bool]:
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     rank = int(os.environ.get("RANK", "0"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     distributed = world_size > 1
-    if distributed:
-        torch.distributed.init_process_group(backend="nccl")
+    # IMPORTANT:
+    # This script does not use distributed collectives for model execution.
+    # We only use torchrun's rank env vars for prompt sharding. Initializing a
+    # NCCL process group here can cause hard-to-debug collective timeouts when
+    # one rank fails. Keep ranks independent.
     if torch.cuda.is_available():
         torch.cuda.set_device(local_rank)
     return rank, world_size, local_rank, distributed
 
 
-def maybe_barrier(distributed: bool) -> None:
-    if distributed:
-        torch.distributed.barrier()
-
-
-def cleanup_dist(distributed: bool) -> None:
-    if distributed:
-        torch.distributed.destroy_process_group()
+def wait_for_rank_logs(log_dir: str, world_size: int, timeout_sec: int, poll_sec: float) -> None:
+    if world_size <= 1:
+        return
+    deadline = time.time() + float(max(1, timeout_sec))
+    expected = [os.path.join(log_dir, f"rank_{r:03d}.jsonl") for r in range(world_size)]
+    while time.time() < deadline:
+        missing = [p for p in expected if not os.path.exists(p)]
+        if not missing:
+            return
+        time.sleep(max(0.1, float(poll_sec)))
+    missing = [p for p in expected if not os.path.exists(p)]
+    raise RuntimeError(
+        "Timed out waiting for rank logs before aggregation. "
+        f"missing={len(missing)} files, examples={missing[:3]}"
+    )
 
 
 def load_prompt_range(prompt_file: str, start_index: int, end_index: int) -> List[Tuple[int, str]]:
@@ -245,8 +269,9 @@ def aggregate_logs(log_dir: str, out_dir: str) -> Dict[str, Any]:
 
 
 def main() -> None:
+    faulthandler.enable(all_threads=True)
     args = normalize_paths(parse_args())
-    rank, world_size, local_rank, distributed = init_dist()
+    rank, world_size, local_rank, distributed = init_runtime()
 
     os.makedirs(args.out_dir, exist_ok=True)
     log_dir = os.path.join(args.out_dir, "logs")
@@ -265,187 +290,200 @@ def main() -> None:
         )
     print(f"[rank {rank}] local_rank={local_rank} assigned_prompts={len(my_entries)}")
 
-    rewrite_cache: Dict[str, List[str]] = {}
-    if args.rewrites_file and os.path.exists(args.rewrites_file):
-        rewrite_cache = json.load(open(args.rewrites_file, encoding="utf-8"))
+    try:
+        rewrite_cache: Dict[str, List[str]] = {}
+        if args.rewrites_file and os.path.exists(args.rewrites_file):
+            rewrite_cache = json.load(open(args.rewrites_file, encoding="utf-8"))
 
-    ctx = load_pipeline(args)
-    reward_model = load_reward_model(args, ctx.device)
+        ctx = load_pipeline(args)
+        reward_model = load_reward_model(args, ctx.device)
 
-    rank_rows: List[Dict[str, Any]] = []
-    for prompt_index, prompt in my_entries:
-        slug = f"p{prompt_index:05d}"
-        seed = args.seed + prompt_index if args.seed_per_prompt else args.seed
-        print(f"[rank {rank}] {slug} seed={seed}")
+        rank_rows: List[Dict[str, Any]] = []
+        for prompt_index, prompt in my_entries:
+            slug = f"p{prompt_index:05d}"
+            seed = args.seed + prompt_index if args.seed_per_prompt else args.seed
+            print(f"[rank {rank}] {slug} seed={seed}")
 
-        variants = generate_variants(args, prompt, rewrite_cache)
-        if args.save_variants:
-            with open(os.path.join(args.out_dir, f"{slug}_variants.txt"), "w", encoding="utf-8") as f:
-                for vi, text in enumerate(variants):
-                    f.write(f"v{vi}: {text}\n")
+            variants = generate_variants(args, prompt, rewrite_cache)
+            if args.save_variants:
+                with open(os.path.join(args.out_dir, f"{slug}_variants.txt"), "w", encoding="utf-8") as f:
+                    for vi, text in enumerate(variants):
+                        f.write(f"v{vi}: {text}\n")
 
-        emb = encode_variants(ctx, variants, max_sequence_length=args.max_sequence_length)
-        base_img, base_score = run_baseline(
-            args,
-            ctx,
-            emb,
-            reward_model,
-            prompt,
-            seed,
-            cfg_scale=float(args.baseline_cfg),
-        )
-
-        if args.save_images:
-            base_img.save(os.path.join(img_dir, f"{slug}_base.png"))
-
-        if "base" in args.modes:
-            rank_rows.append(
-                {
-                    "prompt_index": prompt_index,
-                    "prompt": prompt,
-                    "seed": seed,
-                    "mode": "base",
-                    "score": float(base_score),
-                    "delta_vs_base": 0.0,
-                    "baseline_cfg": float(args.baseline_cfg),
-                    "schedule": [[0, float(args.baseline_cfg)] for _ in range(args.steps)],
-                }
-            )
-
-        if "greedy" in args.modes:
-            greedy = run_greedy(args, ctx, emb, reward_model, prompt, variants, seed)
-            if args.save_images:
-                greedy.image.save(os.path.join(img_dir, f"{slug}_greedy.png"))
-                save_comparison(
-                    os.path.join(img_dir, f"{slug}_greedy_comp.png"),
-                    base_img,
-                    greedy.image,
-                    base_score,
-                    greedy.score,
-                    greedy.actions,
-                )
-            rank_rows.append(
-                {
-                    "prompt_index": prompt_index,
-                    "prompt": prompt,
-                    "seed": seed,
-                    "mode": "greedy",
-                    "score": float(greedy.score),
-                    "delta_vs_base": float(greedy.score - base_score),
-                    "baseline_score": float(base_score),
-                    "actions": [[int(v), float(c)] for v, c in greedy.actions],
-                }
-            )
-
-        if "mcts" in args.modes:
-            mcts = run_mcts(args, ctx, emb, reward_model, prompt, variants, seed)
-            if args.save_images:
-                mcts.image.save(os.path.join(img_dir, f"{slug}_mcts.png"))
-                save_comparison(
-                    os.path.join(img_dir, f"{slug}_mcts_comp.png"),
-                    base_img,
-                    mcts.image,
-                    base_score,
-                    mcts.score,
-                    mcts.actions,
-                )
-            rank_rows.append(
-                {
-                    "prompt_index": prompt_index,
-                    "prompt": prompt,
-                    "seed": seed,
-                    "mode": "mcts",
-                    "score": float(mcts.score),
-                    "delta_vs_base": float(mcts.score - base_score),
-                    "baseline_score": float(base_score),
-                    "actions": [[int(v), float(c)] for v, c in mcts.actions],
-                }
-            )
-
-        if "ga" in args.modes:
-            ga = run_ga(
+            emb = encode_variants(ctx, variants, max_sequence_length=args.max_sequence_length)
+            base_img, base_score = run_baseline(
                 args,
                 ctx,
                 emb,
                 reward_model,
                 prompt,
-                variants,
                 seed,
-                log_dir=os.path.join(args.out_dir, "ga_logs"),
-                log_prefix=slug,
+                cfg_scale=float(args.baseline_cfg),
             )
+
             if args.save_images:
-                ga.image.save(os.path.join(img_dir, f"{slug}_ga.png"))
-                save_comparison(
-                    os.path.join(img_dir, f"{slug}_ga_comp.png"),
-                    base_img,
-                    ga.image,
-                    base_score,
-                    ga.score,
-                    ga.actions,
+                base_img.save(os.path.join(img_dir, f"{slug}_base.png"))
+
+            if "base" in args.modes:
+                rank_rows.append(
+                    {
+                        "prompt_index": prompt_index,
+                        "prompt": prompt,
+                        "seed": seed,
+                        "mode": "base",
+                        "score": float(base_score),
+                        "delta_vs_base": 0.0,
+                        "baseline_cfg": float(args.baseline_cfg),
+                        "schedule": [[0, float(args.baseline_cfg)] for _ in range(args.steps)],
+                    }
                 )
-            rank_rows.append(
+
+            if "greedy" in args.modes:
+                greedy = run_greedy(args, ctx, emb, reward_model, prompt, variants, seed)
+                if args.save_images:
+                    greedy.image.save(os.path.join(img_dir, f"{slug}_greedy.png"))
+                    save_comparison(
+                        os.path.join(img_dir, f"{slug}_greedy_comp.png"),
+                        base_img,
+                        greedy.image,
+                        base_score,
+                        greedy.score,
+                        greedy.actions,
+                    )
+                rank_rows.append(
+                    {
+                        "prompt_index": prompt_index,
+                        "prompt": prompt,
+                        "seed": seed,
+                        "mode": "greedy",
+                        "score": float(greedy.score),
+                        "delta_vs_base": float(greedy.score - base_score),
+                        "baseline_score": float(base_score),
+                        "actions": [[int(v), float(c)] for v, c in greedy.actions],
+                    }
+                )
+
+            if "mcts" in args.modes:
+                mcts = run_mcts(args, ctx, emb, reward_model, prompt, variants, seed)
+                if args.save_images:
+                    mcts.image.save(os.path.join(img_dir, f"{slug}_mcts.png"))
+                    save_comparison(
+                        os.path.join(img_dir, f"{slug}_mcts_comp.png"),
+                        base_img,
+                        mcts.image,
+                        base_score,
+                        mcts.score,
+                        mcts.actions,
+                    )
+                rank_rows.append(
+                    {
+                        "prompt_index": prompt_index,
+                        "prompt": prompt,
+                        "seed": seed,
+                        "mode": "mcts",
+                        "score": float(mcts.score),
+                        "delta_vs_base": float(mcts.score - base_score),
+                        "baseline_score": float(base_score),
+                        "actions": [[int(v), float(c)] for v, c in mcts.actions],
+                    }
+                )
+
+            if "ga" in args.modes:
+                ga = run_ga(
+                    args,
+                    ctx,
+                    emb,
+                    reward_model,
+                    prompt,
+                    variants,
+                    seed,
+                    log_dir=os.path.join(args.out_dir, "ga_logs"),
+                    log_prefix=slug,
+                )
+                if args.save_images:
+                    ga.image.save(os.path.join(img_dir, f"{slug}_ga.png"))
+                    save_comparison(
+                        os.path.join(img_dir, f"{slug}_ga_comp.png"),
+                        base_img,
+                        ga.image,
+                        base_score,
+                        ga.score,
+                        ga.actions,
+                    )
+                rank_rows.append(
+                    {
+                        "prompt_index": prompt_index,
+                        "prompt": prompt,
+                        "seed": seed,
+                        "mode": "ga",
+                        "score": float(ga.score),
+                        "delta_vs_base": float(ga.score - base_score),
+                        "baseline_score": float(base_score),
+                        "actions": [[int(v), float(c)] for v, c in ga.actions],
+                    }
+                )
+
+            if "smc" in args.modes:
+                smc = run_smc(args, ctx, emb, reward_model, prompt, variants, seed)
+                if args.save_images:
+                    smc.image.save(os.path.join(img_dir, f"{slug}_smc.png"))
+                    save_comparison(
+                        os.path.join(img_dir, f"{slug}_smc_comp.png"),
+                        base_img,
+                        smc.image,
+                        base_score,
+                        smc.score,
+                        smc.actions,
+                    )
+                rank_rows.append(
+                    {
+                        "prompt_index": prompt_index,
+                        "prompt": prompt,
+                        "seed": seed,
+                        "mode": "smc",
+                        "score": float(smc.score),
+                        "delta_vs_base": float(smc.score - base_score),
+                        "baseline_score": float(base_score),
+                        "actions": [[int(v), float(c)] for v, c in smc.actions],
+                        "search_diagnostics": smc.diagnostics,
+                    }
+                )
+
+        rank_log = os.path.join(log_dir, f"rank_{rank:03d}.jsonl")
+        with open(rank_log, "w", encoding="utf-8") as f:
+            for row in rank_rows:
+                f.write(json.dumps(row) + "\n")
+        with open(os.path.join(log_dir, f"rank_{rank:03d}_meta.json"), "w", encoding="utf-8") as f:
+            json.dump(
                 {
-                    "prompt_index": prompt_index,
-                    "prompt": prompt,
-                    "seed": seed,
-                    "mode": "ga",
-                    "score": float(ga.score),
-                    "delta_vs_base": float(ga.score - base_score),
-                    "baseline_score": float(base_score),
-                    "actions": [[int(v), float(c)] for v, c in ga.actions],
-                }
+                    "rank": rank,
+                    "world_size": world_size,
+                    "assigned_prompts": len(my_entries),
+                    "rows": len(rank_rows),
+                },
+                f,
+                indent=2,
             )
 
-        if "smc" in args.modes:
-            smc = run_smc(args, ctx, emb, reward_model, prompt, variants, seed)
-            if args.save_images:
-                smc.image.save(os.path.join(img_dir, f"{slug}_smc.png"))
-                save_comparison(
-                    os.path.join(img_dir, f"{slug}_smc_comp.png"),
-                    base_img,
-                    smc.image,
-                    base_score,
-                    smc.score,
-                    smc.actions,
-                )
-            rank_rows.append(
-                {
-                    "prompt_index": prompt_index,
-                    "prompt": prompt,
-                    "seed": seed,
-                    "mode": "smc",
-                    "score": float(smc.score),
-                    "delta_vs_base": float(smc.score - base_score),
-                    "baseline_score": float(base_score),
-                    "actions": [[int(v), float(c)] for v, c in smc.actions],
-                    "search_diagnostics": smc.diagnostics,
-                }
+        if rank == 0:
+            wait_for_rank_logs(
+                log_dir=log_dir,
+                world_size=world_size,
+                timeout_sec=int(args.rank_log_wait_sec),
+                poll_sec=float(args.rank_log_poll_sec),
             )
-
-    rank_log = os.path.join(log_dir, f"rank_{rank:03d}.jsonl")
-    with open(rank_log, "w", encoding="utf-8") as f:
-        for row in rank_rows:
-            f.write(json.dumps(row) + "\n")
-    with open(os.path.join(log_dir, f"rank_{rank:03d}_meta.json"), "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "rank": rank,
-                "world_size": world_size,
-                "assigned_prompts": len(my_entries),
-                "rows": len(rank_rows),
-            },
-            f,
-            indent=2,
-        )
-
-    maybe_barrier(distributed)
-    if rank == 0:
-        aggregate = aggregate_logs(log_dir=log_dir, out_dir=args.out_dir)
-        print("Aggregate summary:")
-        print(json.dumps(aggregate, indent=2))
-    maybe_barrier(distributed)
-    cleanup_dist(distributed)
+            aggregate = aggregate_logs(log_dir=log_dir, out_dir=args.out_dir)
+            print("Aggregate summary:")
+            print(json.dumps(aggregate, indent=2))
+    except Exception as exc:
+        err_path = os.path.join(log_dir, f"rank_{rank:03d}_error.txt")
+        with open(err_path, "w", encoding="utf-8") as f:
+            f.write(f"rank={rank} local_rank={local_rank} world_size={world_size}\n")
+            f.write(f"error_type={type(exc).__name__}\n")
+            f.write(f"error={exc}\n")
+        print(f"[rank {rank}] ERROR: {type(exc).__name__}: {exc}")
+        print(f"[rank {rank}] wrote error log: {err_path}")
+        raise
 
 
 if __name__ == "__main__":

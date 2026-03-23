@@ -250,6 +250,7 @@ def load_prompts(args: argparse.Namespace) -> List[str]:
 
 def qwen_rewrite(args: argparse.Namespace, prompt: str, instruction: str) -> str:
     dtype_literal = "torch.bfloat16" if args.qwen_dtype == "bfloat16" else "torch.float16"
+    marker = "__SID_QWEN_REWRITE__"
     script = f"""
 import re
 import sys
@@ -280,17 +281,25 @@ decoded = re.sub(r"<think>.*?</think>", "", decoded, flags=re.DOTALL).strip()
 for line in decoded.splitlines():
     line = line.strip()
     if line:
-        print(line)
+        print({repr(marker)} + line)
         raise SystemExit(0)
-print(sys.argv[2])
+print({repr(marker)} + sys.argv[2])
 """
     result = subprocess.run(
         [args.qwen_python, "-c", script, instruction, prompt],
         capture_output=True,
         text=True,
     )
-    rewritten = result.stdout.strip()
-    return rewritten if rewritten else prompt
+    if result.returncode != 0:
+        return prompt
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if not line.startswith(marker):
+            continue
+        candidate = line[len(marker):].strip()
+        if candidate:
+            return candidate
+    return prompt
 
 
 def build_structured_variants(args: argparse.Namespace, prompt: str, cache: Dict[str, List[str]]) -> Tuple[List[str], List[str]]:

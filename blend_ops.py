@@ -107,12 +107,26 @@ def blend_prompt_embeddings(
         s = max(w0 + w1, 1e-8)
         t = w1 / s
         pe = slerp_pair(embeds[i0], embeds[i1], t)
-        pm = _merge_masks([masks[i0], masks[i1]])
+        # Important: at endpoints, keep a single prompt mask. Merging both masks at
+        # t≈0/1 can unmask padded tokens from the other prompt and hurt quality.
+        eps = 1e-6
+        if t <= eps:
+            pm = masks[i0]
+            selected_indices = [i0]
+            selected_weights = [1.0]
+        elif t >= 1.0 - eps:
+            pm = masks[i1]
+            selected_indices = [i1]
+            selected_weights = [1.0]
+        else:
+            pm = _merge_masks([masks[i0], masks[i1]])
+            selected_indices = [i0, i1]
+            selected_weights = [w0, w1]
         return BlendResult(
             prompt_embed=pe,
             prompt_mask=pm,
-            selected_indices=[i0, i1],
-            selected_weights=[w0, w1],
+            selected_indices=selected_indices,
+            selected_weights=selected_weights,
         )
 
     raise ValueError(f"Unsupported blend family: {family}")

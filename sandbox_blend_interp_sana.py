@@ -185,6 +185,14 @@ def main(argv: list[str] | None = None) -> None:
             basis = build_prompt_basis(args, prompt, basis_cache)
             basis_emb = encode_prompt_basis(args, ctx, basis, neg_embeds, neg_mask, max_seq=256)
             orig_h, orig_w, h, w = resolve_resolution(args, ctx)
+            basis_texts = {str(c.label): str(c.text) for c in basis.candidates}
+            save_json(
+                os.path.join(prompt_dir, "prompt_basis.json"),
+                {
+                    "original": str(prompt),
+                    "basis": basis_texts,
+                },
+            )
 
             base_img_path = os.path.join(prompt_dir, "baseline_original.png") if save_this and args.save_images else None
             baseline = run_single_prompt_rollout(
@@ -264,6 +272,7 @@ def main(argv: list[str] | None = None) -> None:
                 "slug": slug,
                 "prompt": prompt,
                 "basis_labels": list(basis_emb.labels),
+                "basis_texts": basis_texts,
                 "interp_pair_labels": pair_labels,
                 "interp_pair_indices": pair_indices,
                 "baseline_score": float(baseline.final_score),
@@ -320,4 +329,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -47,6 +47,8 @@ search:
       - source /opt/conda/etc/profile.d/conda.sh
       - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
       - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
+      - /opt/conda/envs/ptca/bin/python -c "import xformers, xformers.ops; print('xformers ok', xformers.__version__)" || (/opt/conda/envs/ptca/bin/pip uninstall -y xformers && echo 'xformers disabled (fallback path)')
       - /opt/conda/envs/ptca/bin/pip install hpsv2 huggingface_hub
       - /opt/conda/envs/ptca/bin/pip install xxhash ftfy regex tqdm
       - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh

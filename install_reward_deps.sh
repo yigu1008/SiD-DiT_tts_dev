@@ -61,7 +61,8 @@ echo "[install] UnifiedReward runtime deps (qwen-vl-utils, openai client)"
   "openai>=1.40.0"
 
 echo "[install] optional HPS backends (hpsv3/hpsv2)"
-if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "hpsv3"; then
+if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" \
+  "hpsv3" "omegaconf>=2.3.0" "hydra-core>=1.3.2"; then
   echo "[install] warning: hpsv3 install failed; continuing."
 fi
 if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "hpsv2"; then
@@ -92,6 +93,16 @@ try:
     print("hpsv3", getattr(hpsv3, "__file__", "ok"))
 except Exception as exc:
     print("hpsv3 import warning:", exc)
+try:
+    import omegaconf
+    print("omegaconf", getattr(omegaconf, "__version__", "ok"))
+except Exception as exc:
+    print("omegaconf import warning:", exc)
+try:
+    import hydra
+    print("hydra", getattr(hydra, "__version__", "ok"))
+except Exception as exc:
+    print("hydra import warning:", exc)
 try:
     import hpsv2
     print("hpsv2", getattr(hpsv2, "__file__", "ok"))

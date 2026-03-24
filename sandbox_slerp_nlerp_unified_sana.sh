@@ -19,6 +19,27 @@ if [[ ! -f "${PROMPT_FILE}" ]]; then
   exit 1
 fi
 
+ensure_hpsv3_runtime() {
+  local backend_lc
+  backend_lc="$(echo "${REWARD_TYPE:-unifiedreward}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${backend_lc}" != "hpsv3" && "${backend_lc}" != "auto" ]]; then
+    return 0
+  fi
+  if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import hpsv3
+import omegaconf
+import hydra
+print(getattr(hpsv3, "__file__", "ok"), getattr(omegaconf, "__version__", "ok"), getattr(hydra, "__version__", "ok"))
+PY
+  then
+    return 0
+  fi
+  echo "[deps] HPSv3 runtime deps missing. Installing with install_reward_deps.sh ..."
+  PYTHON_BIN="${PYTHON_BIN}" bash "${SCRIPT_DIR}/install_reward_deps.sh"
+}
+
+ensure_hpsv3_runtime
+
 reward_args=(
   --reward_type "${REWARD_TYPE:-unifiedreward}"
   --reward_device "${REWARD_DEVICE:-cpu}"
@@ -78,4 +99,3 @@ fi
   --save_first_k "${SAVE_FIRST_K:-10}" \
   --save_images \
   "$@"
-

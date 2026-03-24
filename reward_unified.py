@@ -111,7 +111,7 @@ class UnifiedRewardScorer:
     )
     _hpsv3_install_hint = (
         "Install HPSv3 dependencies, e.g.:\n"
-        "  pip install -U hpsv3 open_clip_torch"
+        "  pip install -U hpsv3 open_clip_torch omegaconf hydra-core"
     )
 
     def __init__(

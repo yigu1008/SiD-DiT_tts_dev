@@ -30,5 +30,5 @@ peft
 wandb
 open_clip_torch
 # ImageReward is installed via install_reward_deps.sh (PyPI wheel + git fallback).
-xformers
+xformers==0.0.31.post1
 sentencepiece

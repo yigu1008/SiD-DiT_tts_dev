@@ -140,7 +140,9 @@ ensure_hpsv3_runtime() {
   fi
   if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
 import hpsv3
-print(getattr(hpsv3, "__file__", "ok"))
+import omegaconf
+import hydra
+print(getattr(hpsv3, "__file__", "ok"), getattr(omegaconf, "__version__", "ok"), getattr(hydra, "__version__", "ok"))
 PY
   then
     return 0
@@ -150,6 +152,36 @@ PY
 }
 
 ensure_hpsv3_runtime
+
+ensure_xformers_runtime() {
+  local xf_ver
+  xf_ver="${XFORMERS_VERSION:-0.0.31.post1}"
+  if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import xformers
+import xformers.ops
+print(xformers.__version__)
+PY
+  then
+    return 0
+  fi
+
+  echo "[deps] xformers import failed (ABI mismatch likely). Reinstalling xformers==${xf_ver} ..."
+  if "${PYTHON_BIN}" -m pip install --no-cache-dir --force-reinstall --no-deps "xformers==${xf_ver}"; then
+    if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import xformers
+import xformers.ops
+print(xformers.__version__)
+PY
+    then
+      return 0
+    fi
+  fi
+
+  echo "[deps] xformers still broken; uninstalling xformers to force non-xformers diffusers path."
+  "${PYTHON_BIN}" -m pip uninstall -y xformers || true
+}
+
+ensure_xformers_runtime
 
 precompute_rewrites_cache() {
   if [[ "${USE_QWEN}" != "1" ]]; then

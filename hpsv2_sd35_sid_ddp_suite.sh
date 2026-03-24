@@ -112,6 +112,45 @@ PY
 
 ensure_imagereward_runtime
 
+ensure_pickscore_runtime() {
+  local backend_lc
+  backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${backend_lc}" != "pickscore" && "${backend_lc}" != "auto" ]]; then
+    return 0
+  fi
+  if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import timm
+from timm.data import ImageNetInfo
+print(timm.__version__, ImageNetInfo.__name__)
+PY
+  then
+    return 0
+  fi
+  echo "[deps] PickScore runtime deps missing/incompatible (timm ImageNetInfo). Installing with install_reward_deps.sh ..."
+  PYTHON_BIN="${PYTHON_BIN}" bash "${SCRIPT_DIR}/install_reward_deps.sh"
+}
+
+ensure_pickscore_runtime
+
+ensure_hpsv3_runtime() {
+  local backend_lc
+  backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${backend_lc}" != "hpsv3" && "${backend_lc}" != "auto" ]]; then
+    return 0
+  fi
+  if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import hpsv3
+print(getattr(hpsv3, "__file__", "ok"))
+PY
+  then
+    return 0
+  fi
+  echo "[deps] HPSv3 runtime deps missing. Installing with install_reward_deps.sh ..."
+  PYTHON_BIN="${PYTHON_BIN}" bash "${SCRIPT_DIR}/install_reward_deps.sh"
+}
+
+ensure_hpsv3_runtime
+
 precompute_rewrites_cache() {
   if [[ "${USE_QWEN}" != "1" ]]; then
     return 0

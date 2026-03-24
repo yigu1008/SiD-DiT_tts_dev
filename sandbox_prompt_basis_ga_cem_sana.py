@@ -83,7 +83,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--decode_cpu_if_free_below_gb", type=float, default=20.0)
 
     # Reward
-    p.add_argument("--reward_type", choices=["imagereward", "auto", "unifiedreward", "unified", "pickscore", "hpsv2", "blend"], default="imagereward")
+    p.add_argument("--reward_type", choices=["imagereward", "auto", "unifiedreward", "unified", "pickscore", "hpsv3", "hpsv2", "blend"], default="imagereward")
     p.add_argument("--reward_device", type=str, default="cpu")
     p.add_argument("--reward_model", type=str, default="CodeGoat24/UnifiedReward-qwen-7b")
     p.add_argument("--unifiedreward_model", type=str, default=None)

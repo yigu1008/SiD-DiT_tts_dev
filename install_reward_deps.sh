@@ -5,7 +5,7 @@ set -euo pipefail
 # - ImageReward
 # - CLIP
 # - UnifiedReward runtime deps
-# - timm (pinned for ImageReward compatibility)
+# - timm (PickScore-compatible)
 #
 # Usage:
 #   ./install_reward_deps.sh
@@ -28,8 +28,8 @@ echo "[install] core runtime deps (ImageReward transitive deps)"
   "regex>=2024.11.6" \
   "tqdm>=4.66.4"
 
-echo "[install] timm==0.9.16"
-"${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "timm==0.9.16"
+echo "[install] timm==1.0.15 (PickScore-compatible)"
+"${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "timm==1.0.15"
 
 echo "[install] image-reward (PyPI), fallback to THUDM/ImageReward"
 if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "image-reward==1.5"; then
@@ -60,6 +60,14 @@ echo "[install] UnifiedReward runtime deps (qwen-vl-utils, openai client)"
   "qwen-vl-utils>=0.0.14" \
   "openai>=1.40.0"
 
+echo "[install] optional HPS backends (hpsv3/hpsv2)"
+if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "hpsv3"; then
+  echo "[install] warning: hpsv3 install failed; continuing."
+fi
+if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "hpsv2"; then
+  echo "[install] warning: hpsv2 install failed; continuing."
+fi
+
 echo "[verify] imports"
 "${PY}" - <<'PY' "${SCRIPT_DIR}"
 import sys
@@ -69,6 +77,8 @@ if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 import timm
 print("timm", timm.__version__)
+from timm.data import ImageNetInfo
+print("timm ImageNetInfo", ImageNetInfo.__name__)
 import clip
 print("clip", getattr(clip, "__file__", "ok"))
 import ImageReward as RM
@@ -77,6 +87,16 @@ import qwen_vl_utils
 print("qwen_vl_utils", getattr(qwen_vl_utils, "__file__", "ok"))
 import openai
 print("openai", getattr(openai, "__version__", "ok"))
+try:
+    import hpsv3
+    print("hpsv3", getattr(hpsv3, "__file__", "ok"))
+except Exception as exc:
+    print("hpsv3 import warning:", exc)
+try:
+    import hpsv2
+    print("hpsv2", getattr(hpsv2, "__file__", "ok"))
+except Exception as exc:
+    print("hpsv2 import warning:", exc)
 try:
     import wandb
     print("wandb", getattr(wandb, "__version__", "ok"))

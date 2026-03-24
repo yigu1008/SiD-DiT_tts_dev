@@ -84,7 +84,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # Reward (UnifiedReward defaults)
     p.add_argument(
         "--reward_type",
-        choices=["imagereward", "auto", "unifiedreward", "unified", "pickscore", "hpsv2", "blend"],
+        choices=["imagereward", "auto", "unifiedreward", "unified", "pickscore", "hpsv3", "hpsv2", "blend"],
         default="unifiedreward",
     )
     p.add_argument("--reward_device", type=str, default="cpu")

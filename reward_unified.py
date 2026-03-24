@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -32,6 +33,7 @@ class _BackendState:
     imagereward: Optional[object] = None
     hps_model: Optional[object] = None
     open_clip: Optional[object] = None
+    hpsv3_inferencer: Optional[object] = None
     pickscore_model: Optional[object] = None
     pickscore_processor: Optional[object] = None
     unifiedreward_model: Optional[object] = None
@@ -51,9 +53,10 @@ class UnifiedRewardScorer:
       - unified      : alias of unifiedreward (kept for compatibility)
       - imagereward
       - pickscore
+      - hpsv3
       - hpsv2
       - blend        : weighted average of ImageReward and HPSv2
-      - auto         : prefer unifiedreward, then imagereward, then pickscore, then hpsv2
+      - auto         : prefer unifiedreward, then imagereward, then pickscore, then hpsv3, then hpsv2
     """
 
     _clip_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073])
@@ -103,7 +106,12 @@ class UnifiedRewardScorer:
     )
     _pickscore_install_hint = (
         "Install PickScore dependencies, e.g.:\n"
-        "  pip install -U transformers accelerate sentencepiece"
+        "  pip install -U transformers accelerate sentencepiece\n"
+        "  pip install -U \"timm>=1.0.15\""
+    )
+    _hpsv3_install_hint = (
+        "Install HPSv3 dependencies, e.g.:\n"
+        "  pip install -U hpsv3 open_clip_torch"
     )
 
     def __init__(
@@ -120,7 +128,7 @@ class UnifiedRewardScorer:
         max_new_tokens: int = 512,
         unifiedreward_prompt_mode: str = "standard",
     ) -> None:
-        valid = {"auto", "imagereward", "pickscore", "hpsv2", "blend", "unified", "unifiedreward"}
+        valid = {"auto", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "unified", "unifiedreward"}
         if backend not in valid:
             raise ValueError(f"Unsupported backend: {backend}")
         if unifiedreward_prompt_mode not in {"standard", "strict"}:
@@ -143,6 +151,7 @@ class UnifiedRewardScorer:
         self.unifiedreward_last_error: Optional[str] = None
         self.imagereward_last_error: Optional[str] = None
         self.pickscore_last_error: Optional[str] = None
+        self.hpsv3_last_error: Optional[str] = None
         self.debug = str(os.environ.get("UNIFIEDREWARD_DEBUG", "")).strip().lower() in {"1", "true", "yes", "on"}
         self._load_backends()
 
@@ -157,6 +166,7 @@ class UnifiedRewardScorer:
         need_unifiedreward = target in {"unifiedreward", "auto"}
         need_imagereward = target in {"imagereward", "blend", "auto"}
         need_pickscore = target in {"pickscore", "auto"}
+        need_hpsv3 = target in {"hpsv3", "blend", "auto"}
         need_hpsv2 = target in {"hpsv2", "blend", "auto"}
 
         if need_unifiedreward:
@@ -165,6 +175,8 @@ class UnifiedRewardScorer:
             self._try_load_imagereward()
         if need_pickscore:
             self._try_load_pickscore()
+        if need_hpsv3:
+            self._try_load_hpsv3()
         if need_hpsv2:
             self._try_load_hpsv2()
 
@@ -186,11 +198,17 @@ class UnifiedRewardScorer:
                 "Requested backend=pickscore, but PickScore is unavailable."
                 f"{detail}\n{self._pickscore_install_hint}"
             )
+        if target == "hpsv3" and "hpsv3" not in self.available:
+            detail = f" Last error: {self.hpsv3_last_error}" if self.hpsv3_last_error else ""
+            raise RuntimeError(
+                "Requested backend=hpsv3, but HPSv3 is unavailable."
+                f"{detail}\n{self._hpsv3_install_hint}"
+            )
         if target == "hpsv2" and "hpsv2" not in self.available:
             raise RuntimeError("Requested backend=hpsv2, but HPSv2 is unavailable.")
         if target == "blend":
-            if "imagereward" not in self.available and "hpsv2" not in self.available:
-                raise RuntimeError("Requested backend=blend, but ImageReward/HPSv2 are both unavailable.")
+            if "imagereward" not in self.available and "hpsv2" not in self.available and "hpsv3" not in self.available:
+                raise RuntimeError("Requested backend=blend, but ImageReward/HPS backends are unavailable.")
         if target == "auto" and not self.available:
             raise RuntimeError("No reward backend available.")
 
@@ -487,6 +505,37 @@ class UnifiedRewardScorer:
         except Exception as exc:
             print(f"[Reward] HPSv2 unavailable: {exc}")
 
+    def _try_load_hpsv3(self) -> None:
+        try:
+            import hpsv3
+
+            inferencer_cls = getattr(hpsv3, "HPSv3RewardInferencer", None)
+            if inferencer_cls is None:
+                raise RuntimeError("hpsv3 module does not expose HPSv3RewardInferencer")
+
+            inferencer = None
+            errors: List[str] = []
+            for kwargs in (
+                {"device": self._hf_device},
+                {"device": self.device},
+                {},
+            ):
+                try:
+                    inferencer = inferencer_cls(**kwargs)
+                    break
+                except Exception as exc:
+                    errors.append(f"{kwargs}: {type(exc).__name__}: {str(exc)[:200]}")
+            if inferencer is None:
+                msg = " | ".join(errors[:3]) if errors else "constructor failed"
+                raise RuntimeError(f"Unable to initialize HPSv3RewardInferencer. {msg}")
+
+            self.state.hpsv3_inferencer = inferencer
+            self.available.append("hpsv3")
+            self.hpsv3_last_error = None
+        except Exception as exc:
+            self.hpsv3_last_error = str(exc)
+            print(f"[Reward] HPSv3 unavailable: {exc}")
+
     def _try_load_pickscore(self) -> None:
         try:
             from transformers import AutoModel, AutoProcessor
@@ -511,7 +560,7 @@ class UnifiedRewardScorer:
         if target == "blend":
             return (
                 f"backend=blend available={self.available} "
-                f"weights=(imagereward={self.unified_weights[0]}, hpsv2={self.unified_weights[1]})"
+                f"weights=(imagereward={self.unified_weights[0]}, hps={self.unified_weights[1]})"
             )
         if target == "pickscore":
             return f"backend=pickscore model={self.pickscore_model} available={self.available}"
@@ -528,6 +577,8 @@ class UnifiedRewardScorer:
             return "imagereward"
         if "pickscore" in self.available:
             return "pickscore"
+        if "hpsv3" in self.available:
+            return "hpsv3"
         if "hpsv2" in self.available:
             return "hpsv2"
         raise RuntimeError("No available backend for auto mode.")
@@ -555,6 +606,72 @@ class UnifiedRewardScorer:
         vf = self.state.hps_model.encode_image(self._prep_hps_image(image))
         vf = vf / vf.norm(dim=-1, keepdim=True)
         return float((vf * tf).sum(dim=-1).item())
+
+    @staticmethod
+    def _extract_scalar_from_hpsv3_output(obj: Any) -> float:
+        if isinstance(obj, torch.Tensor):
+            arr = obj.detach().float().cpu().reshape(-1)
+            if arr.numel() == 0:
+                raise RuntimeError("Empty tensor returned by HPSv3.")
+            # HPSv3 commonly returns [N,2], use the first scalar.
+            return float(arr[0].item())
+        if isinstance(obj, np.ndarray):
+            arr = obj.reshape(-1)
+            if arr.size == 0:
+                raise RuntimeError("Empty ndarray returned by HPSv3.")
+            return float(arr[0])
+        if isinstance(obj, (list, tuple)):
+            if len(obj) == 0:
+                raise RuntimeError("Empty list/tuple returned by HPSv3.")
+            return UnifiedRewardScorer._extract_scalar_from_hpsv3_output(obj[0])
+        if isinstance(obj, (float, int)):
+            return float(obj)
+        raise RuntimeError(f"Unsupported HPSv3 output type: {type(obj).__name__}")
+
+    @torch.no_grad()
+    def _score_hpsv3(self, prompt: str, image: Image.Image) -> float:
+        inferencer = self.state.hpsv3_inferencer
+        if inferencer is None:
+            raise RuntimeError("HPSv3 inferencer is not loaded.")
+
+        tmp_path: Optional[str] = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                tmp_path = f.name
+            image.convert("RGB").save(tmp_path)
+
+            call_errors: List[str] = []
+            for fn_name in ("reward", "score", "__call__"):
+                fn = getattr(inferencer, fn_name, None)
+                if fn is None:
+                    continue
+                for kwargs in (
+                    {"prompts": [prompt], "image_paths": [tmp_path]},
+                    {"prompts": [prompt], "images": [tmp_path]},
+                    {"texts": [prompt], "image_paths": [tmp_path]},
+                ):
+                    try:
+                        out = fn(**kwargs)
+                        return self._extract_scalar_from_hpsv3_output(out)
+                    except Exception as exc:
+                        call_errors.append(f"{fn_name}({list(kwargs.keys())}): {type(exc).__name__}: {str(exc)[:160]}")
+                for args in (
+                    ([prompt], [tmp_path]),
+                    ([prompt], tmp_path),
+                ):
+                    try:
+                        out = fn(*args)
+                        return self._extract_scalar_from_hpsv3_output(out)
+                    except Exception as exc:
+                        call_errors.append(f"{fn_name}(positional): {type(exc).__name__}: {str(exc)[:160]}")
+            msg = " | ".join(call_errors[:4]) if call_errors else "no callable API found"
+            raise RuntimeError(f"Unable to score with HPSv3 inferencer. {msg}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
 
     @torch.no_grad()
     def _score_pickscore(self, prompt: str, image: Image.Image) -> float:
@@ -741,8 +858,10 @@ class UnifiedRewardScorer:
         scored: Dict[str, float] = {}
         if "imagereward" in self.available:
             scored["imagereward"] = self._score_imagereward(prompt, image)
-        if "hpsv2" in self.available:
-            scored["hpsv2"] = self._score_hpsv2(prompt, image)
+        if "hpsv3" in self.available:
+            scored["hps"] = self._score_hpsv3(prompt, image)
+        elif "hpsv2" in self.available:
+            scored["hps"] = self._score_hpsv2(prompt, image)
         if not scored:
             raise RuntimeError("No backend available in blend mode.")
 
@@ -752,8 +871,8 @@ class UnifiedRewardScorer:
         if "imagereward" in scored:
             numer += w_ir * scored["imagereward"]
             denom += w_ir
-        if "hpsv2" in scored:
-            numer += w_hps * scored["hpsv2"]
+        if "hps" in scored:
+            numer += w_hps * scored["hps"]
             denom += w_hps
         if denom <= 0:
             raise RuntimeError("Invalid blend weights; sum must be > 0.")
@@ -765,6 +884,8 @@ class UnifiedRewardScorer:
             return self._score_imagereward(prompt, image)
         if target == "pickscore":
             return self._score_pickscore(prompt, image)
+        if target == "hpsv3":
+            return self._score_hpsv3(prompt, image)
         if target == "hpsv2":
             return self._score_hpsv2(prompt, image)
         if target == "blend":
@@ -779,5 +900,7 @@ class UnifiedRewardScorer:
                 return self._score_imagereward(prompt, image)
             if selected == "pickscore":
                 return self._score_pickscore(prompt, image)
+            if selected == "hpsv3":
+                return self._score_hpsv3(prompt, image)
             return self._score_hpsv2(prompt, image)
         raise RuntimeError(f"Unexpected backend: {self.backend}")

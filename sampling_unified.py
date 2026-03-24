@@ -83,7 +83,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--search_method", choices=["greedy", "mcts", "ga", "smc"], default="greedy")
     parser.add_argument(
         "--reward_type",
-        choices=["imagereward", "geneval", "auto", "unifiedreward", "unified", "pickscore", "hpsv2", "blend"],
+        choices=["imagereward", "geneval", "auto", "unifiedreward", "unified", "pickscore", "hpsv3", "hpsv2", "blend"],
         default="imagereward",
     )
     parser.add_argument(
@@ -117,7 +117,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         nargs=2,
         type=float,
         default=[1.0, 1.0],
-        help="Blend backend weights: imagereward hpsv2",
+        help="Blend backend weights: imagereward hps(v2/v3)",
     )
     parser.add_argument("--reward_api_base", default=None, help="Optional OpenAI-compatible API base for UnifiedReward.")
     parser.add_argument("--reward_api_key", default="unifiedreward")
@@ -930,7 +930,7 @@ def load_reward(args: argparse.Namespace, ctx: PipelineContext) -> RewardContext
         before_decode = _before_decode if reward_device.startswith("cuda") else None
         return RewardContext(kind="imagereward", score_images=score_images, before_decode=before_decode)
 
-    if args.reward_type in {"auto", "unifiedreward", "unified", "pickscore", "hpsv2", "blend"}:
+    if args.reward_type in {"auto", "unifiedreward", "unified", "pickscore", "hpsv3", "hpsv2", "blend"}:
         reward_device = _resolve_reward_device()
         unified_model = args.unifiedreward_model if args.unifiedreward_model else args.reward_model
         print(f"Loading unified reward backend={args.reward_type} on {reward_device} ...")

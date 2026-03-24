@@ -128,7 +128,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--reward_backend",
-        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "hpsv2", "blend"],
+        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend"],
         default="unifiedreward",
     )
     parser.add_argument(
@@ -136,7 +136,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         nargs=2,
         type=float,
         default=[1.0, 1.0],
-        help="Blend backend weights: imagereward hpsv2",
+        help="Blend backend weights: imagereward hps(v2/v3)",
     )
     parser.add_argument("--reward_api_base", default=None, help="Optional OpenAI-compatible API base for UnifiedReward.")
     parser.add_argument("--reward_api_key", default="unifiedreward")

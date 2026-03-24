@@ -52,7 +52,7 @@ search:
       - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
       - PYTHON_BIN=/opt/conda/envs/ptca/bin/python SID_OVERLAY_DIR=/tmp/$$USER/sid_pydeps bash prepare_cluster_overlay_deps.sh
       - export SID_EXTRA_PYTHONPATH=/tmp/$$USER/sid_pydeps/py$$(/opt/conda/envs/ptca/bin/python -c "import sys; print(str(sys.version_info.major)+'.'+str(sys.version_info.minor))")
-      - /opt/conda/envs/ptca/bin/python -c "import xxhash, clip; print('reward deps core ok', xxhash.__version__, getattr(clip, '__file__', 'ok'))"
+      - /opt/conda/envs/ptca/bin/python -c "import xxhash, clip; from timm.data import ImageNetInfo; print('reward deps core ok', xxhash.__version__, getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
       - export NUM_GPUS=${GPUS}
       - export HPSV2_PROMPT_DIR=/mnt/data/v-yigu/hpsv2_prompt_cache
       - export PROMPT_STYLE={prompt_style}

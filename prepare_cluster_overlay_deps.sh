@@ -25,6 +25,7 @@ echo "[overlay] target: ${TARGET_DIR}"
 echo "[overlay] installing runtime deps to overlay"
 "${PY}" -m pip install --no-cache-dir --target "${TARGET_DIR}" --upgrade \
   "xxhash>=3.4.1" \
+  "timm==1.0.15" \
   "wandb" \
   "protobuf<7" \
   "pyyaml>=6.0.1" \
@@ -37,8 +38,10 @@ echo "[overlay] verify imports using overlay"
 PYTHONPATH="${TARGET_DIR}${PYTHONPATH:+:${PYTHONPATH}}" "${PY}" - <<'PY'
 import xxhash
 import wandb
+from timm.data import ImageNetInfo
 print("xxhash", xxhash.__version__)
 print("wandb", wandb.__version__)
+print("timm ImageNetInfo", ImageNetInfo.__name__)
 PY
 
 echo

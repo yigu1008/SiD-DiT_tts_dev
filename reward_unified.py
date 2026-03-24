@@ -16,12 +16,15 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-DEFAULT_UNIFIEDREWARD_MODEL = "CodeGoat24/UnifiedReward-2.0-qwen3vl-4b"
+DEFAULT_UNIFIEDREWARD_MODEL = "CodeGoat24/UnifiedReward-qwen-7b"
 UNIFIEDREWARD_MODEL_ALIASES = {
     "CodeGoat24/UnifiedReward-qwen-4b": DEFAULT_UNIFIEDREWARD_MODEL,
-    "CodeGoat24/UnifiedReward-qwen-7b": DEFAULT_UNIFIEDREWARD_MODEL,
+    "CodeGoat24/UnifiedReward-2.0-qwen3vl-4b": DEFAULT_UNIFIEDREWARD_MODEL,
 }
-UNIFIEDREWARD_MODEL_FALLBACKS = (DEFAULT_UNIFIEDREWARD_MODEL,)
+UNIFIEDREWARD_MODEL_FALLBACKS = (
+    DEFAULT_UNIFIEDREWARD_MODEL,
+    "CodeGoat24/UnifiedReward-qwen-3b",
+)
 
 
 @dataclass
@@ -79,8 +82,8 @@ class UnifiedRewardScorer:
     _coherence_re = re.compile(r"Coherence Score[^:]*:\s*([-+]?\d*\.?\d+)", re.IGNORECASE)
     _style_re = re.compile(r"Style Score[^:]*:\s*([-+]?\d*\.?\d+)", re.IGNORECASE)
     _unifiedreward_install_hint = (
-        "Install/update dependencies for local UnifiedReward, e.g.:\n"
-        "  pip install -U \"transformers>=4.51.0\" accelerate \"qwen-vl-utils>=0.0.14\""
+        "Install/update dependencies for local UnifiedReward (pinned), e.g.:\n"
+        "  pip install -U --no-deps \"transformers==4.52.4\" \"qwen-vl-utils==0.0.14\""
         "\nUse a valid checkpoint id, e.g.:\n"
         f"  --unifiedreward_model {DEFAULT_UNIFIEDREWARD_MODEL}"
         "\nIf private, authenticate first:\n"
@@ -193,7 +196,7 @@ class UnifiedRewardScorer:
 
         try:
             import transformers
-            from transformers import AutoProcessor
+            from transformers import AutoConfig, AutoProcessor
 
             try:
                 from qwen_vl_utils import process_vision_info  # type: ignore
@@ -205,14 +208,80 @@ class UnifiedRewardScorer:
             selected_model = None
             load_errors: List[str] = []
             for model_id in self._candidate_unifiedreward_model_ids():
-                for cls_name in (
-                    "Qwen2_5_VLForConditionalGeneration",
-                    "Qwen3VLForConditionalGeneration",
-                    "AutoModelForImageTextToText",
-                    "AutoModelForVision2Seq",
-                    "AutoModelForCausalLM",
-                    "AutoModel",
-                ):
+                model_type = ""
+                archs: List[str] = []
+                try:
+                    cfg = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+                    model_type = str(getattr(cfg, "model_type", "") or "").strip().lower()
+                    raw_archs = getattr(cfg, "architectures", None)
+                    if isinstance(raw_archs, (list, tuple)):
+                        archs = [str(x) for x in raw_archs]
+                except Exception as exc:
+                    load_errors.append(f"{model_id} :: AutoConfig: {type(exc).__name__}: {str(exc)[:240]}")
+
+                preferred_classes: tuple[str, ...]
+                if model_type == "qwen3_vl" or any("Qwen3VLForConditionalGeneration" in x for x in archs):
+                    preferred_classes = (
+                        "Qwen3VLForConditionalGeneration",
+                        "AutoModelForImageTextToText",
+                        "AutoModelForVision2Seq",
+                        "AutoModelForCausalLM",
+                        "AutoModel",
+                    )
+                elif model_type == "qwen2_5_vl":
+                    preferred_classes = (
+                        "Qwen2_5_VLForConditionalGeneration",
+                        "AutoModelForImageTextToText",
+                        "AutoModelForVision2Seq",
+                        "AutoModelForCausalLM",
+                        "AutoModel",
+                    )
+                elif model_type == "qwen2_vl":
+                    preferred_classes = (
+                        "Qwen2VLForConditionalGeneration",
+                        "AutoModelForImageTextToText",
+                        "AutoModelForVision2Seq",
+                        "AutoModelForCausalLM",
+                        "AutoModel",
+                    )
+                elif model_type == "qwen3_5":
+                    preferred_classes = (
+                        "Qwen3_5ForConditionalGeneration",
+                        "AutoModelForImageTextToText",
+                        "AutoModelForVision2Seq",
+                        "AutoModelForCausalLM",
+                        "AutoModel",
+                    )
+                else:
+                    preferred_classes = (
+                        "Qwen3VLForConditionalGeneration",
+                        "Qwen3_5ForConditionalGeneration",
+                        "Qwen2_5_VLForConditionalGeneration",
+                        "Qwen2VLForConditionalGeneration",
+                        "AutoModelForImageTextToText",
+                        "AutoModelForVision2Seq",
+                        "AutoModelForCausalLM",
+                        "AutoModel",
+                    )
+
+                if model_type == "qwen3_vl" and not hasattr(transformers, "Qwen3VLForConditionalGeneration"):
+                    tv = str(getattr(transformers, "__version__", "unknown"))
+                    load_errors.append(
+                        f"{model_id} :: model_type=qwen3_vl requires Qwen3VLForConditionalGeneration "
+                        f"(transformers={tv}, need >=4.57.1)"
+                    )
+                    # Do not force-load qwen3_vl checkpoints via Qwen2.5/Auto fallbacks.
+                    continue
+                if model_type == "qwen3_5" and not hasattr(transformers, "Qwen3_5ForConditionalGeneration"):
+                    tv = str(getattr(transformers, "__version__", "unknown"))
+                    load_errors.append(
+                        f"{model_id} :: model_type=qwen3_5 requires Qwen3_5ForConditionalGeneration "
+                        f"(transformers={tv})"
+                    )
+                    # Do not force-load qwen3.5 checkpoints via Qwen2.5/Auto fallbacks.
+                    continue
+
+                for cls_name in preferred_classes:
                     cls = getattr(transformers, cls_name, None)
                     if cls is None:
                         load_errors.append(f"{model_id} :: {cls_name}: class not found in transformers")

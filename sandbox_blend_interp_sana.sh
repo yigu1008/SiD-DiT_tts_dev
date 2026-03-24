@@ -20,7 +20,7 @@ if [[ ! -f "${PROMPT_FILE}" ]]; then
 fi
 
 reward_args=(
-  --reward_model "${REWARD_MODEL:-CodeGoat24/UnifiedReward-2.0-qwen3vl-4b}"
+  --reward_model "${REWARD_MODEL:-CodeGoat24/UnifiedReward-qwen-7b}"
   --image_reward_model "${IMAGE_REWARD_MODEL:-ImageReward-v1.0}"
   --reward_max_new_tokens "${REWARD_MAX_NEW_TOKENS:-512}"
   --reward_prompt_mode "${REWARD_PROMPT_MODE:-standard}"

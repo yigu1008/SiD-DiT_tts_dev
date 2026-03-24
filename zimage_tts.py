@@ -197,7 +197,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--allow_skip", action="store_true", help="Enable skip action as ablation.")
     parser.add_argument("--allow_repeat", action="store_true", help="Enable repeat action as ablation.")
 
-    parser.add_argument("--reward_model", type=str, default="CodeGoat24/UnifiedReward-2.0-qwen3vl-4b")
+    parser.add_argument("--reward_model", type=str, default="CodeGoat24/UnifiedReward-qwen-7b")
     parser.add_argument(
         "--reward_backend",
         type=str,

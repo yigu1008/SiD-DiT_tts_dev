@@ -9,7 +9,7 @@ PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/prompts.txt}"
 OUTDIR="${OUTDIR:-./zimage_tts_mcts_out}"
 
 REWARD_BACKEND="${REWARD_BACKEND:-unifiedreward}"
-REWARD_MODEL="${REWARD_MODEL:-CodeGoat24/UnifiedReward-2.0-qwen3vl-4b}"
+REWARD_MODEL="${REWARD_MODEL:-CodeGoat24/UnifiedReward-qwen-7b}"
 REWARD_PROMPT_MODE="${REWARD_PROMPT_MODE:-standard}"
 REWARD_MAX_NEW_TOKENS="${REWARD_MAX_NEW_TOKENS:-64}"
 

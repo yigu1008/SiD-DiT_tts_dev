@@ -85,7 +85,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # Reward
     p.add_argument("--reward_type", choices=["imagereward", "auto", "unifiedreward", "unified", "hpsv2", "blend"], default="imagereward")
     p.add_argument("--reward_device", type=str, default="cpu")
-    p.add_argument("--reward_model", type=str, default="CodeGoat24/UnifiedReward-2.0-qwen3vl-4b")
+    p.add_argument("--reward_model", type=str, default="CodeGoat24/UnifiedReward-qwen-7b")
     p.add_argument("--unifiedreward_model", type=str, default=None)
     p.add_argument("--image_reward_model", type=str, default="ImageReward-v1.0")
     p.add_argument("--reward_weights", nargs=2, type=float, default=[1.0, 1.0])

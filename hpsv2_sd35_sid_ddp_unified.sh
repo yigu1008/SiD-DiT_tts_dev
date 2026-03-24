@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/shell_env.sh"
 
 REWARD_BACKEND="${REWARD_BACKEND:-unifiedreward}"
-REWARD_MODEL="${REWARD_MODEL:-CodeGoat24/UnifiedReward-qwen-7b}"
+REWARD_MODEL="${REWARD_MODEL:-CodeGoat24/UnifiedReward-2.0-qwen3vl-4b}"
 UNIFIEDREWARD_MODEL="${UNIFIEDREWARD_MODEL:-${REWARD_MODEL}}"
 REWARD_PROMPT_MODE="${REWARD_PROMPT_MODE:-standard}"
 REWARD_MAX_NEW_TOKENS="${REWARD_MAX_NEW_TOKENS:-512}"

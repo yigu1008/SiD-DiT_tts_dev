@@ -127,7 +127,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--reward_model",
-        default="CodeGoat24/UnifiedReward-qwen-7b",
+        default="CodeGoat24/UnifiedReward-2.0-qwen3vl-4b",
         help="Legacy alias for UnifiedReward model id (kept for compatibility).",
     )
     p.add_argument(

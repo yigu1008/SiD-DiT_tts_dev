@@ -98,7 +98,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ga_phase_constraints", action="store_true")
     parser.add_argument(
         "--reward_model",
-        default="CodeGoat24/UnifiedReward-qwen-7b",
+        default="CodeGoat24/UnifiedReward-2.0-qwen3vl-4b",
         help="Legacy alias for UnifiedReward model id (kept for compatibility).",
     )
     parser.add_argument(

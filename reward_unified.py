@@ -16,6 +16,13 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
+DEFAULT_UNIFIEDREWARD_MODEL = "CodeGoat24/UnifiedReward-2.0-qwen3vl-4b"
+UNIFIEDREWARD_MODEL_ALIASES = {
+    "CodeGoat24/UnifiedReward-qwen-4b": DEFAULT_UNIFIEDREWARD_MODEL,
+    "CodeGoat24/UnifiedReward-qwen-7b": DEFAULT_UNIFIEDREWARD_MODEL,
+}
+UNIFIEDREWARD_MODEL_FALLBACKS = (DEFAULT_UNIFIEDREWARD_MODEL,)
+
 
 @dataclass
 class _BackendState:
@@ -74,6 +81,10 @@ class UnifiedRewardScorer:
     _unifiedreward_install_hint = (
         "Install/update dependencies for local UnifiedReward, e.g.:\n"
         "  pip install -U \"transformers>=4.51.0\" accelerate \"qwen-vl-utils>=0.0.14\""
+        "\nUse a valid checkpoint id, e.g.:\n"
+        f"  --unifiedreward_model {DEFAULT_UNIFIEDREWARD_MODEL}"
+        "\nIf private, authenticate first:\n"
+        "  huggingface-cli login"
     )
     _imagereward_install_hint = (
         "Install ImageReward dependencies, e.g.:\n"
@@ -90,7 +101,7 @@ class UnifiedRewardScorer:
         device: str = "cuda",
         backend: str = "auto",
         image_reward_model: str = "ImageReward-v1.0",
-        unifiedreward_model: str = "CodeGoat24/UnifiedReward-qwen-7b",
+        unifiedreward_model: str = DEFAULT_UNIFIEDREWARD_MODEL,
         unified_weights: Tuple[float, float] = (1.0, 1.0),
         unifiedreward_api_base: Optional[str] = None,
         unifiedreward_api_key: str = "unifiedreward",
@@ -161,6 +172,17 @@ class UnifiedRewardScorer:
         if target == "auto" and not self.available:
             raise RuntimeError("No reward backend available.")
 
+    def _candidate_unifiedreward_model_ids(self) -> List[str]:
+        requested = str(self.unifiedreward_model).strip() or DEFAULT_UNIFIEDREWARD_MODEL
+        remapped = UNIFIEDREWARD_MODEL_ALIASES.get(requested, requested)
+        if remapped != requested:
+            print(f"[Reward] Remapping deprecated UnifiedReward id '{requested}' -> '{remapped}'.")
+        candidates: List[str] = [remapped]
+        for fallback in UNIFIEDREWARD_MODEL_FALLBACKS:
+            if fallback not in candidates:
+                candidates.append(fallback)
+        return candidates
+
     def _try_load_unifiedreward(self) -> None:
         if self.unifiedreward_api_base:
             self.state.unifiedreward_api_base = self.unifiedreward_api_base.rstrip("/")
@@ -179,54 +201,70 @@ class UnifiedRewardScorer:
                 process_vision_info = None
 
             model = None
+            requested_model = self.unifiedreward_model
+            selected_model = None
             load_errors: List[str] = []
-            for cls_name in (
-                "Qwen2_5_VLForConditionalGeneration",
-                "Qwen3VLForConditionalGeneration",
-                "AutoModelForImageTextToText",
-                "AutoModelForVision2Seq",
-                "AutoModelForCausalLM",
-                "AutoModel",
-            ):
-                cls = getattr(transformers, cls_name, None)
-                if cls is None:
-                    load_errors.append(f"{cls_name}: class not found in transformers")
-                    continue
-                for dm in ({"": self._hf_device}, "auto", None):
-                    kwargs: Dict[str, Any] = {
-                        "torch_dtype": "auto",
-                        "trust_remote_code": True,
-                    }
-                    if dm is not None:
-                        kwargs["device_map"] = dm
-                    try:
-                        candidate = cls.from_pretrained(self.unifiedreward_model, **kwargs)
-                        if dm is None and hasattr(candidate, "to"):
-                            try:
-                                candidate = candidate.to(self._hf_device)
-                            except Exception:
-                                pass
-                        if not hasattr(candidate, "generate"):
-                            load_errors.append(f"{cls_name}(device_map={dm}): loaded model has no generate()")
-                            continue
-                        model = candidate
+            for model_id in self._candidate_unifiedreward_model_ids():
+                for cls_name in (
+                    "Qwen2_5_VLForConditionalGeneration",
+                    "Qwen3VLForConditionalGeneration",
+                    "AutoModelForImageTextToText",
+                    "AutoModelForVision2Seq",
+                    "AutoModelForCausalLM",
+                    "AutoModel",
+                ):
+                    cls = getattr(transformers, cls_name, None)
+                    if cls is None:
+                        load_errors.append(f"{model_id} :: {cls_name}: class not found in transformers")
+                        continue
+                    for dm in ({"": self._hf_device}, "auto", None):
+                        kwargs: Dict[str, Any] = {
+                            "torch_dtype": "auto",
+                            "trust_remote_code": True,
+                        }
+                        if dm is not None:
+                            kwargs["device_map"] = dm
+                        try:
+                            candidate = cls.from_pretrained(model_id, **kwargs)
+                            if dm is None and hasattr(candidate, "to"):
+                                try:
+                                    candidate = candidate.to(self._hf_device)
+                                except Exception:
+                                    pass
+                            if not hasattr(candidate, "generate"):
+                                load_errors.append(
+                                    f"{model_id} :: {cls_name}(device_map={dm}): loaded model has no generate()"
+                                )
+                                continue
+                            model = candidate
+                            selected_model = model_id
+                            break
+                        except Exception as exc:
+                            err = f"{model_id} :: {cls_name}(device_map={dm}): {type(exc).__name__}: {str(exc)[:240]}"
+                            load_errors.append(err)
+                    if model is not None:
                         break
-                    except Exception as exc:
-                        err = f"{cls_name}(device_map={dm}): {type(exc).__name__}: {str(exc)[:240]}"
-                        load_errors.append(err)
                 if model is not None:
                     break
             if model is None:
                 preview = " | ".join(load_errors[:4]) if load_errors else "no loader attempts captured"
                 raise RuntimeError(f"No compatible transformers loader worked for UnifiedReward. {preview}")
+            if selected_model is None:
+                selected_model = requested_model
 
-            processor = AutoProcessor.from_pretrained(self.unifiedreward_model, trust_remote_code=True)
+            processor = AutoProcessor.from_pretrained(selected_model, trust_remote_code=True)
             model.eval()
+            self.unifiedreward_model = selected_model
             self.state.unifiedreward_model = model
             self.state.unifiedreward_processor = processor
             self.state.unifiedreward_process_vision_info = process_vision_info
             self.available.append("unifiedreward")
             self.unifiedreward_last_error = None
+            if selected_model != requested_model:
+                print(
+                    f"[Reward] UnifiedReward fallback loaded '{selected_model}' "
+                    f"(requested '{requested_model}')."
+                )
         except Exception as exc:
             self.unifiedreward_last_error = str(exc)
             print(f"[Reward] UnifiedReward unavailable: {exc}")

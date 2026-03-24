@@ -72,6 +72,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--qwen_id", default="Qwen/Qwen3-4B")
     parser.add_argument("--qwen_python", default="python3")
     parser.add_argument("--qwen_dtype", choices=["float16", "bfloat16"], default="bfloat16")
+    parser.add_argument("--qwen_timeout_sec", type=float, default=240.0)
     parser.add_argument("--rewrites_file", default=None)
 
     parser.add_argument("--steps", type=int, default=4)
@@ -337,11 +338,15 @@ for line in decoded.splitlines():
         raise SystemExit(0)
 print({repr(marker)} + sys.argv[2])
 """
-    result = subprocess.run(
-        [args.qwen_python, "-c", script, instruction, prompt],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [args.qwen_python, "-c", script, instruction, prompt],
+            capture_output=True,
+            text=True,
+            timeout=max(1.0, float(getattr(args, "qwen_timeout_sec", 240.0))),
+        )
+    except subprocess.TimeoutExpired:
+        return prompt
     if result.returncode != 0:
         return prompt
     for raw_line in result.stdout.splitlines():
@@ -356,16 +361,28 @@ print({repr(marker)} + sys.argv[2])
 
 def sanitize_rewrite_text(candidate: str, fallback: str) -> str:
     text = re.sub(r"<think>.*?</think>", "", str(candidate), flags=re.DOTALL).strip()
+    text = text.replace("\ufffd", "")
+    text = re.sub(r"\s+", " ", text).strip()
     if not text:
         return fallback
     text = text.strip("`\"' ")
+    if any(ord(ch) < 32 for ch in text):
+        return fallback
+    if len(text) > 220:
+        return fallback
     lower = text.lower()
     if lower in _REWRITE_BAD_TOKENS:
+        return fallback
+    if "nccl info" in lower or "traceback" in lower or "runtimeerror" in lower:
         return fallback
     if _REWRITE_PLACEHOLDER_RE.fullmatch(text):
         return fallback
     if "<" in text and ">" in text and len(text) < 24:
         return fallback
+    if all(ord(ch) < 128 for ch in fallback):
+        non_ascii = sum(1 for ch in text if ord(ch) >= 128)
+        if non_ascii > 0 and (non_ascii / max(1, len(text))) > 0.08:
+            return fallback
     if len(text) < 4:
         return fallback
     return text

@@ -51,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qwen_id", default="Qwen/Qwen3-4B")
     parser.add_argument("--qwen_python", default="python3")
     parser.add_argument("--qwen_dtype", default="bfloat16", choices=["float16", "bfloat16"])
+    parser.add_argument("--qwen_timeout_sec", type=float, default=240.0)
     parser.add_argument("--rewrites_file", default=None)
     parser.add_argument("--max_sequence_length", type=int, default=256)
 
@@ -293,6 +294,11 @@ def main() -> None:
             f"DDP launch: world_size={world_size} prompts_total={len(all_entries)} "
             f"range=[{args.start_index},{args.end_index if args.end_index!=-1 else 'end'})"
         )
+        print(
+            f"Runtime cfg: size={args.width}x{args.height} steps={args.steps} "
+            f"modes={','.join(args.modes)} reward={args.reward_backend} "
+            f"qwen={'off' if args.no_qwen else 'on'}"
+        )
     print(f"[rank {rank}] local_rank={local_rank} assigned_prompts={len(my_entries)}")
 
     try:
@@ -308,6 +314,7 @@ def main() -> None:
             slug = f"p{prompt_index:05d}"
             seed = args.seed + prompt_index if args.seed_per_prompt else args.seed
             print(f"[rank {rank}] {slug} seed={seed}")
+            t0 = time.time()
 
             variants = generate_variants(args, prompt, rewrite_cache)
             if args.save_variants:
@@ -453,6 +460,12 @@ def main() -> None:
                         "search_diagnostics": smc.diagnostics,
                     }
                 )
+
+            dt = time.time() - t0
+            print(
+                f"[rank {rank}] {slug} done base={float(base_score):.4f} "
+                f"modes={','.join(args.modes)} elapsed={dt:.1f}s"
+            )
 
         rank_log = os.path.join(log_dir, f"rank_{rank:03d}.jsonl")
         with open(rank_log, "w", encoding="utf-8") as f:

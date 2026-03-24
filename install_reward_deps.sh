@@ -69,6 +69,12 @@ if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "hpsv
   echo "[install] warning: hpsv2 install failed; continuing."
 fi
 
+echo "[install] restoring protobuf/wandb compatibility (hpsv2 may downgrade protobuf)"
+"${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "protobuf>=4.25,<6"
+if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" --force-reinstall "wandb>=0.19,<0.21"; then
+  echo "[install] warning: wandb reinstall failed."
+fi
+
 echo "[verify] imports"
 "${PY}" - <<'PY' "${SCRIPT_DIR}"
 import sys
@@ -82,8 +88,11 @@ from timm.data import ImageNetInfo
 print("timm ImageNetInfo", ImageNetInfo.__name__)
 import clip
 print("clip", getattr(clip, "__file__", "ok"))
-import ImageReward as RM
-print("ImageReward", getattr(RM, "__file__", "ok"))
+try:
+    import ImageReward as RM
+    print("ImageReward", getattr(RM, "__file__", "ok"))
+except Exception as exc:
+    print("ImageReward import warning:", exc)
 import qwen_vl_utils
 print("qwen_vl_utils", getattr(qwen_vl_utils, "__file__", "ok"))
 import openai

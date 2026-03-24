@@ -17,6 +17,8 @@ PY
 )}"
 
 STEPS="${STEPS:-4}"
+WIDTH="${WIDTH:-1024}"
+HEIGHT="${HEIGHT:-1024}"
 SEED="${SEED:-42}"
 N_VARIANTS="${N_VARIANTS:-3}"
 CFG_SCALES="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5}"
@@ -32,6 +34,7 @@ SMC_VARIANT_IDX="${SMC_VARIANT_IDX:-0}"
 USE_QWEN="${USE_QWEN:-0}"
 QWEN_ID="${QWEN_ID:-Qwen/Qwen3-4B}"
 QWEN_DTYPE="${QWEN_DTYPE:-bfloat16}"
+QWEN_TIMEOUT_SEC="${QWEN_TIMEOUT_SEC:-240}"
 SAVE_IMAGES="${SAVE_IMAGES:-0}"
 SAVE_VARIANTS="${SAVE_VARIANTS:-0}"
 PRECOMPUTE_REWRITES="${PRECOMPUTE_REWRITES:-1}"
@@ -365,11 +368,14 @@ run_method() {
     --end_index "${END_INDEX}" \
     --modes "${mode_arg}" \
     --steps "${STEPS}" \
+    --width "${WIDTH}" \
+    --height "${HEIGHT}" \
     --cfg_scales ${CFG_SCALES} \
     --baseline_cfg "${BASELINE_CFG}" \
     --n_variants "${N_VARIANTS}" \
     --qwen_id "${QWEN_ID}" \
     --qwen_dtype "${QWEN_DTYPE}" \
+    --qwen_timeout_sec "${QWEN_TIMEOUT_SEC}" \
     --n_sims "${N_SIMS}" \
     --ucb_c "${UCB_C}" \
     --smc_k "${SMC_K}" \

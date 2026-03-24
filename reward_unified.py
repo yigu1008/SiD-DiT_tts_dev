@@ -152,6 +152,8 @@ class UnifiedRewardScorer:
         self.imagereward_last_error: Optional[str] = None
         self.pickscore_last_error: Optional[str] = None
         self.hpsv3_last_error: Optional[str] = None
+        self._hpsv3_fp32_forced = False
+        self._hpsv3_bf16_forced = False
         self.debug = str(os.environ.get("UNIFIEDREWARD_DEBUG", "")).strip().lower() in {"1", "true", "yes", "on"}
         self._load_backends()
 
@@ -609,6 +611,13 @@ class UnifiedRewardScorer:
 
     @staticmethod
     def _extract_scalar_from_hpsv3_output(obj: Any) -> float:
+        if isinstance(obj, dict):
+            for key in ("score", "scores", "reward", "rewards", "preference", "preferences", "logits"):
+                if key in obj:
+                    return UnifiedRewardScorer._extract_scalar_from_hpsv3_output(obj[key])
+            if len(obj) > 0:
+                return UnifiedRewardScorer._extract_scalar_from_hpsv3_output(next(iter(obj.values())))
+            raise RuntimeError("Empty dict returned by HPSv3.")
         if isinstance(obj, torch.Tensor):
             arr = obj.detach().float().cpu().reshape(-1)
             if arr.numel() == 0:
@@ -634,6 +643,86 @@ class UnifiedRewardScorer:
         if inferencer is None:
             raise RuntimeError("HPSv3 inferencer is not loaded.")
 
+        def _run_call(fn: Any, *args: Any, **kwargs: Any) -> Any:
+            # Avoid inheriting outer autocast state from diffusion path.
+            if str(self.device).startswith("cuda"):
+                with torch.autocast(device_type="cuda", enabled=False):
+                    return fn(*args, **kwargs)
+            if str(self.device).startswith("cpu"):
+                try:
+                    with torch.autocast(device_type="cpu", enabled=False):
+                        return fn(*args, **kwargs)
+                except Exception:
+                    return fn(*args, **kwargs)
+            return fn(*args, **kwargs)
+
+        def _force_fp32_modules() -> int:
+            touched = 0
+            candidates = []
+            if isinstance(inferencer, torch.nn.Module):
+                candidates.append(inferencer)
+            for name in ("model", "clip_model", "hps_model", "image_encoder", "text_encoder", "backbone", "net", "module"):
+                mod = getattr(inferencer, name, None)
+                if isinstance(mod, torch.nn.Module):
+                    candidates.append(mod)
+            try:
+                for mod in vars(inferencer).values():
+                    if isinstance(mod, torch.nn.Module):
+                        candidates.append(mod)
+            except Exception:
+                pass
+            seen = set()
+            for mod in candidates:
+                mid = id(mod)
+                if mid in seen:
+                    continue
+                seen.add(mid)
+                try:
+                    mod.to(dtype=torch.float32)
+                    touched += 1
+                except Exception:
+                    pass
+            return touched
+
+        def _force_bf16_modules() -> int:
+            if not str(self.device).startswith("cuda"):
+                return 0
+            touched = 0
+            candidates = []
+            if isinstance(inferencer, torch.nn.Module):
+                candidates.append(inferencer)
+            for name in ("model", "clip_model", "hps_model", "image_encoder", "text_encoder", "backbone", "net", "module"):
+                mod = getattr(inferencer, name, None)
+                if isinstance(mod, torch.nn.Module):
+                    candidates.append(mod)
+            try:
+                for mod in vars(inferencer).values():
+                    if isinstance(mod, torch.nn.Module):
+                        candidates.append(mod)
+            except Exception:
+                pass
+            seen = set()
+            for mod in candidates:
+                mid = id(mod)
+                if mid in seen:
+                    continue
+                seen.add(mid)
+                try:
+                    mod.to(dtype=torch.bfloat16)
+                    touched += 1
+                except Exception:
+                    pass
+            return touched
+
+        def _is_dtype_mismatch(msg: str) -> bool:
+            low = msg.lower()
+            return (
+                "same dtype" in low
+                or "expected scalar type" in low
+                or ("bfloat16" in low and "float" in low)
+                or ("half" in low and "float" in low)
+            )
+
         tmp_path: Optional[str] = None
         try:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
@@ -647,23 +736,72 @@ class UnifiedRewardScorer:
                     continue
                 for kwargs in (
                     {"prompts": [prompt], "image_paths": [tmp_path]},
-                    {"prompts": [prompt], "images": [tmp_path]},
-                    {"texts": [prompt], "image_paths": [tmp_path]},
+                    {"image_paths": [tmp_path], "prompts": [prompt]},
                 ):
                     try:
-                        out = fn(**kwargs)
+                        out = _run_call(fn, **kwargs)
                         return self._extract_scalar_from_hpsv3_output(out)
                     except Exception as exc:
-                        call_errors.append(f"{fn_name}({list(kwargs.keys())}): {type(exc).__name__}: {str(exc)[:160]}")
+                        msg = str(exc)
+                        if _is_dtype_mismatch(msg):
+                            if not self._hpsv3_fp32_forced:
+                                touched = _force_fp32_modules()
+                                if touched > 0:
+                                    self._hpsv3_fp32_forced = True
+                                    try:
+                                        out = _run_call(fn, **kwargs)
+                                        return self._extract_scalar_from_hpsv3_output(out)
+                                    except Exception as retry_exc:
+                                        call_errors.append(
+                                            f"{fn_name}({list(kwargs.keys())})[fp32-retry]: {type(retry_exc).__name__}: {str(retry_exc)[:160]}"
+                                        )
+                            if not self._hpsv3_bf16_forced:
+                                touched = _force_bf16_modules()
+                                if touched > 0:
+                                    self._hpsv3_bf16_forced = True
+                                    try:
+                                        out = _run_call(fn, **kwargs)
+                                        return self._extract_scalar_from_hpsv3_output(out)
+                                    except Exception as retry_exc:
+                                        call_errors.append(
+                                            f"{fn_name}({list(kwargs.keys())})[bf16-retry]: {type(retry_exc).__name__}: {str(retry_exc)[:160]}"
+                                        )
+                        call_errors.append(f"{fn_name}({list(kwargs.keys())}): {type(exc).__name__}: {msg[:160]}")
                 for args in (
                     ([prompt], [tmp_path]),
-                    ([prompt], tmp_path),
+                    ([tmp_path], [prompt]),
                 ):
                     try:
-                        out = fn(*args)
+                        out = _run_call(fn, *args)
                         return self._extract_scalar_from_hpsv3_output(out)
                     except Exception as exc:
-                        call_errors.append(f"{fn_name}(positional): {type(exc).__name__}: {str(exc)[:160]}")
+                        msg = str(exc)
+                        if _is_dtype_mismatch(msg):
+                            if not self._hpsv3_fp32_forced:
+                                touched = _force_fp32_modules()
+                            else:
+                                touched = 0
+                            if touched > 0:
+                                self._hpsv3_fp32_forced = True
+                                try:
+                                    out = _run_call(fn, *args)
+                                    return self._extract_scalar_from_hpsv3_output(out)
+                                except Exception as retry_exc:
+                                    call_errors.append(
+                                        f"{fn_name}(positional)[fp32-retry]: {type(retry_exc).__name__}: {str(retry_exc)[:160]}"
+                                    )
+                            if not self._hpsv3_bf16_forced:
+                                touched = _force_bf16_modules()
+                                if touched > 0:
+                                    self._hpsv3_bf16_forced = True
+                                    try:
+                                        out = _run_call(fn, *args)
+                                        return self._extract_scalar_from_hpsv3_output(out)
+                                    except Exception as retry_exc:
+                                        call_errors.append(
+                                            f"{fn_name}(positional)[bf16-retry]: {type(retry_exc).__name__}: {str(retry_exc)[:160]}"
+                                        )
+                        call_errors.append(f"{fn_name}(positional): {type(exc).__name__}: {msg[:160]}")
             msg = " | ".join(call_errors[:4]) if call_errors else "no callable API found"
             raise RuntimeError(f"Unable to score with HPSv3 inferencer. {msg}")
         finally:

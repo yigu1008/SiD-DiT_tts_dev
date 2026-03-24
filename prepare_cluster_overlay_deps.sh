@@ -27,7 +27,7 @@ echo "[overlay] installing runtime deps to overlay"
   "xxhash>=3.4.1" \
   "timm==1.0.15" \
   "wandb" \
-  "protobuf<7" \
+  "protobuf>=4.25,<6" \
   "pyyaml>=6.0.1" \
   "click>=8.1.7" \
   "typing-extensions>=4.11.0" \

@@ -9,7 +9,7 @@ import numpy as np
 import sampling_unified as su
 from cem_opt import CEMResult, optimize_cem
 from prompt_basis import PromptBasisEmbeddings
-from rollout_runner import RolloutResult, run_dynamic_rollout
+from rollout_runner import RolloutResult, run_dynamic_rollout, run_single_prompt_rollout
 from weight_policy import WeightParams
 
 
@@ -21,6 +21,11 @@ class PromptGAEval:
     subset_labels: list[str]
     blend_family: str
     theta: list[float]
+    objective_mode: str
+    orig_score: float
+    cond_score: float
+    ref_score: float | None
+    objective_rollouts_per_eval: int
     rollout: RolloutResult
     cem: CEMResult
 
@@ -153,6 +158,17 @@ def _weight_evolution(rollout: RolloutResult) -> list[dict[str, Any]]:
     ]
 
 
+def _reduce_scores(values: list[float], mode: str) -> float:
+    if len(values) == 0:
+        return 0.0
+    key = str(mode).strip().lower()
+    if key == "mean":
+        return float(np.mean(values))
+    if key == "min":
+        return float(np.min(values))
+    return float(np.max(values))
+
+
 def run_ga_prompt_search(
     args: Any,
     ctx: su.PipelineContext,
@@ -178,6 +194,16 @@ def run_ga_prompt_search(
     pop_size = max(4, int(args.ga_population))
     elites = max(1, min(int(args.ga_elites), pop_size))
     steps = int(args.steps)
+    objective_mode = str(getattr(args, "hybrid_reward_mode", "orig_only")).strip().lower()
+    if objective_mode not in {"orig_only", "mixed_shared_image", "paired_rollout"}:
+        objective_mode = "orig_only"
+    cond_reduce = str(getattr(args, "hybrid_cond_reduce", "max")).strip().lower()
+    if cond_reduce not in {"max", "mean", "min"}:
+        cond_reduce = "max"
+    mix_orig = float(getattr(args, "hybrid_reward_mix_orig", 1.0))
+    mix_cond = float(getattr(args, "hybrid_reward_mix_cond", 0.0))
+    mix_delta = float(getattr(args, "hybrid_reward_mix_delta", 0.0))
+    rollouts_per_eval = 2 if objective_mode == "paired_rollout" else 1
 
     # Anchor: first K candidates + configured family.
     anchor_family = str(args.ga_anchor_family).strip().lower()
@@ -217,7 +243,7 @@ def run_ga_prompt_search(
 
         k = len(subset_indices)
 
-        def objective(theta_vec: np.ndarray) -> tuple[float, RolloutResult]:
+        def objective(theta_vec: np.ndarray) -> tuple[float, Any]:
             theta = WeightParams.from_vector(theta_vec, k)
             trace = run_dynamic_rollout(
                 args=args,
@@ -238,7 +264,51 @@ def run_ga_prompt_search(
                 save_path=None,
                 tag=f"{tag_prefix}_{family}",
             )
-            return float(trace.final_score), trace
+            orig_score = float(trace.final_score)
+            cond_prompt_scores = [
+                float(reward_ctx.score_images(str(basis_emb.texts[i]), [trace.final_image], metadata)[0])
+                for i in subset_indices
+            ]
+            cond_score = _reduce_scores(cond_prompt_scores, cond_reduce)
+
+            ref_score: float | None = None
+            if objective_mode == "paired_rollout":
+                ref_trace = run_single_prompt_rollout(
+                    args=args,
+                    ctx=ctx,
+                    reward_ctx=reward_ctx,
+                    prompt=prompt,
+                    metadata=metadata,
+                    seed=seed,
+                    h=h,
+                    w=w,
+                    orig_h=orig_h,
+                    orig_w=orig_w,
+                    pe=basis_emb.orig_pe,
+                    pm=basis_emb.orig_pm,
+                    ue=basis_emb.orig_ue,
+                    um=basis_emb.orig_um,
+                    preview_every=-1,
+                    save_path=None,
+                    tag=f"{tag_prefix}_{family}_ref",
+                )
+                ref_score = float(ref_trace.final_score)
+
+            if objective_mode == "orig_only":
+                objective_score = orig_score
+            elif objective_mode == "mixed_shared_image":
+                objective_score = (mix_orig * orig_score) + (mix_cond * cond_score)
+            else:
+                delta = orig_score - float(ref_score if ref_score is not None else 0.0)
+                objective_score = (mix_orig * orig_score) + (mix_cond * cond_score) + (mix_delta * delta)
+
+            aux = {
+                "trace": trace,
+                "orig_score": float(orig_score),
+                "cond_score": float(cond_score),
+                "ref_score": None if ref_score is None else float(ref_score),
+            }
+            return float(objective_score), aux
 
         cem = optimize_cem(
             objective=objective,
@@ -252,10 +322,15 @@ def run_ga_prompt_search(
             clip_value=float(args.cem_clip),
         )
         eval_calls_total += int(cem.eval_calls)
-        nfe_total += int(cem.eval_calls * steps)
+        nfe_total += int(cem.eval_calls * steps * rollouts_per_eval)
 
         theta = [float(x) for x in cem.best_x.tolist()]
-        rollout = cem.best_aux
+        best_aux = cem.best_aux if isinstance(cem.best_aux, dict) else {"trace": cem.best_aux}
+        rollout = best_aux["trace"]
+        orig_score = float(best_aux.get("orig_score", rollout.final_score))
+        cond_score = float(best_aux.get("cond_score", orig_score))
+        ref_score_raw = best_aux.get("ref_score", None)
+        ref_score = None if ref_score_raw is None else float(ref_score_raw)
         result = PromptGAEval(
             score=float(cem.best_score),
             genome=[int(x) for x in repaired],
@@ -263,6 +338,11 @@ def run_ga_prompt_search(
             subset_labels=[basis_emb.labels[i] for i in subset_indices],
             blend_family=family,
             theta=theta,
+            objective_mode=objective_mode,
+            orig_score=orig_score,
+            cond_score=cond_score,
+            ref_score=ref_score,
+            objective_rollouts_per_eval=int(rollouts_per_eval),
             rollout=rollout,
             cem=cem,
         )
@@ -270,6 +350,10 @@ def run_ga_prompt_search(
             {
                 "tag": str(tag_prefix),
                 "score": float(result.score),
+                "objective_mode": str(result.objective_mode),
+                "orig_score": float(result.orig_score),
+                "cond_score": float(result.cond_score),
+                "ref_score": None if result.ref_score is None else float(result.ref_score),
                 "genome": [int(x) for x in result.genome],
                 "subset_indices": [int(x) for x in result.subset_indices],
                 "subset_labels": [str(x) for x in result.subset_labels],
@@ -315,6 +399,7 @@ def run_ga_prompt_search(
                     tag="ga_best_save",
                 )
                 best_eval.rollout = saved_trace
+                best_eval.orig_score = float(saved_trace.final_score)
 
         topk = max(1, int(args.ga_log_topk))
         history.append(
@@ -323,13 +408,19 @@ def run_ga_prompt_search(
                 "best_score": float(evaluated[0].score),
                 "mean_score": float(np.mean([row.score for row in evaluated])),
                 "eval_calls_total": int(eval_calls_total),
-                "nfe_per_generation": int(sum(row.cem.eval_calls for row in evaluated) * steps),
+                "nfe_per_generation": int(
+                    sum(row.cem.eval_calls * steps * row.objective_rollouts_per_eval for row in evaluated)
+                ),
                 "nfe_total": int(nfe_total),
                 "wallclock_sec": float(time.perf_counter() - gen_start),
                 "top": [
                     {
                         "rank": int(r + 1),
                         "score": float(row.score),
+                        "objective_mode": str(row.objective_mode),
+                        "orig_score": float(row.orig_score),
+                        "cond_score": float(row.cond_score),
+                        "ref_score": None if row.ref_score is None else float(row.ref_score),
                         "genome": [int(x) for x in row.genome],
                         "subset_indices": [int(x) for x in row.subset_indices],
                         "subset_labels": list(row.subset_labels),

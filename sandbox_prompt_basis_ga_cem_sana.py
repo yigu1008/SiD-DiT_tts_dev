@@ -130,6 +130,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--ga_anchor_family", choices=["nlerp", "slerp"], default="nlerp")
     p.add_argument("--ga_eval_cache", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--blend_families", nargs="+", default=["nlerp", "slerp"])
+    p.add_argument(
+        "--hybrid_reward_mode",
+        choices=["orig_only", "mixed_shared_image", "paired_rollout"],
+        default="orig_only",
+        help="Hybrid GA objective mode. paired_rollout is NFE-intensive.",
+    )
+    p.add_argument("--hybrid_reward_mix_orig", type=float, default=1.0)
+    p.add_argument("--hybrid_reward_mix_cond", type=float, default=0.0)
+    p.add_argument("--hybrid_reward_mix_delta", type=float, default=0.0, help="Weight for (orig_score - ref_score).")
+    p.add_argument(
+        "--hybrid_cond_reduce",
+        choices=["max", "mean", "min"],
+        default="max",
+        help="How to reduce per-subset conditioned prompt reward into cond_score.",
+    )
 
     # Placeholders for load_reward(geneval path)
     p.add_argument("--reward_url", type=str, default=None)
@@ -395,7 +410,17 @@ def run_prompt(
         },
         "naive_blend_ablation": naive_blend_payload,
         "hybrid": {
+            "objective": {
+                "mode": str(args.hybrid_reward_mode),
+                "mix_orig": float(args.hybrid_reward_mix_orig),
+                "mix_cond": float(args.hybrid_reward_mix_cond),
+                "mix_delta": float(args.hybrid_reward_mix_delta),
+                "cond_reduce": str(args.hybrid_cond_reduce),
+            },
             "best_score": float(ga_res.best.score),
+            "best_orig_score": float(ga_res.best.orig_score),
+            "best_cond_score": float(ga_res.best.cond_score),
+            "best_ref_score": None if ga_res.best.ref_score is None else float(ga_res.best.ref_score),
             "best_genome": [int(x) for x in ga_res.best.genome],
             "best_subset_indices": [int(x) for x in ga_res.best.subset_indices],
             "best_subset_labels": list(ga_res.best.subset_labels),
@@ -463,6 +488,15 @@ def main(argv: list[str] | None = None) -> None:
             f"oneshot={scores['oneshot_balanced']:.4f} "
             f"fixed={scores['fixed_equal_blend']:.4f} "
             f"hybrid={scores['ga_cem_hybrid_best']:.4f}"
+        )
+        h = row["hybrid"]
+        ref_txt = "None" if h["best_ref_score"] is None else f"{float(h['best_ref_score']):.4f}"
+        print(
+            "  hybrid-objective: "
+            f"mode={h['objective']['mode']} "
+            f"orig={h['best_orig_score']:.4f} "
+            f"cond={h['best_cond_score']:.4f} "
+            f"ref={ref_txt}"
         )
         if "naive_equal_nlerp" in scores and "naive_equal_slerp" in scores:
             print(

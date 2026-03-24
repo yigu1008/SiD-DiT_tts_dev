@@ -92,6 +92,18 @@ def blend_prompt_embeddings(
         )
 
     if fam == "slerp":
+        # If one prompt dominates numerically, treat this as a hard endpoint.
+        # This guarantees t=0/1 behavior matches exact prompt selection.
+        max_w, max_i = torch.max(weights, dim=0)
+        if float(max_w.item()) >= 1.0 - 1e-6:
+            idx = int(max_i.item())
+            return BlendResult(
+                prompt_embed=embeds[idx],
+                prompt_mask=masks[idx],
+                selected_indices=[idx],
+                selected_weights=[1.0],
+            )
+
         top = torch.topk(weights, k=min(2, len(embeds)), largest=True)
         i0 = int(top.indices[0].item())
         if top.indices.shape[0] == 1:

@@ -57,6 +57,11 @@ fi
   --ga_tournament_k "${GA_TOURNAMENT_K:-3}" \
   --ga_log_topk "${GA_LOG_TOPK:-3}" \
   --ga_anchor_family "${GA_ANCHOR_FAMILY:-nlerp}" \
+  --hybrid_reward_mode "${HYBRID_REWARD_MODE:-paired_rollout}" \
+  --hybrid_reward_mix_orig "${HYBRID_REWARD_MIX_ORIG:-1.0}" \
+  --hybrid_reward_mix_cond "${HYBRID_REWARD_MIX_COND:-0.5}" \
+  --hybrid_reward_mix_delta "${HYBRID_REWARD_MIX_DELTA:-0.5}" \
+  --hybrid_cond_reduce "${HYBRID_COND_REDUCE:-max}" \
   --save_first_k "${SAVE_FIRST_K:-10}" \
   --save_images \
   "${extra_args[@]}" \

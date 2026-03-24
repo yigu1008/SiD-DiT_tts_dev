@@ -18,6 +18,7 @@ import time
 from typing import Any
 
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 import sampling_unified as su
 from eval_and_log import ensure_dir, save_json
@@ -146,6 +147,55 @@ def _t_slug(t: float) -> str:
     return str(f"{float(t):.2f}").replace(".", "p")
 
 
+def _font(size: int = 15) -> ImageFont.ImageFont:
+    try:
+        return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size)
+    except Exception:
+        return ImageFont.load_default()
+
+
+def _build_interp_panel(
+    baseline_img: Image.Image,
+    baseline_score: float,
+    families: list[str],
+    t_values: list[float],
+    panel_data: dict[str, dict[float, tuple[Image.Image, float]]],
+    out_path: str,
+) -> None:
+    if len(families) == 0:
+        return
+    w, h = baseline_img.size
+    cols = 1 + len(t_values)
+    rows = len(families)
+    label_h = 46
+    panel = Image.new("RGB", (cols * w, rows * (h + label_h)), (18, 18, 18))
+    draw = ImageDraw.Draw(panel)
+    f_main = _font(15)
+    f_sub = _font(13)
+
+    for r, fam in enumerate(families):
+        y0 = r * (h + label_h)
+        # Baseline column for each row.
+        panel.paste(baseline_img, (0, y0 + label_h))
+        draw.text((8, y0 + 6), f"{fam} baseline", fill=(220, 220, 220), font=f_main)
+        draw.text((8, y0 + 24), f"s={baseline_score:.4f}", fill=(200, 200, 200), font=f_sub)
+
+        fam_map = panel_data.get(fam, {})
+        for c, tval in enumerate(t_values, start=1):
+            x0 = c * w
+            item = fam_map.get(float(tval))
+            if item is None:
+                continue
+            img, score = item
+            delta = float(score - baseline_score)
+            panel.paste(img, (x0, y0 + label_h))
+            draw.text((x0 + 8, y0 + 6), f"{fam} t={float(tval):.2f}", fill=(230, 230, 230), font=f_main)
+            col = (110, 255, 110) if delta >= 0.0 else (255, 120, 120)
+            draw.text((x0 + 8, y0 + 24), f"s={score:.4f} d={delta:+.4f}", fill=col, font=f_sub)
+
+    panel.save(out_path)
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     ensure_dir(args.out_dir)
@@ -226,6 +276,7 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  interp pair: {pair_labels[0]}->{pair_labels[1]} (indices={pair_indices})")
 
             entries: list[dict[str, Any]] = []
+            panel_data: dict[str, dict[float, tuple[Image.Image, float]]] = {}
             writer.writerow([slug, prompt, "baseline", "baseline", f"{baseline.final_score:.6f}", "+0.000000", base_img_path or ""])
 
             for fam in families:
@@ -265,8 +316,23 @@ def main(argv: list[str] | None = None) -> None:
                         "image_file": img_path,
                     }
                     entries.append(entry)
+                    if save_this and args.save_images:
+                        panel_data.setdefault(str(fam), {})[float(tval)] = (trace.final_image, float(score))
                     writer.writerow([slug, prompt, fam, f"{float(tval):.2f}", f"{score:.6f}", f"{delta:+.6f}", img_path or ""])
                     print(f"  {fam:>5} t={float(tval):.2f} score={score:.4f} delta={delta:+.4f}")
+
+            # Endpoint sanity: nlerp/slerp should match when one side weight is 1.
+            by_key = {(str(e["family"]), round(float(e["t"]), 6)): float(e["score"]) for e in entries}
+            for t_edge in (0.0, 1.0):
+                key_n = ("nlerp", round(t_edge, 6))
+                key_s = ("slerp", round(t_edge, 6))
+                if key_n in by_key and key_s in by_key:
+                    gap = by_key[key_s] - by_key[key_n]
+                    if abs(gap) > 1e-3:
+                        print(
+                            f"  [warn] endpoint mismatch at t={t_edge:.2f}: "
+                            f"slerp-nlerp={gap:+.4f} (expected near 0)"
+                        )
 
             row = {
                 "slug": slug,
@@ -278,6 +344,34 @@ def main(argv: list[str] | None = None) -> None:
                 "baseline_score": float(baseline.final_score),
                 "results": entries,
             }
+            if save_this and args.save_images:
+                # One stacked panel for all families.
+                all_panel = os.path.join(prompt_dir, "interp_comparison_panel.png")
+                _build_interp_panel(
+                    baseline_img=baseline.final_image,
+                    baseline_score=float(baseline.final_score),
+                    families=families,
+                    t_values=t_values,
+                    panel_data=panel_data,
+                    out_path=all_panel,
+                )
+                # Per-method panels.
+                method_panels: dict[str, str] = {}
+                for fam in families:
+                    fam_panel = os.path.join(prompt_dir, f"{fam}_interp_panel.png")
+                    _build_interp_panel(
+                        baseline_img=baseline.final_image,
+                        baseline_score=float(baseline.final_score),
+                        families=[fam],
+                        t_values=t_values,
+                        panel_data=panel_data,
+                        out_path=fam_panel,
+                    )
+                    method_panels[str(fam)] = fam_panel
+                row["panel_files"] = {
+                    "stacked": all_panel,
+                    "by_family": method_panels,
+                }
             save_json(os.path.join(prompt_dir, "interp_result.json"), row)
             all_rows.append(row)
 

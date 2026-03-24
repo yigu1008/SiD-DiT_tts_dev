@@ -41,7 +41,7 @@ fi
   --seed 42 \
   --baseline_guidance_scale 1.0 \
   --ga_population 24 \
-  --ga_generations 12 \
+  --ga_generations 8 \
   --ga_elites 3 \
   --ga_mutation_prob 0.10 \
   --ga_tournament_k 3 \

@@ -32,6 +32,8 @@ class _BackendState:
     imagereward: Optional[object] = None
     hps_model: Optional[object] = None
     open_clip: Optional[object] = None
+    pickscore_model: Optional[object] = None
+    pickscore_processor: Optional[object] = None
     unifiedreward_model: Optional[object] = None
     unifiedreward_processor: Optional[object] = None
     unifiedreward_process_vision_info: Optional[object] = None
@@ -48,9 +50,10 @@ class UnifiedRewardScorer:
       - unifiedreward: paper model scoring (CodeGoat24 UnifiedReward)
       - unified      : alias of unifiedreward (kept for compatibility)
       - imagereward
+      - pickscore
       - hpsv2
       - blend        : weighted average of ImageReward and HPSv2
-      - auto         : prefer unifiedreward, then imagereward, then hpsv2
+      - auto         : prefer unifiedreward, then imagereward, then pickscore, then hpsv2
     """
 
     _clip_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073])
@@ -98,12 +101,17 @@ class UnifiedRewardScorer:
         "  pip install -U ftfy regex tqdm\n"
         "  pip install -U git+https://github.com/openai/CLIP.git"
     )
+    _pickscore_install_hint = (
+        "Install PickScore dependencies, e.g.:\n"
+        "  pip install -U transformers accelerate sentencepiece"
+    )
 
     def __init__(
         self,
         device: str = "cuda",
         backend: str = "auto",
         image_reward_model: str = "ImageReward-v1.0",
+        pickscore_model: str = "yuvalkirstain/PickScore_v1",
         unifiedreward_model: str = DEFAULT_UNIFIEDREWARD_MODEL,
         unified_weights: Tuple[float, float] = (1.0, 1.0),
         unifiedreward_api_base: Optional[str] = None,
@@ -112,7 +120,7 @@ class UnifiedRewardScorer:
         max_new_tokens: int = 512,
         unifiedreward_prompt_mode: str = "standard",
     ) -> None:
-        valid = {"auto", "imagereward", "hpsv2", "blend", "unified", "unifiedreward"}
+        valid = {"auto", "imagereward", "pickscore", "hpsv2", "blend", "unified", "unifiedreward"}
         if backend not in valid:
             raise ValueError(f"Unsupported backend: {backend}")
         if unifiedreward_prompt_mode not in {"standard", "strict"}:
@@ -122,6 +130,7 @@ class UnifiedRewardScorer:
         self._hf_device = self._normalize_hf_device(device)
         self.backend = backend
         self.image_reward_model = image_reward_model
+        self.pickscore_model = pickscore_model
         self.unifiedreward_model = unifiedreward_model
         self.unified_weights = unified_weights
         self.unifiedreward_api_base = unifiedreward_api_base
@@ -133,6 +142,7 @@ class UnifiedRewardScorer:
         self.available: List[str] = []
         self.unifiedreward_last_error: Optional[str] = None
         self.imagereward_last_error: Optional[str] = None
+        self.pickscore_last_error: Optional[str] = None
         self.debug = str(os.environ.get("UNIFIEDREWARD_DEBUG", "")).strip().lower() in {"1", "true", "yes", "on"}
         self._load_backends()
 
@@ -146,12 +156,15 @@ class UnifiedRewardScorer:
         target = "unifiedreward" if self.backend == "unified" else self.backend
         need_unifiedreward = target in {"unifiedreward", "auto"}
         need_imagereward = target in {"imagereward", "blend", "auto"}
+        need_pickscore = target in {"pickscore", "auto"}
         need_hpsv2 = target in {"hpsv2", "blend", "auto"}
 
         if need_unifiedreward:
             self._try_load_unifiedreward()
         if need_imagereward:
             self._try_load_imagereward()
+        if need_pickscore:
+            self._try_load_pickscore()
         if need_hpsv2:
             self._try_load_hpsv2()
 
@@ -166,6 +179,12 @@ class UnifiedRewardScorer:
             raise RuntimeError(
                 "Requested backend=imagereward, but ImageReward is unavailable."
                 f"{detail}\n{self._imagereward_install_hint}"
+            )
+        if target == "pickscore" and "pickscore" not in self.available:
+            detail = f" Last error: {self.pickscore_last_error}" if self.pickscore_last_error else ""
+            raise RuntimeError(
+                "Requested backend=pickscore, but PickScore is unavailable."
+                f"{detail}\n{self._pickscore_install_hint}"
             )
         if target == "hpsv2" and "hpsv2" not in self.available:
             raise RuntimeError("Requested backend=hpsv2, but HPSv2 is unavailable.")
@@ -468,6 +487,23 @@ class UnifiedRewardScorer:
         except Exception as exc:
             print(f"[Reward] HPSv2 unavailable: {exc}")
 
+    def _try_load_pickscore(self) -> None:
+        try:
+            from transformers import AutoModel, AutoProcessor
+
+            processor = AutoProcessor.from_pretrained(self.pickscore_model, trust_remote_code=True)
+            model = AutoModel.from_pretrained(self.pickscore_model, trust_remote_code=True)
+            model = model.to(self.device).eval()
+            for p in model.parameters():
+                p.requires_grad_(False)
+            self.state.pickscore_model = model
+            self.state.pickscore_processor = processor
+            self.available.append("pickscore")
+            self.pickscore_last_error = None
+        except Exception as exc:
+            self.pickscore_last_error = str(exc)
+            print(f"[Reward] PickScore unavailable: {exc}")
+
     def describe(self) -> str:
         target = "unifiedreward" if self.backend == "unified" else self.backend
         if target == "auto":
@@ -477,6 +513,8 @@ class UnifiedRewardScorer:
                 f"backend=blend available={self.available} "
                 f"weights=(imagereward={self.unified_weights[0]}, hpsv2={self.unified_weights[1]})"
             )
+        if target == "pickscore":
+            return f"backend=pickscore model={self.pickscore_model} available={self.available}"
         if target == "unifiedreward":
             mode = "api" if self.state.unifiedreward_api_base else "local"
             detail = self.state.unifiedreward_api_model if mode == "api" else self.unifiedreward_model
@@ -488,6 +526,8 @@ class UnifiedRewardScorer:
             return "unifiedreward"
         if "imagereward" in self.available:
             return "imagereward"
+        if "pickscore" in self.available:
+            return "pickscore"
         if "hpsv2" in self.available:
             return "hpsv2"
         raise RuntimeError("No available backend for auto mode.")
@@ -515,6 +555,45 @@ class UnifiedRewardScorer:
         vf = self.state.hps_model.encode_image(self._prep_hps_image(image))
         vf = vf / vf.norm(dim=-1, keepdim=True)
         return float((vf * tf).sum(dim=-1).item())
+
+    @torch.no_grad()
+    def _score_pickscore(self, prompt: str, image: Image.Image) -> float:
+        model = self.state.pickscore_model
+        processor = self.state.pickscore_processor
+        if model is None or processor is None:
+            raise RuntimeError("PickScore model is not loaded.")
+
+        inputs = processor(
+            text=[prompt],
+            images=[image.convert("RGB")],
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+        )
+        prepared = {}
+        for key, value in inputs.items():
+            if hasattr(value, "to"):
+                prepared[key] = value.to(self.device)
+            else:
+                prepared[key] = value
+
+        if hasattr(model, "get_image_features") and hasattr(model, "get_text_features"):
+            image_embs = model.get_image_features(pixel_values=prepared["pixel_values"])
+            text_embs = model.get_text_features(
+                input_ids=prepared["input_ids"],
+                attention_mask=prepared.get("attention_mask"),
+            )
+        else:
+            raise RuntimeError("PickScore model missing CLIP-style get_image_features/get_text_features.")
+        image_embs = image_embs / image_embs.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+        text_embs = text_embs / text_embs.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+        logits = image_embs @ text_embs.T
+        if hasattr(model, "logit_scale"):
+            try:
+                logits = logits * model.logit_scale.exp()
+            except Exception:
+                pass
+        return float(logits.squeeze().item())
 
     def _unifiedreward_question(self, prompt: str) -> str:
         if self.unifiedreward_prompt_mode == "strict":
@@ -684,6 +763,8 @@ class UnifiedRewardScorer:
         target = "unifiedreward" if self.backend == "unified" else self.backend
         if target == "imagereward":
             return self._score_imagereward(prompt, image)
+        if target == "pickscore":
+            return self._score_pickscore(prompt, image)
         if target == "hpsv2":
             return self._score_hpsv2(prompt, image)
         if target == "blend":
@@ -696,5 +777,7 @@ class UnifiedRewardScorer:
                 return self._score_unifiedreward(prompt, image)
             if selected == "imagereward":
                 return self._score_imagereward(prompt, image)
+            if selected == "pickscore":
+                return self._score_pickscore(prompt, image)
             return self._score_hpsv2(prompt, image)
         raise RuntimeError(f"Unexpected backend: {self.backend}")

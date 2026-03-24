@@ -47,6 +47,16 @@ REWRITE_STYLES = [
     "Change one mood or atmosphere word.",
 ]
 
+_REWRITE_PLACEHOLDER_RE = re.compile(r"^/?\s*<[^>]+>\s*$")
+_REWRITE_BAD_TOKENS = {
+    "<thin>",
+    "</thin>",
+    "/<thin>",
+    "<think>",
+    "</think>",
+    "/<think>",
+}
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified SD3.5 sampling/search with unified reward.")
@@ -87,7 +97,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--smc_cfg_scale", type=float, default=1.25)
     parser.add_argument("--smc_variant_idx", type=int, default=0)
     parser.add_argument("--ga_population", type=int, default=24)
-    parser.add_argument("--ga_generations", type=int, default=12)
+    parser.add_argument("--ga_generations", type=int, default=8)
     parser.add_argument("--ga_elites", type=int, default=3)
     parser.add_argument("--ga_mutation_prob", type=float, default=0.10)
     parser.add_argument("--ga_tournament_k", type=int, default=3)
@@ -112,8 +122,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="ImageReward model id/checkpoint name.",
     )
     parser.add_argument(
+        "--pickscore_model",
+        default="yuvalkirstain/PickScore_v1",
+        help="PickScore model id.",
+    )
+    parser.add_argument(
         "--reward_backend",
-        choices=["auto", "unifiedreward", "unified", "imagereward", "hpsv2", "blend"],
+        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "hpsv2", "blend"],
         default="unifiedreward",
     )
     parser.add_argument(
@@ -262,6 +277,7 @@ def load_reward_model(args: argparse.Namespace, device: str) -> UnifiedRewardSco
         device=device,
         backend=args.reward_backend,
         image_reward_model=args.image_reward_model,
+        pickscore_model=getattr(args, "pickscore_model", "yuvalkirstain/PickScore_v1"),
         unifiedreward_model=unified_model,
         unified_weights=(float(args.reward_weights[0]), float(args.reward_weights[1])),
         unifiedreward_api_base=args.reward_api_base,
@@ -334,20 +350,43 @@ print({repr(marker)} + sys.argv[2])
             continue
         candidate = line[len(marker):].strip()
         if candidate:
-            return candidate
+            return sanitize_rewrite_text(candidate, prompt)
     return prompt
+
+
+def sanitize_rewrite_text(candidate: str, fallback: str) -> str:
+    text = re.sub(r"<think>.*?</think>", "", str(candidate), flags=re.DOTALL).strip()
+    if not text:
+        return fallback
+    text = text.strip("`\"' ")
+    lower = text.lower()
+    if lower in _REWRITE_BAD_TOKENS:
+        return fallback
+    if _REWRITE_PLACEHOLDER_RE.fullmatch(text):
+        return fallback
+    if "<" in text and ">" in text and len(text) < 24:
+        return fallback
+    if len(text) < 4:
+        return fallback
+    return text
 
 
 def generate_variants(args: argparse.Namespace, prompt: str, cache: dict[str, list[str]]) -> list[str]:
     if prompt in cache:
-        cached = cache[prompt][: args.n_variants + 1]
-        return cached if cached else [prompt]
+        cached = [sanitize_rewrite_text(v, prompt) for v in cache[prompt][: args.n_variants + 1]]
+        dedup: list[str] = []
+        for v in cached:
+            if v not in dedup:
+                dedup.append(v)
+        return dedup if dedup else [prompt]
     if args.n_variants <= 0 or args.no_qwen:
         return [prompt]
     variants = [prompt]
     styles = (REWRITE_STYLES * ((args.n_variants // len(REWRITE_STYLES)) + 1))[: args.n_variants]
     for style in styles:
-        variants.append(qwen_rewrite(args, prompt, style))
+        rewritten = sanitize_rewrite_text(qwen_rewrite(args, prompt, style), prompt)
+        if rewritten not in variants:
+            variants.append(rewritten)
     return variants
 
 

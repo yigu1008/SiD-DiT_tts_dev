@@ -29,6 +29,16 @@ REWRITE_STYLES = [
     "Change one mood or atmosphere word.",
 ]
 
+_REWRITE_PLACEHOLDER_RE = re.compile(r"^/?\s*<[^>]+>\s*$")
+_REWRITE_BAD_TOKENS = {
+    "<thin>",
+    "</thin>",
+    "/<thin>",
+    "<think>",
+    "</think>",
+    "/<think>",
+}
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Batch precompute Qwen rewrites cache for SD3.5 DDP runs.")
@@ -95,7 +105,17 @@ def clean_generation(text: str, fallback: str) -> str:
     decoded = re.sub(r"<think>.*?</think>", "", str(text), flags=re.DOTALL).strip()
     for line in decoded.splitlines():
         line = line.strip()
-        if line:
+        if not line:
+            continue
+        line = line.strip("`\"' ")
+        lower = line.lower()
+        if lower in _REWRITE_BAD_TOKENS:
+            continue
+        if _REWRITE_PLACEHOLDER_RE.fullmatch(line):
+            continue
+        if "<" in line and ">" in line and len(line) < 24:
+            continue
+        if len(line) >= 4:
             return line
     return fallback
 

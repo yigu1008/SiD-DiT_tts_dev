@@ -16,7 +16,7 @@ source "${SCRIPT_DIR}/shell_env.sh"
   --width 512 \
   --height 512 \
   --ga_population 24 \
-  --ga_generations 12 \
+  --ga_generations 8 \
   --ga_elites 3 \
   --ga_mutation_prob 0.10 \
   --ga_tournament_k 3 \

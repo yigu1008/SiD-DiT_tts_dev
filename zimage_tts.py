@@ -45,6 +45,16 @@ REWRITE_STYLES = [
     "Change one mood or atmosphere word.",
 ]
 
+_REWRITE_PLACEHOLDER_RE = re.compile(r"^/?\s*<[^>]+>\s*$")
+_REWRITE_BAD_TOKENS = {
+    "<thin>",
+    "</thin>",
+    "/<thin>",
+    "<think>",
+    "</think>",
+    "/<think>",
+}
+
 TOKEN_GROUP_ORDER = [
     "subject_face",
     "garment_embroidery",
@@ -198,10 +208,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--allow_repeat", action="store_true", help="Enable repeat action as ablation.")
 
     parser.add_argument("--reward_model", type=str, default="CodeGoat24/UnifiedReward-qwen-7b")
+    parser.add_argument("--unifiedreward_model", type=str, default=None)
+    parser.add_argument("--image_reward_model", type=str, default="ImageReward-v1.0")
+    parser.add_argument("--pickscore_model", type=str, default="yuvalkirstain/PickScore_v1")
     parser.add_argument(
         "--reward_backend",
         type=str,
-        choices=["auto", "unifiedreward", "unified", "imagereward", "hpsv2", "blend"],
+        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "hpsv2", "blend"],
         default="unifiedreward",
         help="Reward backend selector.",
     )
@@ -246,6 +259,23 @@ def load_prompts(args: argparse.Namespace) -> List[str]:
     if not prompts:
         raise RuntimeError("No prompts found.")
     return prompts
+
+
+def sanitize_rewrite_text(candidate: str, fallback: str) -> str:
+    text = re.sub(r"<think>.*?</think>", "", str(candidate), flags=re.DOTALL).strip()
+    if not text:
+        return fallback
+    text = text.strip("`\"' ")
+    lower = text.lower()
+    if lower in _REWRITE_BAD_TOKENS:
+        return fallback
+    if _REWRITE_PLACEHOLDER_RE.fullmatch(text):
+        return fallback
+    if "<" in text and ">" in text and len(text) < 24:
+        return fallback
+    if len(text) < 4:
+        return fallback
+    return text
 
 
 def qwen_rewrite(args: argparse.Namespace, prompt: str, instruction: str) -> str:
@@ -298,7 +328,7 @@ print({repr(marker)} + sys.argv[2])
             continue
         candidate = line[len(marker):].strip()
         if candidate:
-            return candidate
+            return sanitize_rewrite_text(candidate, prompt)
     return prompt
 
 
@@ -307,14 +337,16 @@ def build_structured_variants(args: argparse.Namespace, prompt: str, cache: Dict
     variants = [f"{prompt} {PROMPT_FOCUS_SUFFIX[label]}" if label != "balanced" else prompt for label in labels]
 
     if prompt in cache:
-        qwen_variants = cache[prompt][: args.n_variants]
+        qwen_variants = [sanitize_rewrite_text(v, prompt) for v in cache[prompt][: args.n_variants]]
     else:
         if not args.use_qwen_variants or args.no_qwen or args.n_variants <= 0:
             return labels, variants
         styles = (REWRITE_STYLES * ((args.n_variants // len(REWRITE_STYLES)) + 1))[: args.n_variants]
-        qwen_variants = [qwen_rewrite(args, prompt, style) for style in styles]
+        qwen_variants = [sanitize_rewrite_text(qwen_rewrite(args, prompt, style), prompt) for style in styles]
 
     for i, v in enumerate(qwen_variants):
+        if not v or v in variants:
+            continue
         labels.append(f"qwen_{i}")
         variants.append(v)
     return labels, variants
@@ -1059,11 +1091,13 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.compile_transformer:
         pipe.transformer.compile()
 
+    unified_model = args.unifiedreward_model if args.unifiedreward_model else args.reward_model
     reward_scorer = UnifiedRewardScorer(
         device=device,
         backend=args.reward_backend,
-        image_reward_model=args.reward_model,
-        unifiedreward_model=args.reward_model,
+        image_reward_model=args.image_reward_model,
+        pickscore_model=args.pickscore_model,
+        unifiedreward_model=unified_model,
         unified_weights=(float(args.reward_weights[0]), float(args.reward_weights[1])),
         unifiedreward_api_base=args.reward_api_base,
         unifiedreward_api_key=args.reward_api_key,

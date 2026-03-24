@@ -244,7 +244,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # Reward
     p.add_argument(
         "--reward_type",
-        choices=["imagereward", "auto", "unifiedreward", "unified", "hpsv2", "blend"],
+        choices=["imagereward", "auto", "unifiedreward", "unified", "pickscore", "hpsv2", "blend"],
         default="imagereward",
     )
     p.add_argument("--reward_device", type=str, default="cpu")
@@ -383,9 +383,9 @@ print(decoded)
     obj = _parse_json_object(proc.stdout)
     if obj is None:
         return None
-    coarse = str(obj.get("coarse", "")).strip()
-    mid = str(obj.get("mid", "")).strip()
-    fine = str(obj.get("fine", "")).strip()
+    coarse = su.sanitize_rewrite_text(str(obj.get("coarse", "")), prompt)
+    mid = su.sanitize_rewrite_text(str(obj.get("mid", "")), prompt)
+    fine = su.sanitize_rewrite_text(str(obj.get("fine", "")), prompt)
     if not coarse or not mid or not fine:
         return None
     return HierarchyPrompts(original=prompt, coarse=coarse, mid=mid, fine=fine)
@@ -409,9 +409,9 @@ def qwen_hierarchy_fallback(args: argparse.Namespace, prompt: str) -> HierarchyP
     )
     return HierarchyPrompts(
         original=prompt,
-        coarse=coarse.strip() or prompt,
-        mid=mid.strip() or prompt,
-        fine=fine.strip() or prompt,
+        coarse=su.sanitize_rewrite_text(coarse, prompt),
+        mid=su.sanitize_rewrite_text(mid, prompt),
+        fine=su.sanitize_rewrite_text(fine, prompt),
     )
 
 
@@ -422,9 +422,9 @@ def build_hierarchy_prompt(
 ) -> HierarchyPrompts:
     cached = cache.get(prompt)
     if cached is not None:
-        c = str(cached.get("coarse", "")).strip()
-        m = str(cached.get("mid", "")).strip()
-        f = str(cached.get("fine", "")).strip()
+        c = su.sanitize_rewrite_text(str(cached.get("coarse", "")), prompt)
+        m = su.sanitize_rewrite_text(str(cached.get("mid", "")), prompt)
+        f = su.sanitize_rewrite_text(str(cached.get("fine", "")), prompt)
         if c and m and f:
             return HierarchyPrompts(original=prompt, coarse=c, mid=m, fine=f)
 

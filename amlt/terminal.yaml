@@ -62,8 +62,9 @@ search:
       - export START_INDEX={start_index}
       - export END_INDEX={end_index}
       - export METHODS="{methods}"
-      - export REWARD_BACKEND={reward_backend}
-      - export REWARD_TYPE={reward_backend}
+      - export REWARD_BACKEND="{reward_backend}"
+      - export REWARD_TYPE="{reward_backend}"
+      - export REWARD_BACKENDS="{reward_backend}"
       - export CFG_SCALES="{cfg_scales}"
       - export BASELINE_CFG={baseline_cfg}
       - export STEPS={steps}
@@ -121,7 +122,7 @@ search:
     - name: methods
       values: [ "baseline greedy mcts ga smc" ]
     - name: reward_backend
-      values: [ "imagereward" ]
+      values: [ "pickscore hpsv2" ]
     - name: cfg_scales
       values: [ "1.0 1.25 1.5 1.75 2.0 2.25 2.5" ]
     - name: baseline_cfg
@@ -147,9 +148,9 @@ search:
     - name: smc_variant_idx
       values: [ 0 ]
     - name: ga_population
-      values: [ 48 ]
+      values: [ 24 ]
     - name: ga_generations
-      values: [ 30 ]
+      values: [ 8 ]
     - name: ga_elites
       values: [ 4 ]
     - name: ga_mutation_prob

@@ -83,7 +83,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--decode_cpu_if_free_below_gb", type=float, default=20.0)
 
     # Reward
-    p.add_argument("--reward_type", choices=["imagereward", "auto", "unifiedreward", "unified", "hpsv2", "blend"], default="imagereward")
+    p.add_argument("--reward_type", choices=["imagereward", "auto", "unifiedreward", "unified", "pickscore", "hpsv2", "blend"], default="imagereward")
     p.add_argument("--reward_device", type=str, default="cpu")
     p.add_argument("--reward_model", type=str, default="CodeGoat24/UnifiedReward-qwen-7b")
     p.add_argument("--unifiedreward_model", type=str, default=None)
@@ -120,7 +120,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     # GA (outer)
     p.add_argument("--ga_population", type=int, default=8)
-    p.add_argument("--ga_generations", type=int, default=6)
+    p.add_argument("--ga_generations", type=int, default=8)
     p.add_argument("--ga_elites", type=int, default=2)
     p.add_argument("--ga_mutation_prob", type=float, default=0.15)
     p.add_argument("--ga_selection", choices=["rank", "tournament"], default="rank")

@@ -37,7 +37,7 @@ fi
   --time_scale 1000.0 \
   --n_samples 1 \
   --ga_population 48 \
-  --ga_generations 30 \
+  --ga_generations 8 \
   --ga_elites 4 \
   --ga_mutation_prob 0.15 \
   --ga_tournament_k 4 \

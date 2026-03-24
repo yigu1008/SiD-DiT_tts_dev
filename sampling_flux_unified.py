@@ -117,7 +117,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     p.add_argument(
         "--reward_backend",
-        choices=["auto", "unifiedreward", "unified", "imagereward", "hpsv2", "blend"],
+        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "hpsv2", "blend"],
         default="imagereward",
     )
     p.add_argument(
@@ -139,6 +139,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--image_reward_model",
         default="ImageReward-v1.0",
         help="ImageReward model id/checkpoint name.",
+    )
+    p.add_argument(
+        "--pickscore_model",
+        default="yuvalkirstain/PickScore_v1",
+        help="PickScore model id.",
     )
     p.add_argument(
         "--reward_weights",
@@ -191,7 +196,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     # GA
     p.add_argument("--ga_population", type=int, default=24)
-    p.add_argument("--ga_generations", type=int, default=12)
+    p.add_argument("--ga_generations", type=int, default=8)
     p.add_argument("--ga_elites", type=int, default=3)
     p.add_argument("--ga_mutation_prob", type=float, default=0.10)
     p.add_argument("--ga_tournament_k", type=int, default=3)
@@ -370,6 +375,7 @@ def load_reward(args: argparse.Namespace, pipeline_device: str):
         device=reward_device,
         backend=args.reward_backend,
         image_reward_model=args.image_reward_model,
+        pickscore_model=getattr(args, "pickscore_model", "yuvalkirstain/PickScore_v1"),
         unifiedreward_model=unified_model,
         unified_weights=(float(args.reward_weights[0]), float(args.reward_weights[1])),
         unifiedreward_api_base=args.reward_api_base,

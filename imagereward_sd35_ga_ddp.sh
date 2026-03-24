@@ -78,7 +78,7 @@ torchrun --standalone --nproc_per_node "${NUM_GPUS}" "${SCRIPT_DIR}/sd35_ddp_exp
   --image_reward_model "${IMAGE_REWARD_MODEL:-ImageReward-v1.0}" \
   --seed "${SEED:-42}" \
   --ga_population "${GA_POPULATION:-24}" \
-  --ga_generations "${GA_GENERATIONS:-12}" \
+  --ga_generations "${GA_GENERATIONS:-8}" \
   --ga_elites "${GA_ELITES:-3}" \
   --ga_mutation_prob "${GA_MUTATION_PROB:-0.10}" \
   --ga_tournament_k "${GA_TOURNAMENT_K:-3}" \

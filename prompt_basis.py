@@ -105,8 +105,7 @@ def _extract_json_obj(raw: str) -> dict[str, Any] | None:
 
 
 def _normalize_text(s: str, fallback: str) -> str:
-    out = str(s).strip()
-    return out if out else fallback
+    return su.sanitize_rewrite_text(str(s), fallback)
 
 
 def _qwen_basis_once(args: Any, prompt: str) -> PromptBasis | None:

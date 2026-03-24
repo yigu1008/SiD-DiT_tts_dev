@@ -63,7 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--smc_cfg_scale", type=float, default=1.25)
     parser.add_argument("--smc_variant_idx", type=int, default=0)
     parser.add_argument("--ga_population", type=int, default=24)
-    parser.add_argument("--ga_generations", type=int, default=12)
+    parser.add_argument("--ga_generations", type=int, default=8)
     parser.add_argument("--ga_elites", type=int, default=3)
     parser.add_argument("--ga_mutation_prob", type=float, default=0.10)
     parser.add_argument("--ga_tournament_k", type=int, default=3)
@@ -88,8 +88,13 @@ def parse_args() -> argparse.Namespace:
         help="ImageReward model id/checkpoint name.",
     )
     parser.add_argument(
+        "--pickscore_model",
+        default="yuvalkirstain/PickScore_v1",
+        help="PickScore model id.",
+    )
+    parser.add_argument(
         "--reward_backend",
-        choices=["auto", "unifiedreward", "unified", "imagereward", "hpsv2", "blend"],
+        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "hpsv2", "blend"],
         default="unifiedreward",
     )
     parser.add_argument(

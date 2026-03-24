@@ -49,7 +49,7 @@ fi
   --cem_min_std "${CEM_MIN_STD:-0.05}" \
   --cem_clip "${CEM_CLIP:-3.0}" \
   --ga_population "${GA_POP:-8}" \
-  --ga_generations "${GA_GENS:-6}" \
+  --ga_generations "${GA_GENS:-8}" \
   --ga_elites "${GA_ELITES:-2}" \
   --ga_mutation_prob "${GA_MUTATION_PROB:-0.15}" \
   --ga_selection "${GA_SELECTION:-rank}" \

@@ -19,6 +19,33 @@ if [[ ! -f "${PROMPT_FILE}" ]]; then
   exit 1
 fi
 
+reward_args=(
+  --reward_model "${REWARD_MODEL:-CodeGoat24/UnifiedReward-qwen-7b}"
+  --image_reward_model "${IMAGE_REWARD_MODEL:-ImageReward-v1.0}"
+  --reward_max_new_tokens "${REWARD_MAX_NEW_TOKENS:-512}"
+  --reward_prompt_mode "${REWARD_PROMPT_MODE:-standard}"
+)
+if [[ -n "${UNIFIEDREWARD_MODEL:-}" ]]; then
+  reward_args+=(--unifiedreward_model "${UNIFIEDREWARD_MODEL}")
+fi
+if [[ -n "${REWARD_API_BASE:-}" ]]; then
+  reward_args+=(--reward_api_base "${REWARD_API_BASE}")
+fi
+if [[ -n "${REWARD_API_KEY:-}" ]]; then
+  reward_args+=(--reward_api_key "${REWARD_API_KEY}")
+fi
+if [[ -n "${REWARD_API_MODEL:-}" ]]; then
+  reward_args+=(--reward_api_model "${REWARD_API_MODEL}")
+fi
+reward_weights_str="${REWARD_WEIGHTS:-1.0 1.0}"
+if [[ -n "${reward_weights_str}" ]]; then
+  # shellcheck disable=SC2206
+  reward_weights_arr=(${reward_weights_str})
+  if [[ "${#reward_weights_arr[@]}" -eq 2 ]]; then
+    reward_args+=(--reward_weights "${reward_weights_arr[0]}" "${reward_weights_arr[1]}")
+  fi
+fi
+
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sandbox_blend_interp_sana.py" \
   --prompt_file "${PROMPT_FILE}" \
   --max_prompts "${MAX_PROMPTS:-0}" \
@@ -32,7 +59,7 @@ fi
   --guidance_scale "${GUIDANCE_SCALE:-1.0}" \
   --reward_type "${REWARD_TYPE:-imagereward}" \
   --reward_device "${REWARD_DEVICE:-cpu}" \
-  --image_reward_model "${IMAGE_REWARD_MODEL:-ImageReward-v1.0}" \
+  "${reward_args[@]}" \
   --interp_labels ${INTERP_LABELS:-balanced subject} \
   --interp_values ${INTERP_VALUES:-0.0 0.25 0.5 0.75 1.0} \
   --families ${FAMILIES:-nlerp slerp} \
@@ -40,4 +67,3 @@ fi
   --save_first_k "${SAVE_FIRST_K:-10}" \
   --save_images \
   "$@"
-

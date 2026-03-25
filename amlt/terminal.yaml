@@ -61,6 +61,7 @@ search:
       - export PROMPT_STYLE={prompt_style}
       - OUT_DIR="$$HPSV2_PROMPT_DIR" STYLE="$$PROMPT_STYLE" bash get_hpsv2_prompts.sh
       - if [ "$$PROMPT_STYLE" = "all" ]; then export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts.txt"; else export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts_$$PROMPT_STYLE.txt"; fi
+      - if [ {use_subset} = 1 ]; then export PROMPT_FILE=./hpsv2_subset.txt; fi
       - export OUT_ROOT=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}
       - export START_INDEX={start_index}
       - export END_INDEX={end_index}
@@ -175,6 +176,8 @@ search:
       values: [ 5 ]
     - name: ga_eval_batch
       values: [ 2 ]
+    - name: use_subset
+      values: [ 0 ]
     - name: save_images
       values: [ 0 ]
     - name: seed

@@ -222,7 +222,7 @@ def shard(entries: List[Tuple[int, str]], rank: int, world_size: int) -> List[Tu
 def aggregate_logs(log_dir: str, out_dir: str) -> Dict[str, Any]:
     rows: List[Dict[str, Any]] = []
     for name in sorted(os.listdir(log_dir)):
-        if not name.endswith(".jsonl"):
+        if not name.endswith(".jsonl") or name.endswith("_rewrite_examples.jsonl"):
             continue
         with open(os.path.join(log_dir, name), encoding="utf-8") as f:
             for line in f:

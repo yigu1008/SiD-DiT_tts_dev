@@ -4,7 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/shell_env.sh"
 
-PROMPT_FILE="${PROMPT_FILE:-/data/ygu/hpsv2_prompts.txt}"
+DEFAULT_PROMPT_FILE="${SCRIPT_DIR}/hpsv2_subset.txt"
+if [[ -f "${DEFAULT_PROMPT_FILE}" ]]; then
+  PROMPT_FILE="${PROMPT_FILE:-${DEFAULT_PROMPT_FILE}}"
+else
+  PROMPT_FILE="${PROMPT_FILE:-/data/ygu/hpsv2_prompts.txt}"
+fi
 OUT_DIR="${OUT_DIR:-/data/ygu/imagereward_smc_hpsv2_set2}"
 
 if [[ ! -f "${PROMPT_FILE}" ]]; then

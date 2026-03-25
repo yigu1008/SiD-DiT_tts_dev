@@ -78,6 +78,7 @@ GA_SELECTION="${GA_SELECTION:-rank}"
 GA_RANK_PRESSURE="${GA_RANK_PRESSURE:-1.7}"
 GA_CROSSOVER="${GA_CROSSOVER:-uniform}"
 GA_LOG_TOPK="${GA_LOG_TOPK:-3}"
+GA_EVAL_BATCH="${GA_EVAL_BATCH:-2}"
 GA_PHASE_CONSTRAINTS="${GA_PHASE_CONSTRAINTS:-1}"
 
 if [[ ! -f "${PROMPT_FILE}" ]]; then
@@ -100,6 +101,7 @@ echo "  modes: ${METHODS}"
 echo "  nproc_per_node: ${NUM_GPUS}"
 echo "  reward_backend: ${REWARD_BACKEND}"
 echo "  eval_best_images: ${EVAL_BEST_IMAGES} eval_backends: ${EVAL_BACKENDS} eval_device: ${EVAL_REWARD_DEVICE}"
+echo "  ga: pop=${GA_POPULATION} gens=${GA_GENERATIONS} eval_batch=${GA_EVAL_BATCH}"
 echo "  use_qwen: ${USE_QWEN} (precompute=${PRECOMPUTE_REWRITES})"
 echo "  rewrites_file: ${REWRITES_FILE}"
 echo "  out: ${RUN_DIR}"
@@ -529,6 +531,7 @@ PY
     --ga_rank_pressure "${GA_RANK_PRESSURE}" \
     --ga_crossover "${GA_CROSSOVER}" \
     --ga_log_topk "${GA_LOG_TOPK}" \
+    --ga_eval_batch "${GA_EVAL_BATCH}" \
     --out_dir "${method_out}" \
     "${extra[@]}"
 

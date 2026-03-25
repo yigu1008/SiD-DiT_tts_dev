@@ -106,6 +106,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--ga_selection", choices=["rank", "tournament"], default="rank")
     parser.add_argument("--ga_rank_pressure", type=float, default=1.7)
     parser.add_argument("--ga_log_topk", type=int, default=3)
+    parser.add_argument("--ga_eval_batch", type=int, default=1, help="Batch size for GA genome rollout evaluation.")
     parser.add_argument("--ga_phase_constraints", action="store_true")
     parser.add_argument(
         "--reward_model",
@@ -658,6 +659,78 @@ def run_schedule_actions(
     return SearchResult(image=image, score=score, actions=[(int(v), float(c)) for v, c in actions])
 
 
+def _batched_flow_for_step_actions(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    emb: EmbeddingContext,
+    latents: torch.Tensor,
+    t_flat: torch.Tensor,
+    step_actions: list[tuple[int, float]],
+) -> torch.Tensor:
+    flow_out = torch.empty_like(latents)
+    groups: dict[tuple[int, float], list[int]] = {}
+    for idx, (variant_idx, cfg) in enumerate(step_actions):
+        key = (int(variant_idx), float(cfg))
+        groups.setdefault(key, []).append(int(idx))
+
+    for (variant_idx, cfg), idxs in groups.items():
+        idx_t = torch.tensor(idxs, device=latents.device, dtype=torch.long)
+        sub_latents = latents.index_select(0, idx_t)
+        sub_t = t_flat.expand(sub_latents.shape[0])
+        sub_flow = transformer_step(args, ctx, sub_latents, emb, int(variant_idx), sub_t, float(cfg))
+        flow_out.index_copy_(0, idx_t, sub_flow)
+    return flow_out
+
+
+@torch.no_grad()
+def score_schedule_actions_batch(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    emb: EmbeddingContext,
+    reward_model: UnifiedRewardScorer,
+    prompt: str,
+    seed: int,
+    actions_batch: list[list[tuple[int, float]]],
+    deterministic_noise: bool = True,
+) -> list[float]:
+    if len(actions_batch) == 0:
+        return []
+    steps = int(args.steps)
+    for actions in actions_batch:
+        if len(actions) != steps:
+            raise RuntimeError(f"Schedule length {len(actions)} does not match steps={steps}")
+
+    if deterministic_noise:
+        torch.manual_seed(int(seed))
+        if str(ctx.device).startswith("cuda"):
+            torch.cuda.manual_seed_all(int(seed))
+
+    batch_n = len(actions_batch)
+    base_latents = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
+    latents = base_latents.repeat(batch_n, 1, 1, 1)
+    dx = torch.zeros_like(latents)
+    sched = step_schedule(ctx.device, latents.dtype, steps)
+    shared_noises: list[torch.Tensor] = [base_latents]
+    for _ in range(1, steps):
+        shared_noises.append(torch.randn_like(base_latents))
+
+    for step_idx, (t_flat, t_4d) in enumerate(sched):
+        if step_idx == 0:
+            noise = latents
+        else:
+            noise = shared_noises[step_idx].expand(batch_n, -1, -1, -1)
+        latents = (1.0 - t_4d) * dx + t_4d * noise
+        step_actions = [actions[step_idx] for actions in actions_batch]
+        flow = _batched_flow_for_step_actions(args, ctx, emb, latents, t_flat, step_actions)
+        dx = latents - t_4d * flow
+
+    scores: list[float] = []
+    for bi in range(batch_n):
+        image = decode_to_pil(ctx, dx[bi : bi + 1])
+        scores.append(score_image(reward_model, prompt, image))
+    return scores
+
+
 def _decode_genome(genome: list[int], cfg_scales: list[float], steps: int) -> list[tuple[int, float]]:
     actions: list[tuple[int, float]] = []
     for step in range(steps):
@@ -847,38 +920,52 @@ def run_ga(
     cache_misses = 0
     prev_eval_calls_total = 0
 
-    def eval_genome(genome: list[int]) -> float:
+    def eval_genomes(genomes: list[list[int]]) -> list[tuple[float, list[int]]]:
         nonlocal eval_calls, cache_hits, cache_misses
-        eval_calls += 1
-        repaired = _repair_genome(genome, steps, n_variants, n_cfg, args.ga_phase_constraints)
-        key = tuple(repaired)
-        if key in score_cache:
-            cache_hits += 1
-            return score_cache[key]
-        cache_misses += 1
-        actions = _decode_genome(repaired, list(args.cfg_scales), steps)
-        result = run_schedule_actions(
-            args,
-            ctx,
-            emb,
-            reward_model,
-            prompt,
-            seed,
-            actions,
-            deterministic_noise=True,
-        )
-        score_cache[key] = float(result.score)
-        return score_cache[key]
+        prepared: list[tuple[list[int], tuple[int, ...]]] = []
+        queued: dict[tuple[int, ...], list[tuple[int, float]]] = {}
+        for genome in genomes:
+            eval_calls += 1
+            repaired = _repair_genome(genome, steps, n_variants, n_cfg, args.ga_phase_constraints)
+            key = tuple(repaired)
+            prepared.append((repaired, key))
+            if key in score_cache or key in queued:
+                cache_hits += 1
+                continue
+            cache_misses += 1
+            queued[key] = _decode_genome(repaired, list(args.cfg_scales), steps)
+
+        pending_items = list(queued.items())
+        eval_batch = max(1, int(args.ga_eval_batch))
+        for start in range(0, len(pending_items), eval_batch):
+            chunk = pending_items[start : start + eval_batch]
+            chunk_keys = [item[0] for item in chunk]
+            chunk_actions = [item[1] for item in chunk]
+            chunk_scores = score_schedule_actions_batch(
+                args,
+                ctx,
+                emb,
+                reward_model,
+                prompt,
+                seed,
+                chunk_actions,
+                deterministic_noise=True,
+            )
+            for key, score in zip(chunk_keys, chunk_scores):
+                score_cache[key] = float(score)
+
+        out: list[tuple[float, list[int]]] = []
+        for repaired, key in prepared:
+            out.append((float(score_cache[key]), list(repaired)))
+        return out
 
     print(
         f"  ga: pop={pop_size} gens={generations} elites={elites} "
-        f"selection={args.ga_selection} crossover={args.ga_crossover}"
+        f"selection={args.ga_selection} crossover={args.ga_crossover} "
+        f"eval_batch={int(args.ga_eval_batch)}"
     )
     for gen in range(generations):
-        scored: list[tuple[float, list[int]]] = []
-        for genome in population:
-            score = eval_genome(genome)
-            scored.append((score, _repair_genome(genome, steps, n_variants, n_cfg, args.ga_phase_constraints)))
+        scored = eval_genomes(population)
         scored.sort(key=lambda item: item[0], reverse=True)
 
         gen_best_score, gen_best_genome = scored[0]

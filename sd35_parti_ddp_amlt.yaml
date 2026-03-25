@@ -69,7 +69,7 @@ search:
       - export REWARD_TYPE="imagereward"
       - export REWARD_BACKENDS="imagereward"
       - export EVAL_BEST_IMAGES=1
-      - export EVAL_BACKENDS="imagereward hpsv2 pickscore"
+      - export EVAL_BACKENDS="{eval_backends}"
       - export EVAL_REWARD_DEVICE=cpu
       - export EVAL_ALLOW_MISSING_BACKENDS=0
       - export CFG_SCALES="{cfg_scales}"
@@ -93,6 +93,7 @@ search:
       - export GA_RANK_PRESSURE={ga_rank_pressure}
       - export GA_CROSSOVER={ga_crossover}
       - export GA_LOG_TOPK={ga_log_topk}
+      - export GA_EVAL_BATCH={ga_eval_batch}
       - export SEED={seed}
       - export RUN_SANA={run_sana}
       - export RUN_SD35={run_sd35}
@@ -128,6 +129,8 @@ search:
       values: [ -1 ]
     - name: methods
       values: [ "baseline greedy mcts ga smc" ]
+    - name: eval_backends
+      values: [ "imagereward hpsv2 pickscore" ]
     - name: cfg_scales
       values: [ "1.0 1.25 1.5 1.75 2.0 2.25 2.5" ]
     - name: baseline_cfg
@@ -170,6 +173,8 @@ search:
       values: [ "uniform" ]
     - name: ga_log_topk
       values: [ 5 ]
+    - name: ga_eval_batch
+      values: [ 2 ]
     - name: save_images
       values: [ 0 ]
     - name: seed

@@ -72,6 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ga_selection", choices=["rank", "tournament"], default="rank")
     parser.add_argument("--ga_rank_pressure", type=float, default=1.7)
     parser.add_argument("--ga_log_topk", type=int, default=3)
+    parser.add_argument("--ga_eval_batch", type=int, default=1, help="Batched GA rollout eval size (>=1).")
     parser.add_argument("--ga_phase_constraints", action="store_true")
     parser.add_argument(
         "--reward_model",

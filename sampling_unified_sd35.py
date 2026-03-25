@@ -241,9 +241,28 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
 
     from sid import SiDSD3Pipeline
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    cuda_available = torch.cuda.is_available()
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    if cuda_available:
+        # In torchrun, pin each rank to its own GPU explicitly.
+        device = f"cuda:{local_rank}" if world_size > 1 else "cuda"
+    else:
+        device = "cpu"
+        if world_size > 1:
+            raise RuntimeError(
+                "CUDA is unavailable under torchrun (WORLD_SIZE>1). "
+                "This would force SD3.5 fp16 pipeline to CPU and hang/slow heavily. "
+                f"WORLD_SIZE={world_size} LOCAL_RANK={local_rank} "
+                f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}"
+            )
     dtype = torch.float16
-    print(f"Loading SD3.5 pipeline: {args.model_id}")
+    dev_count = int(torch.cuda.device_count()) if cuda_available else 0
+    print(
+        f"Loading SD3.5 pipeline: {args.model_id} "
+        f"(device={device} cuda_available={cuda_available} device_count={dev_count} "
+        f"local_rank={local_rank} cvd={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')})"
+    )
     pipe = SiDSD3Pipeline.from_pretrained(args.model_id, torch_dtype=dtype).to(device)
     # Normalize text-encoder dtypes explicitly. On some cluster images (Apex fused RMSNorm),
     # partially-fp32 encoder params can trigger Half/Float mismatch at prompt encoding time.

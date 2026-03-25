@@ -476,6 +476,17 @@ run_method() {
   begin_ts="$(date +%s)"
   echo "[$(date '+%F %T')] method=${method} start"
 
+  "${PYTHON_BIN}" - <<'PY'
+import os
+import torch
+cuda_ok = torch.cuda.is_available()
+count = int(torch.cuda.device_count()) if cuda_ok else 0
+cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>")
+print(f"[preflight] cuda_available={cuda_ok} device_count={count} CUDA_VISIBLE_DEVICES={cvd}")
+if not cuda_ok:
+    raise SystemExit("ERROR: CUDA unavailable before torchrun; refusing CPU fp16 SD3.5 run.")
+PY
+
   torchrun --standalone --nproc_per_node "${NUM_GPUS}" "${SCRIPT_DIR}/sd35_ddp_experiment.py" \
     --prompt_file "${PROMPT_FILE}" \
     --start_index "${START_INDEX}" \

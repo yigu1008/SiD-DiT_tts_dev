@@ -37,6 +37,10 @@ REWARD_API_KEY="${REWARD_API_KEY:-unifiedreward}"
 REWARD_API_MODEL="${REWARD_API_MODEL:-UnifiedReward-7b-v1.5}"
 REWARD_MAX_NEW_TOKENS="${REWARD_MAX_NEW_TOKENS:-512}"
 REWARD_PROMPT_MODE="${REWARD_PROMPT_MODE:-standard}"
+EVAL_BEST_IMAGES="${EVAL_BEST_IMAGES:-1}"
+EVAL_BACKENDS="${EVAL_BACKENDS:-imagereward hpsv2 pickscore}"
+EVAL_REWARD_DEVICE="${EVAL_REWARD_DEVICE:-cpu}"
+EVAL_ALLOW_MISSING_BACKENDS="${EVAL_ALLOW_MISSING_BACKENDS:-0}"
 
 GA_POPULATION="${GA_POPULATION:-24}"
 GA_GENERATIONS="${GA_GENERATIONS:-8}"
@@ -121,12 +125,24 @@ echo "  prompt_file: ${PROMPT_FILE}"
 echo "  prompts_total: ${TOTAL_PROMPTS} selected: ${RANGE_TOTAL} range=[${START_INDEX},${EFFECTIVE_END})"
 echo "  gpus(${NUM_GPUS}): ${GPU_IDS[*]}"
 echo "  reward_backend: ${REWARD_BACKEND} reward_device: ${REWARD_DEVICE}"
+echo "  eval_best_images: ${EVAL_BEST_IMAGES} eval_backends: ${EVAL_BACKENDS} eval_device: ${EVAL_REWARD_DEVICE}"
 echo "  out: ${RUN_DIR}"
+
+eval_backend_requested() {
+  local target="${1,,}"
+  local b
+  for b in ${EVAL_BACKENDS}; do
+    if [[ "${b,,}" == "${target}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 ensure_imagereward_runtime() {
   local backend_lc
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
-  if [[ "${backend_lc}" != "imagereward" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]]; then
+  if [[ "${backend_lc}" != "imagereward" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]] && ! eval_backend_requested "imagereward"; then
     return 0
   fi
   if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
@@ -147,7 +163,7 @@ ensure_imagereward_runtime
 ensure_pickscore_runtime() {
   local backend_lc
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
-  if [[ "${backend_lc}" != "pickscore" && "${backend_lc}" != "auto" ]]; then
+  if [[ "${backend_lc}" != "pickscore" && "${backend_lc}" != "auto" ]] && ! eval_backend_requested "pickscore"; then
     return 0
   fi
   if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
@@ -164,10 +180,29 @@ PY
 
 ensure_pickscore_runtime
 
+ensure_hpsv2_runtime() {
+  local backend_lc
+  backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${backend_lc}" != "hpsv2" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]] && ! eval_backend_requested "hpsv2"; then
+    return 0
+  fi
+  if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import hpsv2
+print(getattr(hpsv2, "__file__", "ok"))
+PY
+  then
+    return 0
+  fi
+  echo "[deps] HPSv2 runtime deps missing. Installing with install_reward_deps.sh ..."
+  PYTHON_BIN="${PYTHON_BIN}" bash "${SCRIPT_DIR}/install_reward_deps.sh"
+}
+
+ensure_hpsv2_runtime
+
 ensure_hpsv3_runtime() {
   local backend_lc
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
-  if [[ "${backend_lc}" != "hpsv3" && "${backend_lc}" != "auto" ]]; then
+  if [[ "${backend_lc}" != "hpsv3" && "${backend_lc}" != "auto" ]] && ! eval_backend_requested "hpsv3"; then
     return 0
   fi
   if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
@@ -215,11 +250,41 @@ PY
 
 ensure_xformers_runtime
 
+post_eval_best_images() {
+  local method_out="$1"
+  local method_name="$2"
+  if [[ "${EVAL_BEST_IMAGES}" != "1" ]]; then
+    return 0
+  fi
+  local -a cmd=(
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/evaluate_best_images_multi_reward.py"
+    --layout flux
+    --method_out "${method_out}"
+    --method "${method_name}"
+    --backends ${EVAL_BACKENDS}
+    --reward_device "${EVAL_REWARD_DEVICE}"
+    --image_reward_model "${IMAGE_REWARD_MODEL}"
+    --pickscore_model "${PICKSCORE_MODEL}"
+    --unifiedreward_model "${UNIFIEDREWARD_MODEL}"
+    --reward_api_base "${REWARD_API_BASE}"
+    --reward_api_key "${REWARD_API_KEY}"
+    --reward_api_model "${REWARD_API_MODEL}"
+    --reward_max_new_tokens "${REWARD_MAX_NEW_TOKENS}"
+    --reward_prompt_mode "${REWARD_PROMPT_MODE}"
+    --out_json "${method_out}/best_images_multi_reward.json"
+    --out_aggregate "${method_out}/best_images_multi_reward_aggregate.json"
+  )
+  if [[ "${EVAL_ALLOW_MISSING_BACKENDS}" == "1" ]]; then
+    cmd+=(--allow_missing_backends)
+  fi
+  "${cmd[@]}"
+}
+
 append_method_summary() {
   local method_out="$1"
   local method_name="$2"
   local elapsed_sec="$3"
-  "${PYTHON_BIN}" - <<'PY' "${method_out}" "${method_name}" "${elapsed_sec}" "${SUITE_TSV}"
+  "${PYTHON_BIN}" - <<'PY' "${method_out}" "${method_name}" "${elapsed_sec}" "${SUITE_TSV}" "${EVAL_BACKENDS}"
 import csv
 import glob
 import json
@@ -232,6 +297,7 @@ method_out = sys.argv[1]
 method = sys.argv[2]
 elapsed = int(sys.argv[3])
 suite_tsv = sys.argv[4]
+eval_backends = [x for x in str(sys.argv[5]).split() if x]
 
 baseline = []
 search = []
@@ -278,6 +344,17 @@ aggregate = {
 with open(os.path.join(method_out, "aggregate_ddp.json"), "w", encoding="utf-8") as f:
     json.dump(aggregate, f, indent=2)
 
+eval_means = {b: "" for b in eval_backends}
+eval_agg_path = os.path.join(method_out, "best_images_multi_reward_aggregate.json")
+if os.path.exists(eval_agg_path):
+    with open(eval_agg_path, encoding="utf-8") as f:
+        eval_agg = json.load(f)
+    stats = eval_agg.get("backend_stats", {})
+    for b in eval_backends:
+        mean_val = stats.get(b, {}).get("mean")
+        if mean_val is not None:
+            eval_means[b] = f"{float(mean_val):.6f}"
+
 if nfe_by_gen:
     with open(os.path.join(method_out, "ga_nfe_per_generation.csv"), "w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
@@ -292,9 +369,11 @@ with open(suite_tsv, "a", encoding="utf-8", newline="") as f:
     if need_header:
         writer.writerow(
             ["method", "elapsed_sec", "num_samples", "mean_baseline", "mean_search", "mean_delta", "note"]
+            + [f"eval_{b}" for b in eval_backends]
         )
     writer.writerow(
         [method, elapsed, len(baseline), f"{mean_baseline:.6f}", f"{mean_search:.6f}", f"{mean_delta:+.6f}", ""]
+        + [eval_means[b] for b in eval_backends]
     )
 PY
 }
@@ -407,6 +486,7 @@ PY
   local elapsed=$(( end_ts - begin_ts ))
   echo "[$(date '+%F %T')] method=${method_name} done elapsed=${elapsed}s"
 
+  post_eval_best_images "${method_out}" "${method_name}"
   append_method_summary "${method_out}" "${method_name}" "${elapsed}"
 }
 

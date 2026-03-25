@@ -119,6 +119,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save_images", action="store_true")
     parser.add_argument("--save_variants", action="store_true")
     parser.add_argument(
+        "--rewrite_check_topk",
+        type=int,
+        default=5,
+        help="Save up to K prompt-rewrite examples for quick inspection.",
+    )
+    parser.add_argument(
         "--rank_log_wait_sec",
         type=int,
         default=7200,
@@ -274,6 +280,40 @@ def aggregate_logs(log_dir: str, out_dir: str) -> Dict[str, Any]:
     return aggregate
 
 
+def aggregate_rewrite_examples(log_dir: str, out_dir: str, topk: int) -> str | None:
+    topk = max(0, int(topk))
+    if topk <= 0:
+        return None
+
+    rows: List[Dict[str, Any]] = []
+    for name in sorted(os.listdir(log_dir)):
+        if not name.endswith("_rewrite_examples.jsonl"):
+            continue
+        path = os.path.join(log_dir, name)
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                rows.append(json.loads(line))
+
+    if not rows:
+        return None
+
+    rows.sort(key=lambda r: (int(r.get("prompt_index", 10**9)), int(r.get("rank", 10**9))))
+    selected = rows[:topk]
+
+    payload = {
+        "topk": topk,
+        "total_candidates": len(rows),
+        "examples": selected,
+    }
+    out_path = os.path.join(out_dir, f"rewrite_examples_top{topk}.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    return out_path
+
+
 def main() -> None:
     faulthandler.enable(all_threads=True)
     args = normalize_paths(parse_args())
@@ -310,6 +350,7 @@ def main() -> None:
         reward_model = load_reward_model(args, ctx.device)
 
         rank_rows: List[Dict[str, Any]] = []
+        rewrite_rows: List[Dict[str, Any]] = []
         for prompt_index, prompt in my_entries:
             slug = f"p{prompt_index:05d}"
             seed = args.seed + prompt_index if args.seed_per_prompt else args.seed
@@ -317,6 +358,19 @@ def main() -> None:
             t0 = time.time()
 
             variants = generate_variants(args, prompt, rewrite_cache)
+            if len(rewrite_rows) < max(0, int(args.rewrite_check_topk)):
+                changed = [v for v in variants[1:] if str(v).strip() != str(prompt).strip()]
+                rewrite_rows.append(
+                    {
+                        "rank": int(rank),
+                        "prompt_index": int(prompt_index),
+                        "slug": slug,
+                        "original": prompt,
+                        "variants": [str(v) for v in variants],
+                        "changed_count": int(len(changed)),
+                        "from_cache": bool(prompt in rewrite_cache),
+                    }
+                )
             if args.save_variants:
                 with open(os.path.join(args.out_dir, f"{slug}_variants.txt"), "w", encoding="utf-8") as f:
                     for vi, text in enumerate(variants):
@@ -471,6 +525,10 @@ def main() -> None:
         with open(rank_log, "w", encoding="utf-8") as f:
             for row in rank_rows:
                 f.write(json.dumps(row) + "\n")
+        rewrite_log = os.path.join(log_dir, f"rank_{rank:03d}_rewrite_examples.jsonl")
+        with open(rewrite_log, "w", encoding="utf-8") as f:
+            for row in rewrite_rows:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
         with open(os.path.join(log_dir, f"rank_{rank:03d}_meta.json"), "w", encoding="utf-8") as f:
             json.dump(
                 {
@@ -478,6 +536,7 @@ def main() -> None:
                     "world_size": world_size,
                     "assigned_prompts": len(my_entries),
                     "rows": len(rank_rows),
+                    "rewrite_rows": len(rewrite_rows),
                 },
                 f,
                 indent=2,
@@ -493,6 +552,13 @@ def main() -> None:
             aggregate = aggregate_logs(log_dir=log_dir, out_dir=args.out_dir)
             print("Aggregate summary:")
             print(json.dumps(aggregate, indent=2))
+            rewrite_summary = aggregate_rewrite_examples(
+                log_dir=log_dir,
+                out_dir=args.out_dir,
+                topk=int(args.rewrite_check_topk),
+            )
+            if rewrite_summary:
+                print(f"Rewrite examples: {rewrite_summary}")
     except Exception as exc:
         err_path = os.path.join(log_dir, f"rank_{rank:03d}_error.txt")
         with open(err_path, "w", encoding="utf-8") as f:

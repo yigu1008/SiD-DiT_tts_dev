@@ -193,8 +193,8 @@ PY
   then
     return 0
   fi
-  echo "[deps] HPSv2 runtime deps missing. Installing with install_reward_deps.sh ..."
-  PYTHON_BIN="${PYTHON_BIN}" bash "${SCRIPT_DIR}/install_reward_deps.sh"
+  echo "[deps] HPSv2 missing. Installing hpsv2 ..."
+  "${PYTHON_BIN}" -m pip install --no-cache-dir "hpsv2" || true
 }
 
 ensure_hpsv2_runtime

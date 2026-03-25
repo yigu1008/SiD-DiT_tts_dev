@@ -23,7 +23,7 @@ echo "[overlay] python: ${PY}"
 echo "[overlay] target: ${TARGET_DIR}"
 
 echo "[overlay] installing runtime deps to overlay"
-"${PY}" -m pip install --no-cache-dir --target "${TARGET_DIR}" --upgrade \
+"${PY}" -m pip install --no-cache-dir --target "${TARGET_DIR}" --upgrade --no-deps \
   "xxhash>=3.4.1" \
   "timm==1.0.15" \
   "wandb" \
@@ -34,14 +34,21 @@ echo "[overlay] installing runtime deps to overlay"
   "sentry-sdk>=2.0.0" \
   "gitpython>=3.1.43"
 
+# Safety: never allow core torch stack in overlay (can shadow CUDA-enabled env torch).
+for pat in "torch*" "torchvision*" "torchaudio*" "triton*" "nvidia*"; do
+  find "${TARGET_DIR}" -maxdepth 1 -name "${pat}" -print -exec rm -rf {} + 2>/dev/null || true
+done
+
 echo "[overlay] verify imports using overlay"
 PYTHONPATH="${TARGET_DIR}${PYTHONPATH:+:${PYTHONPATH}}" "${PY}" - <<'PY'
 import xxhash
 import wandb
 from timm.data import ImageNetInfo
+import torch
 print("xxhash", xxhash.__version__)
 print("wandb", wandb.__version__)
 print("timm ImageNetInfo", ImageNetInfo.__name__)
+print("torch", torch.__version__, "from", torch.__file__)
 PY
 
 echo

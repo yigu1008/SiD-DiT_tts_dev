@@ -129,8 +129,6 @@ search:
       values: [ -1 ]
     - name: methods
       values: [ "baseline greedy mcts ga smc" ]
-    - name: reward_backend
-      values: [ "imagereward" ]
     - name: cfg_scales
       values: [ "1.0 1.25 1.5 1.75 2.0 2.25 2.5" ]
     - name: baseline_cfg

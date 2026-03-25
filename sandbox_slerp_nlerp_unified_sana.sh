@@ -6,7 +6,12 @@ source "${SCRIPT_DIR}/shell_env.sh"
 
 PROMPT_STYLE="${PROMPT_STYLE:-all}"
 PROMPT_DIR="${PROMPT_DIR:-/data/ygu}"
-PROMPT_FILE="${PROMPT_FILE:-${PROMPT_DIR}/hpsv2_prompts.txt}"
+DEFAULT_PROMPT_FILE="${SCRIPT_DIR}/hpsv2_subset.txt"
+if [[ -f "${DEFAULT_PROMPT_FILE}" ]]; then
+  PROMPT_FILE="${PROMPT_FILE:-${DEFAULT_PROMPT_FILE}}"
+else
+  PROMPT_FILE="${PROMPT_FILE:-${PROMPT_DIR}/hpsv2_prompts.txt}"
+fi
 OUT_DIR="${OUT_DIR:-/data/ygu/sandbox_slerp_nlerp_unified_sana}"
 
 if [[ ! -f "${PROMPT_FILE}" ]]; then
@@ -71,6 +76,17 @@ if [[ -n "${reward_weights_str}" ]]; then
   fi
 fi
 
+algo_args=()
+if [[ "${RUN_SWEEP:-1}" == "0" ]]; then
+  algo_args+=(--no-run_sweep)
+fi
+if [[ "${RUN_GA:-1}" == "0" ]]; then
+  algo_args+=(--no-run_ga)
+fi
+if [[ "${RUN_MCTS:-1}" == "0" ]]; then
+  algo_args+=(--no-run_mcts)
+fi
+
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sandbox_slerp_nlerp_unified_sana.py" \
   --prompt_file "${PROMPT_FILE}" \
   --max_prompts "${MAX_PROMPTS:-0}" \
@@ -82,6 +98,8 @@ fi
   --height "${HEIGHT:-512}" \
   --seed "${SEED:-42}" \
   --guidance_scale "${GUIDANCE_SCALE:-1.0}" \
+  --baseline_cfg "${BASELINE_CFG:-1.0}" \
+  --cfg_scales ${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5} \
   "${reward_args[@]}" \
   --interp_labels ${INTERP_LABELS:-balanced subject} \
   --interp_values ${INTERP_VALUES:-0.0 0.25 0.5 0.75 1.0} \
@@ -96,6 +114,10 @@ fi
   --ga_rank_pressure "${GA_RANK_PRESSURE:-1.7}" \
   --ga_crossover "${GA_CROSSOVER:-uniform}" \
   --ga_log_topk "${GA_LOG_TOPK:-3}" \
+  --mcts_n_sims "${MCTS_N_SIMS:-50}" \
+  --mcts_ucb_c "${MCTS_UCB_C:-1.41}" \
+  --mcts_log_every "${MCTS_LOG_EVERY:-10}" \
+  "${algo_args[@]}" \
   --save_first_k "${SAVE_FIRST_K:-10}" \
   --save_images \
   "$@"

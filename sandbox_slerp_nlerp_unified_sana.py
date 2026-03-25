@@ -2,8 +2,8 @@
 SANA SLERP/NLERP sandbox with UnifiedReward defaults.
 
 This script focuses on two things:
-  1) fixed interpolation sweep over (family, t)
-  2) optional GA search over per-step (family, t) actions
+  1) fixed interpolation sweep over (family, t, cfg)
+  2) optional GA/MCTS search over per-step (family, t, cfg) actions
 
 GA here is intentionally simple (discrete action genomes) and reuses the
 same rank/tournament selection style used elsewhere in this repo.
@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -42,7 +43,7 @@ class ActionRollout:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="SANA SLERP/NLERP test with UnifiedReward defaults and optional GA action search."
+        description="SANA SLERP/NLERP test with UnifiedReward defaults and optional GA/MCTS action search."
     )
 
     # I/O
@@ -68,6 +69,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--steps", type=int, default=4)
     p.add_argument("--time_scale", type=float, default=1000.0)
     p.add_argument("--guidance_scale", type=float, default=1.0)
+    p.add_argument("--baseline_cfg", type=float, default=None)
+    p.add_argument("--cfg_scales", nargs="+", type=float, default=[1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5])
     p.add_argument("--seed", type=int, default=42)
 
     # Runtime/memory
@@ -114,6 +117,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # Which evaluations to run
     p.add_argument("--run_sweep", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--run_ga", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--run_mcts", action=argparse.BooleanOptionalAction, default=True)
 
     # GA over per-step discrete actions (action bank = families x interp_values)
     p.add_argument("--ga_population", type=int, default=24)
@@ -126,6 +130,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--ga_crossover", choices=["uniform", "one_point"], default="uniform")
     p.add_argument("--ga_log_topk", type=int, default=3)
     p.add_argument("--ga_cache", action=argparse.BooleanOptionalAction, default=True)
+
+    # MCTS over per-step discrete actions (action bank = families x interp_values x cfg_scales)
+    p.add_argument("--mcts_n_sims", type=int, default=50)
+    p.add_argument("--mcts_ucb_c", type=float, default=1.41)
+    p.add_argument("--mcts_log_every", type=int, default=10)
+    p.add_argument("--mcts_cache", action=argparse.BooleanOptionalAction, default=True)
     return p.parse_args(argv)
 
 
@@ -166,11 +176,12 @@ def _family_list(args: argparse.Namespace) -> list[str]:
     return out
 
 
-def _action_bank(families: list[str], t_values: list[float]) -> list[tuple[str, float]]:
-    out: list[tuple[str, float]] = []
+def _action_bank(families: list[str], t_values: list[float], cfg_values: list[float]) -> list[tuple[str, float, float]]:
+    out: list[tuple[str, float, float]] = []
     for fam in families:
         for t in t_values:
-            out.append((str(fam), float(t)))
+            for cfg in cfg_values:
+                out.append((str(fam), float(t), float(cfg)))
     return out
 
 
@@ -193,16 +204,19 @@ def _build_summary_panel(
     baseline_img: Image.Image,
     baseline_score: float,
     sweep_items: list[dict[str, Any]],
+    mcts_item: dict[str, Any] | None,
     ga_item: dict[str, Any] | None,
     out_path: str,
 ) -> None:
-    # Keep panel compact: baseline + top 4 sweep + ga best (if present).
+    # Keep panel compact: baseline + top 4 sweep + mcts/ga best (if present).
     ranked = sorted(sweep_items, key=lambda x: float(x["score"]), reverse=True)
     ranked = ranked[:4]
     entries: list[tuple[str, Image.Image, float, float]] = [("baseline", baseline_img, baseline_score, 0.0)]
     for row in ranked:
-        label = f"{row['family']} t={float(row['t']):.2f}"
+        label = f"{row['family']} t={float(row['t']):.2f} cfg={float(row['cfg']):.2f}"
         entries.append((label, row["image"], float(row["score"]), float(row["score"]) - baseline_score))
+    if mcts_item is not None:
+        entries.append(("mcts_best", mcts_item["image"], float(mcts_item["score"]), float(mcts_item["score"]) - baseline_score))
     if ga_item is not None:
         entries.append(("ga_best", ga_item["image"], float(ga_item["score"]), float(ga_item["score"]) - baseline_score))
 
@@ -236,7 +250,7 @@ def run_stepwise_action_rollout(
     orig_w: int,
     basis_emb: Any,
     pair_indices: list[int],
-    action_bank: list[tuple[str, float]],
+    action_bank: list[tuple[str, float, float]],
     genome: list[int],
     preview_every: int,
     save_path: str | None = None,
@@ -272,7 +286,7 @@ def run_stepwise_action_rollout(
         latents = (1.0 - t_4d) * dx + t_4d * noise
 
         a_idx = int(genome[step_idx % len(genome)]) % len(action_bank)
-        fam, tval = action_bank[a_idx]
+        fam, tval, cfg = action_bank[a_idx]
         weights_t = torch.tensor(
             [1.0 - float(tval), float(tval)],
             dtype=pe_bank[0].dtype,
@@ -288,7 +302,7 @@ def run_stepwise_action_rollout(
             basis_emb.ue,
             basis_emb.um,
             t_flat,
-            float(args.guidance_scale),
+            float(cfg),
         )
         dx = latents - t_4d * velocity
 
@@ -308,6 +322,7 @@ def run_stepwise_action_rollout(
                 "action_idx": int(a_idx),
                 "family": str(fam),
                 "t": float(tval),
+                "cfg": float(cfg),
                 "weights": [float(1.0 - tval), float(tval)],
                 "selected_indices": [int(pair_indices[i]) for i in blend.selected_indices],
                 "selected_labels": [str([basis_emb.labels[j] for j in pair_indices][i]) for i in blend.selected_indices],
@@ -369,7 +384,7 @@ def run_ga_search(
     orig_w: int,
     basis_emb: Any,
     pair_indices: list[int],
-    action_bank: list[tuple[str, float]],
+    action_bank: list[tuple[str, float, float]],
     prompt_dir: str,
     save_images: bool,
 ) -> dict[str, Any]:
@@ -450,6 +465,7 @@ def run_ga_search(
                             "action_idx": int(aidx),
                             "family": str(action_bank[aidx][0]),
                             "t": float(action_bank[aidx][1]),
+                            "cfg": float(action_bank[aidx][2]),
                         }
                         for i, aidx in enumerate(detailed["genome"])
                     ],
@@ -511,7 +527,13 @@ def run_ga_search(
     assert global_best is not None
     best_genome = [int(x) for x in global_best["genome"]]
     best_actions = [
-        {"step": int(i), "action_idx": int(aidx), "family": str(action_bank[aidx][0]), "t": float(action_bank[aidx][1])}
+        {
+            "step": int(i),
+            "action_idx": int(aidx),
+            "family": str(action_bank[aidx][0]),
+            "t": float(action_bank[aidx][1]),
+            "cfg": float(action_bank[aidx][2]),
+        }
         for i, aidx in enumerate(best_genome)
     ]
     best_img_path = None
@@ -534,9 +556,210 @@ def run_ga_search(
     return result
 
 
+class _MCTSNode:
+    __slots__ = ("step", "prefix", "N", "children", "action_N", "action_Q")
+
+    def __init__(self, step: int, prefix: tuple[int, ...]) -> None:
+        self.step = int(step)
+        self.prefix = tuple(int(x) for x in prefix)
+        self.N = 0
+        self.children: dict[int, _MCTSNode] = {}
+        self.action_N: dict[int, int] = {}
+        self.action_Q: dict[int, float] = {}
+
+    def untried_actions(self, n_actions: int) -> list[int]:
+        return [a for a in range(int(n_actions)) if a not in self.action_N]
+
+    def ucb(self, action: int, c: float) -> float:
+        n = int(self.action_N.get(int(action), 0))
+        if n <= 0:
+            return float("inf")
+        q = float(self.action_Q.get(int(action), 0.0)) / float(n)
+        return q + float(c) * math.sqrt(math.log(max(1, int(self.N))) / float(n))
+
+
+def run_mcts_search(
+    args: argparse.Namespace,
+    ctx: su.PipelineContext,
+    reward_ctx: su.RewardContext,
+    prompt: str,
+    metadata: dict[str, Any] | None,
+    seed: int,
+    h: int,
+    w: int,
+    orig_h: int,
+    orig_w: int,
+    basis_emb: Any,
+    pair_indices: list[int],
+    action_bank: list[tuple[str, float, float]],
+    prompt_dir: str,
+    save_images: bool,
+) -> dict[str, Any]:
+    rng = np.random.default_rng(int(seed) + 1777)
+    n_actions = int(len(action_bank))
+    steps = int(args.steps)
+    n_sims = max(1, int(args.mcts_n_sims))
+    ucb_c = float(args.mcts_ucb_c)
+    log_every = max(1, int(args.mcts_log_every))
+
+    cache: dict[tuple[int, ...], dict[str, Any]] = {}
+    history: list[dict[str, Any]] = []
+    eval_calls_total = 0
+    best: dict[str, Any] | None = None
+
+    def evaluate(genome: list[int], need_image: bool, sim_idx: int, phase: str) -> dict[str, Any]:
+        nonlocal eval_calls_total
+        repaired = [int(x) % n_actions for x in genome]
+        key = tuple(repaired)
+        eval_calls_total += 1
+        if bool(args.mcts_cache):
+            cached = cache.get(key)
+            if cached is not None and (not need_image or cached.get("image") is not None):
+                return cached
+        trace = run_stepwise_action_rollout(
+            args=args,
+            ctx=ctx,
+            reward_ctx=reward_ctx,
+            prompt=prompt,
+            metadata=metadata,
+            seed=int(seed),
+            h=h,
+            w=w,
+            orig_h=orig_h,
+            orig_w=orig_w,
+            basis_emb=basis_emb,
+            pair_indices=pair_indices,
+            action_bank=action_bank,
+            genome=repaired,
+            preview_every=int(args.preview_every),
+            save_path=None,
+            tag=f"mcts_s{sim_idx}_{phase}",
+        )
+        payload = {
+            "genome": repaired,
+            "score": float(trace.final_score),
+            "image": trace.final_image if need_image else None,
+            "preview_rewards": [float(x) for x in trace.preview_rewards],
+            "step_actions": trace.step_actions,
+        }
+        if bool(args.mcts_cache):
+            cache[key] = payload
+        return payload
+
+    root = _MCTSNode(step=0, prefix=())
+
+    for sim in range(n_sims):
+        node = root
+        root.N += 1
+        path: list[tuple[_MCTSNode, int]] = []
+
+        while node.step < steps:
+            untried = node.untried_actions(n_actions)
+            if len(untried) > 0:
+                action = int(untried[int(rng.integers(0, len(untried)))])
+                child = node.children.get(action)
+                if child is None:
+                    child = _MCTSNode(step=node.step + 1, prefix=node.prefix + (action,))
+                    node.children[action] = child
+                path.append((node, action))
+                node = child
+                break
+
+            action = max(range(n_actions), key=lambda a: node.ucb(a, ucb_c))
+            child = node.children.get(action)
+            if child is None:
+                child = _MCTSNode(step=node.step + 1, prefix=node.prefix + (action,))
+                node.children[action] = child
+            path.append((node, int(action)))
+            node = child
+
+        rollout = [int(x) for x in node.prefix]
+        while len(rollout) < steps:
+            rollout.append(int(rng.integers(0, n_actions)))
+        scored = evaluate(rollout, need_image=False, sim_idx=sim, phase="rollout")
+
+        if best is None or float(scored["score"]) > float(best["score"]):
+            best = evaluate(scored["genome"], need_image=save_images, sim_idx=sim, phase="best")
+
+        score = float(scored["score"])
+        for parent, action in path:
+            parent.action_N[action] = int(parent.action_N.get(action, 0) + 1)
+            parent.action_Q[action] = float(parent.action_Q.get(action, 0.0) + score)
+            child = parent.children[action]
+            child.N = int(child.N + 1)
+
+        if (sim + 1) % log_every == 0 or sim == 0:
+            top_root = []
+            for a, n in root.action_N.items():
+                if int(n) > 0:
+                    top_root.append((float(root.action_Q[a]) / float(n), int(a), int(n)))
+            top_root.sort(reverse=True)
+            top_root = top_root[: max(1, int(args.ga_log_topk))]
+            row = {
+                "sim": int(sim + 1),
+                "best_score": float(best["score"]) if best is not None else None,
+                "root_visits": int(root.N),
+                "eval_calls_total": int(eval_calls_total),
+                "nfe_total": int(eval_calls_total * steps),
+                "root_top": [
+                    {
+                        "mean_score": float(m),
+                        "action_idx": int(aidx),
+                        "family": str(action_bank[aidx][0]),
+                        "t": float(action_bank[aidx][1]),
+                        "cfg": float(action_bank[aidx][2]),
+                        "visits": int(v),
+                    }
+                    for m, aidx, v in top_root
+                ],
+            }
+            history.append(row)
+            print(
+                f"  [mcts] sim={sim+1:03d}/{n_sims} "
+                f"best={(float(best['score']) if best is not None else float('-inf')):.4f} "
+                f"evals={eval_calls_total}"
+            )
+
+    if best is None:
+        raise RuntimeError("MCTS failed to evaluate any rollout.")
+
+    best_genome = [int(x) for x in best["genome"]]
+    best_actions = [
+        {
+            "step": int(i),
+            "action_idx": int(aidx),
+            "family": str(action_bank[aidx][0]),
+            "t": float(action_bank[aidx][1]),
+            "cfg": float(action_bank[aidx][2]),
+        }
+        for i, aidx in enumerate(best_genome)
+    ]
+    best_img_path = None
+    if save_images and best.get("image") is not None:
+        best_img_path = os.path.join(prompt_dir, "mcts_best.png")
+        best["image"].save(best_img_path)
+
+    result = {
+        "best_score": float(best["score"]),
+        "best_genome": best_genome,
+        "best_actions": best_actions,
+        "best_preview_rewards": [float(x) for x in best.get("preview_rewards", [])],
+        "best_step_actions": best.get("step_actions", []),
+        "best_image_file": best_img_path,
+        "history": history,
+        "eval_calls_total": int(eval_calls_total),
+        "nfe_total": int(eval_calls_total * steps),
+    }
+    save_json(os.path.join(prompt_dir, "mcts_action_search.json"), result)
+    return result
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     ensure_dir(args.out_dir)
+
+    if args.baseline_cfg is None:
+        args.baseline_cfg = float(args.guidance_scale)
 
     if args.cuda_alloc_conf:
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = str(args.cuda_alloc_conf)
@@ -545,7 +768,14 @@ def main(argv: list[str] | None = None) -> None:
     prompts = load_prompts(args)
     families = _family_list(args)
     t_values = [float(np.clip(v, 0.0, 1.0)) for v in args.interp_values]
-    action_bank = _action_bank(families, t_values)
+    cfg_values: list[float] = []
+    for c in args.cfg_scales:
+        fc = float(c)
+        if fc not in cfg_values:
+            cfg_values.append(fc)
+    if len(cfg_values) == 0:
+        cfg_values = [float(args.guidance_scale)]
+    action_bank = _action_bank(families, t_values, cfg_values)
     basis_cache = load_basis_cache(args.basis_cache_json)
 
     t0 = time.perf_counter()
@@ -567,6 +797,7 @@ def main(argv: list[str] | None = None) -> None:
                 "method",
                 "family",
                 "t",
+                "cfg",
                 "score",
                 "delta_vs_baseline",
                 "image_file",
@@ -598,35 +829,56 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  pair: {pair_labels[0]} -> {pair_labels[1]}")
 
             baseline_img_path = os.path.join(prompt_dir, "baseline_original.png") if (save_this and args.save_images) else None
-            baseline = run_single_prompt_rollout(
-                args=args,
-                ctx=ctx,
-                reward_ctx=reward_ctx,
-                prompt=prompt,
-                metadata=None,
-                seed=int(args.seed),
-                h=h,
-                w=w,
-                orig_h=orig_h,
-                orig_w=orig_w,
-                pe=basis_emb.orig_pe,
-                pm=basis_emb.orig_pm,
-                ue=basis_emb.orig_ue,
-                um=basis_emb.orig_um,
-                preview_every=int(args.preview_every),
-                save_path=baseline_img_path,
-                tag=f"{slug}_baseline",
-            )
+            old_guidance = float(args.guidance_scale)
+            args.guidance_scale = float(args.baseline_cfg)
+            try:
+                baseline = run_single_prompt_rollout(
+                    args=args,
+                    ctx=ctx,
+                    reward_ctx=reward_ctx,
+                    prompt=prompt,
+                    metadata=None,
+                    seed=int(args.seed),
+                    h=h,
+                    w=w,
+                    orig_h=orig_h,
+                    orig_w=orig_w,
+                    pe=basis_emb.orig_pe,
+                    pm=basis_emb.orig_pm,
+                    ue=basis_emb.orig_ue,
+                    um=basis_emb.orig_um,
+                    preview_every=int(args.preview_every),
+                    save_path=baseline_img_path,
+                    tag=f"{slug}_baseline",
+                )
+            finally:
+                args.guidance_scale = old_guidance
             baseline_score = float(baseline.final_score)
-            print(f"  baseline={baseline_score:.4f}")
-            writer.writerow([slug, prompt, "baseline", "baseline", "baseline", f"{baseline_score:.6f}", "+0.000000", baseline_img_path or "", ""])
+            print(f"  baseline={baseline_score:.4f} cfg={float(args.baseline_cfg):.2f}")
+            writer.writerow(
+                [
+                    slug,
+                    prompt,
+                    "baseline",
+                    "baseline",
+                    "baseline",
+                    f"{float(args.baseline_cfg):.2f}",
+                    f"{baseline_score:.6f}",
+                    "+0.000000",
+                    baseline_img_path or "",
+                    "",
+                ]
+            )
 
             sweep_results: list[dict[str, Any]] = []
             if bool(args.run_sweep):
-                for action_idx, (fam, tval) in enumerate(action_bank):
+                for action_idx, (fam, tval, cfg) in enumerate(action_bank):
                     genome = [int(action_idx) for _ in range(int(args.steps))]
                     img_path = (
-                        os.path.join(prompt_dir, f"sweep_{fam}_t{str(f'{tval:.2f}').replace('.', 'p')}.png")
+                        os.path.join(
+                            prompt_dir,
+                            f"sweep_{fam}_t{str(f'{tval:.2f}').replace('.', 'p')}_cfg{str(f'{cfg:.2f}').replace('.', 'p')}.png",
+                        )
                         if (save_this and args.save_images)
                         else None
                     )
@@ -654,6 +906,7 @@ def main(argv: list[str] | None = None) -> None:
                     row = {
                         "family": str(fam),
                         "t": float(tval),
+                        "cfg": float(cfg),
                         "score": score,
                         "delta_vs_baseline": delta,
                         "image_file": img_path,
@@ -670,13 +923,17 @@ def main(argv: list[str] | None = None) -> None:
                             "sweep",
                             str(fam),
                             f"{float(tval):.2f}",
+                            f"{float(cfg):.2f}",
                             f"{score:.6f}",
                             f"{delta:+.6f}",
                             img_path or "",
                             json.dumps(genome),
                         ]
                     )
-                    print(f"  sweep {fam:>5} t={float(tval):.2f} score={score:.4f} delta={delta:+.4f}")
+                    print(
+                        f"  sweep {fam:>5} t={float(tval):.2f} cfg={float(cfg):.2f} "
+                        f"score={score:.4f} delta={delta:+.4f}"
+                    )
 
             ga_result: dict[str, Any] | None = None
             if bool(args.run_ga):
@@ -705,6 +962,7 @@ def main(argv: list[str] | None = None) -> None:
                         "ga",
                         "mixed",
                         "mixed",
+                        "mixed",
                         f"{float(ga_result['best_score']):.6f}",
                         f"{ga_delta:+.6f}",
                         ga_result.get("best_image_file", "") or "",
@@ -713,6 +971,42 @@ def main(argv: list[str] | None = None) -> None:
                 )
                 print(f"  ga_best={float(ga_result['best_score']):.4f} delta={ga_delta:+.4f}")
 
+            mcts_result: dict[str, Any] | None = None
+            if bool(args.run_mcts):
+                mcts_result = run_mcts_search(
+                    args=args,
+                    ctx=ctx,
+                    reward_ctx=reward_ctx,
+                    prompt=prompt,
+                    metadata=None,
+                    seed=int(args.seed),
+                    h=h,
+                    w=w,
+                    orig_h=orig_h,
+                    orig_w=orig_w,
+                    basis_emb=basis_emb,
+                    pair_indices=pair_indices,
+                    action_bank=action_bank,
+                    prompt_dir=prompt_dir,
+                    save_images=(save_this and args.save_images),
+                )
+                mcts_delta = float(mcts_result["best_score"] - baseline_score)
+                writer.writerow(
+                    [
+                        slug,
+                        prompt,
+                        "mcts",
+                        "mixed",
+                        "mixed",
+                        "mixed",
+                        f"{float(mcts_result['best_score']):.6f}",
+                        f"{mcts_delta:+.6f}",
+                        mcts_result.get("best_image_file", "") or "",
+                        json.dumps(mcts_result["best_genome"]),
+                    ]
+                )
+                print(f"  mcts_best={float(mcts_result['best_score']):.4f} delta={mcts_delta:+.4f}")
+
             row_out: dict[str, Any] = {
                 "slug": slug,
                 "prompt": prompt,
@@ -720,12 +1014,17 @@ def main(argv: list[str] | None = None) -> None:
                 "basis_texts": {str(c.label): str(c.text) for c in basis.candidates},
                 "interp_pair_labels": pair_labels,
                 "interp_pair_indices": pair_indices,
-                "action_bank": [{"action_idx": int(k), "family": str(v[0]), "t": float(v[1])} for k, v in enumerate(action_bank)],
+                "action_bank": [
+                    {"action_idx": int(k), "family": str(v[0]), "t": float(v[1]), "cfg": float(v[2])}
+                    for k, v in enumerate(action_bank)
+                ],
                 "baseline_score": baseline_score,
+                "baseline_cfg": float(args.baseline_cfg),
                 "sweep": [
                     {
                         "family": str(r["family"]),
                         "t": float(r["t"]),
+                        "cfg": float(r["cfg"]),
                         "score": float(r["score"]),
                         "delta_vs_baseline": float(r["delta_vs_baseline"]),
                         "image_file": r["image_file"],
@@ -736,8 +1035,13 @@ def main(argv: list[str] | None = None) -> None:
                     for r in sweep_results
                 ],
                 "ga": ga_result,
+                "mcts": mcts_result,
             }
             if save_this and args.save_images:
+                mcts_panel_item = None
+                if mcts_result is not None and mcts_result.get("best_image_file"):
+                    mcts_img = Image.open(mcts_result["best_image_file"]).convert("RGB")
+                    mcts_panel_item = {"image": mcts_img, "score": float(mcts_result["best_score"])}
                 ga_panel_item = None
                 if ga_result is not None and ga_result.get("best_image_file"):
                     ga_img = Image.open(ga_result["best_image_file"]).convert("RGB")
@@ -747,6 +1051,7 @@ def main(argv: list[str] | None = None) -> None:
                     baseline_img=baseline.final_image,
                     baseline_score=baseline_score,
                     sweep_items=sweep_results,
+                    mcts_item=mcts_panel_item,
                     ga_item=ga_panel_item,
                     out_path=panel_path,
                 )
@@ -760,10 +1065,16 @@ def main(argv: list[str] | None = None) -> None:
     for row in all_rows:
         base = float(row["baseline_score"])
         for srow in row.get("sweep", []):
-            key = f"{srow['family']}@{float(srow['t']):.2f}"
+            key = f"{srow['family']}@{float(srow['t']):.2f}@{float(srow['cfg']):.2f}"
             agg = sweep_agg.setdefault(
                 key,
-                {"family": srow["family"], "t": float(srow["t"]), "scores": [], "deltas": []},
+                {
+                    "family": srow["family"],
+                    "t": float(srow["t"]),
+                    "cfg": float(srow["cfg"]),
+                    "scores": [],
+                    "deltas": [],
+                },
             )
             agg["scores"].append(float(srow["score"]))
             agg["deltas"].append(float(srow["score"]) - base)
@@ -777,6 +1088,7 @@ def main(argv: list[str] | None = None) -> None:
             {
                 "family": str(cur["family"]),
                 "t": float(cur["t"]),
+                "cfg": float(cur["cfg"]),
                 "count": int(s.size),
                 "mean_score": float(s.mean()) if s.size else 0.0,
                 "mean_delta_vs_baseline": float(d.mean()) if d.size else 0.0,
@@ -785,6 +1097,9 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     ga_scores = [float(r["ga"]["best_score"]) for r in all_rows if isinstance(r.get("ga"), dict)]
+    ga_deltas = [float(r["ga"]["best_score"]) - float(r["baseline_score"]) for r in all_rows if isinstance(r.get("ga"), dict)]
+    mcts_scores = [float(r["mcts"]["best_score"]) for r in all_rows if isinstance(r.get("mcts"), dict)]
+    mcts_deltas = [float(r["mcts"]["best_score"]) - float(r["baseline_score"]) for r in all_rows if isinstance(r.get("mcts"), dict)]
     baseline_scores = [float(r["baseline_score"]) for r in all_rows]
 
     summary = {
@@ -797,11 +1112,9 @@ def main(argv: list[str] | None = None) -> None:
         "aggregate_global": {
             "mean_baseline": float(np.mean(baseline_scores)) if baseline_scores else 0.0,
             "mean_ga_best": float(np.mean(ga_scores)) if ga_scores else None,
-            "mean_ga_delta_vs_baseline": (
-                float(np.mean(np.asarray(ga_scores) - np.asarray(baseline_scores[: len(ga_scores)])))
-                if ga_scores
-                else None
-            ),
+            "mean_ga_delta_vs_baseline": float(np.mean(ga_deltas)) if ga_deltas else None,
+            "mean_mcts_best": float(np.mean(mcts_scores)) if mcts_scores else None,
+            "mean_mcts_delta_vs_baseline": float(np.mean(mcts_deltas)) if mcts_deltas else None,
         },
         "scores_tsv": tsv_path,
     }

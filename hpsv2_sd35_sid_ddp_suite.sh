@@ -191,6 +191,39 @@ PY
 
 ensure_xformers_runtime
 
+ensure_qwen_precompute_runtime() {
+  if [[ "${USE_QWEN}" != "1" || "${PRECOMPUTE_REWRITES}" != "1" ]]; then
+    return 0
+  fi
+  if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import importlib.metadata as md
+md.version("regex")
+import transformers
+print(transformers.__version__)
+PY
+  then
+    return 0
+  fi
+
+  echo "[deps] Qwen precompute deps missing/broken (regex/transformers metadata). Installing regex ..."
+  "${PYTHON_BIN}" -m pip install --no-cache-dir --upgrade "regex>=2024.11.6"
+
+  if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import importlib.metadata as md
+md.version("regex")
+import transformers
+print(transformers.__version__)
+PY
+  then
+    return 0
+  fi
+
+  echo "Error: Qwen precompute runtime still broken after regex repair." >&2
+  echo "Try manual repair:" >&2
+  echo "  ${PYTHON_BIN} -m pip install --no-cache-dir --upgrade regex transformers" >&2
+  exit 1
+}
+
 precompute_rewrites_cache() {
   if [[ "${USE_QWEN}" != "1" ]]; then
     return 0
@@ -198,6 +231,7 @@ precompute_rewrites_cache() {
   if [[ "${PRECOMPUTE_REWRITES}" != "1" ]]; then
     return 0
   fi
+  ensure_qwen_precompute_runtime
   echo "[rewrites] precomputing Qwen rewrites cache ..."
   local -a cmd=(
     "${PYTHON_BIN}" "-u" "${SCRIPT_DIR}/precompute_sd35_rewrites.py"

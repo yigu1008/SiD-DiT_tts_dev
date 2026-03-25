@@ -6,12 +6,13 @@ import gc
 import json
 import os
 import re
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 REWRITE_SYSTEM = (
@@ -195,6 +196,60 @@ def batched(items: list[str], batch_size: int) -> list[list[str]]:
     return [items[i : i + bs] for i in range(0, len(items), bs)]
 
 
+def _import_transformers_with_repair() -> tuple[Any, Any]:
+    try:
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        return AutoModelForCausalLM, AutoTokenizer
+    except Exception as exc:
+        msg = str(exc)
+        needs_regex_repair = ("regex" in msg.lower()) or ("PackageNotFoundError" in type(exc).__name__)
+        if not needs_regex_repair:
+            raise
+
+        print(
+            "[rewrites] transformers import failed (regex metadata issue). "
+            "Attempting automatic repair: pip install -U regex",
+            flush=True,
+        )
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--no-cache-dir", "--upgrade", "regex>=2024.11.6"],
+                check=True,
+            )
+        except Exception as repair_exc:
+            raise RuntimeError(
+                "Failed to repair regex dependency for transformers import. "
+                "Please run: python -m pip install -U regex"
+            ) from repair_exc
+
+        try:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+
+            return AutoModelForCausalLM, AutoTokenizer
+        except Exception:
+            print(
+                "[rewrites] regex upgrade did not fully fix metadata; "
+                "retrying with --force-reinstall",
+                flush=True,
+            )
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-cache-dir",
+                    "--force-reinstall",
+                    "regex>=2024.11.6",
+                ],
+                check=True,
+            )
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+
+            return AutoModelForCausalLM, AutoTokenizer
+
+
 def main() -> None:
     args = parse_args()
     args.prompt_file = resolve_path(args.prompt_file)
@@ -219,6 +274,7 @@ def main() -> None:
     for key in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "LOCAL_WORLD_SIZE", "NODE_RANK"):
         if key in os.environ:
             os.environ.pop(key, None)
+    AutoModelForCausalLM, AutoTokenizer = _import_transformers_with_repair()
     tokenizer = AutoTokenizer.from_pretrained(args.qwen_id)
     model = AutoModelForCausalLM.from_pretrained(
         args.qwen_id,

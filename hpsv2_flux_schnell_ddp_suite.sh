@@ -253,7 +253,7 @@ ensure_xformers_runtime
 post_eval_best_images() {
   local method_out="$1"
   local method_name="$2"
-  if [[ "${EVAL_BEST_IMAGES}" != "1" ]]; then
+  if [[ "${EVAL_BEST_IMAGES}" != "1" || "${SAVE_IMAGES}" != "1" ]]; then
     return 0
   fi
   local -a cmd=(

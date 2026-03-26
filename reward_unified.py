@@ -444,6 +444,30 @@ class UnifiedRewardScorer:
 
             download_root = os.environ.get("IMAGEREWARD_CACHE") or None
 
+            # Rank-safe pre-download: rank 0 fetches the .pt file; other ranks
+            # wait up to 120 s for it to appear.  This prevents N-way concurrent
+            # download races when torchrun spawns multiple workers simultaneously.
+            if download_root:
+                import time as _time
+                pt_path = os.path.join(download_root, "ImageReward.pt")
+                local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+                if not os.path.exists(pt_path):
+                    if local_rank == 0:
+                        os.makedirs(download_root, exist_ok=True)
+                        try:
+                            from huggingface_hub import hf_hub_download
+                            hf_hub_download("THUDM/ImageReward", "ImageReward.pt", local_dir=download_root)
+                            print(f"[Reward] ImageReward.pt downloaded to {download_root}")
+                        except Exception as _dl_exc:
+                            print(f"[Reward] ImageReward.pt pre-download failed: {_dl_exc}")
+                    else:
+                        for _ in range(120):
+                            if os.path.exists(pt_path):
+                                break
+                            _time.sleep(1)
+                        if not os.path.exists(pt_path):
+                            print(f"[Reward] rank {local_rank}: timed out waiting for ImageReward.pt")
+
             model = None
             selected = None
             for candidate in candidates:

@@ -357,12 +357,16 @@ search = []
 deltas = []
 
 for log_path in glob.glob(os.path.join(method_out, "logs", "rank_*.jsonl")):
+    if os.path.basename(log_path).endswith("_rewrite_examples.jsonl"):
+        continue
     with open(log_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             row = json.loads(line)
+            if "score" not in row:
+                continue
             score = float(row["score"])
             delta = float(row.get("delta_vs_base", 0.0))
             b = row.get("baseline_score")

@@ -13,11 +13,13 @@ Relevant env vars:
     HF_HOME               - HuggingFace hub cache root
     IMAGEREWARD_CACHE     - Directory for ImageReward.pt (overrides ~/.cache/ImageReward)
     PICKSCORE_MODEL       - HF repo id (default yuvalkirstain/PickScore_v1)
+    HPS_ROOT              - Directory for HPSv2 checkpoint (overrides ~/.cache/hpsv2)
     REWARD_BACKENDS       - Space-separated list of backends to preload
                             (default: imagereward pickscore hpsv2)
 """
 
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -58,6 +60,47 @@ def _mark_done(name: str) -> None:
     Path(sentinel).touch()
 
 
+def _hf_download(repo_id: str, filename: str, local_dir: str) -> str:
+    """
+    Download a single file from HuggingFace Hub to local_dir/filename.
+
+    Uses local_dir_use_symlinks=False to force a real file copy — Azure blob
+    FUSE mounts do not support symlinks, so the default symlink behaviour of
+    newer huggingface_hub versions silently leaves a broken link.
+
+    Falls back to a manual copy from the hub cache if local_dir_use_symlinks
+    is not supported by the installed version.
+    """
+    from huggingface_hub import hf_hub_download
+
+    dest = Path(local_dir) / filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # huggingface_hub >= 0.17 supports local_dir_use_symlinks
+        cached = hf_hub_download(
+            repo_id,
+            filename,
+            local_dir=local_dir,
+            local_dir_use_symlinks=False,
+        )
+    except TypeError:
+        # Older huggingface_hub: download to hub cache, then copy manually
+        cached = hf_hub_download(repo_id, filename)
+        if str(Path(cached).resolve()) != str(dest.resolve()):
+            shutil.copy2(cached, str(dest))
+        cached = str(dest)
+
+    # Verify the destination is a real file (not a broken symlink)
+    if not dest.is_file():
+        # Symlink exists but target unreachable — copy the hub-cached file
+        hub_cached = hf_hub_download(repo_id, filename)
+        shutil.copy2(hub_cached, str(dest))
+
+    _log(f"  -> {dest} ({dest.stat().st_size // (1024*1024)} MB)")
+    return str(dest)
+
+
 # ---------------------------------------------------------------------------
 # ImageReward
 # ---------------------------------------------------------------------------
@@ -69,20 +112,20 @@ def preload_imagereward() -> None:
     pt_path = Path(cache_dir) / "ImageReward.pt"
     sentinel = _sentinel_path("imagereward")
 
-    if pt_path.exists():
+    if pt_path.is_file() and pt_path.stat().st_size > 0:
         _log(f"ImageReward.pt already cached at {cache_dir}")
         _mark_done("imagereward")
         return
 
     if LOCAL_RANK == 0:
-        pt_path.parent.mkdir(parents=True, exist_ok=True)
+        _log("downloading ImageReward.pt ...")
         try:
-            from huggingface_hub import hf_hub_download
-            hf_hub_download("THUDM/ImageReward", "ImageReward.pt", local_dir=str(cache_dir))
-            _log(f"ImageReward.pt downloaded to {cache_dir}")
+            _hf_download("THUDM/ImageReward", "ImageReward.pt", cache_dir)
+            _log(f"ImageReward.pt ready at {cache_dir}")
             _mark_done("imagereward")
         except Exception as exc:
             _log(f"ERROR downloading ImageReward.pt: {exc}")
+            raise
     else:
         _wait_for_sentinel(sentinel, "ImageReward.pt")
 
@@ -103,13 +146,15 @@ def preload_pickscore() -> None:
         return
 
     if LOCAL_RANK == 0:
+        _log(f"downloading PickScore ({model_id}) ...")
         try:
             from huggingface_hub import snapshot_download
             snapshot_download(model_id)
-            _log(f"PickScore downloaded ({model_id})")
+            _log(f"PickScore ready")
             _mark_done("pickscore")
         except Exception as exc:
             _log(f"ERROR downloading PickScore: {exc}")
+            raise
     else:
         _wait_for_sentinel(sentinel, "PickScore")
 
@@ -119,26 +164,24 @@ def preload_pickscore() -> None:
 # ---------------------------------------------------------------------------
 
 def preload_hpsv2() -> None:
-    # hpsv2 downloads its checkpoint from xswu/HPSv2 on HuggingFace Hub.
-    # root_path = $HPS_ROOT or ~/.cache/hpsv2
     hps_root = os.environ.get("HPS_ROOT", str(Path.home() / ".cache" / "hpsv2"))
     checkpoint = Path(hps_root) / "HPS_v2_compressed.pt"
     sentinel = _sentinel_path("hpsv2")
 
-    if checkpoint.exists():
+    if checkpoint.is_file() and checkpoint.stat().st_size > 0:
         _log(f"HPSv2 checkpoint already cached at {hps_root}")
         _mark_done("hpsv2")
         return
 
     if LOCAL_RANK == 0:
+        _log("downloading HPSv2 checkpoint ...")
         try:
-            from huggingface_hub import hf_hub_download
-            Path(hps_root).mkdir(parents=True, exist_ok=True)
-            hf_hub_download("xswu/HPSv2", "HPS_v2_compressed.pt", local_dir=hps_root)
-            _log(f"HPSv2 checkpoint downloaded to {hps_root}")
+            _hf_download("xswu/HPSv2", "HPS_v2_compressed.pt", hps_root)
+            _log(f"HPSv2 checkpoint ready at {hps_root}")
             _mark_done("hpsv2")
         except Exception as exc:
             _log(f"ERROR downloading HPSv2: {exc}")
+            raise
     else:
         _wait_for_sentinel(sentinel, "HPSv2 checkpoint")
 

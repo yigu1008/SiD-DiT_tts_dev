@@ -57,6 +57,8 @@ search:
       - if [ "$$ENABLE_OVERLAY_PYDEPS" = "1" ]; then PYTHON_BIN=/opt/conda/envs/ptca/bin/python SID_OVERLAY_DIR=/tmp/$$USER/sid_pydeps bash prepare_cluster_overlay_deps.sh; export SID_EXTRA_PYTHONPATH=/tmp/$$USER/sid_pydeps/py$$(/opt/conda/envs/ptca/bin/python -c "import sys; print(str(sys.version_info.major)+'.'+str(sys.version_info.minor))"); else unset SID_EXTRA_PYTHONPATH || true; fi
       - /opt/conda/envs/ptca/bin/python -c "import xxhash, clip; from timm.data import ImageNetInfo; print('reward deps core ok', xxhash.__version__, getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
       - export NUM_GPUS=${GPUS}
+      - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
+      - mkdir -p /mnt/data/v-yigu/model_cache/ImageReward
       - export HPSV2_PROMPT_DIR=/mnt/data/v-yigu/hpsv2_prompt_cache
       - export PROMPT_STYLE={prompt_style}
       - OUT_DIR="$$HPSV2_PROMPT_DIR" STYLE="$$PROMPT_STYLE" bash get_hpsv2_prompts.sh

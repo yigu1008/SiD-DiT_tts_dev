@@ -442,11 +442,13 @@ class UnifiedRewardScorer:
             if self.image_reward_model != "ImageReward-v1.0":
                 candidates.append("ImageReward-v1.0")
 
+            download_root = os.environ.get("IMAGEREWARD_CACHE") or None
+
             model = None
             selected = None
             for candidate in candidates:
                 try:
-                    model = RM.load(candidate, device=self.device)
+                    model = RM.load(candidate, device=self.device, download_root=download_root)
                     selected = candidate
                     break
                 except Exception as exc:

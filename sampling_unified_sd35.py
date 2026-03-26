@@ -512,12 +512,13 @@ def transformer_step(
 ) -> torch.Tensor:
     pe = emb.cond_text[variant_idx]
     pp = emb.cond_pooled[variant_idx]
+    n = latents.shape[0]
 
     if cfg == 1.0:
         velocity = ctx.pipe.transformer(
             hidden_states=latents,
-            encoder_hidden_states=pe,
-            pooled_projections=pp,
+            encoder_hidden_states=pe.expand(n, -1, -1),
+            pooled_projections=pp.expand(n, -1),
             timestep=args.time_scale * t_flat,
             return_dict=False,
         )[0]
@@ -525,8 +526,8 @@ def transformer_step(
 
     flow = ctx.pipe.transformer(
         hidden_states=torch.cat([latents, latents]),
-        encoder_hidden_states=torch.cat([emb.uncond_text, pe]),
-        pooled_projections=torch.cat([emb.uncond_pooled, pp]),
+        encoder_hidden_states=torch.cat([emb.uncond_text.expand(n, -1, -1), pe.expand(n, -1, -1)]),
+        pooled_projections=torch.cat([emb.uncond_pooled.expand(n, -1), pp.expand(n, -1)]),
         timestep=args.time_scale * torch.cat([t_flat, t_flat]),
         return_dict=False,
     )[0]

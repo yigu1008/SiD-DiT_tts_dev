@@ -177,7 +177,7 @@ search:
     - name: ga_eval_batch
       values: [ 2 ]
     - name: use_subset
-      values: [ 0 ]
+      values: [ 1 ]
     - name: save_images
       values: [ 0 ]
     - name: seed

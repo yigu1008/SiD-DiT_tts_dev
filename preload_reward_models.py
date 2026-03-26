@@ -119,26 +119,28 @@ def preload_pickscore() -> None:
 # ---------------------------------------------------------------------------
 
 def preload_hpsv2() -> None:
+    # hpsv2 downloads its checkpoint from xswu/HPSv2 on HuggingFace Hub.
+    # root_path = $HPS_ROOT or ~/.cache/hpsv2
+    hps_root = os.environ.get("HPS_ROOT", str(Path.home() / ".cache" / "hpsv2"))
+    checkpoint = Path(hps_root) / "HPS_v2_compressed.pt"
     sentinel = _sentinel_path("hpsv2")
 
-    # hpsv2's initialize_model() downloads the checkpoint on first call.
-    # Use the same HF_HOME so it lands in persistent cache.
-    if os.path.exists(sentinel):
-        _log("HPSv2 already cached (sentinel)")
+    if checkpoint.exists():
+        _log(f"HPSv2 checkpoint already cached at {hps_root}")
+        _mark_done("hpsv2")
         return
 
     if LOCAL_RANK == 0:
         try:
-            import hpsv2 as hm
-            import open_clip  # noqa: F401 — required by hpsv2
-            model = hm.utils.initialize_model()
-            del model
-            _log("HPSv2 model initialised and cached")
+            from huggingface_hub import hf_hub_download
+            Path(hps_root).mkdir(parents=True, exist_ok=True)
+            hf_hub_download("xswu/HPSv2", "HPS_v2_compressed.pt", local_dir=hps_root)
+            _log(f"HPSv2 checkpoint downloaded to {hps_root}")
             _mark_done("hpsv2")
         except Exception as exc:
-            _log(f"ERROR initialising HPSv2: {exc}")
+            _log(f"ERROR downloading HPSv2: {exc}")
     else:
-        _wait_for_sentinel(sentinel, "HPSv2")
+        _wait_for_sentinel(sentinel, "HPSv2 checkpoint")
 
 
 # ---------------------------------------------------------------------------

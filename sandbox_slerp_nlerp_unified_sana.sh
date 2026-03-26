@@ -87,6 +87,15 @@ if [[ "${RUN_MCTS:-1}" == "0" ]]; then
   algo_args+=(--no-run_mcts)
 fi
 
+mix_args=()
+if [[ -n "${MIX_WEIGHT_VECTORS:-}" ]]; then
+  # shellcheck disable=SC2206
+  mix_vec_arr=(${MIX_WEIGHT_VECTORS})
+  if [[ "${#mix_vec_arr[@]}" -gt 0 ]]; then
+    mix_args+=(--mix_weight_vectors "${mix_vec_arr[@]}")
+  fi
+fi
+
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sandbox_slerp_nlerp_unified_sana.py" \
   --prompt_file "${PROMPT_FILE}" \
   --max_prompts "${MAX_PROMPTS:-0}" \
@@ -101,8 +110,10 @@ fi
   --baseline_cfg "${BASELINE_CFG:-1.0}" \
   --cfg_scales ${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5} \
   "${reward_args[@]}" \
-  --interp_labels ${INTERP_LABELS:-balanced subject} \
+  --interp_labels ${INTERP_LABELS:-balanced subject composition texture} \
+  --interp_k "${INTERP_K:-4}" \
   --interp_values ${INTERP_VALUES:-0.0 0.25 0.5 0.75 1.0} \
+  "${mix_args[@]}" \
   --families ${FAMILIES:-nlerp slerp} \
   --preview_every "${PREVIEW_EVERY:--1}" \
   --ga_population "${GA_POPULATION:-24}" \

@@ -2,8 +2,8 @@
 SANA SLERP/NLERP sandbox with UnifiedReward defaults.
 
 This script focuses on two things:
-  1) fixed interpolation sweep over (family, t, cfg)
-  2) optional GA/MCTS search over per-step (family, t, cfg) actions
+  1) fixed blend-profile sweep over (family, profile, cfg)
+  2) optional GA/MCTS search over per-step (family, profile, cfg) actions
 
 GA here is intentionally simple (discrete action genomes) and reuses the
 same rank/tournament selection style used elsewhere in this repo.
@@ -109,8 +109,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--qwen_dtype", choices=["float16", "bfloat16"], default="bfloat16")
 
     # Interp setup
-    p.add_argument("--interp_labels", nargs=2, default=["balanced", "subject"], help="Two basis labels to interpolate.")
+    p.add_argument(
+        "--interp_labels",
+        nargs="+",
+        default=["balanced", "subject", "composition", "texture"],
+        help="Basis labels to blend (defaults to four prompt levels).",
+    )
+    p.add_argument("--interp_k", type=int, default=4, help="How many basis prompts to blend.")
     p.add_argument("--interp_values", nargs="+", type=float, default=[0.0, 0.25, 0.5, 0.75, 1.0])
+    p.add_argument(
+        "--mix_weight_vectors",
+        nargs="+",
+        default=None,
+        help="Optional explicit weight vectors over interp_k prompts, e.g. '1,0,0,0 0.25,0.25,0.25,0.25'.",
+    )
     p.add_argument("--families", nargs="+", default=["nlerp", "slerp"])
     p.add_argument("--preview_every", type=int, default=-1, help="Set -1 to disable preview decodes for speed.")
 
@@ -119,7 +131,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--run_ga", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--run_mcts", action=argparse.BooleanOptionalAction, default=True)
 
-    # GA over per-step discrete actions (action bank = families x interp_values)
+    # GA over per-step discrete actions (action bank = families x profiles x cfg_scales)
     p.add_argument("--ga_population", type=int, default=24)
     p.add_argument("--ga_generations", type=int, default=8)
     p.add_argument("--ga_elites", type=int, default=3)
@@ -131,7 +143,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--ga_log_topk", type=int, default=3)
     p.add_argument("--ga_cache", action=argparse.BooleanOptionalAction, default=True)
 
-    # MCTS over per-step discrete actions (action bank = families x interp_values x cfg_scales)
+    # MCTS over per-step discrete actions (action bank = families x profiles x cfg_scales)
     p.add_argument("--mcts_n_sims", type=int, default=50)
     p.add_argument("--mcts_ucb_c", type=float, default=1.41)
     p.add_argument("--mcts_log_every", type=int, default=10)
@@ -152,17 +164,21 @@ def load_prompts(args: argparse.Namespace) -> list[str]:
     return prompts
 
 
-def _pick_pair_indices(labels: list[str], want_a: str, want_b: str) -> tuple[int, int]:
+def _pick_basis_indices(labels: list[str], wanted: list[str], k: int) -> list[int]:
     key_to_idx = {str(lbl).strip().lower(): i for i, lbl in enumerate(labels)}
-    a = key_to_idx.get(str(want_a).strip().lower(), -1)
-    b = key_to_idx.get(str(want_b).strip().lower(), -1)
-    if a < 0:
-        a = 0
-    if b < 0:
-        b = 1 if len(labels) > 1 else 0
-    if a == b and len(labels) > 1:
-        b = 1 if a == 0 else 0
-    return int(a), int(b)
+    picks: list[int] = []
+    for raw in wanted:
+        idx = key_to_idx.get(str(raw).strip().lower(), -1)
+        if idx >= 0 and idx not in picks:
+            picks.append(int(idx))
+    for i in range(len(labels)):
+        if len(picks) >= int(k):
+            break
+        if i not in picks:
+            picks.append(int(i))
+    if len(picks) == 0:
+        raise RuntimeError("No basis indices available to blend.")
+    return [int(x) for x in picks[: max(1, int(k))]]
 
 
 def _family_list(args: argparse.Namespace) -> list[str]:
@@ -176,12 +192,117 @@ def _family_list(args: argparse.Namespace) -> list[str]:
     return out
 
 
-def _action_bank(families: list[str], t_values: list[float], cfg_values: list[float]) -> list[tuple[str, float, float]]:
-    out: list[tuple[str, float, float]] = []
+def _normalize_weights(weights: list[float]) -> np.ndarray:
+    arr = np.asarray(weights, dtype=np.float64).reshape(-1)
+    arr = np.clip(arr, 0.0, None)
+    s = float(arr.sum())
+    if (not np.isfinite(s)) or s <= 0.0:
+        arr = np.full_like(arr, 1.0 / float(max(1, arr.size)))
+    else:
+        arr = arr / s
+    return arr
+
+
+def _build_weight_profiles(
+    args: argparse.Namespace,
+    selected_labels: list[str],
+    t_values: list[float],
+) -> list[dict[str, Any]]:
+    k = int(len(selected_labels))
+    if k <= 0:
+        raise RuntimeError("Expected at least one selected label for profiles.")
+
+    raw_profiles: list[dict[str, Any]] = []
+    explicit = args.mix_weight_vectors if args.mix_weight_vectors is not None else []
+    if len(explicit) > 0:
+        for i, spec in enumerate(explicit):
+            toks = [x.strip() for x in str(spec).split(",") if x.strip()]
+            if len(toks) != k:
+                raise RuntimeError(
+                    f"Invalid mix_weight_vectors entry '{spec}': expected {k} comma-separated values."
+                )
+            vec = _normalize_weights([float(x) for x in toks])
+            raw_profiles.append(
+                {
+                    "name": f"custom_{i:02d}",
+                    "weights": [float(x) for x in vec.tolist()],
+                    "source": "custom",
+                    "t": None,
+                    "focus_label": None,
+                }
+            )
+    else:
+        # Uniform profile.
+        raw_profiles.append(
+            {
+                "name": "uniform",
+                "weights": [float(1.0 / float(k)) for _ in range(k)],
+                "source": "auto",
+                "t": None,
+                "focus_label": None,
+            }
+        )
+        # Focus-label profiles: interpolate target label vs others.
+        for idx, label in enumerate(selected_labels):
+            for t in t_values:
+                tt = float(np.clip(t, 0.0, 1.0))
+                if k == 1:
+                    w = np.asarray([1.0], dtype=np.float64)
+                else:
+                    other = (1.0 - tt) / float(k - 1)
+                    w = np.full((k,), other, dtype=np.float64)
+                    w[idx] = tt
+                w = _normalize_weights([float(x) for x in w.tolist()])
+                raw_profiles.append(
+                    {
+                        "name": f"focus_{str(label)}_t{tt:.2f}",
+                        "weights": [float(x) for x in w.tolist()],
+                        "source": "auto",
+                        "t": float(tt),
+                        "focus_label": str(label),
+                    }
+                )
+
+    # Deduplicate by exact weight vector after normalization.
+    dedup: list[dict[str, Any]] = []
+    seen: set[tuple[float, ...]] = set()
+    for row in raw_profiles:
+        key = tuple(float(f"{float(x):.8f}") for x in row["weights"])
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(row)
+    return dedup
+
+
+def _action_bank(families: list[str], n_profiles: int, cfg_values: list[float]) -> list[tuple[str, int, float]]:
+    out: list[tuple[str, int, float]] = []
     for fam in families:
-        for t in t_values:
+        for profile_idx in range(int(n_profiles)):
             for cfg in cfg_values:
-                out.append((str(fam), float(t), float(cfg)))
+                out.append((str(fam), int(profile_idx), float(cfg)))
+    return out
+
+
+def _action_detail(
+    action_idx: int,
+    action_bank: list[tuple[str, int, float]],
+    weight_profiles: list[dict[str, Any]],
+) -> dict[str, Any]:
+    fam, profile_idx, cfg = action_bank[int(action_idx)]
+    profile = weight_profiles[int(profile_idx)]
+    out: dict[str, Any] = {
+        "action_idx": int(action_idx),
+        "family": str(fam),
+        "profile_idx": int(profile_idx),
+        "profile": str(profile["name"]),
+        "cfg": float(cfg),
+        "weights": [float(x) for x in profile["weights"]],
+    }
+    if profile.get("t") is not None:
+        out["t"] = float(profile["t"])
+    if profile.get("focus_label") is not None:
+        out["focus_label"] = str(profile["focus_label"])
     return out
 
 
@@ -213,7 +334,7 @@ def _build_summary_panel(
     ranked = ranked[:4]
     entries: list[tuple[str, Image.Image, float, float]] = [("baseline", baseline_img, baseline_score, 0.0)]
     for row in ranked:
-        label = f"{row['family']} t={float(row['t']):.2f} cfg={float(row['cfg']):.2f}"
+        label = f"{row['family']} {row['profile']} cfg={float(row['cfg']):.2f}"
         entries.append((label, row["image"], float(row["score"]), float(row["score"]) - baseline_score))
     if mcts_item is not None:
         entries.append(("mcts_best", mcts_item["image"], float(mcts_item["score"]), float(mcts_item["score"]) - baseline_score))
@@ -249,20 +370,23 @@ def run_stepwise_action_rollout(
     orig_h: int,
     orig_w: int,
     basis_emb: Any,
-    pair_indices: list[int],
-    action_bank: list[tuple[str, float, float]],
+    basis_indices: list[int],
+    weight_profiles: list[dict[str, Any]],
+    action_bank: list[tuple[str, int, float]],
     genome: list[int],
     preview_every: int,
     save_path: str | None = None,
     tag: str = "stepwise",
 ) -> ActionRollout:
-    if len(pair_indices) != 2:
-        raise ValueError(f"Expected two interpolation indices, got {pair_indices}")
+    if len(basis_indices) <= 0:
+        raise ValueError("Expected non-empty basis_indices.")
+    if len(weight_profiles) <= 0:
+        raise ValueError("Expected non-empty weight_profiles.")
     if len(action_bank) <= 0:
         raise ValueError("action_bank must be non-empty.")
 
-    pe_bank = [basis_emb.pe_list[int(i)][0] for i in pair_indices]
-    pm_bank = [basis_emb.pe_list[int(i)][1] for i in pair_indices]
+    pe_bank = [basis_emb.pe_list[int(i)][0] for i in basis_indices]
+    pm_bank = [basis_emb.pe_list[int(i)][1] for i in basis_indices]
 
     latents = su.make_latents(ctx, int(seed), int(h), int(w), basis_emb.orig_pe.dtype)
     sched = su._step_tensors(ctx, int(args.steps), latents.dtype)
@@ -286,12 +410,9 @@ def run_stepwise_action_rollout(
         latents = (1.0 - t_4d) * dx + t_4d * noise
 
         a_idx = int(genome[step_idx % len(genome)]) % len(action_bank)
-        fam, tval, cfg = action_bank[a_idx]
-        weights_t = torch.tensor(
-            [1.0 - float(tval), float(tval)],
-            dtype=pe_bank[0].dtype,
-            device=ctx.device,
-        )
+        fam, profile_idx, cfg = action_bank[a_idx]
+        profile = weight_profiles[int(profile_idx)]
+        weights_t = torch.tensor(profile["weights"], dtype=pe_bank[0].dtype, device=ctx.device)
         blend = blend_prompt_embeddings(pe_bank, pm_bank, weights_t, fam)
         velocity = su.transformer_step(
             args,
@@ -321,11 +442,14 @@ def run_stepwise_action_rollout(
                 "progress": float(prog_t),
                 "action_idx": int(a_idx),
                 "family": str(fam),
-                "t": float(tval),
+                "profile_idx": int(profile_idx),
+                "profile": str(profile["name"]),
+                "t": float(profile["t"]) if profile.get("t") is not None else None,
+                "focus_label": str(profile["focus_label"]) if profile.get("focus_label") is not None else None,
                 "cfg": float(cfg),
-                "weights": [float(1.0 - tval), float(tval)],
-                "selected_indices": [int(pair_indices[i]) for i in blend.selected_indices],
-                "selected_labels": [str([basis_emb.labels[j] for j in pair_indices][i]) for i in blend.selected_indices],
+                "weights": [float(x) for x in profile["weights"]],
+                "selected_indices": [int(basis_indices[i]) for i in blend.selected_indices],
+                "selected_labels": [str([basis_emb.labels[j] for j in basis_indices][i]) for i in blend.selected_indices],
                 "selected_weights": [float(x) for x in blend.selected_weights],
                 "preview_reward": float(cur_reward),
                 "delta_reward": float(delta),
@@ -383,8 +507,9 @@ def run_ga_search(
     orig_h: int,
     orig_w: int,
     basis_emb: Any,
-    pair_indices: list[int],
-    action_bank: list[tuple[str, float, float]],
+    basis_indices: list[int],
+    weight_profiles: list[dict[str, Any]],
+    action_bank: list[tuple[str, int, float]],
     prompt_dir: str,
     save_images: bool,
 ) -> dict[str, Any]:
@@ -426,7 +551,8 @@ def run_ga_search(
             orig_h=orig_h,
             orig_w=orig_w,
             basis_emb=basis_emb,
-            pair_indices=pair_indices,
+            basis_indices=basis_indices,
+            weight_profiles=weight_profiles,
             action_bank=action_bank,
             genome=repaired,
             preview_every=int(args.preview_every),
@@ -460,13 +586,7 @@ def run_ga_search(
                     "score": float(detailed["score"]),
                     "genome": [int(x) for x in detailed["genome"]],
                     "actions": [
-                        {
-                            "step": int(i),
-                            "action_idx": int(aidx),
-                            "family": str(action_bank[aidx][0]),
-                            "t": float(action_bank[aidx][1]),
-                            "cfg": float(action_bank[aidx][2]),
-                        }
+                        dict({"step": int(i)}, **_action_detail(int(aidx), action_bank, weight_profiles))
                         for i, aidx in enumerate(detailed["genome"])
                     ],
                 }
@@ -527,13 +647,7 @@ def run_ga_search(
     assert global_best is not None
     best_genome = [int(x) for x in global_best["genome"]]
     best_actions = [
-        {
-            "step": int(i),
-            "action_idx": int(aidx),
-            "family": str(action_bank[aidx][0]),
-            "t": float(action_bank[aidx][1]),
-            "cfg": float(action_bank[aidx][2]),
-        }
+        dict({"step": int(i)}, **_action_detail(int(aidx), action_bank, weight_profiles))
         for i, aidx in enumerate(best_genome)
     ]
     best_img_path = None
@@ -590,8 +704,9 @@ def run_mcts_search(
     orig_h: int,
     orig_w: int,
     basis_emb: Any,
-    pair_indices: list[int],
-    action_bank: list[tuple[str, float, float]],
+    basis_indices: list[int],
+    weight_profiles: list[dict[str, Any]],
+    action_bank: list[tuple[str, int, float]],
     prompt_dir: str,
     save_images: bool,
 ) -> dict[str, Any]:
@@ -628,7 +743,8 @@ def run_mcts_search(
             orig_h=orig_h,
             orig_w=orig_w,
             basis_emb=basis_emb,
-            pair_indices=pair_indices,
+            basis_indices=basis_indices,
+            weight_profiles=weight_profiles,
             action_bank=action_bank,
             genome=repaired,
             preview_every=int(args.preview_every),
@@ -702,14 +818,13 @@ def run_mcts_search(
                 "eval_calls_total": int(eval_calls_total),
                 "nfe_total": int(eval_calls_total * steps),
                 "root_top": [
-                    {
-                        "mean_score": float(m),
-                        "action_idx": int(aidx),
-                        "family": str(action_bank[aidx][0]),
-                        "t": float(action_bank[aidx][1]),
-                        "cfg": float(action_bank[aidx][2]),
-                        "visits": int(v),
-                    }
+                    dict(
+                        {
+                            "mean_score": float(m),
+                            "visits": int(v),
+                        },
+                        **_action_detail(int(aidx), action_bank, weight_profiles),
+                    )
                     for m, aidx, v in top_root
                 ],
             }
@@ -725,13 +840,7 @@ def run_mcts_search(
 
     best_genome = [int(x) for x in best["genome"]]
     best_actions = [
-        {
-            "step": int(i),
-            "action_idx": int(aidx),
-            "family": str(action_bank[aidx][0]),
-            "t": float(action_bank[aidx][1]),
-            "cfg": float(action_bank[aidx][2]),
-        }
+        dict({"step": int(i)}, **_action_detail(int(aidx), action_bank, weight_profiles))
         for i, aidx in enumerate(best_genome)
     ]
     best_img_path = None
@@ -775,7 +884,6 @@ def main(argv: list[str] | None = None) -> None:
             cfg_values.append(fc)
     if len(cfg_values) == 0:
         cfg_values = [float(args.guidance_scale)]
-    action_bank = _action_bank(families, t_values, cfg_values)
     basis_cache = load_basis_cache(args.basis_cache_json)
 
     t0 = time.perf_counter()
@@ -796,6 +904,7 @@ def main(argv: list[str] | None = None) -> None:
                 "prompt",
                 "method",
                 "family",
+                "profile",
                 "t",
                 "cfg",
                 "score",
@@ -819,14 +928,19 @@ def main(argv: list[str] | None = None) -> None:
             basis_emb = encode_prompt_basis(args, ctx, basis, neg_embeds, neg_mask, max_seq=256)
             orig_h, orig_w, h, w = resolve_resolution(args, ctx)
 
-            li0, li1 = _pick_pair_indices(
+            wanted_labels = [str(x) for x in args.interp_labels]
+            basis_indices = _pick_basis_indices(
                 basis_emb.labels,
-                str(args.interp_labels[0]),
-                str(args.interp_labels[1]),
+                wanted_labels,
+                int(args.interp_k),
             )
-            pair_indices = [int(li0), int(li1)]
-            pair_labels = [basis_emb.labels[li0], basis_emb.labels[li1]]
-            print(f"  pair: {pair_labels[0]} -> {pair_labels[1]}")
+            basis_labels = [str(basis_emb.labels[i]) for i in basis_indices]
+            weight_profiles = _build_weight_profiles(args, basis_labels, t_values)
+            action_bank = _action_bank(families, len(weight_profiles), cfg_values)
+            print(
+                f"  blend labels ({len(basis_labels)}): {', '.join(basis_labels)} "
+                f"profiles={len(weight_profiles)} actions={len(action_bank)}"
+            )
 
             baseline_img_path = os.path.join(prompt_dir, "baseline_original.png") if (save_this and args.save_images) else None
             old_guidance = float(args.guidance_scale)
@@ -862,6 +976,7 @@ def main(argv: list[str] | None = None) -> None:
                     "baseline",
                     "baseline",
                     "baseline",
+                    "baseline",
                     f"{float(args.baseline_cfg):.2f}",
                     f"{baseline_score:.6f}",
                     "+0.000000",
@@ -872,12 +987,15 @@ def main(argv: list[str] | None = None) -> None:
 
             sweep_results: list[dict[str, Any]] = []
             if bool(args.run_sweep):
-                for action_idx, (fam, tval, cfg) in enumerate(action_bank):
+                for action_idx, (fam, profile_idx, cfg) in enumerate(action_bank):
+                    profile = weight_profiles[int(profile_idx)]
+                    profile_name = str(profile["name"])
+                    profile_t = profile.get("t")
                     genome = [int(action_idx) for _ in range(int(args.steps))]
                     img_path = (
                         os.path.join(
                             prompt_dir,
-                            f"sweep_{fam}_t{str(f'{tval:.2f}').replace('.', 'p')}_cfg{str(f'{cfg:.2f}').replace('.', 'p')}.png",
+                            f"sweep_{fam}_{profile_name}_cfg{str(f'{cfg:.2f}').replace('.', 'p')}.png",
                         )
                         if (save_this and args.save_images)
                         else None
@@ -894,18 +1012,22 @@ def main(argv: list[str] | None = None) -> None:
                         orig_h=orig_h,
                         orig_w=orig_w,
                         basis_emb=basis_emb,
-                        pair_indices=pair_indices,
+                        basis_indices=basis_indices,
+                        weight_profiles=weight_profiles,
                         action_bank=action_bank,
                         genome=genome,
                         preview_every=int(args.preview_every),
                         save_path=img_path,
-                        tag=f"{slug}_sweep_{fam}_{tval:.2f}",
+                        tag=f"{slug}_sweep_{fam}_{profile_name}",
                     )
                     score = float(trace.final_score)
                     delta = float(score - baseline_score)
                     row = {
                         "family": str(fam),
-                        "t": float(tval),
+                        "profile_idx": int(profile_idx),
+                        "profile": profile_name,
+                        "t": float(profile_t) if profile_t is not None else None,
+                        "weights": [float(x) for x in profile["weights"]],
                         "cfg": float(cfg),
                         "score": score,
                         "delta_vs_baseline": delta,
@@ -922,7 +1044,8 @@ def main(argv: list[str] | None = None) -> None:
                             prompt,
                             "sweep",
                             str(fam),
-                            f"{float(tval):.2f}",
+                            profile_name,
+                            f"{float(profile_t):.2f}" if profile_t is not None else "",
                             f"{float(cfg):.2f}",
                             f"{score:.6f}",
                             f"{delta:+.6f}",
@@ -931,7 +1054,7 @@ def main(argv: list[str] | None = None) -> None:
                         ]
                     )
                     print(
-                        f"  sweep {fam:>5} t={float(tval):.2f} cfg={float(cfg):.2f} "
+                        f"  sweep {fam:>5} profile={profile_name} cfg={float(cfg):.2f} "
                         f"score={score:.4f} delta={delta:+.4f}"
                     )
 
@@ -949,7 +1072,8 @@ def main(argv: list[str] | None = None) -> None:
                     orig_h=orig_h,
                     orig_w=orig_w,
                     basis_emb=basis_emb,
-                    pair_indices=pair_indices,
+                    basis_indices=basis_indices,
+                    weight_profiles=weight_profiles,
                     action_bank=action_bank,
                     prompt_dir=prompt_dir,
                     save_images=(save_this and args.save_images),
@@ -960,6 +1084,7 @@ def main(argv: list[str] | None = None) -> None:
                         slug,
                         prompt,
                         "ga",
+                        "mixed",
                         "mixed",
                         "mixed",
                         "mixed",
@@ -985,7 +1110,8 @@ def main(argv: list[str] | None = None) -> None:
                     orig_h=orig_h,
                     orig_w=orig_w,
                     basis_emb=basis_emb,
-                    pair_indices=pair_indices,
+                    basis_indices=basis_indices,
+                    weight_profiles=weight_profiles,
                     action_bank=action_bank,
                     prompt_dir=prompt_dir,
                     save_images=(save_this and args.save_images),
@@ -996,6 +1122,7 @@ def main(argv: list[str] | None = None) -> None:
                         slug,
                         prompt,
                         "mcts",
+                        "mixed",
                         "mixed",
                         "mixed",
                         "mixed",
@@ -1012,18 +1139,20 @@ def main(argv: list[str] | None = None) -> None:
                 "prompt": prompt,
                 "basis_labels": list(basis_emb.labels),
                 "basis_texts": {str(c.label): str(c.text) for c in basis.candidates},
-                "interp_pair_labels": pair_labels,
-                "interp_pair_indices": pair_indices,
-                "action_bank": [
-                    {"action_idx": int(k), "family": str(v[0]), "t": float(v[1]), "cfg": float(v[2])}
-                    for k, v in enumerate(action_bank)
-                ],
+                "interp_labels_requested": wanted_labels,
+                "interp_basis_indices": [int(x) for x in basis_indices],
+                "interp_basis_labels": basis_labels,
+                "weight_profiles": weight_profiles,
+                "action_bank": [dict({"action_idx": int(k)}, **_action_detail(int(k), action_bank, weight_profiles)) for k in range(len(action_bank))],
                 "baseline_score": baseline_score,
                 "baseline_cfg": float(args.baseline_cfg),
                 "sweep": [
                     {
                         "family": str(r["family"]),
-                        "t": float(r["t"]),
+                        "profile_idx": int(r["profile_idx"]),
+                        "profile": str(r["profile"]),
+                        "t": float(r["t"]) if r["t"] is not None else None,
+                        "weights": [float(x) for x in r["weights"]],
                         "cfg": float(r["cfg"]),
                         "score": float(r["score"]),
                         "delta_vs_baseline": float(r["delta_vs_baseline"]),
@@ -1065,12 +1194,13 @@ def main(argv: list[str] | None = None) -> None:
     for row in all_rows:
         base = float(row["baseline_score"])
         for srow in row.get("sweep", []):
-            key = f"{srow['family']}@{float(srow['t']):.2f}@{float(srow['cfg']):.2f}"
+            key = f"{srow['family']}@{srow['profile']}@{float(srow['cfg']):.2f}"
             agg = sweep_agg.setdefault(
                 key,
                 {
                     "family": srow["family"],
-                    "t": float(srow["t"]),
+                    "profile": srow["profile"],
+                    "t": float(srow["t"]) if srow["t"] is not None else None,
                     "cfg": float(srow["cfg"]),
                     "scores": [],
                     "deltas": [],
@@ -1087,7 +1217,8 @@ def main(argv: list[str] | None = None) -> None:
         aggregate_sweep_rows.append(
             {
                 "family": str(cur["family"]),
-                "t": float(cur["t"]),
+                "profile": str(cur["profile"]),
+                "t": float(cur["t"]) if cur["t"] is not None else None,
                 "cfg": float(cur["cfg"]),
                 "count": int(s.size),
                 "mean_score": float(s.mean()) if s.size else 0.0,
@@ -1106,6 +1237,8 @@ def main(argv: list[str] | None = None) -> None:
         "num_prompts": len(all_rows),
         "reward_type": str(args.reward_type),
         "families": families,
+        "interp_k": int(args.interp_k),
+        "interp_labels_requested": [str(x) for x in args.interp_labels],
         "interp_values": [float(x) for x in t_values],
         "rows": all_rows,
         "aggregate_sweep": aggregate_sweep_rows,

@@ -61,6 +61,7 @@ search:
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - mkdir -p /mnt/data/v-yigu/model_cache/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/clip
       - mkdir -p /home/aiscuser/.cache && ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
+      - /opt/conda/envs/ptca/bin/python -c "import os; d='/mnt/data/v-yigu/model_cache/ImageReward'; os.makedirs(d,exist_ok=True); __import__('huggingface_hub').hf_hub_download('THUDM/ImageReward','ImageReward.pt',local_dir=d); print('[preload] ImageReward.pt ready')"
       - export HPSV2_PROMPT_DIR=/mnt/data/v-yigu/hpsv2_prompt_cache
       - export PROMPT_STYLE={prompt_style}
       - OUT_DIR="$$HPSV2_PROMPT_DIR" STYLE="$$PROMPT_STYLE" bash get_hpsv2_prompts.sh

@@ -166,10 +166,10 @@ class UnifiedRewardScorer:
     def _load_backends(self) -> None:
         target = "unifiedreward" if self.backend == "unified" else self.backend
         need_unifiedreward = target in {"unifiedreward", "auto"}
-        need_imagereward = target in {"imagereward", "blend", "auto"}
-        need_pickscore = target in {"pickscore", "auto"}
-        need_hpsv3 = target in {"hpsv3", "blend", "auto"}
-        need_hpsv2 = target in {"hpsv2", "blend", "auto"}
+        need_imagereward = target in {"imagereward", "blend", "auto", "all"}
+        need_pickscore = target in {"pickscore", "auto", "all"}
+        need_hpsv3 = target in {"hpsv3", "blend", "auto", "all"}
+        need_hpsv2 = target in {"hpsv2", "blend", "auto", "all"}
 
         if need_unifiedreward:
             self._try_load_unifiedreward()
@@ -994,6 +994,21 @@ class UnifiedRewardScorer:
             return self._score_unifiedreward_api(prompt, image)
         return self._score_unifiedreward_local(prompt, image)
 
+    def _score_all(self, prompt: str, image: Image.Image) -> float:
+        """Equal-weight mean of every available backend: imagereward, pickscore, hpsv2, hpsv3."""
+        scores: List[float] = []
+        if "imagereward" in self.available:
+            scores.append(self._score_imagereward(prompt, image))
+        if "pickscore" in self.available:
+            scores.append(self._score_pickscore(prompt, image))
+        if "hpsv2" in self.available:
+            scores.append(self._score_hpsv2(prompt, image))
+        if "hpsv3" in self.available:
+            scores.append(self._score_hpsv3(prompt, image))
+        if not scores:
+            raise RuntimeError("No backend available in 'all' mode.")
+        return float(sum(scores) / len(scores))
+
     def _score_blend(self, prompt: str, image: Image.Image) -> float:
         scored: Dict[str, float] = {}
         if "imagereward" in self.available:
@@ -1030,6 +1045,8 @@ class UnifiedRewardScorer:
             return self._score_hpsv2(prompt, image)
         if target == "blend":
             return self._score_blend(prompt, image)
+        if target == "all":
+            return self._score_all(prompt, image)
         if target == "unifiedreward":
             return self._score_unifiedreward(prompt, image)
         if target == "auto":

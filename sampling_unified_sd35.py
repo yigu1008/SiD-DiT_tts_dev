@@ -29,6 +29,7 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
+from blend_ops import nlerp_all, slerp_pair
 from reward_unified import UnifiedRewardScorer
 
 
@@ -1170,6 +1171,46 @@ def _expand_child(
     return new_dx, new_latents
 
 
+def expand_emb_with_interp(
+    emb: EmbeddingContext,
+    family: str,
+    n_steps: int,
+) -> EmbeddingContext:
+    """
+    Expand EmbeddingContext with slerp/nlerp interpolated variants.
+
+    For each adjacent pair of variants (i, i+1), inserts n_steps interpolated
+    embeddings at t = k/(n_steps+1) for k in 1..n_steps.  The MCTS action space
+    then covers both the original discrete variants and all interpolated points.
+    """
+    if family == "none" or n_steps <= 0 or len(emb.cond_text) <= 1:
+        return emb
+
+    new_text = list(emb.cond_text)
+    new_pooled = list(emb.cond_pooled)
+    n_orig = len(emb.cond_text)
+
+    for i in range(n_orig - 1):
+        a_t, b_t = emb.cond_text[i], emb.cond_text[i + 1]
+        a_p, b_p = emb.cond_pooled[i], emb.cond_pooled[i + 1]
+        for k in range(1, n_steps + 1):
+            t = k / (n_steps + 1)
+            if family == "slerp":
+                new_text.append(slerp_pair(a_t, b_t, t))
+                new_pooled.append(slerp_pair(a_p, b_p, t))
+            else:  # nlerp
+                w = torch.tensor([1.0 - t, t], device=a_t.device, dtype=a_t.dtype)
+                new_text.append(nlerp_all([a_t, b_t], w))
+                new_pooled.append(nlerp_all([a_p, b_p], w))
+
+    return EmbeddingContext(
+        cond_text=new_text,
+        cond_pooled=new_pooled,
+        uncond_text=emb.uncond_text,
+        uncond_pooled=emb.uncond_pooled,
+    )
+
+
 def run_mcts(
     args: argparse.Namespace,
     ctx: PipelineContext,
@@ -1179,7 +1220,12 @@ def run_mcts(
     variants: list[str],
     seed: int,
 ) -> SearchResult:
-    actions = [(vi, cfg) for vi in range(len(variants)) for cfg in args.cfg_scales]
+    family = getattr(args, "mcts_interp_family", "none")
+    n_interp = getattr(args, "mcts_n_interp", 1)
+    if family != "none":
+        emb = expand_emb_with_interp(emb, family, n_interp)
+        print(f"  mcts: interp={family} n_interp={n_interp} total_variants={len(emb.cond_text)}")
+    actions = [(vi, cfg) for vi in range(len(emb.cond_text)) for cfg in args.cfg_scales]
     n_actions = len(actions)
     latents0 = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx0 = torch.zeros_like(latents0)

@@ -57,6 +57,10 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--n_sims", type=int, default=50)
     parser.add_argument("--ucb_c", type=float, default=1.41)
+    parser.add_argument("--mcts_interp_family", choices=["none", "slerp", "nlerp"], default="none",
+                        help="Embedding interpolation family for MCTS action space expansion.")
+    parser.add_argument("--mcts_n_interp", type=int, default=1,
+                        help="Number of interpolation points inserted between each adjacent variant pair.")
     parser.add_argument("--smc_k", type=int, default=8)
     parser.add_argument("--smc_gamma", type=float, default=0.10)
     parser.add_argument("--ess_threshold", type=float, default=0.5)
@@ -96,7 +100,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--reward_backend",
-        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend"],
+        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "all"],
         default="unifiedreward",
     )
     parser.add_argument(

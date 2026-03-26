@@ -64,6 +64,8 @@ def _collect_sd35_records(method_out: str, method: str) -> tuple[list[ImageRecor
     mode_key = "base" if method == "baseline" else method
 
     for log_path in sorted(glob.glob(os.path.join(logs_dir, "rank_*.jsonl"))):
+        if os.path.basename(log_path).endswith("_rewrite_examples.jsonl"):
+            continue
         with open(log_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()

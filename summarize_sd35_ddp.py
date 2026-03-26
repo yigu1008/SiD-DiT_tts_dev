@@ -21,6 +21,8 @@ def load_rows(log_dir: str) -> List[Dict[str, Any]]:
     for name in sorted(os.listdir(log_dir)):
         if not (name.startswith("rank_") and name.endswith(".jsonl")):
             continue
+        if name.endswith("_rewrite_examples.jsonl"):
+            continue
         path = os.path.join(log_dir, name)
         with open(path, encoding="utf-8") as f:
             for line in f:
@@ -34,6 +36,8 @@ def summarize(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     by_mode = defaultdict(list)
     by_prompt = defaultdict(dict)
     for row in rows:
+        if "mode" not in row:
+            continue
         by_mode[row["mode"]].append(row)
         by_prompt[row["prompt_index"]][row["mode"]] = row
 

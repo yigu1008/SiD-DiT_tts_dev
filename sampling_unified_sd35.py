@@ -188,7 +188,7 @@ _BACKEND_CONFIGS = {
         "transformer_subfolder": None,
         "sigmas": None,       # linear schedule driven by --steps
         "dtype": "float16",
-        "gen_batch_size": 1,  # CFG doubles → [2,C,H,W] per step; 40GB is already tight
+        "gen_batch_size": 2,  # CFG doubles → [4,C,H,W] per step at gbs=2; may OOM on 40GB
     },
     # SenseFlow Large: 2-step, no CFG → no batch doubling → can use larger gen_batch_size.
     # On a 40 GB GPU: ~16 GB transformer + ~14 GB text-encoders + ~0.3 GB VAE ≈ 30 GB static,
@@ -343,7 +343,8 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
         f"local_rank={local_rank} cvd={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')} dtype={dtype_str})"
     )
     pipe = SiDSD3Pipeline.from_pretrained(args.model_id, torch_dtype=dtype).to(device)
-    pipe.enable_vae_slicing()
+    if hasattr(pipe, "enable_vae_slicing"):
+        pipe.enable_vae_slicing()
     # Normalize text-encoder dtypes explicitly. On some cluster images (Apex fused RMSNorm),
     # partially-fp32 encoder params can trigger Half/Float mismatch at prompt encoding time.
     for name in ("text_encoder", "text_encoder_2", "text_encoder_3"):

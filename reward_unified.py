@@ -32,6 +32,7 @@ UNIFIEDREWARD_MODEL_FALLBACKS = (
 class _BackendState:
     imagereward: Optional[object] = None
     hps_model: Optional[object] = None
+    hps_module: Optional[object] = None  # fallback for newer hpsv2 (module-level score())
     open_clip: Optional[object] = None
     hpsv3_inferencer: Optional[object] = None
     pickscore_model: Optional[object] = None
@@ -498,13 +499,23 @@ class UnifiedRewardScorer:
     def _try_load_hpsv2(self) -> None:
         try:
             import hpsv2 as hm
-            import open_clip
 
-            model = hm.utils.initialize_model().to(self.device).eval()
-            for p in model.parameters():
-                p.requires_grad_(False)
-            self.state.hps_model = model
-            self.state.open_clip = open_clip
+            # Strategy 1: old hpsv2 API — hm.utils.initialize_model() returns a CLIP model.
+            if hasattr(getattr(hm, "utils", None), "initialize_model"):
+                import open_clip
+                model = hm.utils.initialize_model().to(self.device).eval()
+                for p in model.parameters():
+                    p.requires_grad_(False)
+                self.state.hps_model = model
+                self.state.open_clip = open_clip
+            # Strategy 2: newer hpsv2 — module exposes hpsv2.score([img], prompt, hps_version=...).
+            elif callable(getattr(hm, "score", None)):
+                self.state.hps_module = hm
+            else:
+                raise RuntimeError(
+                    "hpsv2 has neither utils.initialize_model nor a callable score(); "
+                    "unsupported hpsv2 version."
+                )
             self.available.append("hpsv2")
         except Exception as exc:
             print(f"[Reward] HPSv2 unavailable: {exc}")
@@ -602,14 +613,19 @@ class UnifiedRewardScorer:
 
     @torch.no_grad()
     def _score_hpsv2(self, prompt: str, image: Image.Image) -> float:
-        assert self.state.hps_model is not None
-        assert self.state.open_clip is not None
-        toks = self.state.open_clip.tokenize([prompt]).to(self.device)
-        tf = self.state.hps_model.encode_text(toks)
-        tf = tf / tf.norm(dim=-1, keepdim=True)
-        vf = self.state.hps_model.encode_image(self._prep_hps_image(image))
-        vf = vf / vf.norm(dim=-1, keepdim=True)
-        return float((vf * tf).sum(dim=-1).item())
+        # Fast path: model loaded directly via old hpsv2 API.
+        if self.state.hps_model is not None:
+            assert self.state.open_clip is not None
+            toks = self.state.open_clip.tokenize([prompt]).to(self.device)
+            tf = self.state.hps_model.encode_text(toks)
+            tf = tf / tf.norm(dim=-1, keepdim=True)
+            vf = self.state.hps_model.encode_image(self._prep_hps_image(image))
+            vf = vf / vf.norm(dim=-1, keepdim=True)
+            return float((vf * tf).sum(dim=-1).item())
+        # Fallback: newer hpsv2 module-level score() API.
+        assert self.state.hps_module is not None
+        result = self.state.hps_module.score([image], prompt, hps_version="v2.1")
+        return float(result[0])
 
     @staticmethod
     def _extract_scalar_from_hpsv3_output(obj: Any) -> float:

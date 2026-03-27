@@ -97,11 +97,13 @@ def load_reward_model(device, preferred="auto"):
         if backend == "hpsv2":
             try:
                 import hpsv2 as hm
+                if not hasattr(getattr(hm, "utils", None), "initialize_model"):
+                    raise ImportError("hpsv2.utils.initialize_model not available in this version")
                 m = hm.utils.initialize_model().to(device).eval()
                 for p in m.parameters():
                     p.requires_grad_(False)
                 return m, "hpsv2"
-            except ImportError:
+            except (ImportError, Exception):
                 continue
         if backend == "imagereward":
             try:

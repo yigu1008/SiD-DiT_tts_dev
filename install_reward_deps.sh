@@ -43,6 +43,11 @@ if ! "${PY}" -m pip install --no-cache-dir "git+https://github.com/openai/CLIP.g
   "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "clip-anytorch"
 fi
 
+echo "[install] open-clip-torch (needed by old hpsv2 API)"
+if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "open-clip-torch"; then
+  echo "[install] warning: open-clip-torch install failed; old-API hpsv2 path will be skipped."
+fi
+
 echo "[install] wandb (required by ImageReward import path)"
 if ! "${PY}" -m pip install --no-cache-dir --force-reinstall "wandb"; then
   echo "[install] warning: wandb reinstall failed (likely permissions)."
@@ -65,8 +70,14 @@ if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" \
   "hpsv3" "omegaconf>=2.3.0" "hydra-core>=1.3.2"; then
   echo "[install] warning: hpsv3 install failed; continuing."
 fi
-if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "hpsv2"; then
-  echo "[install] warning: hpsv2 install failed; continuing."
+# hpsv2x is a drop-in replacement for hpsv2 that includes the missing BPE vocab file
+# (bpe_simple_vocab_16e6.txt.gz was omitted from the official hpsv2 PyPI release).
+# It still imports as `import hpsv2`. See: https://pypi.org/project/hpsv2x/
+if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "hpsv2x"; then
+  echo "[install] warning: hpsv2x install failed; falling back to hpsv2 (may have missing BPE file)."
+  if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "hpsv2"; then
+    echo "[install] warning: hpsv2 install also failed; continuing."
+  fi
 fi
 
 echo "[install] restoring protobuf/wandb compatibility (hpsv2 may downgrade protobuf)"

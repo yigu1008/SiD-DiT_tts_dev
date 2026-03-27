@@ -510,6 +510,9 @@ class UnifiedRewardScorer:
                 self.state.open_clip = open_clip
             # Strategy 2: newer hpsv2 — module exposes hpsv2.score([img], prompt, hps_version=...).
             elif callable(getattr(hm, "score", None)):
+                # Eagerly trigger the internal imports so a broken install
+                # (e.g. missing BPE vocab file) is caught here, not at score time.
+                import hpsv2.img_score as _hps_check  # noqa: F401
                 self.state.hps_module = hm
             else:
                 raise RuntimeError(

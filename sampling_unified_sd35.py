@@ -63,8 +63,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified SD3.5 sampling/search with unified reward.")
     parser.add_argument("--search_method", choices=["greedy", "mcts", "ga", "smc"], default="greedy")
 
-    parser.add_argument("--model_id", default="YGu1998/SiD-DiT-SD3.5-large")
+    parser.add_argument(
+        "--backend",
+        choices=["sid", "senseflow_large", "senseflow_medium"],
+        default=None,
+        help="Convenience shortcut: sets --model_id, --transformer_id, --transformer_subfolder, "
+             "and --sigmas together. Explicit flags override these defaults.",
+    )
+    parser.add_argument("--model_id", default=None)
     parser.add_argument("--ckpt", default=None)
+    parser.add_argument("--transformer_id", default=None,
+                        help="HuggingFace repo for the transformer (e.g. domiso/SenseFlow).")
+    parser.add_argument("--transformer_subfolder", default=None,
+                        help="Subfolder within --transformer_id (e.g. SenseFlow-SD35L/transformer).")
     parser.add_argument("--prompt", default="a cinematic portrait of a woman in soft rim light, 85mm, ultra detailed")
     parser.add_argument("--prompt_file", default=None)
 
@@ -77,6 +88,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--rewrites_file", default=None)
 
     parser.add_argument("--steps", type=int, default=4)
+    parser.add_argument(
+        "--sigmas",
+        nargs="+",
+        type=float,
+        default=None,
+        help="Explicit sigma schedule (overrides --backend default).",
+    )
     parser.add_argument(
         "--cfg_scales",
         nargs="+",
@@ -151,7 +169,64 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="standard",
         help="UnifiedReward prompt template mode.",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--dtype",
+        choices=["float16", "bfloat16"],
+        default=None,
+        help="Pipeline/transformer dtype. Defaults to backend setting (float16 for sid, bfloat16 for senseflow).",
+    )
+    args = parser.parse_args(argv)
+    return _apply_backend_defaults(args)
+
+
+_BACKEND_CONFIGS = {
+    # SiD student baked into the HF repo.
+    # CFG doubles the transformer batch at every step, so gen_batch_size=1 is the safe default.
+    "sid": {
+        "model_id": "YGu1998/SiD-DiT-SD3.5-large",
+        "transformer_id": None,
+        "transformer_subfolder": None,
+        "sigmas": None,       # linear schedule driven by --steps
+        "dtype": "float16",
+        "gen_batch_size": 1,  # CFG doubles → [2,C,H,W] per step; 40GB is already tight
+    },
+    # SenseFlow Large: 2-step, no CFG → no batch doubling → can use larger gen_batch_size.
+    # On a 40 GB GPU: ~16 GB transformer + ~14 GB text-encoders + ~0.3 GB VAE ≈ 30 GB static,
+    # leaving ~10 GB for activations.  gen_batch_size=2 → ~4-6 GB activation headroom → safe.
+    # Raise to 4 if you have headroom (e.g., after verifying with nvidia-smi).
+    "senseflow_large": {
+        "model_id": "stabilityai/stable-diffusion-3.5-large",
+        "transformer_id": "domiso/SenseFlow",
+        "transformer_subfolder": "SenseFlow-SD35L/transformer",
+        "sigmas": [1.0, 0.75],
+        "dtype": "bfloat16",  # SenseFlow official scripts use bfloat16
+        "gen_batch_size": 2,
+    },
+    "senseflow_medium": {
+        "model_id": "stabilityai/stable-diffusion-3.5-medium",
+        "transformer_id": "domiso/SenseFlow",
+        "transformer_subfolder": "SenseFlow-SD35M/transformer",
+        "sigmas": [1.0, 0.9, 0.75, 0.5],
+        "dtype": "bfloat16",
+        "gen_batch_size": 2,
+    },
+}
+
+
+def _apply_backend_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    """Fill model_id / transformer_id / sigmas / dtype / gen_batch_size from --backend."""
+    cfg = _BACKEND_CONFIGS.get(args.backend or "", {})
+    for key, val in cfg.items():
+        if getattr(args, key, None) is None:
+            setattr(args, key, val)
+    # Final fallbacks for fields not covered by any backend config.
+    if args.model_id is None:
+        args.model_id = _BACKEND_CONFIGS["senseflow_large"]["model_id"]
+    if getattr(args, "dtype", None) is None:
+        args.dtype = "float16"
+    if getattr(args, "gen_batch_size", None) is None:
+        args.gen_batch_size = 1
+    return args
 
 
 def _resolve_file(path_str: str, label: str) -> str:
@@ -205,6 +280,7 @@ class PipelineContext:
     device: str
     dtype: torch.dtype
     latent_c: int
+    nfe: int = 0  # incremented by transformer_step: +1 per step (cfg=1.0), +2 (cfg>1.0)
 
 
 @dataclass
@@ -258,14 +334,16 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
                 f"WORLD_SIZE={world_size} LOCAL_RANK={local_rank} "
                 f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')}"
             )
-    dtype = torch.float16
+    dtype_str = getattr(args, "dtype", None) or "float16"
+    dtype = torch.bfloat16 if dtype_str == "bfloat16" else torch.float16
     dev_count = int(torch.cuda.device_count()) if cuda_available else 0
     print(
         f"Loading SD3.5 pipeline: {args.model_id} "
         f"(device={device} cuda_available={cuda_available} device_count={dev_count} "
-        f"local_rank={local_rank} cvd={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')})"
+        f"local_rank={local_rank} cvd={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')} dtype={dtype_str})"
     )
     pipe = SiDSD3Pipeline.from_pretrained(args.model_id, torch_dtype=dtype).to(device)
+    pipe.enable_vae_slicing()
     # Normalize text-encoder dtypes explicitly. On some cluster images (Apex fused RMSNorm),
     # partially-fp32 encoder params can trigger Half/Float mismatch at prompt encoding time.
     for name in ("text_encoder", "text_encoder_2", "text_encoder_3"):
@@ -276,7 +354,17 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
             except Exception as exc:
                 print(f"[warn] unable to cast {name} to {dtype}: {exc}")
 
-    if args.ckpt:
+    transformer_id = getattr(args, "transformer_id", None)
+    transformer_subfolder = getattr(args, "transformer_subfolder", None)
+    if transformer_id:
+        # Load a HuggingFace-hosted transformer (e.g. SenseFlow on domiso/SenseFlow).
+        from diffusers.models.transformers import SD3Transformer2DModel
+        print(f"Loading transformer from {transformer_id} subfolder={transformer_subfolder}")
+        kwargs = {"torch_dtype": dtype}
+        if transformer_subfolder:
+            kwargs["subfolder"] = transformer_subfolder
+        pipe.transformer = SD3Transformer2DModel.from_pretrained(transformer_id, **kwargs).to(device)
+    elif args.ckpt:
         print(f"Loading transformer weights from {args.ckpt}")
         raw = torch.load(args.ckpt, map_location=device, weights_only=False)
         state_dict = _unwrap_state_dict(raw)
@@ -516,6 +604,7 @@ def transformer_step(
     n = latents.shape[0]
 
     if cfg == 1.0:
+        ctx.nfe += 1
         velocity = ctx.pipe.transformer(
             hidden_states=latents,
             encoder_hidden_states=pe.expand(n, -1, -1),
@@ -525,6 +614,7 @@ def transformer_step(
         )[0]
         return velocity
 
+    ctx.nfe += 2  # uncond + cond = 2 evaluations
     flow = ctx.pipe.transformer(
         hidden_states=torch.cat([latents, latents]),
         encoder_hidden_states=torch.cat([emb.uncond_text.expand(n, -1, -1), pe.expand(n, -1, -1)]),
@@ -550,11 +640,25 @@ def score_image(reward_model: UnifiedRewardScorer, prompt: str, image: Image.Ima
     return float(reward_model.score(prompt, image))
 
 
-def step_schedule(device: str, dtype: torch.dtype, steps: int) -> list[tuple[torch.Tensor, torch.Tensor]]:
+def step_schedule(
+    device: str,
+    dtype: torch.dtype,
+    steps: int,
+    sigmas: list[float] | None = None,
+) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    """Return (t_flat, t_4d) pairs for each denoising step.
+
+    If ``sigmas`` is provided it is used as the sigma schedule directly
+    (SenseFlow style: e.g. [1.0, 0.75] for 2-step Large).
+    Otherwise a uniform linear schedule over ``steps`` is used.
+    """
+    if sigmas is not None:
+        sigma_list = [float(s) for s in sigmas]
+    else:
+        sigma_list = [1.0 - float(i) / float(steps) for i in range(steps)]
     sched: list[tuple[torch.Tensor, torch.Tensor]] = []
-    for i in range(steps):
-        scalar_t = 999.0 * (1.0 - float(i) / float(steps))
-        t_flat = torch.full((1,), scalar_t / 999.0, device=device, dtype=dtype)
+    for s in sigma_list:
+        t_flat = torch.full((1,), s, device=device, dtype=dtype)
         t_4d = t_flat.view(1, 1, 1, 1)
         sched.append((t_flat, t_4d))
     return sched
@@ -571,7 +675,7 @@ def run_baseline(
 ) -> tuple[Image.Image, float]:
     latents = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx = torch.zeros_like(latents)
-    sched = step_schedule(ctx.device, latents.dtype, args.steps)
+    sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
     for i, (t_flat, t_4d) in enumerate(sched):
         noise = latents if i == 0 else torch.randn_like(latents)
         latents = (1.0 - t_4d) * dx + t_4d * noise
@@ -579,6 +683,138 @@ def run_baseline(
         dx = latents - t_4d * flow
     image = decode_to_pil(ctx, dx)
     return image, score_image(reward_model, prompt, image)
+
+
+@torch.no_grad()
+def run_baseline_batch(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    embs: list[EmbeddingContext],
+    reward_model: UnifiedRewardScorer,
+    prompts: list[str],
+    seeds: list[int],
+    cfg_scale: float = 1.0,
+) -> list[tuple[Image.Image, float]]:
+    """Baseline generation for B prompts batched through the transformer simultaneously."""
+    B = len(prompts)
+    dtype = embs[0].cond_text[0].dtype
+    latents = torch.cat([make_latents(ctx, s, args.height, args.width, dtype) for s in seeds])
+    dx = torch.zeros_like(latents)
+    sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
+
+    enc_hs = torch.cat([emb.cond_text[0] for emb in embs])    # [B, seq, dim]
+    pooled = torch.cat([emb.cond_pooled[0] for emb in embs])  # [B, dim]
+    if cfg_scale != 1.0:
+        uncond_hs = torch.cat([emb.uncond_text for emb in embs])
+        uncond_pooled = torch.cat([emb.uncond_pooled for emb in embs])
+
+    for i, (t_flat, t_4d) in enumerate(sched):
+        noise = latents if i == 0 else torch.randn_like(latents)
+        latents = (1.0 - t_4d) * dx + t_4d * noise
+        t_batch = t_flat.expand(B)
+        if cfg_scale == 1.0:
+            ctx.nfe += B
+            flow = ctx.pipe.transformer(
+                hidden_states=latents,
+                encoder_hidden_states=enc_hs,
+                pooled_projections=pooled,
+                timestep=args.time_scale * t_batch,
+                return_dict=False,
+            )[0]
+        else:
+            ctx.nfe += 2 * B
+            flow_both = ctx.pipe.transformer(
+                hidden_states=torch.cat([latents, latents]),
+                encoder_hidden_states=torch.cat([uncond_hs, enc_hs]),
+                pooled_projections=torch.cat([uncond_pooled, pooled]),
+                timestep=args.time_scale * torch.cat([t_batch, t_batch]),
+                return_dict=False,
+            )[0]
+            flow_u, flow_c = flow_both.chunk(2)
+            flow = flow_u + cfg_scale * (flow_c - flow_u)
+        dx = latents - t_4d * flow
+
+    out: list[tuple[Image.Image, float]] = []
+    for j in range(B):
+        img = decode_to_pil(ctx, dx[j : j + 1])
+        out.append((img, score_image(reward_model, prompts[j], img)))
+    return out
+
+
+@torch.no_grad()
+def run_greedy_batch(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    embs: list[EmbeddingContext],
+    reward_model: UnifiedRewardScorer,
+    prompts: list[str],
+    variants_list: list[list[str]],
+    seeds: list[int],
+) -> list[SearchResult]:
+    """Greedy search for B prompts. For each (variant, cfg) action, all B prompts are run
+    through the transformer in one batched forward pass."""
+    B = len(prompts)
+    dtype = embs[0].cond_text[0].dtype
+    actions = [(vi, cfg) for vi in range(len(embs[0].cond_text)) for cfg in args.cfg_scales]
+    latents = torch.cat([make_latents(ctx, s, args.height, args.width, dtype) for s in seeds])
+    dx = torch.zeros_like(latents)
+    sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
+    chosen_per: list[list[tuple[int, float]]] = [[] for _ in range(B)]
+
+    for step_idx, (t_flat, t_4d) in enumerate(sched):
+        noise = latents if step_idx == 0 else torch.randn_like(latents)
+        latents = (1.0 - t_4d) * dx + t_4d * noise  # [B, C, H, W]
+
+        best_scores = [-float("inf")] * B
+        best_actions: list[tuple[int, float]] = [actions[0]] * B
+        best_dx_list = [dx[j : j + 1].clone() for j in range(B)]
+
+        for variant_idx, cfg in actions:
+            enc_hs = torch.cat([embs[j].cond_text[variant_idx] for j in range(B)])    # [B, seq, dim]
+            pooled = torch.cat([embs[j].cond_pooled[variant_idx] for j in range(B)])  # [B, dim]
+            t_batch = t_flat.expand(B)
+            if cfg == 1.0:
+                ctx.nfe += B
+                flow = ctx.pipe.transformer(
+                    hidden_states=latents,
+                    encoder_hidden_states=enc_hs,
+                    pooled_projections=pooled,
+                    timestep=args.time_scale * t_batch,
+                    return_dict=False,
+                )[0]
+            else:
+                ctx.nfe += 2 * B
+                uncond_hs = torch.cat([embs[j].uncond_text for j in range(B)])
+                uncond_pooled = torch.cat([embs[j].uncond_pooled for j in range(B)])
+                flow_both = ctx.pipe.transformer(
+                    hidden_states=torch.cat([latents, latents]),
+                    encoder_hidden_states=torch.cat([uncond_hs, enc_hs]),
+                    pooled_projections=torch.cat([uncond_pooled, pooled]),
+                    timestep=args.time_scale * torch.cat([t_batch, t_batch]),
+                    return_dict=False,
+                )[0]
+                flow_u, flow_c = flow_both.chunk(2)
+                flow = flow_u + cfg * (flow_c - flow_u)
+
+            cand_dx = latents - t_4d * flow  # [B, C, H, W]
+            for j in range(B):
+                cand_img = decode_to_pil(ctx, cand_dx[j : j + 1])
+                cand_score = score_image(reward_model, prompts[j], cand_img)
+                if cand_score > best_scores[j]:
+                    best_scores[j] = cand_score
+                    best_actions[j] = (variant_idx, cfg)
+                    best_dx_list[j] = cand_dx[j : j + 1].clone()
+
+        dx = torch.cat(best_dx_list)
+        for j in range(B):
+            chosen_per[j].append(best_actions[j])
+
+    results = []
+    for j in range(B):
+        img = decode_to_pil(ctx, dx[j : j + 1])
+        score = score_image(reward_model, prompts[j], img)
+        results.append(SearchResult(image=img, score=score, actions=chosen_per[j]))
+    return results
 
 
 def run_greedy(
@@ -593,7 +829,7 @@ def run_greedy(
     actions = [(vi, cfg) for vi in range(len(variants)) for cfg in args.cfg_scales]
     latents = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx = torch.zeros_like(latents)
-    sched = step_schedule(ctx.device, latents.dtype, args.steps)
+    sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
     chosen: list[tuple[int, float]] = []
     for step_idx, (t_flat, t_4d) in enumerate(sched):
         noise = latents if step_idx == 0 else torch.randn_like(latents)
@@ -650,7 +886,7 @@ def run_schedule_actions(
 
     latents = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx = torch.zeros_like(latents)
-    sched = step_schedule(ctx.device, latents.dtype, args.steps)
+    sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
     for step_idx, ((t_flat, t_4d), (variant_idx, cfg)) in enumerate(zip(sched, actions)):
         noise = latents if step_idx == 0 else torch.randn_like(latents)
         latents = (1.0 - t_4d) * dx + t_4d * noise
@@ -697,7 +933,8 @@ def score_schedule_actions_batch(
 ) -> list[float]:
     if len(actions_batch) == 0:
         return []
-    steps = int(args.steps)
+    sigmas = getattr(args, "sigmas", None)
+    steps = len(sigmas) if sigmas is not None else int(args.steps)
     for actions in actions_batch:
         if len(actions) != steps:
             raise RuntimeError(f"Schedule length {len(actions)} does not match steps={steps}")
@@ -711,7 +948,7 @@ def score_schedule_actions_batch(
     base_latents = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     latents = base_latents.repeat(batch_n, 1, 1, 1)
     dx = torch.zeros_like(latents)
-    sched = step_schedule(ctx.device, latents.dtype, steps)
+    sched = step_schedule(ctx.device, latents.dtype, steps, sigmas)
     shared_noises: list[torch.Tensor] = [base_latents]
     for _ in range(1, steps):
         shared_noises.append(torch.randn_like(base_latents))
@@ -1342,7 +1579,7 @@ def run_smc(
         particle_latents.append(make_latents(ctx, seed + pi, args.height, args.width, emb.cond_text[0].dtype))
     latents = torch.cat(particle_latents, dim=0)
     dx = torch.zeros_like(latents)
-    sched = step_schedule(ctx.device, latents.dtype, args.steps)
+    sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
     rng = torch.Generator(device=ctx.device).manual_seed(seed + 6001)
 
     start_idx = int((1.0 - float(args.resample_start_frac)) * int(args.steps))

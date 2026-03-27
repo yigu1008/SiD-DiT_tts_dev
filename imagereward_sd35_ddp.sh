@@ -90,6 +90,7 @@ if [[ -n "${REWARD_API_BASE}" ]]; then
 fi
 
 torchrun --standalone --nproc_per_node "${NUM_GPUS}" "${SCRIPT_DIR}/sd35_ddp_experiment.py" \
+  --backend sid \
   --prompt_file "${PROMPT_FILE_ABS}" \
   --start_index "${START_INDEX:-0}" \
   --end_index "${END_INDEX:--1}" \

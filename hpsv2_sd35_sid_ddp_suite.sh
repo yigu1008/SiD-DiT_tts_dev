@@ -40,7 +40,9 @@ USE_QWEN="${USE_QWEN:-0}"
 QWEN_ID="${QWEN_ID:-Qwen/Qwen3-4B}"
 QWEN_DTYPE="${QWEN_DTYPE:-bfloat16}"
 QWEN_TIMEOUT_SEC="${QWEN_TIMEOUT_SEC:-240}"
+GEN_BATCH_SIZE="${GEN_BATCH_SIZE:-1}"
 SAVE_IMAGES="${SAVE_IMAGES:-0}"
+SAVE_BEST_IMAGES="${SAVE_BEST_IMAGES:-0}"
 SAVE_VARIANTS="${SAVE_VARIANTS:-0}"
 PRECOMPUTE_REWRITES="${PRECOMPUTE_REWRITES:-1}"
 REWRITES_FILE="${REWRITES_FILE:-}"
@@ -306,7 +308,7 @@ precompute_rewrites_cache() {
 post_eval_best_images() {
   local method_out="$1"
   local method_name="$2"
-  if [[ "${EVAL_BEST_IMAGES}" != "1" || "${SAVE_IMAGES}" != "1" ]]; then
+  if [[ "${EVAL_BEST_IMAGES}" != "1" || ( "${SAVE_IMAGES}" != "1" && "${SAVE_BEST_IMAGES}" != "1" ) ]]; then
     return 0
   fi
   local -a cmd=(
@@ -468,6 +470,9 @@ run_method() {
   if [[ "${SAVE_IMAGES}" == "1" ]]; then
     extra+=(--save_images)
   fi
+  if [[ "${SAVE_BEST_IMAGES}" == "1" ]]; then
+    extra+=(--save_best_images)
+  fi
   if [[ "${SAVE_VARIANTS}" == "1" ]]; then
     extra+=(--save_variants)
   fi
@@ -494,6 +499,8 @@ if not cuda_ok:
 PY
 
   torchrun --standalone --nproc_per_node "${NUM_GPUS}" "${SCRIPT_DIR}/sd35_ddp_experiment.py" \
+    --backend sid \
+    --gen_batch_size "${GEN_BATCH_SIZE}" \
     --prompt_file "${PROMPT_FILE}" \
     --start_index "${START_INDEX}" \
     --end_index "${END_INDEX}" \

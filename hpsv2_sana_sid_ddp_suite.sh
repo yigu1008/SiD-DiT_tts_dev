@@ -153,7 +153,7 @@ ensure_imagereward_runtime() {
 import xxhash
 import clip
 import ImageReward as RM
-print(xxhash.__version__, getattr(RM, "__file__", "ok"))
+print(getattr(xxhash, '__version__', 'ok'), getattr(RM, "__file__", "ok"))
 PY
   then
     return 0

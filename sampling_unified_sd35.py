@@ -317,6 +317,15 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
     except Exception:
         pass
 
+    # Compat shim: FLAX_WEIGHTS_NAME was removed from transformers.utils in >=4.50
+    # but older diffusers loaders still import it.
+    try:
+        import transformers.utils as _tu
+        if not hasattr(_tu, "FLAX_WEIGHTS_NAME"):
+            _tu.FLAX_WEIGHTS_NAME = "flax_model.msgpack"
+    except Exception:
+        pass
+
     from sid import SiDSD3Pipeline
 
     cuda_available = torch.cuda.is_available()

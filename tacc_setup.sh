@@ -54,9 +54,10 @@ PIP="${PYTHON_BIN} -m pip"
 echo "[setup] PYTHON_BIN=${PYTHON_BIN}"
 "${PYTHON_BIN}" -V
 
-# Data root: prefer $SCRATCH (TACC), fall back to $HOME/data
+# Data root: prefer $WORK (TACC, large quota, not auto-purged),
+# then $SCRATCH (large but purged after ~10 days), then $HOME/data.
 if [[ -z "${DATA_ROOT:-}" ]]; then
-  DATA_ROOT="${SCRATCH:-${HOME}/data}"
+  DATA_ROOT="${WORK:-${SCRATCH:-${HOME}/data}}"
 fi
 export DATA_ROOT
 

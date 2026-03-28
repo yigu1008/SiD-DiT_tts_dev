@@ -28,10 +28,13 @@ unset REWARD_BACKEND REWARD_TYPE REWARD_BACKENDS 2>/dev/null || true
 export NUM_GPUS="${NUM_GPUS:-8}"
 
 # Prompt / output
-HPSV2_PROMPT_DIR="${HPSV2_PROMPT_DIR:-${DATA_ROOT}/hpsv2_prompt_cache}"
+# Outputs go to $SCRATCH (large, OK for temporary results).
+# Model caches stay on $WORK (set via DATA_ROOT in tacc_setup.sh).
+_OUT_BASE="${SCRATCH:-${DATA_ROOT}}"
+HPSV2_PROMPT_DIR="${HPSV2_PROMPT_DIR:-${_OUT_BASE}/hpsv2_prompt_cache}"
 export HPSV2_PROMPT_DIR
 RUN_TAG="${RUN_TAG:-hpsv2_sd35_flux_allalgos}"
-export OUT_ROOT="${OUT_ROOT:-${DATA_ROOT}/hpsv2_all_models_runs/${RUN_TAG}}"
+export OUT_ROOT="${OUT_ROOT:-${_OUT_BASE}/hpsv2_all_models_runs/${RUN_TAG}}"
 export PROMPT_STYLE="${PROMPT_STYLE:-all}"
 export START_INDEX="${START_INDEX:-0}"
 export END_INDEX="${END_INDEX:--1}"

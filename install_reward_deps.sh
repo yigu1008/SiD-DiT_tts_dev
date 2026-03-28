@@ -86,6 +86,12 @@ if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" --for
   echo "[install] warning: wandb reinstall failed."
 fi
 
+# image-reward and other deps may downgrade transformers to a version that doesn't support
+# qwen3 (needed for UnifiedReward). Force-restore the qwen3-compatible version last.
+echo "[install] restoring transformers>=4.51.0 (qwen3 / UnifiedReward support)"
+"${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" \
+  "transformers>=4.51.0" "tokenizers>=0.19"
+
 echo "[verify] imports"
 "${PY}" - <<'PY' "${SCRIPT_DIR}"
 import sys

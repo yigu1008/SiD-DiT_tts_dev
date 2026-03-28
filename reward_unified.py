@@ -419,12 +419,11 @@ class UnifiedRewardScorer:
                 _inject_wandb_stub(str(exc))
 
         def _load() -> tuple[object, Optional[str]]:
-            # Compatibility shim:
-            # Some ImageReward releases expect BertModel.all_tied_weights_keys,
-            # while newer transformers expose _tied_weights_keys instead.
+            # Compatibility shims for ImageReward vs newer transformers:
             try:
                 import transformers
 
+                # 1. BertModel.all_tied_weights_keys removed in newer transformers.
                 bert_cls = getattr(transformers, "BertModel", None)
                 if bert_cls is not None and not hasattr(bert_cls, "all_tied_weights_keys"):
 
@@ -432,6 +431,25 @@ class UnifiedRewardScorer:
                         return getattr(self, "_tied_weights_keys", None)
 
                     bert_cls.all_tied_weights_keys = property(_all_tied_keys)  # type: ignore[attr-defined]
+
+                # 2. apply_chunking_to_forward removed from transformers.modeling_utils in newer versions.
+                import transformers.modeling_utils as _tmu
+                if not hasattr(_tmu, "apply_chunking_to_forward"):
+                    def _apply_chunking_to_forward(forward_fn, chunk_size, chunk_dim, *input_tensors):
+                        if chunk_size > 0:
+                            tensor_shape = input_tensors[0].shape[chunk_dim]
+                            if tensor_shape % chunk_size != 0:
+                                raise ValueError(
+                                    f"tensor shape {tensor_shape} not divisible by chunk_size {chunk_size}"
+                                )
+                            num_chunks = tensor_shape // chunk_size
+                            return torch.cat(
+                                [forward_fn(*[t.narrow(chunk_dim, c * chunk_size, chunk_size) for t in input_tensors])
+                                 for c in range(num_chunks)],
+                                dim=chunk_dim,
+                            )
+                        return forward_fn(*input_tensors)
+                    _tmu.apply_chunking_to_forward = _apply_chunking_to_forward
             except Exception:
                 pass
 

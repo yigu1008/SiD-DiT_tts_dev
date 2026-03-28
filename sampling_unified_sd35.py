@@ -317,12 +317,29 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
     except Exception:
         pass
 
-    # Compat shim: FLAX_WEIGHTS_NAME was removed from transformers.utils in >=4.50
-    # but older diffusers loaders still import it.
+    # Compat shims: constants/functions removed from transformers in newer versions
+    # but still imported by older diffusers/ImageReward code.
     try:
         import transformers.utils as _tu
         if not hasattr(_tu, "FLAX_WEIGHTS_NAME"):
             _tu.FLAX_WEIGHTS_NAME = "flax_model.msgpack"
+        import transformers.modeling_utils as _tmu
+        if not hasattr(_tmu, "apply_chunking_to_forward"):
+            def _apply_chunking_to_forward(forward_fn, chunk_size, chunk_dim, *input_tensors):
+                if chunk_size > 0:
+                    tensor_shape = input_tensors[0].shape[chunk_dim]
+                    if tensor_shape % chunk_size != 0:
+                        raise ValueError(
+                            f"tensor shape {tensor_shape} not divisible by chunk_size {chunk_size}"
+                        )
+                    num_chunks = tensor_shape // chunk_size
+                    return torch.cat(
+                        [forward_fn(*[t.narrow(chunk_dim, c * chunk_size, chunk_size) for t in input_tensors])
+                         for c in range(num_chunks)],
+                        dim=chunk_dim,
+                    )
+                return forward_fn(*input_tensors)
+            _tmu.apply_chunking_to_forward = _apply_chunking_to_forward
     except Exception:
         pass
 

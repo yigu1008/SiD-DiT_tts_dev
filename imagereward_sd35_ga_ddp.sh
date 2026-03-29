@@ -19,18 +19,34 @@ if [[ ! -f "${PROMPT_FILE}" ]]; then
 fi
 mkdir -p "${OUT_DIR}"
 
+_DEPS_STAMP="${HOME}/.cache/sid_deps/reward_deps_ok"
+_stamp_deps() { mkdir -p "$(dirname "${_DEPS_STAMP}")" && touch "${_DEPS_STAMP}"; }
+
 ensure_imagereward_runtime() {
+  if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_DEPS_STAMP}" ]]; then return 0; fi
   if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
 import xxhash
 import clip
+try:
+    import transformers.modeling_utils as _tmu
+    if not hasattr(_tmu, "apply_chunking_to_forward"):
+        def _acf(fn, cs, cd, *ts):
+            if cs > 0:
+                import torch; n = ts[0].shape[cd]
+                return torch.cat([fn(*[t.narrow(cd,c*cs,cs) for t in ts]) for c in range(n//cs)],dim=cd)
+            return fn(*ts)
+        _tmu.apply_chunking_to_forward = _acf
+except Exception:
+    pass
 import ImageReward as RM
 print(getattr(xxhash, '__version__', 'ok'), getattr(RM, "__file__", "ok"))
 PY
   then
-    return 0
+    _stamp_deps; return 0
   fi
   echo "[deps] ImageReward runtime deps missing. Installing with install_reward_deps.sh ..."
   PYTHON_BIN="${PYTHON_BIN}" bash "${SCRIPT_DIR}/install_reward_deps.sh"
+  _stamp_deps
 }
 
 ensure_imagereward_runtime

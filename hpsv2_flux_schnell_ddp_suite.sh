@@ -139,23 +139,39 @@ eval_backend_requested() {
   return 1
 }
 
+_DEPS_STAMP="${HOME}/.cache/sid_deps/reward_deps_ok"
+_stamp_deps() { mkdir -p "$(dirname "${_DEPS_STAMP}")" && touch "${_DEPS_STAMP}"; }
+
 ensure_imagereward_runtime() {
   local backend_lc
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
   if [[ "${backend_lc}" != "imagereward" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]] && ! eval_backend_requested "imagereward"; then
     return 0
   fi
+  if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_DEPS_STAMP}" ]]; then return 0; fi
   if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
 import xxhash
 import clip
+try:
+    import transformers.modeling_utils as _tmu
+    if not hasattr(_tmu, "apply_chunking_to_forward"):
+        def _acf(fn, cs, cd, *ts):
+            if cs > 0:
+                import torch; n = ts[0].shape[cd]
+                return torch.cat([fn(*[t.narrow(cd,c*cs,cs) for t in ts]) for c in range(n//cs)],dim=cd)
+            return fn(*ts)
+        _tmu.apply_chunking_to_forward = _acf
+except Exception:
+    pass
 import ImageReward as RM
 print(getattr(xxhash, '__version__', 'ok'), getattr(RM, "__file__", "ok"))
 PY
   then
-    return 0
+    _stamp_deps; return 0
   fi
   echo "[deps] ImageReward runtime deps missing. Installing with install_reward_deps.sh ..."
   PYTHON_BIN="${PYTHON_BIN}" bash "${SCRIPT_DIR}/install_reward_deps.sh"
+  _stamp_deps
 }
 
 ensure_imagereward_runtime
@@ -166,16 +182,18 @@ ensure_pickscore_runtime() {
   if [[ "${backend_lc}" != "pickscore" && "${backend_lc}" != "auto" ]] && ! eval_backend_requested "pickscore"; then
     return 0
   fi
+  if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_DEPS_STAMP}" ]]; then return 0; fi
   if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
 import timm
 from timm.data import ImageNetInfo
 print(timm.__version__, ImageNetInfo.__name__)
 PY
   then
-    return 0
+    _stamp_deps; return 0
   fi
   echo "[deps] PickScore runtime deps missing/incompatible (timm ImageNetInfo). Installing with install_reward_deps.sh ..."
   PYTHON_BIN="${PYTHON_BIN}" bash "${SCRIPT_DIR}/install_reward_deps.sh"
+  _stamp_deps
 }
 
 ensure_pickscore_runtime
@@ -186,6 +204,7 @@ ensure_hpsv2_runtime() {
   if [[ "${backend_lc}" != "hpsv2" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]] && ! eval_backend_requested "hpsv2"; then
     return 0
   fi
+  if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_DEPS_STAMP}" ]]; then return 0; fi
   if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
 import hpsv2
 print(getattr(hpsv2, "__file__", "ok"))
@@ -205,6 +224,7 @@ ensure_hpsv3_runtime() {
   if [[ "${backend_lc}" != "hpsv3" && "${backend_lc}" != "auto" ]] && ! eval_backend_requested "hpsv3"; then
     return 0
   fi
+  if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_DEPS_STAMP}" ]]; then return 0; fi
   if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
 import hpsv3
 import omegaconf
@@ -212,10 +232,11 @@ import hydra
 print(getattr(hpsv3, "__file__", "ok"), getattr(omegaconf, "__version__", "ok"), getattr(hydra, "__version__", "ok"))
 PY
   then
-    return 0
+    _stamp_deps; return 0
   fi
   echo "[deps] HPSv3 runtime deps missing. Installing with install_reward_deps.sh ..."
   PYTHON_BIN="${PYTHON_BIN}" bash "${SCRIPT_DIR}/install_reward_deps.sh"
+  _stamp_deps
 }
 
 ensure_hpsv3_runtime

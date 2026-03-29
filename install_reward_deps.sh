@@ -146,3 +146,9 @@ print("UnifiedRewardScorer", getattr(UnifiedRewardScorer, "__name__", "ok"))
 PY
 
 echo "[done] reward dependencies installed"
+
+# Write stamp so ensure_*_runtime functions skip the check on future runs.
+# Delete ~/.cache/sid_deps/reward_deps_ok to force a re-check (e.g. after env rebuild).
+_stamp="${HOME}/.cache/sid_deps/reward_deps_ok"
+mkdir -p "$(dirname "${_stamp}")" && touch "${_stamp}"
+echo "[done] stamp written: ${_stamp}"

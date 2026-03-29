@@ -18,6 +18,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ---------------------------------------------------------------------------
 # Environment setup (installs + env vars)
 # ---------------------------------------------------------------------------
+# SKIP_INSTALL=1 skips all pip installs in tacc_setup.sh (env already set up).
+# Defaults to 1 — set SKIP_INSTALL=0 to force a full reinstall.
+export SKIP_INSTALL="${SKIP_INSTALL:-1}"
 source "${SCRIPT_DIR}/tacc_setup.sh"
 
 # ---------------------------------------------------------------------------

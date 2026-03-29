@@ -178,31 +178,36 @@ PY
 ensure_imagereward_runtime
 
 ensure_pickscore_runtime() {
-  local backend_lc
+  local backend_lc _stamp
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
   if [[ "${backend_lc}" != "pickscore" && "${backend_lc}" != "auto" ]] && ! eval_backend_requested "pickscore"; then
     return 0
   fi
+  _stamp="${HOME}/.cache/sid_deps/reward_deps_ok"
+  if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_stamp}" ]]; then return 0; fi
   if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
 import timm
 from timm.data import ImageNetInfo
 print(timm.__version__, ImageNetInfo.__name__)
 PY
   then
-    return 0
+    mkdir -p "$(dirname "${_stamp}")" && touch "${_stamp}"; return 0
   fi
   echo "[deps] PickScore runtime deps missing/incompatible (timm ImageNetInfo). Installing with install_reward_deps.sh ..."
   PYTHON_BIN="${PYTHON_BIN}" bash "${SCRIPT_DIR}/install_reward_deps.sh"
+  mkdir -p "$(dirname "${_stamp}")" && touch "${_stamp}"
 }
 
 ensure_pickscore_runtime
 
 ensure_hpsv2_runtime() {
-  local backend_lc
+  local backend_lc _stamp
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
   if [[ "${backend_lc}" != "hpsv2" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]] && ! eval_backend_requested "hpsv2"; then
     return 0
   fi
+  _stamp="${HOME}/.cache/sid_deps/reward_deps_ok"
+  if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_stamp}" ]]; then return 0; fi
   if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
 import hpsv2
 print(getattr(hpsv2, "__file__", "ok"))
@@ -217,11 +222,13 @@ PY
 ensure_hpsv2_runtime
 
 ensure_hpsv3_runtime() {
-  local backend_lc
+  local backend_lc _stamp
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
   if [[ "${backend_lc}" != "hpsv3" && "${backend_lc}" != "auto" ]] && ! eval_backend_requested "hpsv3"; then
     return 0
   fi
+  _stamp="${HOME}/.cache/sid_deps/reward_deps_ok"
+  if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_stamp}" ]]; then return 0; fi
   if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
 import hpsv3
 import omegaconf
@@ -229,10 +236,11 @@ import hydra
 print(getattr(hpsv3, "__file__", "ok"), getattr(omegaconf, "__version__", "ok"), getattr(hydra, "__version__", "ok"))
 PY
   then
-    return 0
+    mkdir -p "$(dirname "${_stamp}")" && touch "${_stamp}"; return 0
   fi
   echo "[deps] HPSv3 runtime deps missing. Installing with install_reward_deps.sh ..."
   PYTHON_BIN="${PYTHON_BIN}" bash "${SCRIPT_DIR}/install_reward_deps.sh"
+  mkdir -p "$(dirname "${_stamp}")" && touch "${_stamp}"
 }
 
 ensure_hpsv3_runtime

@@ -25,7 +25,12 @@ source "${SCRIPT_DIR}/tacc_setup.sh"
 # ---------------------------------------------------------------------------
 unset REWARD_BACKEND REWARD_TYPE REWARD_BACKENDS 2>/dev/null || true
 
-export NUM_GPUS="${NUM_GPUS:-8}"
+NUM_GPUS="${NUM_GPUS:-$(python3 - <<'PY'
+import torch
+print(max(torch.cuda.device_count(), 1))
+PY
+)}"
+export NUM_GPUS
 
 # Prompt / output
 # Outputs go to $SCRATCH (large, OK for temporary results).

@@ -51,6 +51,14 @@ try:
                 return torch.cat([fn(*[t.narrow(cd,c*cs,cs) for t in ts]) for c in range(n//cs)],dim=cd)
             return fn(*ts)
         _tmu.apply_chunking_to_forward = _acf
+    if not hasattr(_tmu, "find_pruneable_heads_and_indices"):
+        import torch as _t
+        def _fphai(heads, n, hs, pruned):
+            mask=_t.ones(n,hs); heads=set(heads)-pruned
+            for h in sorted(heads):
+                h2=h-sum(1 for p in sorted(pruned) if p<h); mask[h2]=0
+            mask=mask.view(-1).eq(1); return heads,_t.arange(len(mask))[mask].long()
+        _tmu.find_pruneable_heads_and_indices=_fphai
 except Exception:
     pass
 import ImageReward as RM

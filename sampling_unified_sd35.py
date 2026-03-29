@@ -340,6 +340,17 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
                     )
                 return forward_fn(*input_tensors)
             _tmu.apply_chunking_to_forward = _apply_chunking_to_forward
+        if not hasattr(_tmu, "find_pruneable_heads_and_indices"):
+            def _find_pruneable_heads_and_indices(heads, n_heads, head_size, already_pruned_heads):
+                mask = torch.ones(n_heads, head_size)
+                heads = set(heads) - already_pruned_heads
+                for head in sorted(heads):
+                    head -= sum(1 for h in sorted(already_pruned_heads) if h < head)
+                    mask[head] = 0
+                mask = mask.view(-1).eq(1)
+                index = torch.arange(len(mask))[mask].long()
+                return heads, index
+            _tmu.find_pruneable_heads_and_indices = _find_pruneable_heads_and_indices
     except Exception:
         pass
 

@@ -62,10 +62,14 @@ fi
 export DATA_ROOT
 
 # ---------------------------------------------------------------------------
-# PATH
+# PATH / PYTHONPATH
 # ---------------------------------------------------------------------------
 export PATH="${HOME}/.local/bin:${PATH}"
 export PATH="${PATH}:/opt/conda/envs/ptca/bin"
+# Ensure this repo's directory is first in PYTHONPATH so that imports like
+# `import reward_unified` resolve here and not from any other copy of the repo
+# (e.g. a stale clone in $SCRATCH).
+export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}"
 
 # ---------------------------------------------------------------------------
 # HuggingFace / cache dirs

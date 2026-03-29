@@ -456,13 +456,34 @@ class UnifiedRewardScorer:
                     def _find_pruneable_heads_and_indices(heads, n_heads, head_size, already_pruned_heads):
                         mask = torch.ones(n_heads, head_size)
                         heads = set(heads) - already_pruned_heads
-                        for head in heads:
+                        for head in sorted(heads):
                             head -= sum(1 for h in sorted(already_pruned_heads) if h < head)
                             mask[head] = 0
                         mask = mask.view(-1).eq(1)
                         index = torch.arange(len(mask))[mask].long()
                         return heads, index
                     _tmu.find_pruneable_heads_and_indices = _find_pruneable_heads_and_indices
+
+                # 4. prune_linear_layer removed from transformers.modeling_utils in newer versions.
+                if not hasattr(_tmu, "prune_linear_layer"):
+                    import torch.nn as _nn
+                    def _prune_linear_layer(layer, index, dim=0):
+                        index = index.to(layer.weight.device)
+                        W = layer.weight.index_select(dim, index).clone().detach()
+                        if layer.bias is not None:
+                            b = layer.bias[index].clone().detach() if dim == 0 else layer.bias.clone().detach()
+                        new_size = list(layer.weight.size())
+                        new_size[dim] = len(index)
+                        new_layer = _nn.Linear(new_size[1], new_size[0], bias=layer.bias is not None).to(layer.weight.device)
+                        new_layer.weight.requires_grad = False
+                        new_layer.weight.copy_(W.contiguous())
+                        new_layer.weight.requires_grad = True
+                        if layer.bias is not None:
+                            new_layer.bias.requires_grad = False
+                            new_layer.bias.copy_(b.contiguous())
+                            new_layer.bias.requires_grad = True
+                        return new_layer
+                    _tmu.prune_linear_layer = _prune_linear_layer
             except Exception:
                 pass
 

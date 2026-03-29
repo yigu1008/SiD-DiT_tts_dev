@@ -66,9 +66,14 @@ echo "[install] UnifiedReward runtime deps (qwen-vl-utils, openai client)"
   "openai>=1.40.0"
 
 echo "[install] optional HPS backends (hpsv3/hpsv2)"
-if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" \
-  "hpsv3" "omegaconf>=2.3.0" "hydra-core>=1.3.2"; then
+# Install hpsv3 with --no-deps to prevent it from downgrading transformers to 4.45.2.
+# hpsv3 hard-pins transformers==4.45.2 in its metadata but works fine with newer versions.
+if ! "${PY}" -m pip install --no-cache-dir --no-deps --index-url "${PYPI_INDEX_URL}" "hpsv3"; then
   echo "[install] warning: hpsv3 install failed; continuing."
+fi
+if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" \
+  "omegaconf>=2.3.0" "hydra-core>=1.3.2"; then
+  echo "[install] warning: omegaconf/hydra-core install failed; continuing."
 fi
 # hpsv2x is a drop-in replacement for hpsv2 that includes the missing BPE vocab file
 # (bpe_simple_vocab_16e6.txt.gz was omitted from the official hpsv2 PyPI release).

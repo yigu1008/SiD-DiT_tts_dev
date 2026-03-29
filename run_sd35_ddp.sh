@@ -59,6 +59,18 @@ try:
                 h2=h-sum(1 for p in sorted(pruned) if p<h); mask[h2]=0
             mask=mask.view(-1).eq(1); return heads,_t.arange(len(mask))[mask].long()
         _tmu.find_pruneable_heads_and_indices=_fphai
+    if not hasattr(_tmu, "prune_linear_layer"):
+        import torch.nn as _nn
+        def _pll(layer, index, dim=0):
+            index=index.to(layer.weight.device)
+            W=layer.weight.index_select(dim,index).clone().detach()
+            b=layer.bias[index].clone().detach() if layer.bias is not None and dim==0 else (layer.bias.clone().detach() if layer.bias is not None else None)
+            ns=list(layer.weight.size()); ns[dim]=len(index)
+            nl=_nn.Linear(ns[1],ns[0],bias=layer.bias is not None).to(layer.weight.device)
+            nl.weight.requires_grad=False; nl.weight.copy_(W.contiguous()); nl.weight.requires_grad=True
+            if b is not None: nl.bias.requires_grad=False; nl.bias.copy_(b.contiguous()); nl.bias.requires_grad=True
+            return nl
+        _tmu.prune_linear_layer=_pll
 except Exception:
     pass
 import ImageReward as RM

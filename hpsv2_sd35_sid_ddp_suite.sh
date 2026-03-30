@@ -36,8 +36,7 @@ ESS_THRESHOLD="${ESS_THRESHOLD:-0.5}"
 RESAMPLE_START_FRAC="${RESAMPLE_START_FRAC:-0.3}"
 SMC_CFG_SCALE="${SMC_CFG_SCALE:-1.25}"
 SMC_VARIANT_IDX="${SMC_VARIANT_IDX:-0}"
-CORRECTION_STRENGTH="${CORRECTION_STRENGTH:-1.0}"
-CORRECTION_START_STEP="${CORRECTION_START_STEP:-0}"
+CORRECTION_STRENGTHS="${CORRECTION_STRENGTHS:-0.0}"
 USE_QWEN="${USE_QWEN:-0}"
 QWEN_ID="${QWEN_ID:-Qwen/Qwen3-4B}"
 QWEN_DTYPE="${QWEN_DTYPE:-bfloat16}"
@@ -493,7 +492,6 @@ run_method() {
     mcts) mode_arg="mcts" ;;
     ga) mode_arg="ga" ;;
     smc) mode_arg="smc" ;;
-    corrected) mode_arg="corrected" ;;
     *)
       echo "Error: unsupported method '${method}' for SD3.5 suite." >&2
       exit 1
@@ -591,8 +589,7 @@ PY
     --ga_crossover "${GA_CROSSOVER}" \
     --ga_log_topk "${GA_LOG_TOPK}" \
     --ga_eval_batch "${GA_EVAL_BATCH}" \
-    --correction_strength "${CORRECTION_STRENGTH}" \
-    --correction_start_step "${CORRECTION_START_STEP}" \
+    --correction_strengths ${CORRECTION_STRENGTHS} \
     --out_dir "${method_out}" \
     "${extra[@]}"
 

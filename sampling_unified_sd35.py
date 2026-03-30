@@ -117,18 +117,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--smc_cfg_scale", type=float, default=1.25)
     parser.add_argument("--smc_variant_idx", type=int, default=0)
     parser.add_argument(
-        "--correction_strength",
+        "--correction_strengths",
+        nargs="+",
         type=float,
-        default=0.0,
-        help="Reward-gradient correction strength applied to predicted x̂₀ at each step. "
-             "0.0 disables correction (default). Requires ImageReward backend.",
-    )
-    parser.add_argument(
-        "--correction_start_step",
-        type=int,
-        default=0,
-        help="First denoising step (0-indexed) at which reward correction is applied. "
-             "Skipping early high-noise steps can improve stability.",
+        default=[0.0],
+        help="Reward-gradient correction strength values to include as actions (like --cfg_scales). "
+             "[0.0] disables correction. E.g. --correction_strengths 0.0 0.5 1.0. "
+             "Requires ImageReward backend.",
     )
     parser.add_argument("--ga_population", type=int, default=24)
     parser.add_argument("--ga_generations", type=int, default=8)
@@ -309,7 +304,7 @@ class EmbeddingContext:
 class SearchResult:
     image: Image.Image
     score: float
-    actions: list[tuple[int, float]]
+    actions: list[tuple[int, float, float]]  # (variant_idx, cfg_scale, correction_strength)
     diagnostics: dict[str, Any] | None = None
 
 
@@ -786,10 +781,7 @@ def run_baseline(
     prompt: str,
     seed: int,
     cfg_scale: float = 1.0,
-    correction_strength: float | None = None,
 ) -> tuple[Image.Image, float]:
-    c_strength = correction_strength if correction_strength is not None else getattr(args, "correction_strength", 0.0)
-    c_start = getattr(args, "correction_start_step", 0)
     latents = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx = torch.zeros_like(latents)
     sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
@@ -798,8 +790,6 @@ def run_baseline(
         latents = (1.0 - t_4d) * dx + t_4d * noise
         flow = transformer_step(args, ctx, latents, emb, 0, t_flat, float(cfg_scale))
         dx = latents - t_4d * flow
-        if c_strength > 0.0 and i >= c_start:
-            dx = apply_reward_correction(ctx, dx, prompt, reward_model, c_strength)
     image = decode_to_pil(ctx, dx)
     return image, score_image(reward_model, prompt, image)
 
@@ -874,23 +864,33 @@ def run_greedy_batch(
     through the transformer in one batched forward pass."""
     B = len(prompts)
     dtype = embs[0].cond_text[0].dtype
-    actions = [(vi, cfg) for vi in range(len(embs[0].cond_text)) for cfg in args.cfg_scales]
+    corr_strengths = list(getattr(args, "correction_strengths", [0.0]))
+    actions = [
+        (vi, cfg, cs)
+        for vi in range(len(embs[0].cond_text))
+        for cfg in args.cfg_scales
+        for cs in corr_strengths
+    ]
     latents = torch.cat([make_latents(ctx, s, args.height, args.width, dtype) for s in seeds])
     dx = torch.zeros_like(latents)
     sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
-    chosen_per: list[list[tuple[int, float]]] = [[] for _ in range(B)]
+    chosen_per: list[list[tuple[int, float, float]]] = [[] for _ in range(B)]
+
+    # Group actions by (variant_idx, cfg) so each transformer call covers all correction variants.
+    # correction is applied after the flow step, so the transformer is called once per (vi, cfg) pair.
+    vc_actions: list[tuple[int, float]] = list(dict.fromkeys((vi, cfg) for vi, cfg, _ in actions))
 
     for step_idx, (t_flat, t_4d) in enumerate(sched):
         noise = latents if step_idx == 0 else torch.randn_like(latents)
         latents = (1.0 - t_4d) * dx + t_4d * noise  # [B, C, H, W]
 
         best_scores = [-float("inf")] * B
-        best_actions: list[tuple[int, float]] = [actions[0]] * B
+        best_actions: list[tuple[int, float, float]] = [actions[0]] * B
         best_dx_list = [dx[j : j + 1].clone() for j in range(B)]
 
-        for variant_idx, cfg in actions:
-            enc_hs = torch.cat([embs[j].cond_text[variant_idx] for j in range(B)])    # [B, seq, dim]
-            pooled = torch.cat([embs[j].cond_pooled[variant_idx] for j in range(B)])  # [B, dim]
+        for variant_idx, cfg in vc_actions:
+            enc_hs = torch.cat([embs[j].cond_text[variant_idx] for j in range(B)])
+            pooled = torch.cat([embs[j].cond_pooled[variant_idx] for j in range(B)])
             t_batch = t_flat.expand(B)
             if cfg == 1.0:
                 ctx.nfe += B
@@ -915,22 +915,19 @@ def run_greedy_batch(
                 flow_u, flow_c = flow_both.chunk(2)
                 flow = flow_u + cfg * (flow_c - flow_u)
 
-            cand_dx = latents - t_4d * flow  # [B, C, H, W]
-            for j in range(B):
-                cand_img = decode_to_pil(ctx, cand_dx[j : j + 1])
-                cand_score = score_image(reward_model, prompts[j], cand_img)
-                if cand_score > best_scores[j]:
-                    best_scores[j] = cand_score
-                    best_actions[j] = (variant_idx, cfg)
-                    best_dx_list[j] = cand_dx[j : j + 1].clone()
+            base_cand_dx = latents - t_4d * flow  # [B, C, H, W] — shared across correction variants
+            for cs in corr_strengths:
+                for j in range(B):
+                    cand_dx_j = base_cand_dx[j : j + 1].clone()
+                    if cs > 0.0:
+                        cand_dx_j = apply_reward_correction(ctx, cand_dx_j, prompts[j], reward_model, cs)
+                    cand_img = decode_to_pil(ctx, cand_dx_j)
+                    cand_score = score_image(reward_model, prompts[j], cand_img)
+                    if cand_score > best_scores[j]:
+                        best_scores[j] = cand_score
+                        best_actions[j] = (variant_idx, cfg, cs)
+                        best_dx_list[j] = cand_dx_j
 
-        c_strength = getattr(args, "correction_strength", 0.0)
-        c_start = getattr(args, "correction_start_step", 0)
-        if c_strength > 0.0 and step_idx >= c_start:
-            best_dx_list = [
-                apply_reward_correction(ctx, best_dx_list[j], prompts[j], reward_model, c_strength)
-                for j in range(B)
-            ]
         dx = torch.cat(best_dx_list)
         for j in range(B):
             chosen_per[j].append(best_actions[j])
@@ -952,11 +949,17 @@ def run_greedy(
     variants: list[str],
     seed: int,
 ) -> SearchResult:
-    actions = [(vi, cfg) for vi in range(len(variants)) for cfg in args.cfg_scales]
+    corr_strengths = list(getattr(args, "correction_strengths", [0.0]))
+    actions = [
+        (vi, cfg, cs)
+        for vi in range(len(variants))
+        for cfg in args.cfg_scales
+        for cs in corr_strengths
+    ]
     latents = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx = torch.zeros_like(latents)
     sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
-    chosen: list[tuple[int, float]] = []
+    chosen: list[tuple[int, float, float]] = []
     for step_idx, (t_flat, t_4d) in enumerate(sched):
         noise = latents if step_idx == 0 else torch.randn_like(latents)
         latents = (1.0 - t_4d) * dx + t_4d * noise
@@ -965,30 +968,33 @@ def run_greedy(
         best_action = actions[0]
         best_dx = None
 
+        # Compute transformer flow once per (variant_idx, cfg) pair, then branch on correction.
+        vc_seen: dict[tuple[int, float], torch.Tensor] = {}
         print(f"  step {step_idx + 1}/{args.steps}: {len(actions)} actions")
-        for variant_idx, cfg in actions:
-            flow = transformer_step(args, ctx, latents, emb, variant_idx, t_flat, cfg)
+        for variant_idx, cfg, cs in actions:
+            vc_key = (variant_idx, cfg)
+            if vc_key not in vc_seen:
+                vc_seen[vc_key] = transformer_step(args, ctx, latents, emb, variant_idx, t_flat, cfg)
+            flow = vc_seen[vc_key]
             cand_dx = latents - t_4d * flow
+            if cs > 0.0:
+                cand_dx = apply_reward_correction(ctx, cand_dx, prompt, reward_model, cs)
             cand_img = decode_to_pil(ctx, cand_dx)
             cand_score = score_image(reward_model, prompt, cand_img)
             marker = ""
             if cand_score > best_score:
                 best_score = cand_score
-                best_action = (variant_idx, cfg)
+                best_action = (variant_idx, cfg, cs)
                 best_dx = cand_dx.clone()
                 marker = " <- best"
-            print(f"    v{variant_idx} cfg={cfg:.2f} IR={cand_score:.4f}{marker}")
+            print(f"    v{variant_idx} cfg={cfg:.2f} corr={cs:.2f} IR={cand_score:.4f}{marker}")
 
         assert best_dx is not None
-        c_strength = getattr(args, "correction_strength", 0.0)
-        c_start = getattr(args, "correction_start_step", 0)
-        if c_strength > 0.0 and step_idx >= c_start:
-            best_dx = apply_reward_correction(ctx, best_dx, prompt, reward_model, c_strength)
         dx = best_dx
         chosen.append(best_action)
         preview = variants[best_action[0]][:56]
         print(
-            f"  selected v{best_action[0]} cfg={best_action[1]:.2f} "
+            f"  selected v{best_action[0]} cfg={best_action[1]:.2f} corr={best_action[2]:.2f} "
             f"prompt='{preview}' score={best_score:.4f}"
         )
 
@@ -1004,7 +1010,7 @@ def run_schedule_actions(
     reward_model: UnifiedRewardScorer,
     prompt: str,
     seed: int,
-    actions: list[tuple[int, float]],
+    actions: list[tuple[int, float, float]],
     deterministic_noise: bool = False,
 ) -> SearchResult:
     if len(actions) != args.steps:
@@ -1017,14 +1023,16 @@ def run_schedule_actions(
     latents = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx = torch.zeros_like(latents)
     sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
-    for step_idx, ((t_flat, t_4d), (variant_idx, cfg)) in enumerate(zip(sched, actions)):
+    for step_idx, ((t_flat, t_4d), (variant_idx, cfg, cs)) in enumerate(zip(sched, actions)):
         noise = latents if step_idx == 0 else torch.randn_like(latents)
         latents = (1.0 - t_4d) * dx + t_4d * noise
         flow = transformer_step(args, ctx, latents, emb, int(variant_idx), t_flat, float(cfg))
         dx = latents - t_4d * flow
+        if float(cs) > 0.0:
+            dx = apply_reward_correction(ctx, dx, prompt, reward_model, float(cs))
     image = decode_to_pil(ctx, dx)
     score = score_image(reward_model, prompt, image)
-    return SearchResult(image=image, score=score, actions=[(int(v), float(c)) for v, c in actions])
+    return SearchResult(image=image, score=score, actions=[(int(v), float(c), float(r)) for v, c, r in actions])
 
 
 def _batched_flow_for_step_actions(
@@ -1033,11 +1041,12 @@ def _batched_flow_for_step_actions(
     emb: EmbeddingContext,
     latents: torch.Tensor,
     t_flat: torch.Tensor,
-    step_actions: list[tuple[int, float]],
+    step_actions: list[tuple[int, float, float]],
 ) -> torch.Tensor:
+    """Batch transformer calls grouped by (variant_idx, cfg); correction is ignored here."""
     flow_out = torch.empty_like(latents)
     groups: dict[tuple[int, float], list[int]] = {}
-    for idx, (variant_idx, cfg) in enumerate(step_actions):
+    for idx, (variant_idx, cfg, _cs) in enumerate(step_actions):
         key = (int(variant_idx), float(cfg))
         groups.setdefault(key, []).append(int(idx))
 
@@ -1058,7 +1067,7 @@ def score_schedule_actions_batch(
     reward_model: UnifiedRewardScorer,
     prompt: str,
     seed: int,
-    actions_batch: list[list[tuple[int, float]]],
+    actions_batch: list[list[tuple[int, float, float]]],
     deterministic_noise: bool = True,
 ) -> list[float]:
     if len(actions_batch) == 0:
@@ -1092,6 +1101,10 @@ def score_schedule_actions_batch(
         step_actions = [actions[step_idx] for actions in actions_batch]
         flow = _batched_flow_for_step_actions(args, ctx, emb, latents, t_flat, step_actions)
         dx = latents - t_4d * flow
+        # Apply per-genome correction (uses enable_grad internally, safe under @no_grad).
+        for bi, (_vi, _cfg, cs) in enumerate(step_actions):
+            if float(cs) > 0.0:
+                dx[bi : bi + 1] = apply_reward_correction(ctx, dx[bi : bi + 1], prompt, reward_model, float(cs))
 
     scores: list[float] = []
     for bi in range(batch_n):
@@ -1100,17 +1113,23 @@ def score_schedule_actions_batch(
     return scores
 
 
-def _decode_genome(genome: list[int], cfg_scales: list[float], steps: int) -> list[tuple[int, float]]:
-    actions: list[tuple[int, float]] = []
+def _decode_genome(
+    genome: list[int],
+    cfg_scales: list[float],
+    corr_strengths: list[float],
+    steps: int,
+) -> list[tuple[int, float, float]]:
+    actions: list[tuple[int, float, float]] = []
     for step in range(steps):
-        vi = int(genome[2 * step])
-        ci = int(genome[2 * step + 1])
-        actions.append((vi, float(cfg_scales[ci])))
+        vi = int(genome[3 * step])
+        ci = int(genome[3 * step + 1])
+        ri = int(genome[3 * step + 2])
+        actions.append((vi, float(cfg_scales[ci]), float(corr_strengths[ri])))
     return actions
 
 
-def _actions_brief(actions: list[tuple[int, float]]) -> str:
-    return " ".join(f"s{i+1}:v{vi}/cfg{cfg:.2f}" for i, (vi, cfg) in enumerate(actions))
+def _actions_brief(actions: list[tuple[int, float, float]]) -> str:
+    return " ".join(f"s{i+1}:v{vi}/cfg{cfg:.2f}/c{cs:.2f}" for i, (vi, cfg, cs) in enumerate(actions))
 
 
 def _systematic_resample(weights: torch.Tensor) -> torch.Tensor:
@@ -1145,23 +1164,27 @@ def _repair_genome(
     steps: int,
     n_variants: int,
     n_cfg: int,
+    n_corr: int,
     phase_constraints: bool,
 ) -> list[int]:
-    out = list(genome[: 2 * steps])
-    if len(out) < 2 * steps:
-        out.extend([0] * (2 * steps - len(out)))
+    out = list(genome[: 3 * steps])
+    if len(out) < 3 * steps:
+        out.extend([0] * (3 * steps - len(out)))
     early_choices, late_choices = _phase_variant_choices(steps, n_variants)
     for step in range(steps):
-        v_pos = 2 * step
+        v_pos = 3 * step
         c_pos = v_pos + 1
+        r_pos = v_pos + 2
         vi = int(out[v_pos]) % max(n_variants, 1)
         ci = int(out[c_pos]) % max(n_cfg, 1)
+        ri = int(out[r_pos]) % max(n_corr, 1)
         if phase_constraints and n_variants > 1:
             choices = early_choices if step < max(1, steps // 2) else late_choices
             if vi not in choices:
                 vi = choices[vi % len(choices)]
         out[v_pos] = vi
         out[c_pos] = ci
+        out[r_pos] = ri
     return out
 
 
@@ -1169,6 +1192,7 @@ def _random_genome(
     steps: int,
     n_variants: int,
     n_cfg: int,
+    n_corr: int,
     phase_constraints: bool,
 ) -> list[int]:
     early_choices, late_choices = _phase_variant_choices(steps, n_variants)
@@ -1180,7 +1204,8 @@ def _random_genome(
             choices = list(range(n_variants))
         vi = int(choices[np.random.randint(len(choices))])
         ci = int(np.random.randint(n_cfg))
-        genome.extend([vi, ci])
+        ri = int(np.random.randint(n_corr))
+        genome.extend([vi, ci, ri])
     return genome
 
 
@@ -1228,6 +1253,7 @@ def _mutate_genome(
     steps: int,
     n_variants: int,
     n_cfg: int,
+    n_corr: int,
     mutation_prob: float,
     phase_constraints: bool,
 ) -> list[int]:
@@ -1235,8 +1261,9 @@ def _mutate_genome(
     p = max(0.0, min(1.0, float(mutation_prob)))
     early_choices, late_choices = _phase_variant_choices(steps, n_variants)
     for step in range(steps):
-        v_pos = 2 * step
+        v_pos = 3 * step
         c_pos = v_pos + 1
+        r_pos = v_pos + 2
         if float(np.random.rand()) < p:
             if phase_constraints and n_variants > 1:
                 choices = early_choices if step < max(1, steps // 2) else late_choices
@@ -1245,6 +1272,8 @@ def _mutate_genome(
             out[v_pos] = int(choices[np.random.randint(len(choices))])
         if float(np.random.rand()) < p:
             out[c_pos] = int(np.random.randint(n_cfg))
+        if float(np.random.rand()) < p:
+            out[r_pos] = int(np.random.randint(n_corr))
     return out
 
 
@@ -1261,6 +1290,8 @@ def run_ga(
 ) -> SearchResult:
     n_variants = len(variants)
     n_cfg = len(args.cfg_scales)
+    corr_strengths = list(getattr(args, "correction_strengths", [0.0]))
+    n_corr = max(1, len(corr_strengths))
     if n_variants <= 0 or n_cfg <= 0:
         raise RuntimeError("GA requires non-empty variants and cfg_scales.")
 
@@ -1268,17 +1299,17 @@ def run_ga(
     generations = max(1, int(args.ga_generations))
     elites = max(1, min(int(args.ga_elites), pop_size))
     steps = int(args.steps)
-    genome_len = 2 * steps
+    genome_len = 3 * steps
 
     baseline_cfg_idx = _closest_cfg_index(list(args.cfg_scales), float(args.baseline_cfg))
     baseline_genome: list[int] = []
     for _ in range(steps):
-        baseline_genome.extend([0, baseline_cfg_idx])
+        baseline_genome.extend([0, baseline_cfg_idx, 0])  # correction index 0 = no correction
 
-    population: list[list[int]] = [_repair_genome(baseline_genome, steps, n_variants, n_cfg, args.ga_phase_constraints)]
+    population: list[list[int]] = [_repair_genome(baseline_genome, steps, n_variants, n_cfg, n_corr, args.ga_phase_constraints)]
     while len(population) < pop_size:
-        g = _random_genome(steps, n_variants, n_cfg, args.ga_phase_constraints)
-        population.append(_repair_genome(g, steps, n_variants, n_cfg, args.ga_phase_constraints))
+        g = _random_genome(steps, n_variants, n_cfg, n_corr, args.ga_phase_constraints)
+        population.append(_repair_genome(g, steps, n_variants, n_cfg, n_corr, args.ga_phase_constraints))
 
     score_cache: dict[tuple[int, ...], float] = {}
     best_score = -float("inf")
@@ -1292,17 +1323,17 @@ def run_ga(
     def eval_genomes(genomes: list[list[int]]) -> list[tuple[float, list[int]]]:
         nonlocal eval_calls, cache_hits, cache_misses
         prepared: list[tuple[list[int], tuple[int, ...]]] = []
-        queued: dict[tuple[int, ...], list[tuple[int, float]]] = {}
+        queued: dict[tuple[int, ...], list[tuple[int, float, float]]] = {}
         for genome in genomes:
             eval_calls += 1
-            repaired = _repair_genome(genome, steps, n_variants, n_cfg, args.ga_phase_constraints)
+            repaired = _repair_genome(genome, steps, n_variants, n_cfg, n_corr, args.ga_phase_constraints)
             key = tuple(repaired)
             prepared.append((repaired, key))
             if key in score_cache or key in queued:
                 cache_hits += 1
                 continue
             cache_misses += 1
-            queued[key] = _decode_genome(repaired, list(args.cfg_scales), steps)
+            queued[key] = _decode_genome(repaired, list(args.cfg_scales), corr_strengths, steps)
 
         pending_items = list(queued.items())
         eval_batch = max(1, int(args.ga_eval_batch))
@@ -1353,7 +1384,7 @@ def run_ga(
         cache_hit_rate = float(cache_hits) / float(max(1, eval_calls_total))
         print(f"    gen {gen + 1:02d}/{generations} best={gen_best_score:.4f} mean={gen_mean:.4f}")
         for rank, (score, genome) in enumerate(gen_top, start=1):
-            actions = _decode_genome(genome, list(args.cfg_scales), steps)
+            actions = _decode_genome(genome, list(args.cfg_scales), corr_strengths, steps)
             print(f"      #{rank} score={score:.4f} {_actions_brief(actions)}")
 
         history.append(
@@ -1374,7 +1405,7 @@ def run_ga(
                         "rank": int(rank),
                         "score": float(score),
                         "genome": [int(x) for x in genome],
-                        "actions": [[int(v), float(c)] for v, c in _decode_genome(genome, list(args.cfg_scales), steps)],
+                        "actions": [[int(v), float(c), float(r)] for v, c, r in _decode_genome(genome, list(args.cfg_scales), corr_strengths, steps)],
                     }
                     for rank, (score, genome) in enumerate(gen_top, start=1)
                 ],
@@ -1399,16 +1430,17 @@ def run_ga(
                 steps,
                 n_variants,
                 n_cfg,
+                n_corr,
                 float(args.ga_mutation_prob),
                 args.ga_phase_constraints,
             )
-            child = _repair_genome(child, steps, n_variants, n_cfg, args.ga_phase_constraints)
+            child = _repair_genome(child, steps, n_variants, n_cfg, n_corr, args.ga_phase_constraints)
             if len(child) != genome_len:
                 child = child[:genome_len]
             next_population.append(child)
         population = next_population
 
-    best_actions = _decode_genome(best_genome, list(args.cfg_scales), steps)
+    best_actions = _decode_genome(best_genome, list(args.cfg_scales), corr_strengths, steps)
     best_result = run_schedule_actions(
         args,
         ctx,
@@ -1439,7 +1471,7 @@ def run_ga(
             "ga_phase_constraints": bool(args.ga_phase_constraints),
             "best_score": float(best_result.score),
             "best_genome": [int(x) for x in best_genome],
-            "best_actions": [[int(v), float(c)] for v, c in best_actions],
+            "best_actions": [[int(v), float(c), float(r)] for v, c, r in best_actions],
             "cache_stats": {
                 "eval_calls_total": int(eval_calls),
                 "cache_entries": int(len(score_cache)),
@@ -1453,14 +1485,12 @@ def run_ga(
         with open(history_json, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
         with open(history_txt, "w", encoding="utf-8") as f:
-            f.write(
-                "gen\tbest\tmean\ttop_actions\n"
-            )
+            f.write("gen\tbest\tmean\ttop_actions\n")
             for row in history:
                 top_actions = ""
                 if row["top"]:
                     top_actions = _actions_brief(
-                        [(int(v), float(c)) for v, c in row["top"][0]["actions"]]
+                        [(int(v), float(c), float(r)) for v, c, r in row["top"][0]["actions"]]
                     )
                 f.write(
                     f"{row['generation'] + 1}\t{row['best_score']:.6f}\t"
@@ -1470,7 +1500,7 @@ def run_ga(
     return SearchResult(
         image=best_result.image,
         score=float(best_result.score),
-        actions=[(int(v), float(c)) for v, c in best_actions],
+        actions=[(int(v), float(c), float(r)) for v, c, r in best_actions],
     )
 
 
@@ -1481,28 +1511,28 @@ class MCTSNode:
         self.step = step
         self.dx = dx
         self.latents = latents
-        self.children: dict[tuple[int, float], MCTSNode] = {}
+        self.children: dict[tuple[int, float, float], MCTSNode] = {}
         self.visits = 0
-        self.action_visits: dict[tuple[int, float], int] = {}
-        self.action_values: dict[tuple[int, float], float] = {}
+        self.action_visits: dict[tuple[int, float, float], int] = {}
+        self.action_values: dict[tuple[int, float, float], float] = {}
 
     def is_leaf(self, max_steps: int) -> bool:
         return self.step >= max_steps
 
-    def untried_actions(self, actions: list[tuple[int, float]]) -> list[tuple[int, float]]:
+    def untried_actions(self, actions: list[tuple[int, float, float]]) -> list[tuple[int, float, float]]:
         return [a for a in actions if a not in self.action_visits]
 
-    def ucb(self, action: tuple[int, float], c: float) -> float:
+    def ucb(self, action: tuple[int, float, float], c: float) -> float:
         n = self.action_visits.get(action, 0)
         if n == 0:
             return float("inf")
         mean = self.action_values[action] / n
         return mean + c * math.sqrt(math.log(max(self.visits, 1)) / n)
 
-    def best_ucb(self, actions: list[tuple[int, float]], c: float) -> tuple[int, float]:
+    def best_ucb(self, actions: list[tuple[int, float, float]], c: float) -> tuple[int, float, float]:
         return max(actions, key=lambda action: self.ucb(action, c))
 
-    def best_exploit(self, actions: list[tuple[int, float]]) -> tuple[int, float] | None:
+    def best_exploit(self, actions: list[tuple[int, float, float]]) -> tuple[int, float, float] | None:
         best = None
         best_v = -float("inf")
         for action in actions:
@@ -1521,13 +1551,17 @@ def _expand_child(
     ctx: PipelineContext,
     emb: EmbeddingContext,
     node: MCTSNode,
-    action: tuple[int, float],
+    action: tuple[int, float, float],
     sched: list[tuple[torch.Tensor, torch.Tensor]],
+    reward_model: "UnifiedRewardScorer",
+    prompt: str,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
-    variant_idx, cfg = action
+    variant_idx, cfg, cs = action
     t_flat, t_4d = sched[node.step]
     flow = transformer_step(args, ctx, node.latents, emb, variant_idx, t_flat, cfg)
     new_dx = node.latents - t_4d * flow
+    if float(cs) > 0.0:
+        new_dx = apply_reward_correction(ctx, new_dx, prompt, reward_model, float(cs))
     next_step = node.step + 1
     if next_step < len(sched):
         _, next_t_4d = sched[next_step]
@@ -1592,7 +1626,13 @@ def run_mcts(
     if family != "none":
         emb = expand_emb_with_interp(emb, family, n_interp)
         print(f"  mcts: interp={family} n_interp={n_interp} total_variants={len(emb.cond_text)}")
-    actions = [(vi, cfg) for vi in range(len(emb.cond_text)) for cfg in args.cfg_scales]
+    corr_strengths = list(getattr(args, "correction_strengths", [0.0]))
+    actions = [
+        (vi, cfg, cs)
+        for vi in range(len(emb.cond_text))
+        for cfg in args.cfg_scales
+        for cs in corr_strengths
+    ]
     n_actions = len(actions)
     latents0 = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx0 = torch.zeros_like(latents0)
@@ -1603,12 +1643,12 @@ def run_mcts(
 
     best_global_score = -float("inf")
     best_global_dx = None
-    best_global_path: list[tuple[int, float]] = []
+    best_global_path: list[tuple[int, float, float]] = []
 
     print(f"  mcts: sims={args.n_sims} actions={n_actions} steps={args.steps}")
     for sim in range(args.n_sims):
         node = root
-        path: list[tuple[MCTSNode, tuple[int, float]]] = []
+        path: list[tuple[MCTSNode, tuple[int, float, float]]] = []
 
         while not node.is_leaf(args.steps):
             untried = node.untried_actions(actions)
@@ -1621,7 +1661,7 @@ def run_mcts(
 
         if not node.is_leaf(args.steps):
             if action not in node.children:
-                child_dx, child_lat = _expand_child(args, ctx, emb, node, action, sched)
+                child_dx, child_lat = _expand_child(args, ctx, emb, node, action, sched, reward_model, prompt)
                 node.children[action] = MCTSNode(node.step + 1, child_dx, child_lat)
             path.append((node, action))
             node = node.children[action]
@@ -1630,10 +1670,12 @@ def run_mcts(
         rollout_latents = node.latents
         rollout_step = node.step
         while rollout_step < args.steps:
-            variant_idx, cfg = actions[np.random.randint(n_actions)]
+            variant_idx, cfg, cs = actions[np.random.randint(n_actions)]
             t_flat, t_4d = sched[rollout_step]
             flow = transformer_step(args, ctx, rollout_latents, emb, variant_idx, t_flat, cfg)
             rollout_dx = rollout_latents - t_4d * flow
+            if float(cs) > 0.0:
+                rollout_dx = apply_reward_correction(ctx, rollout_dx, prompt, reward_model, float(cs))
             rollout_step += 1
             if rollout_step < args.steps:
                 _, next_t_4d = sched[rollout_step]
@@ -1655,7 +1697,7 @@ def run_mcts(
         if (sim + 1) % 10 == 0 or sim == 0:
             print(f"    sim {sim + 1:3d}/{args.n_sims} best={best_global_score:.4f}")
 
-    exploit_path: list[tuple[int, float]] = []
+    exploit_path: list[tuple[int, float, float]] = []
     node = root
     for _ in range(args.steps):
         action = node.best_exploit(actions)
@@ -1669,10 +1711,12 @@ def run_mcts(
 
     replay_dx = dx0
     replay_lat = start_latents
-    for step_idx, (variant_idx, cfg) in enumerate(exploit_path):
+    for step_idx, (variant_idx, cfg, cs) in enumerate(exploit_path):
         t_flat, t_4d = sched[step_idx]
         flow = transformer_step(args, ctx, replay_lat, emb, variant_idx, t_flat, cfg)
         replay_dx = replay_lat - t_4d * flow
+        if float(cs) > 0.0:
+            replay_dx = apply_reward_correction(ctx, replay_dx, prompt, reward_model, float(cs))
         if step_idx + 1 < args.steps:
             _, next_t_4d = sched[step_idx + 1]
             noise = torch.randn_like(replay_dx)
@@ -1703,6 +1747,8 @@ def run_smc(
     k = max(2, int(args.smc_k))
     cfg = float(args.smc_cfg_scale)
     variant_idx = int(max(0, min(len(emb.cond_text) - 1, int(args.smc_variant_idx))))
+    corr_strengths = list(getattr(args, "correction_strengths", [0.0]))
+    smc_cs = float(corr_strengths[0]) if corr_strengths else 0.0
 
     particle_latents = []
     for pi in range(k):
@@ -1738,7 +1784,10 @@ def run_smc(
         next_dx_parts = []
         for pi in range(k):
             flow = transformer_step(args, ctx, latents[pi : pi + 1], emb, variant_idx, t_flat, cfg)
-            next_dx_parts.append(latents[pi : pi + 1] - t_4d * flow)
+            p_dx = latents[pi : pi + 1] - t_4d * flow
+            if smc_cs > 0.0:
+                p_dx = apply_reward_correction(ctx, p_dx, prompt, reward_model, smc_cs)
+            next_dx_parts.append(p_dx)
         dx = torch.cat(next_dx_parts, dim=0)
 
         if step_idx < start_idx:
@@ -1779,7 +1828,7 @@ def run_smc(
     return SearchResult(
         image=final_images[best_idx],
         score=float(final_scores[best_idx]),
-        actions=[(variant_idx, cfg) for _ in range(int(args.steps))],
+        actions=[(variant_idx, cfg, smc_cs) for _ in range(int(args.steps))],
         diagnostics=diagnostics,
     )
 

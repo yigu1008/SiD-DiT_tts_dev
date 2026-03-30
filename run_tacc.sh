@@ -77,9 +77,8 @@ export RESAMPLE_START_FRAC="${RESAMPLE_START_FRAC:-0.3}"
 export SMC_CFG_SCALE="${SMC_CFG_SCALE:-1.25}"
 export SMC_VARIANT_IDX="${SMC_VARIANT_IDX:-0}"
 
-# Reward correction
-export CORRECTION_STRENGTH="${CORRECTION_STRENGTH:-1.0}"
-export CORRECTION_START_STEP="${CORRECTION_START_STEP:-0}"
+# Reward correction (space-separated list of strengths, included as search actions)
+export CORRECTION_STRENGTHS="${CORRECTION_STRENGTHS:-0.0}"
 
 # GA
 export GA_POPULATION="${GA_POPULATION:-24}"

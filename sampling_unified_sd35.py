@@ -705,9 +705,13 @@ def apply_reward_correction(
 
     import torch.nn.functional as F  # noqa: PLC0415
 
-    ir_device = next(ir.parameters()).device
+    ir_p = next(ir.parameters())
+    ir_device = ir_p.device
+    ir_dtype = ir_p.dtype  # respect float16 / bfloat16 IR model
+    # Match VAE dtype so the decode forward pass doesn't get a type mismatch.
+    vae_dtype = next(ctx.pipe.vae.parameters()).dtype
 
-    dx_f = dx.detach().float().requires_grad_(True)
+    dx_f = dx.detach().to(dtype=vae_dtype).requires_grad_(True)
     with torch.enable_grad():
         shift = getattr(ctx.pipe.vae.config, "shift_factor", 0.0)
         img = ctx.pipe.vae.decode(
@@ -716,13 +720,13 @@ def apply_reward_correction(
         )[0]
         img_01 = ((img + 1.0) / 2.0).clamp(0.0, 1.0)
         img_224 = F.interpolate(
-            img_01.to(ir_device), size=(224, 224), mode="bicubic", align_corners=False
+            img_01.to(device=ir_device, dtype=ir_dtype), size=(224, 224), mode="bicubic", align_corners=False
         )
         mean = torch.tensor(
-            [0.48145466, 0.4578275, 0.40821073], device=ir_device, dtype=torch.float32
+            [0.48145466, 0.4578275, 0.40821073], device=ir_device, dtype=ir_dtype
         ).view(1, 3, 1, 1)
         std = torch.tensor(
-            [0.26862954, 0.26130258, 0.27577711], device=ir_device, dtype=torch.float32
+            [0.26862954, 0.26130258, 0.27577711], device=ir_device, dtype=ir_dtype
         ).view(1, 3, 1, 1)
         img_norm = (img_224 - mean) / std
         image_embeds = ir.blip.visual_encoder(img_norm)

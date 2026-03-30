@@ -245,6 +245,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # MCTS
     parser.add_argument("--n_sims", type=int, default=50)
     parser.add_argument("--ucb_c", type=float, default=1.41)
+    parser.add_argument(
+        "--correction_strengths",
+        nargs="+",
+        type=float,
+        default=[0.0],
+        help="Reward-gradient correction strengths to include as a search action (0.0 = off).",
+    )
     parser.add_argument("--smc_k", type=int, default=8)
     parser.add_argument("--smc_gamma", type=float, default=0.10)
     parser.add_argument("--ess_threshold", type=float, default=0.5)
@@ -724,6 +731,7 @@ class RewardContext:
     geneval_mode: str | None = None
     scorer_path: str | None = None
     before_decode: Any | None = None
+    raw_ir_model: Any | None = None  # raw ImageReward model for apply_reward_correction
 
 
 GENEVAL_SCORER_SCRIPT = r'''
@@ -928,7 +936,7 @@ def load_reward(args: argparse.Namespace, ctx: PipelineContext) -> RewardContext
             return [float(reward_model.score(prompt, img)) for img in images]
 
         before_decode = _before_decode if reward_device.startswith("cuda") else None
-        return RewardContext(kind="imagereward", score_images=score_images, before_decode=before_decode)
+        return RewardContext(kind="imagereward", score_images=score_images, before_decode=before_decode, raw_ir_model=reward_model)
 
     if args.reward_type in {"auto", "unifiedreward", "unified", "pickscore", "hpsv3", "hpsv2", "blend"}:
         reward_device = _resolve_reward_device()
@@ -1470,6 +1478,85 @@ def decode_to_pil(
     return pil
 
 
+def apply_reward_correction(
+    ctx: "PipelineContext",
+    dx: torch.Tensor,
+    prompt: str,
+    reward_ctx: "RewardContext",
+    strength: float,
+) -> torch.Tensor:
+    """Reward-gradient correction on the predicted x̂₀ via BLIP/ImageReward.
+    Only active when strength > 0 and ImageReward is loaded.
+    """
+    if strength <= 0.0:
+        return dx
+    ir = reward_ctx.raw_ir_model
+    if ir is None:
+        return dx
+
+    import torch.nn.functional as F  # noqa: PLC0415
+
+    ir_p = next(ir.parameters())
+    ir_device, ir_dtype = ir_p.device, ir_p.dtype
+    vae_dtype = next(ctx.pipe.vae.parameters()).dtype
+
+    torch.cuda.empty_cache()
+
+    vae_gc_was_enabled = getattr(ctx.pipe.vae, "gradient_checkpointing", False)
+    if not vae_gc_was_enabled:
+        try:
+            ctx.pipe.vae.enable_gradient_checkpointing()
+        except Exception:
+            pass
+
+    # Decode at half latent resolution — 4× less activation memory during backward.
+    dx_half = F.interpolate(
+        dx.detach().to(dtype=vae_dtype), scale_factor=0.5, mode="bilinear", align_corners=False
+    ).requires_grad_(True)
+
+    try:
+        with torch.enable_grad():
+            shift = getattr(ctx.pipe.vae.config, "shift_factor", 0.0)
+            img = ctx.pipe.vae.decode(
+                (dx_half / ctx.pipe.vae.config.scaling_factor) + shift,
+                return_dict=False,
+            )[0]
+            img_01 = ((img + 1.0) / 2.0).clamp(0.0, 1.0)
+            img_224 = F.interpolate(
+                img_01.to(device=ir_device, dtype=ir_dtype), size=(224, 224), mode="bicubic", align_corners=False
+            )
+            mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=ir_device, dtype=ir_dtype).view(1, 3, 1, 1)
+            std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=ir_device, dtype=ir_dtype).view(1, 3, 1, 1)
+            img_norm = (img_224 - mean) / std
+            image_embeds = ir.blip.visual_encoder(img_norm)
+            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long, device=ir_device)
+            text_tok = ir.blip.tokenizer(
+                prompt, padding="max_length", truncation=True, max_length=35, return_tensors="pt"
+            ).to(ir_device)
+            text_out = ir.blip.text_encoder(
+                text_tok.input_ids,
+                attention_mask=text_tok.attention_mask,
+                encoder_hidden_states=image_embeds,
+                encoder_attention_mask=image_atts,
+                return_dict=True,
+            )
+            reward = ir.mlp(text_out.last_hidden_state[:, 0, :])
+            reward = (reward - ir.mean) / ir.std
+            grad_half = torch.autograd.grad(reward.squeeze(), dx_half)[0]
+    finally:
+        if not vae_gc_was_enabled:
+            try:
+                ctx.pipe.vae.disable_gradient_checkpointing()
+            except Exception:
+                pass
+
+    grad = F.interpolate(grad_half.detach(), size=dx.shape[-2:], mode="bilinear", align_corners=False)
+    result = (dx + strength * grad.to(dx.device, dtype=dx.dtype)).detach()
+    del grad, grad_half, dx_half
+    torch.cuda.empty_cache()
+    return result
+
+
 def maybe_resize_to_bin(
     ctx: PipelineContext,
     height: int,
@@ -1490,7 +1577,7 @@ def maybe_resize_to_bin(
 class SearchResult:
     image: Image.Image
     score: float
-    actions: list[tuple[int, float]]
+    actions: list[tuple[int, float, float]]
     noise_schedule: list[str] | None = None
     diagnostics: dict[str, Any] | None = None
 
@@ -1567,7 +1654,7 @@ def run_action_sequence(
     orig_h: int,
     orig_w: int,
     emb: EmbeddingContext,
-    actions: list[tuple[int, float]],
+    actions: list[tuple[int, float, float]],
     noise_schedule: list[str] | None = None,
 ) -> SearchResult:
     if len(actions) != args.steps:
@@ -1579,7 +1666,7 @@ def run_action_sequence(
     dx = torch.zeros_like(latents)
     fixed_noise = latents.clone()
 
-    for step_idx, ((t_flat, t_4d), (variant_idx, cfg)) in enumerate(zip(schedule, actions)):
+    for step_idx, ((t_flat, t_4d), (variant_idx, cfg, cs)) in enumerate(zip(schedule, actions)):
         noise = _sample_step_noise(
             mode=resolved_noise[step_idx],
             step_idx=step_idx,
@@ -1593,6 +1680,7 @@ def run_action_sequence(
         pe, pm = emb.pe_list[variant_idx]
         velocity = transformer_step(args, ctx, latents, pe, pm, emb.ue, emb.um, t_flat, cfg)
         dx = latents - t_4d * velocity
+        dx = apply_reward_correction(ctx, dx, prompt, reward_ctx, float(cs))
 
     image = decode_to_pil(ctx, dx, orig_h, orig_w, tag="action_sequence_final")
     score = float(reward_ctx.score_images(prompt, [image], metadata)[0])
@@ -1626,12 +1714,12 @@ def _ga_default_actions(
     args: argparse.Namespace,
     prompt_bank: list[tuple[str, str]],
     cfg_bank: list[float],
-) -> list[tuple[int, float]]:
+) -> list[tuple[int, float, float]]:
     label_to_idx = {label: i for i, (label, _) in enumerate(prompt_bank)}
     pidx = label_to_idx.get("balanced", 0)
     cfg_target = 1.0
     cfg = min(cfg_bank, key=lambda x: abs(float(x) - cfg_target))
-    return [(pidx, float(cfg)) for _ in range(args.steps)]
+    return [(pidx, float(cfg), 0.0) for _ in range(args.steps)]
 
 
 def _ga_default_noise_schedule(args: argparse.Namespace, noise_bank: list[str]) -> list[str]:
@@ -1644,7 +1732,7 @@ def _ga_default_noise_schedule(args: argparse.Namespace, noise_bank: list[str]) 
 
 
 def _ga_actions_to_genome(
-    actions: list[tuple[int, float]],
+    actions: list[tuple[int, float, float]],
     noise_schedule: list[str],
     cfg_bank: list[float],
     noise_bank: list[str],
@@ -1652,7 +1740,7 @@ def _ga_actions_to_genome(
     if len(actions) != len(noise_schedule):
         raise ValueError(f"actions/noise_schedule length mismatch: {len(actions)} vs {len(noise_schedule)}")
     genome: list[int] = []
-    for (vi, cfg), noise_mode in zip(actions, noise_schedule):
+    for (vi, cfg, _cs), noise_mode in zip(actions, noise_schedule):
         cfg_idx = min(range(len(cfg_bank)), key=lambda i: abs(float(cfg_bank[i]) - float(cfg)))
         if len(noise_bank) == 0:
             raise ValueError("noise_bank cannot be empty")
@@ -1817,7 +1905,7 @@ def _ga_decode_genome(
     if len(genome) != expected_len:
         raise ValueError(f"Expected genome length={expected_len}, got {len(genome)}")
     repaired = list(genome)
-    actions: list[tuple[int, float]] = []
+    actions: list[tuple[int, float, float]] = []
     noise_schedule: list[str] = []
     for step in range(args.steps):
         p_raw = int(repaired[3 * step])
@@ -1834,7 +1922,7 @@ def _ga_decode_genome(
         repaired[3 * step] = int(p_idx)
         repaired[3 * step + 1] = int(c_idx)
         repaired[3 * step + 2] = int(n_idx)
-        actions.append((int(p_idx), float(cfg_bank[c_idx])))
+        actions.append((int(p_idx), float(cfg_bank[c_idx]), 0.0))
         noise_schedule.append(str(noise_bank[n_idx]))
     return repaired, actions, noise_schedule
 
@@ -2084,7 +2172,7 @@ def run_ga(
                     "need_image": bool(need_image),
                     "score": float(cached["score"]),
                     "genome": [int(x) for x in repaired],
-                    "actions": [[int(vi), float(cfg)] for vi, cfg in actions],
+                    "actions": [[int(vi), float(cfg), float(cs)] for vi, cfg, cs in actions],
                     "noise_schedule": list(noise_schedule),
                 }
             )
@@ -2122,7 +2210,7 @@ def run_ga(
                 "need_image": bool(need_image),
                 "score": float(payload["score"]),
                 "genome": [int(x) for x in repaired],
-                "actions": [[int(vi), float(cfg)] for vi, cfg in actions],
+                "actions": [[int(vi), float(cfg), float(cs)] for vi, cfg, cs in actions],
                 "noise_schedule": list(noise_schedule),
             }
         )
@@ -2147,7 +2235,7 @@ def run_ga(
                 with_img["image"].save(img_path)
                 img_name = os.path.basename(img_path)
             decoded = []
-            for step_i, ((vi, cfg), noise_mode) in enumerate(
+            for step_i, ((vi, cfg, cs), noise_mode) in enumerate(
                 zip(with_img["actions"], with_img.get("noise_schedule", ["fresh"] * args.steps))
             ):
                 label = prompt_bank[vi][0]
@@ -2157,6 +2245,7 @@ def run_ga(
                         "prompt_idx": int(vi),
                         "prompt_label": label,
                         "cfg": float(cfg),
+                        "correction_strength": float(cs),
                         "noise_mode": str(noise_mode),
                     }
                 )
@@ -2233,7 +2322,7 @@ def run_ga(
         population = next_population
 
     assert global_best is not None
-    best_actions = [(int(vi), float(cfg)) for vi, cfg in global_best["actions"]]
+    best_actions = [(int(vi), float(cfg), float(cs)) for vi, cfg, cs in global_best["actions"]]
     final_noise_schedule = [str(m) for m in global_best.get("noise_schedule", default_noise_schedule)]
     final_result = SearchResult(
         image=global_best["image"],
@@ -2271,7 +2360,7 @@ def run_ga(
             "nfe_total": int(eval_calls * int(args.steps)),
         },
         "baselines": {},
-        "baseline_actions": {"ga": [[int(vi), float(cfg)] for vi, cfg in final_result.actions]},
+        "baseline_actions": {"ga": [[int(vi), float(cfg), float(cs)] for vi, cfg, cs in final_result.actions]},
         "baseline_noise_schedules": {"ga": list(final_result.noise_schedule or [])},
     }
     if eval_log_path is not None:
@@ -2325,7 +2414,7 @@ def run_ga(
             for vi in prompt_ids:
                 for cfg in cfg_bank:
                     cand = list(greedy_actions)
-                    cand[step] = (int(vi), float(cfg))
+                    cand[step] = (int(vi), float(cfg), 0.0)
                     cand_result = run_action_sequence(
                         args,
                         ctx,
@@ -2343,7 +2432,7 @@ def run_ga(
                     )
                     if cand_result.score > best_score:
                         best_score = cand_result.score
-                        best = (int(vi), float(cfg))
+                        best = (int(vi), float(cfg), 0.0)
             greedy_actions[step] = best
         greedy_bank_result = run_action_sequence(
             args,
@@ -2385,10 +2474,10 @@ def run_ga(
         }
         diagnostics["baseline_actions"].update(
             {
-                "no_search": [[int(vi), float(cfg)] for vi, cfg in no_search_result.actions],
-                "random": [[int(vi), float(cfg)] for vi, cfg in random_best.actions],
-                "greedy": [[int(vi), float(cfg)] for vi, cfg in greedy_bank_result.actions],
-                "mcts": [[int(vi), float(cfg)] for vi, cfg in mcts_result.actions],
+                "no_search": [[int(vi), float(cfg), float(cs)] for vi, cfg, cs in no_search_result.actions],
+                "random": [[int(vi), float(cfg), float(cs)] for vi, cfg, cs in random_best.actions],
+                "greedy": [[int(vi), float(cfg), float(cs)] for vi, cfg, cs in greedy_bank_result.actions],
+                "mcts": [[int(vi), float(cfg), float(cs)] for vi, cfg, cs in mcts_result.actions],
             }
         )
         diagnostics["baseline_noise_schedules"].update(
@@ -2484,11 +2573,12 @@ def run_greedy(
     emb: EmbeddingContext,
     variants: list[str],
 ) -> SearchResult:
-    actions = [(vi, cfg) for vi in range(len(emb.pe_list)) for cfg in args.cfg_scales]
+    corr_strengths = getattr(args, "correction_strengths", [0.0])
+    actions = [(vi, cfg, cs) for vi in range(len(emb.pe_list)) for cfg in args.cfg_scales for cs in corr_strengths]
     latents = make_latents(ctx, seed, h, w, emb.pe_list[0][0].dtype)
     schedule = _step_tensors(ctx, args.steps, latents.dtype)
     dx = torch.zeros_like(latents)
-    chosen: list[tuple[int, float]] = []
+    chosen: list[tuple[int, float, float]] = []
 
     for step_idx, (t_flat, t_4d) in enumerate(schedule):
         noise = latents if step_idx == 0 else torch.randn_like(latents)
@@ -2499,26 +2589,27 @@ def run_greedy(
         best_dx = None
 
         print(f"  step {step_idx + 1}/{args.steps}: evaluating {len(actions)} actions")
-        for variant_idx, cfg in actions:
+        for variant_idx, cfg, cs in actions:
             pe, pm = emb.pe_list[variant_idx]
             velocity = transformer_step(args, ctx, latents, pe, pm, emb.ue, emb.um, t_flat, cfg)
             candidate_dx = latents - t_4d * velocity
+            candidate_dx = apply_reward_correction(ctx, candidate_dx, prompt, reward_ctx, float(cs))
             candidate_img = decode_to_pil(ctx, candidate_dx, orig_h, orig_w, tag="greedy_candidate")
             score = float(reward_ctx.score_images(prompt, [candidate_img], metadata)[0])
             mark = ""
             if score > best_score:
                 best_score = score
-                best_action = (variant_idx, cfg)
+                best_action = (variant_idx, cfg, cs)
                 best_dx = candidate_dx.clone()
                 mark = " <- best"
-            print(f"    v{variant_idx} cfg={cfg:.2f} score={score:.4f}{mark}")
+            print(f"    v{variant_idx} cfg={cfg:.2f} cs={cs:.2f} score={score:.4f}{mark}")
 
         assert best_dx is not None
         dx = best_dx
         chosen.append(best_action)
         preview_prompt = variants[best_action[0]][:56]
         print(
-            f"  selected: step={step_idx + 1} v={best_action[0]} cfg={best_action[1]:.2f} "
+            f"  selected: step={step_idx + 1} v={best_action[0]} cfg={best_action[1]:.2f} cs={best_action[2]:.2f} "
             f"prompt='{preview_prompt}' score={best_score:.4f}"
         )
 
@@ -2534,28 +2625,28 @@ class MCTSNode:
         self.step = step
         self.dx = dx
         self.latents = latents
-        self.children: dict[tuple[int, float], "MCTSNode"] = {}
+        self.children: dict[tuple[int, float, float], "MCTSNode"] = {}
         self.n = 0
-        self.action_n: dict[tuple[int, float], int] = {}
-        self.action_q: dict[tuple[int, float], float] = {}
+        self.action_n: dict[tuple[int, float, float], int] = {}
+        self.action_q: dict[tuple[int, float, float], float] = {}
 
     def is_leaf(self, steps: int) -> bool:
         return self.step >= steps
 
-    def untried_actions(self, actions: list[tuple[int, float]]) -> list[tuple[int, float]]:
+    def untried_actions(self, actions: list[tuple[int, float, float]]) -> list[tuple[int, float, float]]:
         return [action for action in actions if action not in self.action_n]
 
-    def ucb1(self, action: tuple[int, float], c: float) -> float:
+    def ucb1(self, action: tuple[int, float, float], c: float) -> float:
         action_visits = self.action_n.get(action, 0)
         if action_visits == 0:
             return float("inf")
         avg = self.action_q[action] / action_visits
         return avg + c * math.sqrt(math.log(max(self.n, 1)) / action_visits)
 
-    def best_action_ucb(self, actions: list[tuple[int, float]], c: float) -> tuple[int, float]:
+    def best_action_ucb(self, actions: list[tuple[int, float, float]], c: float) -> tuple[int, float, float]:
         return max(actions, key=lambda action: self.ucb1(action, c))
 
-    def best_action_exploit(self, actions: list[tuple[int, float]]) -> tuple[int, float] | None:
+    def best_action_exploit(self, actions: list[tuple[int, float, float]]) -> tuple[int, float, float] | None:
         best_action = None
         best_avg = -float("inf")
         for action in actions:
@@ -2574,14 +2665,17 @@ def _mcts_forward_child(
     ctx: PipelineContext,
     emb: EmbeddingContext,
     node: MCTSNode,
-    action: tuple[int, float],
+    action: tuple[int, float, float],
     schedule: list[tuple[torch.Tensor, torch.Tensor]],
+    reward_ctx: RewardContext,
+    prompt: str,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
-    variant_idx, cfg = action
+    variant_idx, cfg, cs = action
     pe, pm = emb.pe_list[variant_idx]
     t_flat, t_4d = schedule[node.step]
     velocity = transformer_step(args, ctx, node.latents, pe, pm, emb.ue, emb.um, t_flat, cfg)
     new_dx = node.latents - t_4d * velocity
+    new_dx = apply_reward_correction(ctx, new_dx, prompt, reward_ctx, float(cs))
     next_step = node.step + 1
     if next_step < len(schedule):
         _, next_t_4d = schedule[next_step]
@@ -2605,7 +2699,8 @@ def run_mcts(
     orig_w: int,
     emb: EmbeddingContext,
 ) -> SearchResult:
-    actions = [(vi, cfg) for vi in range(len(emb.pe_list)) for cfg in args.cfg_scales]
+    corr_strengths = getattr(args, "correction_strengths", [0.0])
+    actions = [(vi, cfg, cs) for vi in range(len(emb.pe_list)) for cfg in args.cfg_scales for cs in corr_strengths]
     n_actions = len(actions)
     latents_init = make_latents(ctx, seed, h, w, emb.pe_list[0][0].dtype)
     schedule = _step_tensors(ctx, args.steps, latents_init.dtype)
@@ -2617,14 +2712,14 @@ def run_mcts(
 
     best_global_score = -float("inf")
     best_global_dx = None
-    best_global_path: list[tuple[int, float]] = []
+    best_global_path: list[tuple[int, float, float]] = []
 
     print(
         f"  mcts sims={args.n_sims} actions_per_step={n_actions} steps={args.steps} c={args.ucb_c:.2f}"
     )
     for sim in range(args.n_sims):
         node = root
-        path: list[tuple[MCTSNode, tuple[int, float]]] = []
+        path: list[tuple[MCTSNode, tuple[int, float, float]]] = []
 
         # Select
         while not node.is_leaf(args.steps):
@@ -2639,7 +2734,7 @@ def run_mcts(
         # Expand
         if not node.is_leaf(args.steps):
             if action not in node.children:
-                new_dx, new_latents = _mcts_forward_child(args, ctx, emb, node, action, schedule)
+                new_dx, new_latents = _mcts_forward_child(args, ctx, emb, node, action, schedule, reward_ctx, prompt)
                 node.children[action] = MCTSNode(step=node.step + 1, dx=new_dx, latents=new_latents)
             path.append((node, action))
             node = node.children[action]
@@ -2649,11 +2744,12 @@ def run_mcts(
         rollout_latents = node.latents
         rollout_step = node.step
         while rollout_step < args.steps:
-            variant_idx, cfg = actions[np.random.randint(n_actions)]
+            variant_idx, cfg, cs = actions[np.random.randint(n_actions)]
             pe, pm = emb.pe_list[variant_idx]
             t_flat, t_4d = schedule[rollout_step]
             velocity = transformer_step(args, ctx, rollout_latents, pe, pm, emb.ue, emb.um, t_flat, cfg)
             rollout_dx = rollout_latents - t_4d * velocity
+            rollout_dx = apply_reward_correction(ctx, rollout_dx, prompt, reward_ctx, float(cs))
             rollout_step += 1
             if rollout_step < args.steps:
                 _, next_t_4d = schedule[rollout_step]
@@ -2677,7 +2773,7 @@ def run_mcts(
             print(f"    sim={sim + 1:3d}/{args.n_sims} best_score={best_global_score:.4f}")
 
     # Exploit best average path from the tree
-    exploit_path: list[tuple[int, float]] = []
+    exploit_path: list[tuple[int, float, float]] = []
     node = root
     for _ in range(args.steps):
         action = node.best_action_exploit(actions)
@@ -2691,11 +2787,12 @@ def run_mcts(
 
     replay_dx = dx_init
     replay_latents = latents_0
-    for step_idx, (variant_idx, cfg) in enumerate(exploit_path):
+    for step_idx, (variant_idx, cfg, cs) in enumerate(exploit_path):
         pe, pm = emb.pe_list[variant_idx]
         t_flat, t_4d = schedule[step_idx]
         velocity = transformer_step(args, ctx, replay_latents, pe, pm, emb.ue, emb.um, t_flat, cfg)
         replay_dx = replay_latents - t_4d * velocity
+        replay_dx = apply_reward_correction(ctx, replay_dx, prompt, reward_ctx, float(cs))
         if step_idx + 1 < args.steps:
             _, next_t_4d = schedule[step_idx + 1]
             noise = torch.randn_like(replay_dx)
@@ -2825,7 +2922,7 @@ def run_smc(
     return SearchResult(
         image=best_image,
         score=best_score,
-        actions=[(variant_idx, cfg) for _ in range(int(args.steps))],
+        actions=[(variant_idx, cfg, 0.0) for _ in range(int(args.steps))],
         diagnostics=diagnostics,
     )
 
@@ -2862,11 +2959,11 @@ def save_comparison(
         font=_font(15),
     )
     if noise_schedule is None or len(noise_schedule) != len(actions):
-        path_text = " ".join(f"s{idx + 1}:v{vi}/cfg{cfg:.2f}" for idx, (vi, cfg) in enumerate(actions))
+        path_text = " ".join(f"s{idx + 1}:v{vi}/cfg{cfg:.2f}" for idx, (vi, cfg, *_) in enumerate(actions))
     else:
         path_text = " ".join(
             f"s{idx + 1}:v{vi}/cfg{cfg:.2f}/{str(noise_schedule[idx])[:4]}"
-            for idx, (vi, cfg) in enumerate(actions)
+            for idx, (vi, cfg, *_) in enumerate(actions)
         )
     draw.text((width + 4, 28), path_text[:96], fill=(255, 220, 50), font=_font(11))
     grid.save(out_path)
@@ -3052,7 +3149,7 @@ def run(args: argparse.Namespace) -> None:
                 "baseline_score": baseline_score,
                 "search_score": search_result.score,
                 "delta_score": search_result.score - baseline_score,
-                "actions": [[int(vi), float(cfg)] for vi, cfg in search_result.actions],
+                "actions": [[int(vi), float(cfg), float(cs)] for vi, cfg, cs in search_result.actions],
             }
             if search_result.noise_schedule is not None:
                 sample_payload["noise_schedule"] = [str(m) for m in search_result.noise_schedule]

@@ -86,6 +86,7 @@ mkdir -p \
 
 mkdir -p "${HOME}/.cache"
 ln -sfn "${DATA_ROOT}/model_cache/clip" "${HOME}/.cache/clip" || true
+ln -sfn "${IMAGEREWARD_CACHE}" "${HOME}/.cache/ImageReward" || true
 
 # ---------------------------------------------------------------------------
 # NCCL / distributed env

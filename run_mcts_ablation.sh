@@ -21,12 +21,16 @@
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/shell_env.sh"
+# Use tacc_setup.sh (SKIP_INSTALL=1 = env vars only, no pip) to get HF_HOME,
+# DATA_ROOT, IMAGEREWARD_CACHE, etc. pointing at the right model cache on home1/work.
+export SKIP_INSTALL="${SKIP_INSTALL:-1}"
+source "${SCRIPT_DIR}/tacc_setup.sh"
 
 # ---------------------------------------------------------------------------
 # Base config (all ablations inherit these; override per-ablation below)
 # ---------------------------------------------------------------------------
 PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/hpsv2_subset.txt}"
+# Outputs go to $SCRATCH (large quota); model cache stays on $WORK via DATA_ROOT/HF_HOME.
 OUT_ROOT="${OUT_ROOT:-${SCRATCH:-${DATA_ROOT}}/mcts_ablation}"
 START_INDEX="${START_INDEX:-0}"
 END_INDEX="${END_INDEX:--1}"

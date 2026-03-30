@@ -211,6 +211,9 @@ run_ablation() {
   local begin_ts end_ts elapsed
   begin_ts="$(date +%s)"
 
+  IMAGEREWARD_CACHE="${IMAGEREWARD_CACHE}" \
+  HF_HOME="${HF_HOME}" \
+  HPS_ROOT="${HPS_ROOT}" \
   torchrun --standalone --nproc_per_node "${NUM_GPUS}" \
     "${SCRIPT_DIR}/sd35_ddp_experiment.py" \
     --backend sid \

@@ -95,7 +95,7 @@ export GA_EVAL_BATCH="${GA_EVAL_BATCH:-2}"
 # Models to run
 export RUN_SANA="${RUN_SANA:-0}"
 export RUN_SD35="${RUN_SD35:-1}"
-export RUN_FLUX="${RUN_FLUX:-1}"
+export RUN_FLUX="${RUN_FLUX:-0}"
 
 # Qwen rewrites
 export USE_QWEN="${USE_QWEN:-1}"

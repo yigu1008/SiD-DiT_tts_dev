@@ -14,14 +14,18 @@
 #
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/shell_env.sh"
+# Use tacc_setup.sh (SKIP_INSTALL=1 = env vars only, no pip) to get HF_HOME,
+# DATA_ROOT, IMAGEREWARD_CACHE, etc. pointing at the right model cache on $WORK.
+export SKIP_INSTALL="${SKIP_INSTALL:-1}"
+source "${SCRIPT_DIR}/tacc_setup.sh"
 
 # ---------------------------------------------------------------------------
 # Base config
 # ---------------------------------------------------------------------------
 MODEL_ID="${MODEL_ID:-black-forest-labs/FLUX.1-schnell}"
 PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/hpsv2_subset.txt}"
-OUT_ROOT="${OUT_ROOT:-/mnt/data/v-yigu/mcts_ablation_flux}"
+# Outputs go to $SCRATCH (large quota); model cache stays on $WORK via DATA_ROOT/HF_HOME.
+OUT_ROOT="${OUT_ROOT:-${SCRATCH:-${DATA_ROOT}}/mcts_ablation_flux}"
 START_INDEX="${START_INDEX:-0}"
 END_INDEX="${END_INDEX:--1}"
 
@@ -246,7 +250,11 @@ with open(dst, "w", encoding="utf-8") as f:
 PY
 
     launched=$(( launched + 1 ))
-    CUDA_VISIBLE_DEVICES="${gpu}" "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_flux_unified.py" \
+    CUDA_VISIBLE_DEVICES="${gpu}" \
+    IMAGEREWARD_CACHE="${IMAGEREWARD_CACHE}" \
+    HF_HOME="${HF_HOME}" \
+    HPS_ROOT="${HPS_ROOT}" \
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_flux_unified.py" \
       --search_method mcts \
       --model_id "${MODEL_ID}" \
       --prompt_file "${rank_prompt}" \

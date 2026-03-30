@@ -45,6 +45,8 @@ for reward_backend in ${REWARD_BACKENDS}; do
     START_INDEX="${START_INDEX}" \
     END_INDEX="${END_INDEX}" \
     REWARD_BACKEND="${reward_backend}" \
+    CORRECTION_STRENGTH="${CORRECTION_STRENGTH:-1.0}" \
+    CORRECTION_START_STEP="${CORRECTION_START_STEP:-0}" \
     bash "${SCRIPT_DIR}/hpsv2_sd35_sid_ddp_suite.sh"
   fi
 

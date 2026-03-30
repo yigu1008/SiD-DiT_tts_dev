@@ -116,6 +116,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--resample_start_frac", type=float, default=0.3)
     parser.add_argument("--smc_cfg_scale", type=float, default=1.25)
     parser.add_argument("--smc_variant_idx", type=int, default=0)
+    parser.add_argument(
+        "--correction_strength",
+        type=float,
+        default=0.0,
+        help="Reward-gradient correction strength applied to predicted x̂₀ at each step. "
+             "0.0 disables correction (default). Requires ImageReward backend.",
+    )
+    parser.add_argument(
+        "--correction_start_step",
+        type=int,
+        default=0,
+        help="First denoising step (0-indexed) at which reward correction is applied. "
+             "Skipping early high-noise steps can improve stability.",
+    )
     parser.add_argument("--ga_population", type=int, default=24)
     parser.add_argument("--ga_generations", type=int, default=8)
     parser.add_argument("--ga_elites", type=int, default=3)
@@ -674,6 +688,68 @@ def decode_to_pil(ctx: PipelineContext, dx: torch.Tensor) -> Image.Image:
     return ctx.pipe.image_processor.postprocess(image, output_type="pil")[0]
 
 
+def apply_reward_correction(
+    ctx: "PipelineContext",
+    dx: torch.Tensor,
+    prompt: str,
+    reward_model: "UnifiedRewardScorer",
+    strength: float,
+) -> torch.Tensor:
+    """Apply one step of reward-gradient ascent on the predicted x̂₀ (dx).
+
+    Computes dR/d(dx) via a differentiable BLIP forward pass through ImageReward,
+    then nudges dx in the reward-gradient direction.  No-op when strength <= 0 or
+    ImageReward is not loaded.
+    """
+    if strength <= 0.0:
+        return dx
+    state = getattr(reward_model, "state", None)
+    ir = getattr(state, "imagereward", None) if state is not None else None
+    if ir is None:
+        return dx
+
+    import torch.nn.functional as F  # noqa: PLC0415
+
+    ir_device = next(ir.parameters()).device
+
+    dx_f = dx.detach().float().requires_grad_(True)
+    with torch.enable_grad():
+        shift = getattr(ctx.pipe.vae.config, "shift_factor", 0.0)
+        img = ctx.pipe.vae.decode(
+            (dx_f / ctx.pipe.vae.config.scaling_factor) + shift,
+            return_dict=False,
+        )[0]
+        img_01 = ((img + 1.0) / 2.0).clamp(0.0, 1.0)
+        img_224 = F.interpolate(
+            img_01.to(ir_device), size=(224, 224), mode="bicubic", align_corners=False
+        )
+        mean = torch.tensor(
+            [0.48145466, 0.4578275, 0.40821073], device=ir_device, dtype=torch.float32
+        ).view(1, 3, 1, 1)
+        std = torch.tensor(
+            [0.26862954, 0.26130258, 0.27577711], device=ir_device, dtype=torch.float32
+        ).view(1, 3, 1, 1)
+        img_norm = (img_224 - mean) / std
+        image_embeds = ir.blip.visual_encoder(img_norm)
+        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long, device=ir_device)
+        text_tok = ir.blip.tokenizer(
+            prompt, padding="max_length", truncation=True, max_length=35, return_tensors="pt"
+        ).to(ir_device)
+        text_out = ir.blip.text_encoder(
+            text_tok.input_ids,
+            attention_mask=text_tok.attention_mask,
+            encoder_hidden_states=image_embeds,
+            encoder_attention_mask=image_atts,
+            return_dict=True,
+        )
+        txt_feat = text_out.last_hidden_state[:, 0, :]
+        reward = ir.mlp(txt_feat)
+        reward = (reward - ir.mean) / ir.std
+        grad = torch.autograd.grad(reward.squeeze(), dx_f)[0]
+
+    return (dx + strength * grad.to(dx.device, dtype=dx.dtype)).detach()
+
+
 def score_image(reward_model: UnifiedRewardScorer, prompt: str, image: Image.Image) -> float:
     return float(reward_model.score(prompt, image))
 
@@ -710,7 +786,10 @@ def run_baseline(
     prompt: str,
     seed: int,
     cfg_scale: float = 1.0,
+    correction_strength: float | None = None,
 ) -> tuple[Image.Image, float]:
+    c_strength = correction_strength if correction_strength is not None else getattr(args, "correction_strength", 0.0)
+    c_start = getattr(args, "correction_start_step", 0)
     latents = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx = torch.zeros_like(latents)
     sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
@@ -719,6 +798,8 @@ def run_baseline(
         latents = (1.0 - t_4d) * dx + t_4d * noise
         flow = transformer_step(args, ctx, latents, emb, 0, t_flat, float(cfg_scale))
         dx = latents - t_4d * flow
+        if c_strength > 0.0 and i >= c_start:
+            dx = apply_reward_correction(ctx, dx, prompt, reward_model, c_strength)
     image = decode_to_pil(ctx, dx)
     return image, score_image(reward_model, prompt, image)
 
@@ -843,6 +924,13 @@ def run_greedy_batch(
                     best_actions[j] = (variant_idx, cfg)
                     best_dx_list[j] = cand_dx[j : j + 1].clone()
 
+        c_strength = getattr(args, "correction_strength", 0.0)
+        c_start = getattr(args, "correction_start_step", 0)
+        if c_strength > 0.0 and step_idx >= c_start:
+            best_dx_list = [
+                apply_reward_correction(ctx, best_dx_list[j], prompts[j], reward_model, c_strength)
+                for j in range(B)
+            ]
         dx = torch.cat(best_dx_list)
         for j in range(B):
             chosen_per[j].append(best_actions[j])
@@ -892,6 +980,10 @@ def run_greedy(
             print(f"    v{variant_idx} cfg={cfg:.2f} IR={cand_score:.4f}{marker}")
 
         assert best_dx is not None
+        c_strength = getattr(args, "correction_strength", 0.0)
+        c_start = getattr(args, "correction_start_step", 0)
+        if c_strength > 0.0 and step_idx >= c_start:
+            best_dx = apply_reward_correction(ctx, best_dx, prompt, reward_model, c_strength)
         dx = best_dx
         chosen.append(best_action)
         preview = variants[best_action[0]][:56]

@@ -48,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end_index", type=int, default=-1, help="Exclusive end index; -1 means all.")
     parser.add_argument("--out_dir", default="./sd35_ddp_out")
 
-    parser.add_argument("--modes", nargs="+", choices=["base", "greedy", "mcts", "ga", "smc"], default=["base", "greedy", "mcts", "ga"])
+    parser.add_argument("--modes", nargs="+", choices=["base", "greedy", "mcts", "ga", "smc", "corrected"], default=["base", "greedy", "mcts", "ga"])
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--seed_per_prompt", action="store_true", help="Use seed + prompt_index for each prompt.")
 
@@ -87,6 +87,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resample_start_frac", type=float, default=0.3)
     parser.add_argument("--smc_cfg_scale", type=float, default=1.25)
     parser.add_argument("--smc_variant_idx", type=int, default=0)
+    parser.add_argument(
+        "--correction_strength",
+        type=float,
+        default=0.0,
+        help="Reward-gradient correction strength for the 'corrected' mode. "
+             "0.0 disables correction (default). Requires ImageReward backend.",
+    )
+    parser.add_argument(
+        "--correction_start_step",
+        type=int,
+        default=0,
+        help="First denoising step (0-indexed) at which reward correction is applied.",
+    )
     parser.add_argument("--ga_population", type=int, default=24)
     parser.add_argument("--ga_generations", type=int, default=8)
     parser.add_argument("--ga_elites", type=int, default=3)
@@ -617,6 +630,27 @@ def main() -> None:
                         "nfe": int(ctx.nfe),
                         "actions": [[int(v), float(c)] for v, c in smc.actions],
                         "search_diagnostics": smc.diagnostics,
+                    })
+                    total_rows_written += 1
+
+                if "corrected" in args.modes:
+                    ctx.nfe = 0
+                    corr_strength = float(args.correction_strength) if args.correction_strength > 0.0 else 1.0
+                    corr_img, corr_score = run_baseline(
+                        args, ctx, emb, reward_model, prompt, seed,
+                        cfg_scale=float(args.baseline_cfg),
+                        correction_strength=corr_strength,
+                    )
+                    if args.save_images or args.save_best_images:
+                        corr_img.save(os.path.join(img_dir, f"{slug}_corrected.png"))
+                    _write_row(rank_log_f, {
+                        "prompt_index": prompt_index, "prompt": prompt, "seed": seed,
+                        "mode": "corrected", "score": float(corr_score),
+                        "delta_vs_base": float(corr_score - base_score),
+                        "baseline_score": float(base_score),
+                        "nfe": int(ctx.nfe),
+                        "correction_strength": corr_strength,
+                        "correction_start_step": int(args.correction_start_step),
                     })
                     total_rows_written += 1
 

@@ -214,6 +214,7 @@ run_ablation() {
   IMAGEREWARD_CACHE="${IMAGEREWARD_CACHE}" \
   HF_HOME="${HF_HOME}" \
   HPS_ROOT="${HPS_ROOT}" \
+  PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
   torchrun --standalone --nproc_per_node "${NUM_GPUS}" \
     "${SCRIPT_DIR}/sd35_ddp_experiment.py" \
     --backend sid \

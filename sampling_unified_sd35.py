@@ -711,42 +711,70 @@ def apply_reward_correction(
     # Match VAE dtype so the decode forward pass doesn't get a type mismatch.
     vae_dtype = next(ctx.pipe.vae.parameters()).dtype
 
-    dx_f = dx.detach().to(dtype=vae_dtype).requires_grad_(True)
-    with torch.enable_grad():
-        shift = getattr(ctx.pipe.vae.config, "shift_factor", 0.0)
-        img = ctx.pipe.vae.decode(
-            (dx_f / ctx.pipe.vae.config.scaling_factor) + shift,
-            return_dict=False,
-        )[0]
-        img_01 = ((img + 1.0) / 2.0).clamp(0.0, 1.0)
-        img_224 = F.interpolate(
-            img_01.to(device=ir_device, dtype=ir_dtype), size=(224, 224), mode="bicubic", align_corners=False
-        )
-        mean = torch.tensor(
-            [0.48145466, 0.4578275, 0.40821073], device=ir_device, dtype=ir_dtype
-        ).view(1, 3, 1, 1)
-        std = torch.tensor(
-            [0.26862954, 0.26130258, 0.27577711], device=ir_device, dtype=ir_dtype
-        ).view(1, 3, 1, 1)
-        img_norm = (img_224 - mean) / std
-        image_embeds = ir.blip.visual_encoder(img_norm)
-        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long, device=ir_device)
-        text_tok = ir.blip.tokenizer(
-            prompt, padding="max_length", truncation=True, max_length=35, return_tensors="pt"
-        ).to(ir_device)
-        text_out = ir.blip.text_encoder(
-            text_tok.input_ids,
-            attention_mask=text_tok.attention_mask,
-            encoder_hidden_states=image_embeds,
-            encoder_attention_mask=image_atts,
-            return_dict=True,
-        )
-        txt_feat = text_out.last_hidden_state[:, 0, :]
-        reward = ir.mlp(txt_feat)
-        reward = (reward - ir.mean) / ir.std
-        grad = torch.autograd.grad(reward.squeeze(), dx_f)[0]
+    # Free fragmented allocations before the expensive autograd pass.
+    torch.cuda.empty_cache()
 
-    return (dx + strength * grad.to(dx.device, dtype=dx.dtype)).detach()
+    # Enable VAE gradient checkpointing to trade recompute for activation memory.
+    vae_gc_was_enabled = getattr(ctx.pipe.vae, "gradient_checkpointing", False)
+    if not vae_gc_was_enabled:
+        try:
+            ctx.pipe.vae.enable_gradient_checkpointing()
+        except Exception:
+            pass  # not all VAE versions support it; proceed anyway
+
+    # Decode at half latent resolution — 4× less activation memory.
+    # The correction is a nudge; low-res gradient direction is sufficient.
+    dx_half = F.interpolate(
+        dx.detach().to(dtype=vae_dtype), scale_factor=0.5, mode="bilinear", align_corners=False
+    ).requires_grad_(True)
+
+    try:
+        with torch.enable_grad():
+            shift = getattr(ctx.pipe.vae.config, "shift_factor", 0.0)
+            img = ctx.pipe.vae.decode(
+                (dx_half / ctx.pipe.vae.config.scaling_factor) + shift,
+                return_dict=False,
+            )[0]
+            img_01 = ((img + 1.0) / 2.0).clamp(0.0, 1.0)
+            img_224 = F.interpolate(
+                img_01.to(device=ir_device, dtype=ir_dtype), size=(224, 224), mode="bicubic", align_corners=False
+            )
+            mean = torch.tensor(
+                [0.48145466, 0.4578275, 0.40821073], device=ir_device, dtype=ir_dtype
+            ).view(1, 3, 1, 1)
+            std = torch.tensor(
+                [0.26862954, 0.26130258, 0.27577711], device=ir_device, dtype=ir_dtype
+            ).view(1, 3, 1, 1)
+            img_norm = (img_224 - mean) / std
+            image_embeds = ir.blip.visual_encoder(img_norm)
+            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long, device=ir_device)
+            text_tok = ir.blip.tokenizer(
+                prompt, padding="max_length", truncation=True, max_length=35, return_tensors="pt"
+            ).to(ir_device)
+            text_out = ir.blip.text_encoder(
+                text_tok.input_ids,
+                attention_mask=text_tok.attention_mask,
+                encoder_hidden_states=image_embeds,
+                encoder_attention_mask=image_atts,
+                return_dict=True,
+            )
+            txt_feat = text_out.last_hidden_state[:, 0, :]
+            reward = ir.mlp(txt_feat)
+            reward = (reward - ir.mean) / ir.std
+            grad_half = torch.autograd.grad(reward.squeeze(), dx_half)[0]
+    finally:
+        if not vae_gc_was_enabled:
+            try:
+                ctx.pipe.vae.disable_gradient_checkpointing()
+            except Exception:
+                pass
+
+    # Upsample gradient back to full latent resolution and apply correction.
+    grad = F.interpolate(grad_half.detach(), size=dx.shape[-2:], mode="bilinear", align_corners=False)
+    result = (dx + strength * grad.to(dx.device, dtype=dx.dtype)).detach()
+    del grad, grad_half, dx_half
+    torch.cuda.empty_cache()
+    return result
 
 
 def score_image(reward_model: UnifiedRewardScorer, prompt: str, image: Image.Image) -> float:

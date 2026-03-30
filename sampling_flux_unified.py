@@ -540,19 +540,25 @@ def flux_transformer_step(
     prompt_embeds = embed.prompt_embeds.expand(bsz, -1, -1).to(device=ctx.device)
     pooled = embed.pooled_prompt_embeds.expand(bsz, -1).to(device=ctx.device)
     text_ids = embed.text_ids.to(device=ctx.device)
-    guidance = torch.full((bsz,), float(guidance_scale), device=ctx.device, dtype=latents.dtype)
     t_flat = torch.full((bsz,), float(t_val), device=ctx.device, dtype=latents.dtype)
 
-    flow_packed = ctx.pipe.transformer(
+    # guidance_embeds is True for FLUX.1-dev (guidance distillation) and False for
+    # FLUX.1-schnell. Older diffusers versions raise TypeError when guidance is passed
+    # to a schnell transformer, so only include it when the config requires it.
+    transformer_kwargs: dict = dict(
         hidden_states=packed_latents,
         timestep=t_flat,
-        guidance=guidance,
         pooled_projections=pooled,
         encoder_hidden_states=prompt_embeds,
         txt_ids=text_ids,
         img_ids=latent_image_ids,
         return_dict=False,
-    )[0]
+    )
+    if getattr(ctx.pipe.transformer.config, "guidance_embeds", False):
+        guidance = torch.full((bsz,), float(guidance_scale), device=ctx.device, dtype=latents.dtype)
+        transformer_kwargs["guidance"] = guidance
+
+    flow_packed = ctx.pipe.transformer(**transformer_kwargs)[0]
 
     unpack_h = int(latents.shape[2]) * int(ctx.pipe.vae_scale_factor)
     unpack_w = int(latents.shape[3]) * int(ctx.pipe.vae_scale_factor)

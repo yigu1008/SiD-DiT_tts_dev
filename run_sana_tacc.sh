@@ -115,6 +115,16 @@ declare -A ABLATION_USE_QWEN=(
   [cfg_corr]=0
   [full]=1
 )
+declare -A ABLATION_SEARCH_METHOD=(
+  [none]=greedy
+  [prompt]=mcts
+  [cfg]=mcts
+  [correction]=mcts
+  [prompt_cfg]=mcts
+  [prompt_corr]=mcts
+  [cfg_corr]=mcts
+  [full]=mcts
+)
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -177,6 +187,34 @@ echo "  range=[${START_INDEX},${EFFECTIVE_END}) total=${RANGE_TOTAL}"
 echo
 
 # ---------------------------------------------------------------------------
+# Pre-cache model weights so worker processes never make outbound HF requests
+# (TACC compute nodes have no internet; from_pretrained hangs on hub checks)
+# ---------------------------------------------------------------------------
+preload_model_cache() {
+  echo "[preload] Caching model: ${MODEL_ID} ..."
+  env -u RANK -u LOCAL_RANK -u WORLD_SIZE -u LOCAL_WORLD_SIZE -u NODE_RANK \
+    -u MASTER_ADDR -u MASTER_PORT \
+    HF_HOME="${HF_HOME}" \
+    "${PYTHON_BIN}" - <<'PY'
+import os, sys
+from huggingface_hub import snapshot_download
+model_id = os.environ.get("_PRELOAD_MODEL_ID", "")
+hf_home  = os.environ.get("HF_HOME", "")
+cache_dir = hf_home if hf_home else None
+try:
+    snapshot_download(model_id, cache_dir=cache_dir)
+    print(f"[preload] {model_id} OK")
+except Exception as exc:
+    print(f"[preload] warning: {exc}", file=sys.stderr)
+PY
+}
+_PRELOAD_MODEL_ID="${MODEL_ID}" preload_model_cache
+
+# After preload, disable hub checks so every from_pretrained reads from local cache only
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+# ---------------------------------------------------------------------------
 # Pre-compute Qwen rewrites once (shared by prompt-using ablations)
 # ---------------------------------------------------------------------------
 SHARED_REWRITES="${ABLATION_DIR}/rewrites_cache.json"
@@ -233,11 +271,12 @@ run_ablation() {
   local cfg_scales="${ABLATION_CFG_SCALES[${name}]}"
   local corr_strengths="${ABLATION_CORRECTION_STRENGTHS[${name}]}"
   local use_qwen="${ABLATION_USE_QWEN[${name}]}"
+  local search_method="${ABLATION_SEARCH_METHOD[${name}]}"
   local abl_dir="${ABLATION_DIR}/${name}"
   mkdir -p "${abl_dir}"
 
   echo "[$(date '+%F %T')] ablation=${name} start"
-  echo "  n_variants=${n_var} cfg_scales=[${cfg_scales}] correction_strengths=[${corr_strengths}] use_qwen=${use_qwen}"
+  echo "  search_method=${search_method} n_variants=${n_var} cfg_scales=[${cfg_scales}] correction_strengths=[${corr_strengths}] use_qwen=${use_qwen}"
 
   # Build extra args
   local -a extra=()
@@ -282,9 +321,12 @@ PY
     IMAGEREWARD_CACHE="${IMAGEREWARD_CACHE}" \
     HF_HOME="${HF_HOME}" \
     HPS_ROOT="${HPS_ROOT}" \
+    HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}" \
+    TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}" \
     PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
-    "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified.py" \
-      --search_method mcts \
+    PYTHONUNBUFFERED=1 \
+    "${PYTHON_BIN}" -u "${SCRIPT_DIR}/sampling_unified.py" \
+      --search_method "${search_method}" \
       --model_id "${MODEL_ID}" \
       --prompt_file "${rank_prompt}" \
       --steps "${STEPS}" \

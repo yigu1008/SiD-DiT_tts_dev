@@ -90,6 +90,12 @@ declare -A ABLATION_USE_QWEN=(
   [cfg]=0
   [prompt_cfg]=1
 )
+declare -A ABLATION_SEARCH_METHOD=(
+  [none]=greedy
+  [prompt]=mcts
+  [cfg]=mcts
+  [prompt_cfg]=mcts
+)
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -152,6 +158,26 @@ echo "  range=[${START_INDEX},${EFFECTIVE_END}) total=${RANGE_TOTAL}"
 echo
 
 # ---------------------------------------------------------------------------
+# Pre-cache FLUX model weights so shard processes never make outbound HF requests
+# ---------------------------------------------------------------------------
+echo "[preload] Caching FLUX model: ${MODEL_ID} ..."
+env -u RANK -u LOCAL_RANK -u WORLD_SIZE -u LOCAL_WORLD_SIZE -u NODE_RANK \
+  -u MASTER_ADDR -u MASTER_PORT \
+  HF_HOME="${HF_HOME}" \
+  "${PYTHON_BIN}" -c "
+from huggingface_hub import snapshot_download
+import os, sys
+mid = '${MODEL_ID}'
+try:
+    snapshot_download(mid, cache_dir=os.environ.get('HF_HOME') or None)
+    print(f'[preload] {mid} OK')
+except Exception as e:
+    print(f'[preload] warning: {e}', file=sys.stderr)
+"
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+# ---------------------------------------------------------------------------
 # Pre-compute Qwen rewrites once (shared by prompt/prompt_cfg ablations)
 # ---------------------------------------------------------------------------
 SHARED_REWRITES="${ABLATION_DIR}/rewrites_cache.json"
@@ -207,11 +233,12 @@ run_ablation() {
   local n_var="${ABLATION_N_VARIANTS[${name}]}"
   local cfg_scales="${ABLATION_CFG_SCALES[${name}]}"
   local use_qwen="${ABLATION_USE_QWEN[${name}]}"
+  local search_method="${ABLATION_SEARCH_METHOD[${name}]}"
   local abl_dir="${ABLATION_DIR}/${name}"
   mkdir -p "${abl_dir}"
 
   echo "[$(date '+%F %T')] ablation=${name} start"
-  echo "  n_variants=${n_var} cfg_scales=[${cfg_scales}] use_qwen=${use_qwen}"
+  echo "  search_method=${search_method} n_variants=${n_var} cfg_scales=[${cfg_scales}] use_qwen=${use_qwen}"
 
   # Build extra args
   local -a extra=()
@@ -254,8 +281,11 @@ PY
     IMAGEREWARD_CACHE="${IMAGEREWARD_CACHE}" \
     HF_HOME="${HF_HOME}" \
     HPS_ROOT="${HPS_ROOT}" \
-    "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_flux_unified.py" \
-      --search_method mcts \
+    HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}" \
+    TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}" \
+    PYTHONUNBUFFERED=1 \
+    "${PYTHON_BIN}" -u "${SCRIPT_DIR}/sampling_flux_unified.py" \
+      --search_method "${search_method}" \
       --model_id "${MODEL_ID}" \
       --prompt_file "${rank_prompt}" \
       --n_prompts -1 \

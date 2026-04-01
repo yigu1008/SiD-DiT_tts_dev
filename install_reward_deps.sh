@@ -112,6 +112,8 @@ echo "[install] final restore: transformers, timm, ftfy, regex, xxhash"
 _pip --index-url "${PYPI_INDEX_URL}" \
   "transformers>=4.51.0" "tokenizers>=0.19" "timm==1.0.15" \
   "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
+_pip --index-url "${PYPI_INDEX_URL}" --force-reinstall --no-deps \
+  "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
 
 echo "[verify] imports"
 "${PY}" - <<'PY' "${SCRIPT_DIR}"
@@ -171,6 +173,8 @@ except Exception as exc:
     print("wandb import warning:", exc)
 import xxhash
 print("xxhash", getattr(xxhash, "__version__", "ok"))
+import importlib.metadata as md
+print("metadata ftfy/regex/xxhash", md.version("ftfy"), md.version("regex"), md.version("xxhash"))
 from reward_unified import UnifiedRewardScorer
 print("UnifiedRewardScorer", getattr(UnifiedRewardScorer, "__name__", "ok"))
 PY

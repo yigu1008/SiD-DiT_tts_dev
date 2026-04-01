@@ -62,8 +62,8 @@ search:
       - /opt/conda/envs/ptca/bin/pip install "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
       # Re-install after reward deps in case install_reward_deps.sh overwrote them
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
-      - /opt/conda/envs/ptca/bin/python -c "import xxhash, clip, ftfy; from timm.data import ImageNetInfo; print('reward deps core ok', getattr(xxhash, '__version__', 'ok'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__, ftfy.__version__)"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
+      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex; from timm.data import ImageNetInfo; print('reward deps core ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
       # ── Cache dirs & symlinks ──────────────────────────────────────────────
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
@@ -138,8 +138,8 @@ search:
       - export SAVE_BEST_IMAGES={save_best_images}
       - export SAVE_VARIANTS=0
       # ── Final pin: restore packages that earlier installs may have downgraded ──
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
-      - /opt/conda/envs/ptca/bin/python -c "import ftfy, regex, xxhash; print('final pin ok', ftfy.__version__, regex.__version__)"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
+      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash; print('final pin ok', md.version('ftfy'), md.version('regex'), md.version('xxhash'))"
       - bash hpsv2_sd35_flux_allalgos.sh
       # ── MCTS ablation on Flux Schnell ──────────────────────────────────────
       - export ABLATIONS='{ablations}'

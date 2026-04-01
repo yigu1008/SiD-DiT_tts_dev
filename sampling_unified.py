@@ -903,7 +903,10 @@ def load_reward(args: argparse.Namespace, ctx: PipelineContext) -> RewardContext
         reward_device = _resolve_reward_device()
         print(f"  ImageReward device={reward_device}")
 
-        reward_model = RM.load(args.image_reward_model, device=reward_device)
+        ir_cache = os.environ.get("IMAGEREWARD_CACHE", "").strip() or None
+        if ir_cache:
+            print(f"  ImageReward cache={ir_cache}")
+        reward_model = RM.load(args.image_reward_model, device=reward_device, download_root=ir_cache)
         reward_model.eval()
 
         runtime_device = str(reward_device)

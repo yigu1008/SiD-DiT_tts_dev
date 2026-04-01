@@ -63,6 +63,9 @@ SMC_GAMMA="${SMC_GAMMA:-0.10}"
 SMC_GUIDANCE_SCALE="${SMC_GUIDANCE_SCALE:-1.25}"
 SMC_CHUNK="${SMC_CHUNK:-4}"
 
+BON_N="${BON_N:-16}"
+BEAM_WIDTH="${BEAM_WIDTH:-4}"
+
 NUM_GPUS="${NUM_GPUS:-0}"
 
 if [[ ! -f "${PROMPT_FILE}" ]]; then
@@ -468,7 +471,7 @@ with open(dst, "w", encoding="utf-8") as f:
 PY
 
     launched=$((launched + 1))
-    CUDA_VISIBLE_DEVICES="${gpu}" "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_flux_unified.py" \
+    CUDA_VISIBLE_DEVICES="${gpu}" PYTHONUNBUFFERED=1 "${PYTHON_BIN}" -u "${SCRIPT_DIR}/sampling_flux_unified.py" \
       --search_method "${flux_search_method}" \
       --model_id "${MODEL_ID}" \
       --prompt_file "${rank_prompt}" \
@@ -574,6 +577,16 @@ for method in ${METHODS}; do
         --smc_gamma "${SMC_GAMMA}" \
         --smc_guidance_scale "${SMC_GUIDANCE_SCALE}" \
         --smc_chunk "${SMC_CHUNK}"
+      ;;
+    bon)
+      run_flux_sharded "bon" "bon" \
+        --bon_n "${BON_N}"
+      ;;
+    beam)
+      run_flux_sharded "beam" "beam" \
+        --beam_width "${BEAM_WIDTH}" \
+        --n_variants "${N_VARIANTS}" \
+        --cfg_scales ${CFG_SCALES}
       ;;
     *)
       echo "Error: unsupported method '${method}' for FLUX suite." >&2

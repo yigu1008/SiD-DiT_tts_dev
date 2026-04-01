@@ -110,6 +110,8 @@ fi
   --baseline_cfg "${BASELINE_CFG:-1.0}" \
   --cfg_scales ${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5} \
   "${reward_args[@]}" \
+  --qwen_device "${QWEN_DEVICE:-auto}" \
+  --qwen_timeout_sec "${QWEN_TIMEOUT_SEC:-240}" \
   --interp_labels ${INTERP_LABELS:-balanced subject composition texture} \
   --interp_k "${INTERP_K:-4}" \
   --interp_values ${INTERP_VALUES:-0.0 0.25 0.5 0.75 1.0} \

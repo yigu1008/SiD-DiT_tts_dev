@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -110,6 +111,13 @@ def _normalize_text(s: str, fallback: str) -> str:
 
 def _qwen_basis_once(args: Any, prompt: str) -> PromptBasis | None:
     dtype_literal = "torch.bfloat16" if str(args.qwen_dtype) == "bfloat16" else "torch.float16"
+    qwen_device = str(getattr(args, "qwen_device", "auto")).strip().lower()
+    if qwen_device == "cpu":
+        device_map_literal = "None"
+    elif qwen_device.startswith("cuda"):
+        device_map_literal = repr({"": qwen_device})
+    else:
+        device_map_literal = repr("auto")
     script = f"""
 import json, re, sys, torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -117,7 +125,7 @@ tok = AutoTokenizer.from_pretrained({repr(args.qwen_id)})
 mdl = AutoModelForCausalLM.from_pretrained(
     {repr(args.qwen_id)},
     torch_dtype={dtype_literal},
-    device_map="auto",
+    device_map={device_map_literal},
 )
 mdl.eval()
 msgs = [
@@ -125,7 +133,12 @@ msgs = [
     {{"role":"user","content":"Prompt: " + sys.argv[1] + "\\nReturn strict JSON only."}},
 ]
 text = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
-inp = tok([text], return_tensors="pt").to(mdl.device)
+inp = tok([text], return_tensors="pt")
+if {device_map_literal} is None:
+    dev = next(mdl.parameters()).device
+    inp = {{k: v.to(dev) for k, v in inp.items()}}
+else:
+    inp = inp.to(mdl.device)
 with torch.no_grad():
     out = mdl.generate(
         **inp,
@@ -139,14 +152,34 @@ decoded = tok.decode(out[0][inp.input_ids.shape[1]:], skip_special_tokens=True).
 decoded = re.sub(r"<think>.*?</think>", "", decoded, flags=re.DOTALL).strip()
 print(decoded)
 """
-    proc = subprocess.run([args.qwen_python, "-c", script, prompt], capture_output=True, text=True)
+    timeout_sec = float(getattr(args, "qwen_timeout_sec", 240.0))
+    t0 = time.perf_counter()
+    print(f"[prompt_basis] qwen basis start (timeout={timeout_sec:.0f}s)")
+    try:
+        proc = subprocess.run(
+            [args.qwen_python, "-c", script, prompt],
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+        )
+    except subprocess.TimeoutExpired:
+        dt = time.perf_counter() - t0
+        print(f"[prompt_basis] qwen basis timeout after {dt:.1f}s; falling back.")
+        return None
+
     if proc.returncode != 0:
+        err = (proc.stderr or "").strip()
+        if err:
+            print(f"[prompt_basis] qwen basis failed rc={proc.returncode}: {err[:240]}")
         return None
     obj = _extract_json_obj(proc.stdout)
     if obj is None:
+        print("[prompt_basis] qwen basis returned non-JSON; falling back.")
         return None
     vals = {k: _normalize_text(obj.get(k, ""), prompt) for k in BASIS_LABELS}
     candidates = [PromptCandidate(label=k, text=vals[k]) for k in BASIS_LABELS]
+    dt = time.perf_counter() - t0
+    print(f"[prompt_basis] qwen basis done in {dt:.1f}s")
     return PromptBasis(original=prompt, candidates=candidates)
 
 

@@ -100,6 +100,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--qwen_id", type=str, default="Qwen/Qwen3-4B")
     p.add_argument("--qwen_python", type=str, default="python3")
     p.add_argument("--qwen_dtype", choices=["float16", "bfloat16"], default="bfloat16")
+    p.add_argument("--qwen_device", type=str, default="auto", help="auto/cpu/cuda[:idx] for Qwen rewrite subprocess.")
+    p.add_argument("--qwen_timeout_sec", type=float, default=240.0, help="Timeout for one Qwen rewrite subprocess.")
 
     # Rollout logging
     p.add_argument("--preview_every", type=int, default=1)

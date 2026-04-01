@@ -52,7 +52,7 @@ for reward_backend in ${REWARD_BACKENDS}; do
   if [[ "${RUN_FLUX}" == "1" ]]; then
     OUT_ROOT="${OUT_ROOT}/flux/${reward_backend}" \
     PROMPT_FILE="${PROMPT_FILE}" \
-    METHODS="${METHODS}" \
+    METHODS="${FLUX_METHODS:-${METHODS}}" \
     NUM_GPUS="${NUM_GPUS}" \
     START_INDEX="${START_INDEX}" \
     END_INDEX="${END_INDEX}" \

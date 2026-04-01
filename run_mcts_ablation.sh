@@ -139,6 +139,25 @@ echo "  n_sims: ${N_SIMS}"
 echo "  out: ${ABLATION_DIR}"
 echo
 
+# ---------------------------------------------------------------------------
+# Pre-cache model weights so torchrun workers never make outbound HF requests
+# ---------------------------------------------------------------------------
+echo "[preload] Caching SD3.5 model: YGu1998/SiD-DiT-SD3.5-large ..."
+env -u RANK -u LOCAL_RANK -u WORLD_SIZE -u LOCAL_WORLD_SIZE -u NODE_RANK \
+  -u MASTER_ADDR -u MASTER_PORT \
+  HF_HOME="${HF_HOME}" \
+  "${PYTHON_BIN}" -c "
+from huggingface_hub import snapshot_download
+import os, sys
+try:
+    snapshot_download('YGu1998/SiD-DiT-SD3.5-large', cache_dir=os.environ.get('HF_HOME') or None)
+    print('[preload] SD3.5 OK')
+except Exception as e:
+    print(f'[preload] warning: {e}', file=sys.stderr)
+"
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
 # Pre-compute rewrites once (shared across all ablations that use Qwen)
 SHARED_REWRITES="${ABLATION_DIR}/rewrites_cache.json"
 precompute_shared_rewrites() {
@@ -214,6 +233,8 @@ run_ablation() {
   IMAGEREWARD_CACHE="${IMAGEREWARD_CACHE}" \
   HF_HOME="${HF_HOME}" \
   HPS_ROOT="${HPS_ROOT}" \
+  HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}" \
+  TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}" \
   PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
   torchrun --standalone --nproc_per_node "${NUM_GPUS}" \
     "${SCRIPT_DIR}/sd35_ddp_experiment.py" \

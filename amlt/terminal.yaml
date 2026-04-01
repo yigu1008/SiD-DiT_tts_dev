@@ -65,6 +65,11 @@ search:
       - mkdir -p /mnt/data/v-yigu/model_cache/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
       - mkdir -p /home/aiscuser/.cache && ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
+      # ── Preload model weights into HF cache (avoids network hang during main run) ──
+      - if [ "{run_flux}" = "1" ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', cache_dir=os.environ.get('HF_HOME')); print('FLUX.1-schnell cache OK')"; fi
+      - if [ "{run_sd35}" = "1" ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('YGu1998/SiD-DiT-SD3.5-large', cache_dir=os.environ.get('HF_HOME')); print('SD3.5 cache OK')"; fi
+      - export HF_HUB_OFFLINE=1
+      - export TRANSFORMERS_OFFLINE=1
       - export HPSV2_PROMPT_DIR=/mnt/data/v-yigu/hpsv2_prompt_cache
       - export PROMPT_STYLE={prompt_style}
       - OUT_DIR="$$HPSV2_PROMPT_DIR" STYLE="$$PROMPT_STYLE" bash get_hpsv2_prompts.sh
@@ -74,6 +79,7 @@ search:
       - export START_INDEX={start_index}
       - export END_INDEX={end_index}
       - export METHODS='{methods}'
+      - export FLUX_METHODS='{flux_methods}'
       - export REWARD_BACKEND=imagereward
       - export REWARD_TYPE=imagereward
       - export REWARD_BACKENDS=imagereward
@@ -103,6 +109,9 @@ search:
       - export GA_CROSSOVER={ga_crossover}
       - export GA_LOG_TOPK={ga_log_topk}
       - export GA_EVAL_BATCH={ga_eval_batch}
+      - export CORRECTION_STRENGTHS='{correction_strengths}'
+      - export BON_N={bon_n}
+      - export BEAM_WIDTH={beam_width}
       - export SEED={seed}
       - export RUN_SANA={run_sana}
       - export RUN_SD35={run_sd35}
@@ -139,6 +148,8 @@ search:
       values: [ -1 ]
     - name: methods
       values: [ "baseline greedy mcts ga smc" ]
+    - name: flux_methods
+      values: [ "baseline greedy mcts ga smc bon beam" ]
     - name: eval_backends
       values: [ "imagereward hpsv2 pickscore" ]
     - name: cfg_scales
@@ -213,3 +224,9 @@ search:
       values: [ 1 ]
     - name: qwen_precompute_clear_cache
       values: [ 1 ]
+    - name: correction_strengths
+      values: [ "0.0 1.0" ]
+    - name: bon_n
+      values: [ 16 ]
+    - name: beam_width
+      values: [ 4 ]

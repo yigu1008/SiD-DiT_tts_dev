@@ -39,6 +39,8 @@ fi
   --reward_type "${REWARD_TYPE:-imagereward}" \
   --reward_device "${REWARD_DEVICE:-cpu}" \
   --image_reward_model "${IMAGE_REWARD_MODEL:-ImageReward-v1.0}" \
+  --qwen_device "${QWEN_DEVICE:-auto}" \
+  --qwen_timeout_sec "${QWEN_TIMEOUT_SEC:-240}" \
   --basis_k "${BASIS_K:-3}" \
   --fixed_family "${FIXED_FAMILY:-nlerp}" \
   --blend_families ${BLEND_FAMILIES:-nlerp slerp} \

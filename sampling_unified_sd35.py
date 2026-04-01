@@ -61,7 +61,7 @@ _REWRITE_BAD_TOKENS = {
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified SD3.5 sampling/search with unified reward.")
-    parser.add_argument("--search_method", choices=["greedy", "mcts", "ga", "smc"], default="greedy")
+    parser.add_argument("--search_method", choices=["greedy", "mcts", "ga", "smc", "bon", "beam"], default="greedy")
 
     parser.add_argument(
         "--backend",
@@ -110,6 +110,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument("--n_sims", type=int, default=50)
     parser.add_argument("--ucb_c", type=float, default=1.41)
+    parser.add_argument("--bon_n", type=int, default=16,
+                        help="Number of independent samples for best-of-N search.")
+    parser.add_argument("--beam_width", type=int, default=4,
+                        help="Number of beams to keep per step in beam search.")
     parser.add_argument("--smc_k", type=int, default=8)
     parser.add_argument("--smc_gamma", type=float, default=0.10)
     parser.add_argument("--ess_threshold", type=float, default=0.5)
@@ -970,6 +974,129 @@ def run_greedy_batch(
         score = score_image(reward_model, prompts[j], img)
         results.append(SearchResult(image=img, score=score, actions=chosen_per[j]))
     return results
+
+
+@torch.no_grad()
+def run_bon(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    emb: EmbeddingContext,
+    reward_model: UnifiedRewardScorer,
+    prompt: str,
+    seed: int,
+) -> SearchResult:
+    """Best of N: generate N independent samples with baseline config, return highest-scoring."""
+    n = max(1, int(args.bon_n))
+    cfg = float(args.baseline_cfg)
+    variant_idx = min(0, len(emb.cond_text) - 1)
+    fixed_actions: list[tuple[int, float, float]] = [(variant_idx, cfg, 0.0)] * args.steps
+
+    best_score = -float("inf")
+    best_img: Image.Image | None = None
+
+    print(f"  bon: n={n} cfg={cfg:.2f} variant={variant_idx}")
+    for i in range(n):
+        s = seed + i
+        latents = make_latents(ctx, s, args.height, args.width, emb.cond_text[0].dtype)
+        dx = torch.zeros_like(latents)
+        sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
+        for j, (t_flat, t_4d) in enumerate(sched):
+            noise = latents if j == 0 else torch.randn_like(latents)
+            latents = (1.0 - t_4d) * dx + t_4d * noise
+            flow = transformer_step(args, ctx, latents, emb, variant_idx, t_flat, cfg)
+            dx = latents - t_4d * flow
+        img = decode_to_pil(ctx, dx)
+        score = score_image(reward_model, prompt, img)
+        mark = ""
+        if score > best_score:
+            best_score = score
+            best_img = img
+            mark = " <- best"
+        print(f"    sample {i + 1}/{n} seed={s} score={score:.4f}{mark}")
+
+    assert best_img is not None
+    return SearchResult(
+        image=best_img,
+        score=best_score,
+        actions=fixed_actions,
+        diagnostics={"bon_n": n, "cfg": cfg},
+    )
+
+
+@torch.no_grad()
+def run_beam(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    emb: EmbeddingContext,
+    reward_model: UnifiedRewardScorer,
+    prompt: str,
+    variants: list[str],
+    seed: int,
+) -> SearchResult:
+    """Beam search: maintain top-K partial trajectories, expand with full action space per step."""
+    corr_strengths = list(getattr(args, "correction_strengths", [0.0]))
+    actions = [
+        (vi, cfg, cs)
+        for vi in range(len(variants))
+        for cfg in args.cfg_scales
+        for cs in corr_strengths
+    ]
+    beam_width = max(1, int(args.beam_width))
+    dtype = emb.cond_text[0].dtype
+    sched = step_schedule(ctx.device, dtype, args.steps, getattr(args, "sigmas", None))
+
+    init_latents = make_latents(ctx, seed, args.height, args.width, dtype)
+    # beams: list of (dx, latents, path)
+    beams: list[tuple[torch.Tensor, torch.Tensor, list[tuple[int, float, float]]]] = [
+        (torch.zeros_like(init_latents), init_latents, [])
+    ]
+
+    print(f"  beam: width={beam_width} actions={len(actions)} steps={args.steps}")
+    for step_idx, (t_flat, t_4d) in enumerate(sched):
+        candidates: list[tuple[float, torch.Tensor, list[tuple[int, float, float]]]] = []
+
+        for beam_dx, beam_latents, beam_path in beams:
+            noise = beam_latents if step_idx == 0 else torch.randn_like(beam_latents)
+            latents_in = (1.0 - t_4d) * beam_dx + t_4d * noise
+            # Cache transformer output per (vi, cfg) to avoid redundant forward passes
+            vc_cache: dict[tuple[int, float], torch.Tensor] = {}
+            for vi, cfg, cs in actions:
+                vc_key = (vi, cfg)
+                if vc_key not in vc_cache:
+                    vc_cache[vc_key] = transformer_step(args, ctx, latents_in, emb, vi, t_flat, cfg)
+                flow = vc_cache[vc_key]
+                cand_dx = latents_in - t_4d * flow
+                if cs > 0.0:
+                    cand_dx = apply_reward_correction(ctx, cand_dx, prompt, reward_model, cs)
+                cand_img = decode_to_pil(ctx, cand_dx)
+                cand_score = score_image(reward_model, prompt, cand_img)
+                candidates.append((cand_score, cand_dx, beam_path + [(vi, cfg, cs)]))
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        print(
+            f"  step {step_idx + 1}/{args.steps}: {len(candidates)} candidates, "
+            f"top={candidates[0][0]:.4f}"
+        )
+
+        if step_idx + 1 < args.steps:
+            _, next_t_4d = sched[step_idx + 1]
+            beams = []
+            for _, dx, path in candidates[:beam_width]:
+                noise = torch.randn_like(dx)
+                next_latents = (1.0 - next_t_4d) * dx + next_t_4d * noise
+                beams.append((dx, next_latents, path))
+        else:
+            beams = [(dx, dx, path) for _, dx, path in candidates[:beam_width]]
+
+    best_dx, _, best_path = beams[0]
+    best_img = decode_to_pil(ctx, best_dx)
+    final_score = score_image(reward_model, prompt, best_img)
+    return SearchResult(
+        image=best_img,
+        score=final_score,
+        actions=best_path,
+        diagnostics={"beam_width": beam_width, "n_candidates_per_step": len(actions)},
+    )
 
 
 def run_greedy(
@@ -1943,6 +2070,10 @@ def run(args: argparse.Namespace) -> None:
                 log_dir=args.out_dir,
                 log_prefix=slug,
             )
+        elif args.search_method == "bon":
+            search = run_bon(args, ctx, emb, reward_model, prompt, args.seed)
+        elif args.search_method == "beam":
+            search = run_beam(args, ctx, emb, reward_model, prompt, variants, args.seed)
         else:
             raise RuntimeError(f"Unsupported search_method: {args.search_method}")
 
@@ -1966,7 +2097,7 @@ def run(args: argparse.Namespace) -> None:
                 "baseline_IR": base_score,
                 f"{args.search_method}_IR": search.score,
                 "delta_IR": search.score - base_score,
-                "actions": [[int(v), float(c)] for v, c in search.actions],
+                "actions": [[int(v), float(c), float(cs)] for v, c, cs in search.actions],
                 "search_diagnostics": search.diagnostics,
             }
         )

@@ -74,7 +74,7 @@ class SearchResult:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Unified FLUX search runner (greedy/mcts/ga/smc).")
-    p.add_argument("--search_method", choices=["greedy", "mcts", "ga", "smc"], default="ga")
+    p.add_argument("--search_method", choices=["greedy", "mcts", "ga", "smc", "bon", "beam"], default="ga")
     p.add_argument("--model_id", default="black-forest-labs/FLUX.1-schnell")
     p.add_argument("--prompt", default=None)
     p.add_argument("--prompt_file", default=None)
@@ -257,6 +257,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--n_sims", type=int, default=50, help="MCTS simulation budget per prompt/seed.")
     p.add_argument("--ucb_c", type=float, default=1.41, help="MCTS UCB exploration constant.")
+    p.add_argument("--bon_n", type=int, default=16,
+                   help="Number of independent samples for best-of-N search.")
+    p.add_argument("--beam_width", type=int, default=4,
+                   help="Number of beams to keep per step in beam search.")
 
     # SMC
     p.add_argument("--smc_k", type=int, default=12)
@@ -822,6 +826,132 @@ class MCTSNode:
                 best_mean = mean
                 best = action
         return best
+
+
+@torch.no_grad()
+def run_bon(
+    args: argparse.Namespace,
+    ctx: FluxContext,
+    reward_model: Any,
+    prompt: str,
+    embeds: list[PromptEmbed],
+    seed: int,
+) -> SearchResult:
+    """Best of N: generate N independent samples with baseline guidance, return highest-scoring."""
+    n = max(1, int(args.bon_n))
+    guidance = float(args.baseline_guidance_scale)
+    variant_idx = 0
+    fixed_actions: list[tuple[int, float]] = [(variant_idx, guidance)] * int(args.steps)
+    t_values = build_t_schedule(int(args.steps))
+
+    best_score = -float("inf")
+    best_img: Image.Image | None = None
+
+    print(f"  bon: n={n} guidance={guidance:.2f} variant={variant_idx}")
+    for i in range(n):
+        s = seed + i
+        init_latents = make_initial_latents(ctx, s, args.height, args.width, batch_size=1)
+        dx = torch.zeros_like(init_latents)
+        rng = torch.Generator(device=ctx.device).manual_seed(s + 2048)
+        for step_idx, t_val in enumerate(t_values):
+            t_4d = torch.tensor(float(t_val), device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
+            if step_idx == 0:
+                noise = init_latents
+            else:
+                noise = torch.randn(
+                    init_latents.shape, device=ctx.device, dtype=init_latents.dtype, generator=rng
+                )
+            latents = (1.0 - t_4d) * dx + t_4d * noise
+            flow = flux_transformer_step(ctx, latents, embeds[variant_idx], float(t_val), guidance)
+            dx = latents - t_4d * flow
+        img = decode_to_pil(ctx, dx)
+        score = score_image(reward_model, prompt, img)
+        mark = ""
+        if score > best_score:
+            best_score = float(score)
+            best_img = img
+            mark = " <- best"
+        print(f"    sample {i + 1}/{n} seed={s} score={score:.4f}{mark}")
+
+    assert best_img is not None
+    return SearchResult(
+        image=best_img,
+        score=best_score,
+        actions=fixed_actions,
+        diagnostics={"bon_n": n, "guidance": guidance},
+    )
+
+
+@torch.no_grad()
+def run_beam(
+    args: argparse.Namespace,
+    ctx: FluxContext,
+    reward_model: Any,
+    prompt: str,
+    embeds: list[PromptEmbed],
+    guidance_bank: list[float],
+    seed: int,
+) -> SearchResult:
+    """Beam search: maintain top-K partial trajectories, expand with full action space per step."""
+    actions = build_action_space(len(embeds), guidance_bank)
+    if len(actions) == 0:
+        raise RuntimeError("Beam search requires non-empty action space.")
+    beam_width = max(1, int(args.beam_width))
+    t_values = build_t_schedule(int(args.steps))
+    init_latents = make_initial_latents(ctx, seed, args.height, args.width, batch_size=1)
+    nfe_total = 0
+
+    # beams: list of (dx, latents, path)
+    beams: list[tuple[torch.Tensor, torch.Tensor, list[tuple[int, float]]]] = [
+        (torch.zeros_like(init_latents), init_latents, [])
+    ]
+
+    print(f"  beam: width={beam_width} actions={len(actions)} steps={args.steps}")
+    for step_idx, t_val in enumerate(t_values):
+        t_4d = torch.tensor(float(t_val), device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
+        candidates: list[tuple[float, torch.Tensor, list[tuple[int, float]]]] = []
+
+        for beam_dx, beam_latents, beam_path in beams:
+            if step_idx == 0:
+                noise = beam_latents
+            else:
+                noise = torch.randn(beam_latents.shape, device=ctx.device, dtype=beam_latents.dtype)
+            latents_in = (1.0 - t_4d) * beam_dx + t_4d * noise
+            for vi, guidance in actions:
+                flow = flux_transformer_step(ctx, latents_in, embeds[int(vi)], float(t_val), float(guidance))
+                nfe_total += 1
+                cand_dx = latents_in - t_4d * flow
+                cand_img = decode_to_pil(ctx, cand_dx)
+                cand_score = score_image(reward_model, prompt, cand_img)
+                del cand_img
+                candidates.append((cand_score, cand_dx, beam_path + [(vi, guidance)]))
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        print(
+            f"  step {step_idx + 1}/{args.steps}: {len(candidates)} candidates, "
+            f"top={candidates[0][0]:.4f}"
+        )
+
+        if step_idx + 1 < int(args.steps):
+            next_t = float(t_values[step_idx + 1])
+            next_t_4d = torch.tensor(next_t, device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
+            beams = []
+            for _, dx, path in candidates[:beam_width]:
+                noise = torch.randn(dx.shape, device=ctx.device, dtype=dx.dtype)
+                next_latents = (1.0 - next_t_4d) * dx + next_t_4d * noise
+                beams.append((dx, next_latents, path))
+        else:
+            beams = [(dx, dx, path) for _, dx, path in candidates[:beam_width]]
+
+    best_dx, _, best_path = beams[0]
+    best_img = decode_to_pil(ctx, best_dx)
+    final_score = score_image(reward_model, prompt, best_img)
+    return SearchResult(
+        image=best_img,
+        score=float(final_score),
+        actions=best_path,
+        diagnostics={"beam_width": beam_width, "nfe_total": nfe_total},
+    )
 
 
 @torch.no_grad()
@@ -1696,6 +1826,25 @@ def run(args: argparse.Namespace) -> None:
                 )
             elif args.search_method == "mcts":
                 search = run_mcts(
+                    args=args,
+                    ctx=ctx,
+                    reward_model=reward_model,
+                    prompt=prompt,
+                    embeds=embeds,
+                    guidance_bank=guidance_bank_for_search(args),
+                    seed=seed,
+                )
+            elif args.search_method == "bon":
+                search = run_bon(
+                    args=args,
+                    ctx=ctx,
+                    reward_model=reward_model,
+                    prompt=prompt,
+                    embeds=embeds,
+                    seed=seed,
+                )
+            elif args.search_method == "beam":
+                search = run_beam(
                     args=args,
                     ctx=ctx,
                     reward_model=reward_model,

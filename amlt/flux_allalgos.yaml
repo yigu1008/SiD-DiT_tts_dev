@@ -1,4 +1,4 @@
-description: flux-schnell-mcts-ablation
+description: flux-schnell-all-algorithms
 
 target:
   service: sing
@@ -31,7 +31,7 @@ storage:
 
 search:
   job_template:
-    name: flux-ablation-{run_tag}
+    name: flux-allalgos-{run_tag}
     sku: ${NODES}x${MEM}G${GPUS}-IB
     sla_tier: Standard
     process_count_per_node: 1
@@ -45,7 +45,6 @@ search:
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
       - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
-      # Set both token env vars — newer huggingface_hub uses HF_TOKEN, older uses HUGGING_FACE_HUB_TOKEN
       - export HF_TOKEN={hf_token}
       - export HUGGING_FACE_HUB_TOKEN={hf_token}
       - export AZFUSE_USE_FUSE=0
@@ -55,15 +54,14 @@ search:
       - source /opt/conda/etc/profile.d/conda.sh
       - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
       - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
-      - /opt/conda/envs/ptca/bin/python -c "import os, torch; print('[torch-check]', torch.__version__, 'cuda=', torch.version.cuda, 'is_available=', torch.cuda.is_available(), 'count=', torch.cuda.device_count(), 'cvd=', os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')); assert torch.cuda.is_available() and (torch.version.cuda is not None), 'CPU-only torch detected after requirements install'"
+      - /opt/conda/envs/ptca/bin/python -c "import os, torch; print('[torch-check]', torch.__version__, 'cuda=', torch.version.cuda, 'is_available=', torch.cuda.is_available(), 'count=', torch.cuda.device_count()); assert torch.cuda.is_available() and (torch.version.cuda is not None), 'CPU-only torch detected'"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
-      - /opt/conda/envs/ptca/bin/python -c "import xformers, xformers.ops; print('xformers ok', xformers.__version__)" || (/opt/conda/envs/ptca/bin/pip uninstall -y xformers && echo 'xformers disabled (fallback path)')
+      - /opt/conda/envs/ptca/bin/python -c "import xformers, xformers.ops; print('xformers ok', xformers.__version__)" || (/opt/conda/envs/ptca/bin/pip uninstall -y xformers && echo 'xformers disabled')
       - /opt/conda/envs/ptca/bin/pip install hpsv2 huggingface_hub
       - /opt/conda/envs/ptca/bin/pip install xxhash ftfy regex tqdm
       - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
-      # Re-install after reward deps in case install_reward_deps.sh overwrote them
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir xxhash ftfy regex tqdm
-      - /opt/conda/envs/ptca/bin/python -c "import xxhash, clip, ftfy; from timm.data import ImageNetInfo; print('reward deps core ok', getattr(xxhash, '__version__', 'ok'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__, ftfy.__version__)"
+      - /opt/conda/envs/ptca/bin/python -c "import xxhash, clip, ftfy; from timm.data import ImageNetInfo; print('reward deps ok')"
       # ── Cache dirs & symlinks ──────────────────────────────────────────────
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
@@ -71,12 +69,10 @@ search:
       - mkdir -p /mnt/data/v-yigu/model_cache/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
       - mkdir -p /home/aiscuser/.cache
       - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
-      # Symlink ImageReward fallback so RM.load() finds it even if env var is dropped by subprocess
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
+      # ── Preload reward models & FLUX weights ──────────────────────────────
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
-      # ── Preload FLUX model into HF cache (avoids network hang during main run) ──
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', cache_dir=os.environ.get('HF_HOME')); print('FLUX.1-schnell cache OK')"
-      # Disable hub network checks so pipeline loading never blocks on outbound HTTP
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
       # ── Prompt file ────────────────────────────────────────────────────────
@@ -85,7 +81,7 @@ search:
       - OUT_DIR="$$HPSV2_PROMPT_DIR" STYLE="$$PROMPT_STYLE" bash get_hpsv2_prompts.sh
       - if [ "$$PROMPT_STYLE" = "all" ]; then export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts.txt"; else export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts_$$PROMPT_STYLE.txt"; fi
       - if [ {use_subset} = 1 ]; then export PROMPT_FILE=./hpsv2_subset.txt; fi
-      # ── Flux-only main run ─────────────────────────────────────────────────
+      # ── Run ───────────────────────────────────────────────────────────────
       - export OUT_ROOT=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}
       - export START_INDEX={start_index}
       - export END_INDEX={end_index}
@@ -138,16 +134,6 @@ search:
       - export SAVE_BEST_IMAGES={save_best_images}
       - export SAVE_VARIANTS=0
       - bash hpsv2_sd35_flux_allalgos.sh
-      # ── MCTS ablation on Flux Schnell ──────────────────────────────────────
-      - export ABLATIONS='{ablations}'
-      - export OUT_ROOT=/mnt/data/v-yigu/mcts_ablation_flux/{run_tag}
-      - export N_SIMS={ablation_n_sims}
-      - export PRECOMPUTE_REWRITES={precompute_rewrites}
-      - export REWRITES_OVERWRITE=0
-      # Re-export PROMPT_FILE explicitly — shell_env.sh (sourced by the suite) unsets PYTHONPATH
-      # but preserves exported vars; belt-and-suspenders here
-      - if [ {use_subset} = 1 ]; then export PROMPT_FILE=./hpsv2_subset.txt; fi
-      - bash run_mcts_ablation_flux.sh
 
     submit_args:
       env:
@@ -158,7 +144,7 @@ search:
   type: grid
   params:
     - name: run_tag
-      values: [ "flux_mcts_ablation" ]
+      values: [ "flux_allalgos" ]
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: prompt_style
@@ -167,6 +153,8 @@ search:
       values: [ 0 ]
     - name: end_index
       values: [ -1 ]
+    - name: use_subset
+      values: [ 1 ]
     - name: methods
       values: [ "baseline greedy mcts ga smc bon beam" ]
     - name: eval_backends
@@ -215,14 +203,16 @@ search:
       values: [ 5 ]
     - name: ga_eval_batch
       values: [ 2 ]
-    - name: use_subset
-      values: [ 1 ]
+    - name: bon_n
+      values: [ 16 ]
+    - name: beam_width
+      values: [ 4 ]
+    - name: seed
+      values: [ 42 ]
     - name: save_images
       values: [ 0 ]
     - name: save_best_images
       values: [ 1 ]
-    - name: seed
-      values: [ 42 ]
     - name: use_qwen
       values: [ 1 ]
     - name: precompute_rewrites
@@ -237,12 +227,3 @@ search:
       values: [ 1 ]
     - name: qwen_precompute_clear_cache
       values: [ 1 ]
-    - name: bon_n
-      values: [ 16 ]
-    - name: beam_width
-      values: [ 4 ]
-    # Ablation-specific
-    - name: ablations
-      values: [ "none prompt cfg prompt_cfg" ]
-    - name: ablation_n_sims
-      values: [ 50 ]

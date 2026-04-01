@@ -535,7 +535,7 @@ run_method() {
     local log_file="${method_logs}/rank_${rank}.log"
     launched=$((launched + 1))
 
-    CUDA_VISIBLE_DEVICES="${gpu}" "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified.py" \
+    CUDA_VISIBLE_DEVICES="${gpu}" PYTHONUNBUFFERED=1 "${PYTHON_BIN}" -u "${SCRIPT_DIR}/sampling_unified.py" \
       --reward_type "${REWARD_TYPE}" \
       --dtype bf16 \
       --reward_device "${REWARD_DEVICE}" \

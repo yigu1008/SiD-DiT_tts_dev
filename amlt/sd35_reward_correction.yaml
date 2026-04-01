@@ -59,7 +59,9 @@ search:
       - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
       - if [ "$$ENABLE_OVERLAY_PYDEPS" = "1" ]; then PYTHON_BIN=/opt/conda/envs/ptca/bin/python SID_OVERLAY_DIR=/tmp/$$USER/sid_pydeps bash prepare_cluster_overlay_deps.sh; export SID_EXTRA_PYTHONPATH=/tmp/$$USER/sid_pydeps/py$$(/opt/conda/envs/ptca/bin/python -c "import sys; print(str(sys.version_info.major)+'.'+str(sys.version_info.minor))"); else unset SID_EXTRA_PYTHONPATH || true; fi
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir xxhash ftfy regex tqdm
-      - /opt/conda/envs/ptca/bin/python -c "import xxhash, clip, ftfy; from timm.data import ImageNetInfo; print('reward deps ok')"
+      # Re-install after reward deps in case install_reward_deps.sh overwrote them
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir xxhash ftfy regex tqdm
+      - /opt/conda/envs/ptca/bin/python -c "import xxhash, clip, ftfy; from timm.data import ImageNetInfo; print('reward deps ok', ftfy.__version__)"
       # ── Cache dirs & symlinks ──────────────────────────────────────────────
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward

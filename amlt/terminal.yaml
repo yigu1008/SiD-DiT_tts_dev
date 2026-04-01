@@ -43,6 +43,8 @@ search:
       - export PATH=/home/aiscuser/.local/bin:$$PATH
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
       - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
+      - export HF_TOKEN={hf_token}
+      - export HUGGING_FACE_HUB_TOKEN={hf_token}
       - export AZFUSE_USE_FUSE=0
       - export NCCL_ASYNC_ERROR_HANDLING=0
       - export NCCL_P2P_LEVEL=NVL
@@ -66,7 +68,7 @@ search:
       - mkdir -p /home/aiscuser/.cache && ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
       # ── Preload model weights into HF cache (avoids network hang during main run) ──
-      - if [ "{run_flux}" = "1" ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', cache_dir=os.environ.get('HF_HOME')); print('FLUX.1-schnell cache OK')"; fi
+      - if [ "{run_flux}" = "1" ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('FLUX.1-schnell cache OK')"; fi
       - if [ "{run_sd35}" = "1" ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('YGu1998/SiD-DiT-SD3.5-large', cache_dir=os.environ.get('HF_HOME')); print('SD3.5 cache OK')"; fi
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
@@ -140,6 +142,8 @@ search:
   params:
     - name: run_tag
       values: [ "hpsv2_sd35_flux_allalgos" ]
+    - name: hf_token
+      values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: prompt_style
       values: [ "all" ]
     - name: start_index

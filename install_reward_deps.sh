@@ -14,6 +14,11 @@ set -euo pipefail
 PY="${PYTHON_BIN:-python3}"
 PYPI_INDEX_URL="${PYPI_INDEX_URL:-https://pypi.org/simple}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONSTRAINTS="${SCRIPT_DIR}/constraints.txt"
+
+# --constraint enforces lower bounds on ftfy/regex/xxhash throughout all installs.
+# No individual package can silently downgrade them.
+_pip() { "${PY}" -m pip install --no-cache-dir --constraint "${CONSTRAINTS}" "$@"; }
 
 echo "[install] python: ${PY}"
 "${PY}" -V
@@ -22,34 +27,33 @@ echo "[install] build tooling"
 "${PY}" -m pip install --no-cache-dir --upgrade "setuptools>=70,<76" wheel
 
 echo "[install] core runtime deps (ImageReward transitive deps)"
-"${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" \
+_pip --index-url "${PYPI_INDEX_URL}" \
   "xxhash>=3.4.1" \
   "ftfy>=6.2.3" \
   "regex>=2024.11.6" \
   "tqdm>=4.66.4"
 
 echo "[install] timm==1.0.15 (PickScore-compatible)"
-"${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "timm==1.0.15"
+_pip --index-url "${PYPI_INDEX_URL}" "timm==1.0.15"
 
 echo "[install] image-reward (PyPI), fallback to THUDM/ImageReward"
-if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "image-reward==1.5"; then
-  "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "setuptools==75.8.0"
-  "${PY}" -m pip install --no-cache-dir --no-build-isolation \
-    "git+https://github.com/THUDM/ImageReward.git"
+if ! _pip --index-url "${PYPI_INDEX_URL}" "image-reward==1.5"; then
+  _pip --index-url "${PYPI_INDEX_URL}" "setuptools==75.8.0"
+  _pip --no-build-isolation "git+https://github.com/THUDM/ImageReward.git"
 fi
 
 echo "[install] CLIP (OpenAI), fallback to clip-anytorch"
-if ! "${PY}" -m pip install --no-cache-dir "git+https://github.com/openai/CLIP.git"; then
-  "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "clip-anytorch"
+if ! _pip "git+https://github.com/openai/CLIP.git"; then
+  _pip --index-url "${PYPI_INDEX_URL}" "clip-anytorch"
 fi
 
 echo "[install] open-clip-torch (needed by old hpsv2 API)"
-if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "open-clip-torch"; then
+if ! _pip --index-url "${PYPI_INDEX_URL}" "open-clip-torch"; then
   echo "[install] warning: open-clip-torch install failed; old-API hpsv2 path will be skipped."
 fi
 
 echo "[install] wandb (required by ImageReward import path)"
-if ! "${PY}" -m pip install --no-cache-dir --force-reinstall "wandb"; then
+if ! _pip --force-reinstall "wandb"; then
   echo "[install] warning: wandb reinstall failed (likely permissions)."
   echo "[install] warning: trying user-writable overlay install for cluster ..."
   if PYTHON_BIN="${PY}" SID_OVERLAY_DIR="${SID_OVERLAY_DIR:-$HOME/.sid_pydeps}" bash "${SCRIPT_DIR}/prepare_cluster_overlay_deps.sh"; then
@@ -61,39 +65,39 @@ if ! "${PY}" -m pip install --no-cache-dir --force-reinstall "wandb"; then
 fi
 
 echo "[install] UnifiedReward runtime deps (qwen-vl-utils, openai client)"
-"${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" \
+_pip --index-url "${PYPI_INDEX_URL}" \
   "qwen-vl-utils>=0.0.14" \
   "openai>=1.40.0"
 
 echo "[install] optional HPS backends (hpsv3/hpsv2)"
 # Install hpsv3 with --no-deps to prevent it from downgrading transformers to 4.45.2.
 # hpsv3 hard-pins transformers==4.45.2 in its metadata but works fine with newer versions.
-if ! "${PY}" -m pip install --no-cache-dir --no-deps --index-url "${PYPI_INDEX_URL}" "hpsv3"; then
+if ! _pip --no-deps --index-url "${PYPI_INDEX_URL}" "hpsv3"; then
   echo "[install] warning: hpsv3 install failed; continuing."
 fi
-if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" \
+if ! _pip --index-url "${PYPI_INDEX_URL}" \
   "omegaconf>=2.3.0" "hydra-core>=1.3.2"; then
   echo "[install] warning: omegaconf/hydra-core install failed; continuing."
 fi
 # hpsv2x is a drop-in replacement for hpsv2 that includes the missing BPE vocab file
 # (bpe_simple_vocab_16e6.txt.gz was omitted from the official hpsv2 PyPI release).
 # It still imports as `import hpsv2`. See: https://pypi.org/project/hpsv2x/
-if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "hpsv2x"; then
+if ! _pip --index-url "${PYPI_INDEX_URL}" "hpsv2x"; then
   echo "[install] warning: hpsv2x install failed; falling back to hpsv2 (may have missing BPE file)."
-  if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "hpsv2"; then
+  if ! _pip --index-url "${PYPI_INDEX_URL}" "hpsv2"; then
     echo "[install] warning: hpsv2 install also failed; continuing."
   fi
 fi
 
 echo "[install] restoring protobuf/wandb compatibility (hpsv2 may downgrade protobuf)"
-"${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" "protobuf>=4.25,<6"
-if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" --force-reinstall "wandb>=0.19,<0.21"; then
+_pip --index-url "${PYPI_INDEX_URL}" "protobuf>=4.25,<6"
+if ! _pip --index-url "${PYPI_INDEX_URL}" --force-reinstall "wandb>=0.19,<0.21"; then
   echo "[install] warning: wandb reinstall failed."
 fi
 
-# Restore packages that earlier deps (open-clip-torch, image-reward, hpsv3) may have downgraded.
-echo "[install] restoring transformers>=4.51.0, timm==1.0.15, ftfy, regex (pinned last to win version conflicts)"
-"${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" \
+# Final restore — belt-and-suspenders after all installs complete.
+echo "[install] final restore: transformers, timm, ftfy, regex, xxhash"
+_pip --index-url "${PYPI_INDEX_URL}" \
   "transformers>=4.51.0" "tokenizers>=0.19" "timm==1.0.15" \
   "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
 

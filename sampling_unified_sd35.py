@@ -48,6 +48,9 @@ REWRITE_STYLES = [
     "Change one mood or atmosphere word.",
 ]
 
+_DEFAULT_CFG_SCALES = [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5]
+_DEFAULT_BASELINE_CFG = 1.0
+
 _REWRITE_PLACEHOLDER_RE = re.compile(r"^/?\s*<[^>]+>\s*$")
 _REWRITE_BAD_TOKENS = {
     "<thin>",
@@ -99,9 +102,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--cfg_scales",
         nargs="+",
         type=float,
-        default=[1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5],
+        default=list(_DEFAULT_CFG_SCALES),
     )
-    parser.add_argument("--baseline_cfg", type=float, default=1.0)
+    parser.add_argument("--baseline_cfg", type=float, default=_DEFAULT_BASELINE_CFG)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--width", type=int, default=1024)
     parser.add_argument("--height", type=int, default=1024)
@@ -214,6 +217,8 @@ _BACKEND_CONFIGS = {
         "sigmas": [1.0, 0.75],
         "dtype": "bfloat16",  # SenseFlow official scripts use bfloat16
         "gen_batch_size": 2,
+        "cfg_scales": [0.0],  # SenseFlow release uses guidance_scale=0.0
+        "baseline_cfg": 0.0,
     },
     "senseflow_medium": {
         "model_id": "stabilityai/stable-diffusion-3.5-medium",
@@ -222,6 +227,8 @@ _BACKEND_CONFIGS = {
         "sigmas": [1.0, 0.9, 0.75, 0.5],
         "dtype": "bfloat16",
         "gen_batch_size": 2,
+        "cfg_scales": [0.0],
+        "baseline_cfg": 0.0,
     },
 }
 
@@ -230,8 +237,16 @@ def _apply_backend_defaults(args: argparse.Namespace) -> argparse.Namespace:
     """Fill model_id / transformer_id / sigmas / dtype / gen_batch_size from --backend."""
     cfg = _BACKEND_CONFIGS.get(args.backend or "", {})
     for key, val in cfg.items():
+        if key in {"cfg_scales", "baseline_cfg"}:
+            continue
         if getattr(args, key, None) is None:
             setattr(args, key, val)
+    # Keep legacy behavior for sid, but use SenseFlow defaults when user kept parser defaults.
+    if (args.backend or "").startswith("senseflow"):
+        if list(getattr(args, "cfg_scales", [])) == list(_DEFAULT_CFG_SCALES):
+            args.cfg_scales = list(cfg.get("cfg_scales", [0.0]))
+        if float(getattr(args, "baseline_cfg", _DEFAULT_BASELINE_CFG)) == float(_DEFAULT_BASELINE_CFG):
+            args.baseline_cfg = float(cfg.get("baseline_cfg", 0.0))
     # Final fallbacks for fields not covered by any backend config.
     if args.model_id is None:
         args.model_id = _BACKEND_CONFIGS["senseflow_large"]["model_id"]
@@ -239,6 +254,10 @@ def _apply_backend_defaults(args: argparse.Namespace) -> argparse.Namespace:
         args.dtype = "float16"
     if getattr(args, "gen_batch_size", None) is None:
         args.gen_batch_size = 1
+    # Sigmas define the true denoising length (SenseFlow-style sampler).
+    if getattr(args, "sigmas", None) is not None:
+        args.sigmas = [float(s) for s in args.sigmas]
+        args.steps = len(args.sigmas)
     return args
 
 
@@ -1795,7 +1814,7 @@ def run_mcts(
     n_actions = len(actions)
     latents0 = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx0 = torch.zeros_like(latents0)
-    sched = step_schedule(ctx.device, latents0.dtype, args.steps)
+    sched = step_schedule(ctx.device, latents0.dtype, args.steps, getattr(args, "sigmas", None))
     _, t0_4d = sched[0]
     start_latents = (1.0 - t0_4d) * dx0 + t0_4d * latents0
     root = MCTSNode(0, dx0, start_latents)

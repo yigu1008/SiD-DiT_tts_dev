@@ -35,6 +35,8 @@ OUT_ROOT="${OUT_ROOT:-${SCRATCH:-${DATA_ROOT}}/mcts_ablation}"
 START_INDEX="${START_INDEX:-0}"
 END_INDEX="${END_INDEX:--1}"
 NUM_GPUS="${NUM_GPUS:-$(${PYTHON_BIN} -c 'import torch; print(max(torch.cuda.device_count(),1))')}"
+SD35_BACKEND="${SD35_BACKEND:-sid}"
+SD35_SIGMAS="${SD35_SIGMAS:-}"
 
 STEPS="${STEPS:-4}"
 SEED="${SEED:-42}"
@@ -134,6 +136,7 @@ SUMMARY_TSV="${ABLATION_DIR}/ablation_summary.tsv"
 
 echo "MCTS ablation study"
 echo "  ablations: ${ABLATIONS}"
+echo "  sd35_backend: ${SD35_BACKEND} sd35_sigmas: ${SD35_SIGMAS:-<none>}"
 echo "  prompt_file: ${PROMPT_FILE}"
 echo "  n_sims: ${N_SIMS}"
 echo "  out: ${ABLATION_DIR}"
@@ -226,6 +229,9 @@ run_ablation() {
   if [[ -n "${REWARD_API_BASE}" ]]; then
     extra+=(--reward_api_base "${REWARD_API_BASE}")
   fi
+  if [[ -n "${SD35_SIGMAS}" ]]; then
+    extra+=(--sigmas ${SD35_SIGMAS})
+  fi
 
   local begin_ts end_ts elapsed
   begin_ts="$(date +%s)"
@@ -238,7 +244,7 @@ run_ablation() {
   PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
   torchrun --standalone --nproc_per_node "${NUM_GPUS}" \
     "${SCRIPT_DIR}/sd35_ddp_experiment.py" \
-    --backend sid \
+    --backend "${SD35_BACKEND}" \
     --prompt_file "${PROMPT_FILE}" \
     --start_index "${START_INDEX}" \
     --end_index "${END_INDEX}" \

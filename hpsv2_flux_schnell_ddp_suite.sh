@@ -13,6 +13,8 @@ fi
 OUT_ROOT="${OUT_ROOT:-/data/ygu/hpsv2_flux_schnell_ddp}"
 METHODS="${METHODS:-baseline greedy mcts ga}"
 MODEL_ID="${MODEL_ID:-black-forest-labs/FLUX.1-schnell}"
+FLUX_BACKEND="${FLUX_BACKEND:-flux}"
+FLUX_SIGMAS="${FLUX_SIGMAS:-}"
 
 START_INDEX="${START_INDEX:-0}"
 END_INDEX="${END_INDEX:--1}"
@@ -65,6 +67,25 @@ SMC_CHUNK="${SMC_CHUNK:-4}"
 
 BON_N="${BON_N:-16}"
 BEAM_WIDTH="${BEAM_WIDTH:-4}"
+
+_DEFAULT_GUIDANCE_SCALES_STR="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
+if [[ "${FLUX_BACKEND}" == "senseflow_flux" ]]; then
+  if [[ "${CFG_SCALES}" == "${_DEFAULT_GUIDANCE_SCALES_STR}" ]]; then
+    CFG_SCALES="0.0"
+  fi
+  if [[ "${GA_GUIDANCE_SCALES}" == "${_DEFAULT_GUIDANCE_SCALES_STR}" ]]; then
+    GA_GUIDANCE_SCALES="0.0"
+  fi
+  if [[ "${BASELINE_GUIDANCE_SCALE}" == "1.0" ]]; then
+    BASELINE_GUIDANCE_SCALE="0.0"
+  fi
+  if [[ "${SMC_GUIDANCE_SCALE}" == "1.25" ]]; then
+    SMC_GUIDANCE_SCALE="0.0"
+  fi
+  if [[ -z "${FLUX_SIGMAS}" ]]; then
+    FLUX_SIGMAS="1.0 0.75"
+  fi
+fi
 
 NUM_GPUS="${NUM_GPUS:-0}"
 
@@ -127,6 +148,7 @@ echo "FLUX schnell DDP suite"
 echo "  prompt_file: ${PROMPT_FILE}"
 echo "  prompts_total: ${TOTAL_PROMPTS} selected: ${RANGE_TOTAL} range=[${START_INDEX},${EFFECTIVE_END})"
 echo "  gpus(${NUM_GPUS}): ${GPU_IDS[*]}"
+echo "  flux_backend: ${FLUX_BACKEND} flux_sigmas: ${FLUX_SIGMAS:-<none>}"
 echo "  reward_backend: ${REWARD_BACKEND} reward_device: ${REWARD_DEVICE}"
 echo "  eval_best_images: ${EVAL_BEST_IMAGES} eval_backends: ${EVAL_BACKENDS} eval_device: ${EVAL_REWARD_DEVICE}"
 echo "  out: ${RUN_DIR}"
@@ -431,6 +453,10 @@ run_flux_sharded() {
   local method_logs="${method_out}/logs"
   mkdir -p "${method_out}" "${method_logs}"
   local -a reward_extra=()
+  local -a backend_extra=(--backend "${FLUX_BACKEND}")
+  if [[ -n "${FLUX_SIGMAS}" ]]; then
+    backend_extra+=(--sigmas ${FLUX_SIGMAS})
+  fi
   if [[ -n "${REWARD_API_BASE}" ]]; then
     reward_extra+=(--reward_api_base "${REWARD_API_BASE}")
   fi
@@ -473,6 +499,7 @@ PY
     launched=$((launched + 1))
     CUDA_VISIBLE_DEVICES="${gpu}" PYTHONUNBUFFERED=1 "${PYTHON_BIN}" -u "${SCRIPT_DIR}/sampling_flux_unified.py" \
       --search_method "${flux_search_method}" \
+      "${backend_extra[@]}" \
       --model_id "${MODEL_ID}" \
       --prompt_file "${rank_prompt}" \
       --n_prompts -1 \

@@ -42,6 +42,33 @@ PROMPT_FOCUS = {
     "detail": "Focus on fine details, textures, and local attributes.",
 }
 
+_DEFAULT_GUIDANCE_SCALES = [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5]
+_DEFAULT_BASELINE_GUIDANCE = 1.0
+
+_BACKEND_CONFIGS: dict[str, dict[str, Any]] = {
+    "flux": {
+        "model_id": "black-forest-labs/FLUX.1-schnell",
+        "transformer_id": None,
+        "transformer_subfolder": None,
+        "sigmas": None,
+        "dtype": "bf16",
+        "baseline_guidance_scale": _DEFAULT_BASELINE_GUIDANCE,
+        "ga_guidance_scales": list(_DEFAULT_GUIDANCE_SCALES),
+        "cfg_scales": list(_DEFAULT_GUIDANCE_SCALES),
+    },
+    "senseflow_flux": {
+        "model_id": "black-forest-labs/FLUX.1-schnell",
+        "transformer_id": "domiso/SenseFlow",
+        "transformer_subfolder": "SenseFlow-Flux-Schnell/transformer",
+        "sigmas": [1.0, 0.75],
+        "dtype": "bf16",
+        # SenseFlow examples use guidance_scale=0.0 with the x0 sampler.
+        "baseline_guidance_scale": 0.0,
+        "ga_guidance_scales": [0.0],
+        "cfg_scales": [0.0],
+    },
+}
+
 
 @dataclass
 class PromptEmbed:
@@ -75,7 +102,17 @@ class SearchResult:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Unified FLUX search runner (greedy/mcts/ga/smc).")
     p.add_argument("--search_method", choices=["greedy", "mcts", "ga", "smc", "bon", "beam"], default="ga")
-    p.add_argument("--model_id", default="black-forest-labs/FLUX.1-schnell")
+    p.add_argument(
+        "--backend",
+        choices=["flux", "senseflow_flux"],
+        default=None,
+        help="Convenience shortcut: sets model/transformer/sigmas/guidance defaults for FLUX variants.",
+    )
+    p.add_argument("--model_id", default=None)
+    p.add_argument("--transformer_id", default=None,
+                   help="Optional HuggingFace transformer repo override (e.g. domiso/SenseFlow).")
+    p.add_argument("--transformer_subfolder", default=None,
+                   help="Optional subfolder inside --transformer_id.")
     p.add_argument("--prompt", default=None)
     p.add_argument("--prompt_file", default=None)
     p.add_argument("--n_prompts", type=int, default=-1)
@@ -88,6 +125,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--n_samples", type=int, default=1)
     p.add_argument("--steps", type=int, default=4)
+    p.add_argument(
+        "--sigmas",
+        nargs="+",
+        type=float,
+        default=None,
+        help="Explicit sigma schedule (SenseFlow-style). Overrides linear schedule from --steps.",
+    )
     p.add_argument("--n_variants", type=int, default=-1, help="Prompt variants to keep from the bank; <=0 keeps all.")
     p.add_argument(
         "--cfg_scales",
@@ -253,7 +297,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--ga_guidance_scales",
         nargs="+",
         type=float,
-        default=[1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5],
+        default=list(_DEFAULT_GUIDANCE_SCALES),
     )
     p.add_argument("--n_sims", type=int, default=50, help="MCTS simulation budget per prompt/seed.")
     p.add_argument("--ucb_c", type=float, default=1.41, help="MCTS UCB exploration constant.")
@@ -272,7 +316,42 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     p.add_argument("--save_first_k", type=int, default=10)
     p.add_argument("--out_dir", default="./flux_sampling_out")
-    return p.parse_args(argv)
+    return _apply_backend_defaults(p.parse_args(argv))
+
+
+def _apply_backend_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    cfg = _BACKEND_CONFIGS.get(args.backend or "", {})
+
+    # Fill nullable fields first.
+    for key in ("model_id", "transformer_id", "transformer_subfolder", "sigmas"):
+        if getattr(args, key, None) is None and key in cfg:
+            setattr(args, key, cfg[key])
+
+    # dtype has a parser default; only force backend dtype when backend explicitly set.
+    if args.backend and "dtype" in cfg:
+        args.dtype = str(cfg["dtype"])
+
+    # SenseFlow defaults should apply only when caller kept legacy defaults.
+    if (args.backend or "").startswith("senseflow"):
+        if list(getattr(args, "ga_guidance_scales", [])) == list(_DEFAULT_GUIDANCE_SCALES):
+            args.ga_guidance_scales = list(cfg.get("ga_guidance_scales", [0.0]))
+        if getattr(args, "cfg_scales", None) is None:
+            args.cfg_scales = list(cfg.get("cfg_scales", args.ga_guidance_scales))
+        elif list(args.cfg_scales) == list(_DEFAULT_GUIDANCE_SCALES):
+            args.cfg_scales = list(cfg.get("cfg_scales", [0.0]))
+        if float(getattr(args, "baseline_guidance_scale", _DEFAULT_BASELINE_GUIDANCE)) == float(
+            _DEFAULT_BASELINE_GUIDANCE
+        ):
+            args.baseline_guidance_scale = float(cfg.get("baseline_guidance_scale", 0.0))
+
+    if args.model_id is None:
+        args.model_id = str(_BACKEND_CONFIGS["flux"]["model_id"])
+
+    if args.sigmas is not None:
+        args.sigmas = [float(s) for s in args.sigmas]
+        args.steps = len(args.sigmas)
+
+    return args
 
 
 def resolve_dtype(name: str) -> torch.dtype:
@@ -326,8 +405,25 @@ def cuda_free_gb(device: str) -> float | None:
 def load_pipeline(args: argparse.Namespace, device: str, dtype: torch.dtype) -> FluxContext:
     from sid import SiDFluxPipeline
 
-    print(f"Loading FLUX pipeline: {args.model_id}")
+    print(
+        f"Loading FLUX pipeline: {args.model_id} "
+        f"(backend={args.backend or 'flux'} "
+        f"sigmas={args.sigmas if args.sigmas is not None else f'steps={args.steps}'})"
+    )
     pipe = SiDFluxPipeline.from_pretrained(args.model_id, torch_dtype=dtype).to(device)
+    if getattr(args, "transformer_id", None):
+        try:
+            from diffusers.models.transformers import FluxTransformer2DModel
+        except Exception:
+            from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel
+        kwargs: dict[str, Any] = {"torch_dtype": dtype}
+        if getattr(args, "transformer_subfolder", None):
+            kwargs["subfolder"] = args.transformer_subfolder
+        print(
+            f"Loading FLUX transformer override: {args.transformer_id} "
+            f"subfolder={getattr(args, 'transformer_subfolder', None)}"
+        )
+        pipe.transformer = FluxTransformer2DModel.from_pretrained(args.transformer_id, **kwargs).to(device)
     pipe.transformer.eval().requires_grad_(False)
     pipe.vae.eval().requires_grad_(False)
     if getattr(pipe, "text_encoder", None) is not None:
@@ -510,7 +606,12 @@ def make_initial_latents(
     )
 
 
-def build_t_schedule(steps: int) -> list[float]:
+def build_t_schedule(steps: int, sigmas: list[float] | None = None) -> list[float]:
+    if sigmas is not None:
+        out = [float(s) for s in sigmas]
+        if len(out) == 0:
+            raise RuntimeError("Empty --sigmas is not allowed.")
+        return out
     if steps <= 1:
         return [1.0]
     denom = float(steps - 1)
@@ -679,7 +780,7 @@ def run_action_sequence(
     init_latents = make_initial_latents(ctx, seed, args.height, args.width, batch_size=1)
     dx = torch.zeros_like(init_latents)
     rng = torch.Generator(device=ctx.device).manual_seed(seed + 2048)
-    t_values = build_t_schedule(int(args.steps))
+    t_values = build_t_schedule(int(args.steps), getattr(args, "sigmas", None))
 
     for step_idx, (variant_idx, guidance) in enumerate(actions):
         t_val = float(t_values[step_idx])
@@ -719,7 +820,7 @@ def run_greedy(
     init_latents = make_initial_latents(ctx, seed, args.height, args.width, batch_size=1)
     dx = torch.zeros_like(init_latents)
     rng = torch.Generator(device=ctx.device).manual_seed(seed + 2048)
-    t_values = build_t_schedule(int(args.steps))
+    t_values = build_t_schedule(int(args.steps), getattr(args, "sigmas", None))
     chosen: list[tuple[int, float]] = []
     history: list[dict[str, Any]] = []
     nfe_total = 0
@@ -842,7 +943,7 @@ def run_bon(
     guidance = float(args.baseline_guidance_scale)
     variant_idx = 0
     fixed_actions: list[tuple[int, float]] = [(variant_idx, guidance)] * int(args.steps)
-    t_values = build_t_schedule(int(args.steps))
+    t_values = build_t_schedule(int(args.steps), getattr(args, "sigmas", None))
 
     best_score = -float("inf")
     best_img: Image.Image | None = None
@@ -897,7 +998,7 @@ def run_beam(
     if len(actions) == 0:
         raise RuntimeError("Beam search requires non-empty action space.")
     beam_width = max(1, int(args.beam_width))
-    t_values = build_t_schedule(int(args.steps))
+    t_values = build_t_schedule(int(args.steps), getattr(args, "sigmas", None))
     init_latents = make_initial_latents(ctx, seed, args.height, args.width, batch_size=1)
     nfe_total = 0
 
@@ -969,7 +1070,7 @@ def run_mcts(
         raise RuntimeError("MCTS requires non-empty action space.")
 
     n_actions = len(actions)
-    t_values = build_t_schedule(int(args.steps))
+    t_values = build_t_schedule(int(args.steps), getattr(args, "sigmas", None))
     init_latents = make_initial_latents(ctx, seed, args.height, args.width, batch_size=1)
     dx0 = torch.zeros_like(init_latents)
     t0_4d = torch.tensor(float(t_values[0]), device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
@@ -1632,7 +1733,7 @@ def run_smc(
     init_latents = make_initial_latents(ctx, seed, args.height, args.width, batch_size=k)
     dx = torch.zeros_like(init_latents)
     rng = torch.Generator(device=ctx.device).manual_seed(seed + 6001)
-    t_values = build_t_schedule(int(args.steps))
+    t_values = build_t_schedule(int(args.steps), getattr(args, "sigmas", None))
     start_idx = int((1.0 - float(args.resample_start_frac)) * int(args.steps))
     log_w = torch.zeros(k, device=ctx.device, dtype=torch.float32)
     ess_hist: list[float] = []

@@ -10,5 +10,7 @@ export RUN_SD35="${RUN_SD35:-1}"
 export RUN_FLUX="${RUN_FLUX:-1}"
 export METHODS="${METHODS:-baseline greedy mcts ga smc}"
 export USE_QWEN="${USE_QWEN:-1}"
+export SD35_BACKEND="${SD35_BACKEND:-sid}"
+export FLUX_BACKEND="${FLUX_BACKEND:-flux}"
 
 bash "${SCRIPT_DIR}/hpsv2_all_models_ddp_suite.sh" "$@"

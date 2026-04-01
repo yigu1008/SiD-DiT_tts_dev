@@ -23,6 +23,8 @@ source "${SCRIPT_DIR}/tacc_setup.sh"
 # Base config
 # ---------------------------------------------------------------------------
 MODEL_ID="${MODEL_ID:-black-forest-labs/FLUX.1-schnell}"
+FLUX_BACKEND="${FLUX_BACKEND:-flux}"
+FLUX_SIGMAS="${FLUX_SIGMAS:-}"
 PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/hpsv2_subset.txt}"
 # Outputs go to $SCRATCH (large quota); model cache stays on $WORK via DATA_ROOT/HF_HOME.
 OUT_ROOT="${OUT_ROOT:-${SCRATCH:-${DATA_ROOT}}/mcts_ablation_flux}"
@@ -72,6 +74,15 @@ ABLATIONS="${ABLATIONS:-none prompt cfg prompt_cfg}"
 # ---------------------------------------------------------------------------
 ALL_CFG_SCALES="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
 
+if [[ "${FLUX_BACKEND}" == "senseflow_flux" ]]; then
+  if [[ "${BASELINE_GUIDANCE_SCALE}" == "1.0" ]]; then
+    BASELINE_GUIDANCE_SCALE="0.0"
+  fi
+  if [[ -z "${FLUX_SIGMAS}" ]]; then
+    FLUX_SIGMAS="1.0 0.75"
+  fi
+fi
+
 declare -A ABLATION_N_VARIANTS=(
   [none]=1
   [prompt]=3
@@ -114,6 +125,7 @@ SUMMARY_TSV="${ABLATION_DIR}/ablation_summary.tsv"
 echo "FLUX MCTS ablation study"
 echo "  ablations: ${ABLATIONS}"
 echo "  prompt_file: ${PROMPT_FILE}"
+echo "  flux_backend: ${FLUX_BACKEND} flux_sigmas: ${FLUX_SIGMAS:-<none>}"
 echo "  n_sims: ${N_SIMS}"
 echo "  out: ${ABLATION_DIR}"
 echo
@@ -242,6 +254,10 @@ run_ablation() {
 
   # Build extra args
   local -a extra=()
+  extra+=(--backend "${FLUX_BACKEND}")
+  if [[ -n "${FLUX_SIGMAS}" ]]; then
+    extra+=(--sigmas ${FLUX_SIGMAS})
+  fi
   if [[ "${use_qwen}" == "1" && -s "${SHARED_REWRITES}" ]]; then
     extra+=(--rewrites_file "${SHARED_REWRITES}")
   fi

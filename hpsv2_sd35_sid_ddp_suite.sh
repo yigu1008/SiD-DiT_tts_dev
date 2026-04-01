@@ -12,6 +12,8 @@ else
 fi
 OUT_ROOT="${OUT_ROOT:-/data/ygu/hpsv2_sd35_sid_ddp}"
 METHODS="${METHODS:-baseline greedy mcts ga}"
+SD35_BACKEND="${SD35_BACKEND:-sid}"
+SD35_SIGMAS="${SD35_SIGMAS:-}"
 
 START_INDEX="${START_INDEX:-0}"
 END_INDEX="${END_INDEX:--1}"
@@ -84,6 +86,16 @@ GA_LOG_TOPK="${GA_LOG_TOPK:-3}"
 GA_EVAL_BATCH="${GA_EVAL_BATCH:-2}"
 GA_PHASE_CONSTRAINTS="${GA_PHASE_CONSTRAINTS:-1}"
 
+_DEFAULT_CFG_SCALES_STR="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
+if [[ "${SD35_BACKEND}" == "senseflow_large" || "${SD35_BACKEND}" == "senseflow_medium" ]]; then
+  if [[ "${CFG_SCALES}" == "${_DEFAULT_CFG_SCALES_STR}" ]]; then
+    CFG_SCALES="0.0"
+  fi
+  if [[ "${BASELINE_CFG}" == "1.0" ]]; then
+    BASELINE_CFG="0.0"
+  fi
+fi
+
 if [[ ! -f "${PROMPT_FILE}" ]]; then
   echo "Error: PROMPT_FILE not found: ${PROMPT_FILE}" >&2
   exit 1
@@ -101,6 +113,7 @@ fi
 echo "SD3.5L SiD DDP suite"
 echo "  prompt_file: ${PROMPT_FILE}"
 echo "  modes: ${METHODS}"
+echo "  sd35_backend: ${SD35_BACKEND} sd35_sigmas: ${SD35_SIGMAS:-<none>}"
 echo "  nproc_per_node: ${NUM_GPUS}"
 echo "  reward_backend: ${REWARD_BACKEND}"
 echo "  eval_best_images: ${EVAL_BEST_IMAGES} eval_backends: ${EVAL_BACKENDS} eval_device: ${EVAL_REWARD_DEVICE}"
@@ -528,6 +541,9 @@ run_method() {
   if [[ -n "${REWARD_API_BASE}" ]]; then
     extra+=(--reward_api_base "${REWARD_API_BASE}")
   fi
+  if [[ -n "${SD35_SIGMAS}" ]]; then
+    extra+=(--sigmas ${SD35_SIGMAS})
+  fi
 
   local begin_ts
   begin_ts="$(date +%s)"
@@ -545,7 +561,7 @@ if not cuda_ok:
 PY
 
   torchrun --standalone --nproc_per_node "${NUM_GPUS}" "${SCRIPT_DIR}/sd35_ddp_experiment.py" \
-    --backend sid \
+    --backend "${SD35_BACKEND}" \
     --gen_batch_size "${GEN_BATCH_SIZE}" \
     --prompt_file "${PROMPT_FILE}" \
     --start_index "${START_INDEX}" \

@@ -1,0 +1,6 @@
+# Hard lower bounds for packages that get silently downgraded by transitive deps
+# (open-clip-torch, image-reward, hpsv3 are the usual culprits).
+# Passed via --constraint to every pip install call in install_reward_deps.sh.
+ftfy>=6.2.3
+regex>=2024.11.6
+xxhash>=3.4.1

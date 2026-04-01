@@ -55,13 +55,12 @@ search:
       - /opt/conda/envs/ptca/bin/python -c "import os, torch; print('[torch-check]', torch.__version__, 'cuda=', torch.version.cuda, 'is_available=', torch.cuda.is_available(), 'count=', torch.cuda.device_count()); assert torch.cuda.is_available() and (torch.version.cuda is not None), 'CPU-only torch detected'"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
       - /opt/conda/envs/ptca/bin/python -c "import xformers, xformers.ops; print('xformers ok', xformers.__version__)" || (/opt/conda/envs/ptca/bin/pip uninstall -y xformers && echo 'xformers disabled')
-      - /opt/conda/envs/ptca/bin/pip install hpsv2 huggingface_hub
-      - /opt/conda/envs/ptca/bin/pip install xxhash ftfy regex tqdm
+      - /opt/conda/envs/ptca/bin/pip install hpsv2 huggingface_hub "regex>=2024.11.6" "ftfy>=6.2.3" "xxhash>=3.4.1"
+      - /opt/conda/envs/ptca/bin/pip install "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
       - if [ "$$ENABLE_OVERLAY_PYDEPS" = "1" ]; then PYTHON_BIN=/opt/conda/envs/ptca/bin/python SID_OVERLAY_DIR=/tmp/$$USER/sid_pydeps bash prepare_cluster_overlay_deps.sh; export SID_EXTRA_PYTHONPATH=/tmp/$$USER/sid_pydeps/py$$(/opt/conda/envs/ptca/bin/python -c "import sys; print(str(sys.version_info.major)+'.'+str(sys.version_info.minor))"); else unset SID_EXTRA_PYTHONPATH || true; fi
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir xxhash ftfy regex tqdm
       # Re-install after reward deps in case install_reward_deps.sh overwrote them
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir xxhash ftfy regex tqdm
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - /opt/conda/envs/ptca/bin/python -c "import xxhash, clip, ftfy, regex; from timm.data import ImageNetInfo; print('reward deps ok', ftfy.__version__, regex.__version__)"
       # ── Cache dirs & symlinks ──────────────────────────────────────────────
       - export NUM_GPUS=${GPUS}
@@ -131,6 +130,9 @@ search:
       - export SAVE_IMAGES={save_images}
       - export SAVE_BEST_IMAGES={save_best_images}
       - export SAVE_VARIANTS=0
+      # ── Final pin: restore packages that earlier installs may have downgraded ──
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
+      - /opt/conda/envs/ptca/bin/python -c "import ftfy, regex, xxhash; print('final pin ok', ftfy.__version__, regex.__version__)"
       - bash hpsv2_sd35_flux_allalgos.sh
 
     submit_args:

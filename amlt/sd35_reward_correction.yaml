@@ -43,6 +43,7 @@ search:
       # ── Paths ──────────────────────────────────────────────────────────────
       - export PATH=/home/aiscuser/.local/bin:$$PATH
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
+      - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
       - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
       - export AZFUSE_USE_FUSE=0
       - export NCCL_ASYNC_ERROR_HANDLING=0
@@ -61,7 +62,7 @@ search:
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir xxhash ftfy regex tqdm
       # Re-install after reward deps in case install_reward_deps.sh overwrote them
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir xxhash ftfy regex tqdm
-      - /opt/conda/envs/ptca/bin/python -c "import xxhash, clip, ftfy; from timm.data import ImageNetInfo; print('reward deps ok', ftfy.__version__)"
+      - /opt/conda/envs/ptca/bin/python -c "import xxhash, clip, ftfy, regex; from timm.data import ImageNetInfo; print('reward deps ok', ftfy.__version__, regex.__version__)"
       # ── Cache dirs & symlinks ──────────────────────────────────────────────
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward

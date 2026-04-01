@@ -92,9 +92,10 @@ if ! "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" --for
 fi
 
 # Restore packages that earlier deps (open-clip-torch, image-reward, hpsv3) may have downgraded.
-echo "[install] restoring transformers>=4.51.0, timm==1.0.15 (pinned last to win version conflicts)"
+echo "[install] restoring transformers>=4.51.0, timm==1.0.15, ftfy, regex (pinned last to win version conflicts)"
 "${PY}" -m pip install --no-cache-dir --index-url "${PYPI_INDEX_URL}" \
-  "transformers>=4.51.0" "tokenizers>=0.19" "timm==1.0.15"
+  "transformers>=4.51.0" "tokenizers>=0.19" "timm==1.0.15" \
+  "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
 
 echo "[verify] imports"
 "${PY}" - <<'PY' "${SCRIPT_DIR}"

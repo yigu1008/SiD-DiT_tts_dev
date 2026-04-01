@@ -38,13 +38,17 @@ _pip --index-url "${PYPI_INDEX_URL}" "timm==1.0.15"
 
 echo "[install] image-reward (PyPI), fallback to THUDM/ImageReward"
 if ! _pip --index-url "${PYPI_INDEX_URL}" "image-reward==1.5"; then
-  _pip --index-url "${PYPI_INDEX_URL}" "setuptools==75.8.0"
-  _pip --no-build-isolation "git+https://github.com/THUDM/ImageReward.git"
+  if ! _pip --index-url "${PYPI_INDEX_URL}" "setuptools==75.8.0" || \
+     ! _pip --no-build-isolation "git+https://github.com/THUDM/ImageReward.git"; then
+    echo "[install] warning: image-reward install failed (PyPI and git); ImageReward backend unavailable."
+  fi
 fi
 
 echo "[install] CLIP (OpenAI), fallback to clip-anytorch"
 if ! _pip "git+https://github.com/openai/CLIP.git"; then
-  _pip --index-url "${PYPI_INDEX_URL}" "clip-anytorch"
+  if ! _pip --index-url "${PYPI_INDEX_URL}" "clip-anytorch"; then
+    echo "[install] warning: CLIP install failed (git and clip-anytorch); CLIP-dependent backends unavailable."
+  fi
 fi
 
 echo "[install] open-clip-torch (needed by old hpsv2 API)"
@@ -65,9 +69,11 @@ if ! _pip --force-reinstall "wandb"; then
 fi
 
 echo "[install] UnifiedReward runtime deps (qwen-vl-utils, openai client)"
-_pip --index-url "${PYPI_INDEX_URL}" \
+if ! _pip --index-url "${PYPI_INDEX_URL}" \
   "qwen-vl-utils>=0.0.14" \
-  "openai>=1.40.0"
+  "openai>=1.40.0"; then
+  echo "[install] warning: qwen-vl-utils/openai install failed; UnifiedReward backend unavailable."
+fi
 
 echo "[install] optional HPS backends (hpsv3/hpsv2)"
 # Install hpsv3 with --no-deps to prevent it from downgrading transformers to 4.45.2.
@@ -90,7 +96,13 @@ if ! _pip --index-url "${PYPI_INDEX_URL}" "hpsv2x"; then
 fi
 
 echo "[install] restoring protobuf/wandb compatibility (hpsv2 may downgrade protobuf)"
-_pip --index-url "${PYPI_INDEX_URL}" "protobuf>=4.25,<6"
+# Use >=4.25 only — no upper bound. requirements.txt pins protobuf==6.31.1, so
+# capping at <6 would cause pip to conflict with any base-image package that
+# requires protobuf>=6, killing the script via set -euo pipefail before the
+# final restore runs (and thus before the stamp is written).
+if ! _pip --index-url "${PYPI_INDEX_URL}" "protobuf>=4.25"; then
+  echo "[install] warning: protobuf restore failed; continuing."
+fi
 if ! _pip --index-url "${PYPI_INDEX_URL}" --force-reinstall "wandb>=0.19,<0.21"; then
   echo "[install] warning: wandb reinstall failed."
 fi
@@ -112,17 +124,26 @@ import timm
 print("timm", timm.__version__)
 from timm.data import ImageNetInfo
 print("timm ImageNetInfo", ImageNetInfo.__name__)
-import clip
-print("clip", getattr(clip, "__file__", "ok"))
+try:
+    import clip
+    print("clip", getattr(clip, "__file__", "ok"))
+except Exception as exc:
+    print("clip import warning:", exc)
 try:
     import ImageReward as RM
     print("ImageReward", getattr(RM, "__file__", "ok"))
 except Exception as exc:
     print("ImageReward import warning:", exc)
-import qwen_vl_utils
-print("qwen_vl_utils", getattr(qwen_vl_utils, "__file__", "ok"))
-import openai
-print("openai", getattr(openai, "__version__", "ok"))
+try:
+    import qwen_vl_utils
+    print("qwen_vl_utils", getattr(qwen_vl_utils, "__file__", "ok"))
+except Exception as exc:
+    print("qwen_vl_utils import warning:", exc)
+try:
+    import openai
+    print("openai", getattr(openai, "__version__", "ok"))
+except Exception as exc:
+    print("openai import warning:", exc)
 try:
     import hpsv3
     print("hpsv3", getattr(hpsv3, "__file__", "ok"))

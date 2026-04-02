@@ -40,6 +40,8 @@ search:
     command:
       - set -x
       - unset REWARD_BACKEND REWARD_TYPE REWARD_BACKENDS || true
+      - export PYTHONNOUSERSITE=1
+      - unset PYTHONPATH || true
       # ── Paths ──────────────────────────────────────────────────────────────
       - export PATH=/home/aiscuser/.local/bin:$$PATH
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
@@ -55,13 +57,12 @@ search:
       - /opt/conda/envs/ptca/bin/python -c "import os, torch; print('[torch-check]', torch.__version__, 'cuda=', torch.version.cuda, 'is_available=', torch.cuda.is_available(), 'count=', torch.cuda.device_count()); assert torch.cuda.is_available() and (torch.version.cuda is not None), 'CPU-only torch detected'"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
       - /opt/conda/envs/ptca/bin/python -c "import xformers, xformers.ops; print('xformers ok', xformers.__version__)" || (/opt/conda/envs/ptca/bin/pip uninstall -y xformers && echo 'xformers disabled')
-      - /opt/conda/envs/ptca/bin/pip install hpsv2 huggingface_hub "regex>=2024.11.6" "ftfy>=6.2.3" "xxhash>=3.4.1"
-      - /opt/conda/envs/ptca/bin/pip install "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
       - if [ "$$ENABLE_OVERLAY_PYDEPS" = "1" ]; then PYTHON_BIN=/opt/conda/envs/ptca/bin/python SID_OVERLAY_DIR=/tmp/$$USER/sid_pydeps bash prepare_cluster_overlay_deps.sh; export SID_EXTRA_PYTHONPATH=/tmp/$$USER/sid_pydeps/py$$(/opt/conda/envs/ptca/bin/python -c "import sys; print(str(sys.version_info.major)+'.'+str(sys.version_info.minor))"); else unset SID_EXTRA_PYTHONPATH || true; fi
       # Re-install after reward deps in case install_reward_deps.sh overwrote them
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
-      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex; from timm.data import ImageNetInfo; print('reward deps ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
       # ── Cache dirs & symlinks ──────────────────────────────────────────────
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
@@ -132,7 +133,8 @@ search:
       - export SAVE_VARIANTS=0
       # ── Final pin: restore packages that earlier installs may have downgraded ──
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
-      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash; print('final pin ok', md.version('ftfy'), md.version('regex'), md.version('xxhash'))"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets; print('final pin ok', md.version('ftfy'), md.version('regex'), md.version('xxhash'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'))"
       - bash hpsv2_sd35_flux_allalgos.sh
 
     submit_args:

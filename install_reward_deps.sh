@@ -15,6 +15,26 @@ PY="${PYTHON_BIN:-python3}"
 PYPI_INDEX_URL="${PYPI_INDEX_URL:-https://pypi.org/simple}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONSTRAINTS="${SCRIPT_DIR}/constraints.txt"
+STAMP_VERSION="${STAMP_VERSION:-v2}"
+_stamp="${HOME}/.cache/sid_deps/reward_deps_ok_${STAMP_VERSION}"
+
+_quick_verify() {
+  "${PY}" - <<'PY' >/dev/null 2>&1
+import importlib.metadata as md
+import xxhash
+import ftfy
+import regex
+import pandas
+import pyarrow
+import datasets
+import timm
+import clip
+from timm.data import ImageNetInfo
+for pkg in ("xxhash", "ftfy", "regex", "pandas", "pyarrow", "datasets", "timm"):
+    md.version(pkg)
+print(xxhash.__version__, ftfy.__version__, regex.__version__, ImageNetInfo.__name__)
+PY
+}
 
 # --constraint enforces lower bounds on ftfy/regex/xxhash throughout all installs.
 # No individual package can silently downgrade them.
@@ -22,6 +42,14 @@ _pip() { "${PY}" -m pip install --no-cache-dir --constraint "${CONSTRAINTS}" "$@
 
 echo "[install] python: ${PY}"
 "${PY}" -V
+
+if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_stamp}" ]]; then
+  if _quick_verify; then
+    echo "[install] stamp + quick verify passed; skipping reinstall (${_stamp})"
+    exit 0
+  fi
+  echo "[install] stale deps stamp detected; reinstalling runtime deps."
+fi
 
 echo "[install] build tooling"
 "${PY}" -m pip install --no-cache-dir --upgrade "setuptools>=70,<76" wheel
@@ -32,6 +60,12 @@ _pip --index-url "${PYPI_INDEX_URL}" \
   "ftfy>=6.2.3" \
   "regex>=2024.11.6" \
   "tqdm>=4.66.4"
+
+echo "[install] core data runtime deps (datasets stack)"
+_pip --index-url "${PYPI_INDEX_URL}" \
+  "pandas>=2.1.4" \
+  "pyarrow>=14.0.2" \
+  "datasets>=2.19.0"
 
 echo "[install] timm==1.0.15 (PickScore-compatible)"
 _pip --index-url "${PYPI_INDEX_URL}" "timm==1.0.15"
@@ -108,10 +142,11 @@ if ! _pip --index-url "${PYPI_INDEX_URL}" --force-reinstall "wandb>=0.19,<0.21";
 fi
 
 # Final restore — belt-and-suspenders after all installs complete.
-echo "[install] final restore: transformers, timm, ftfy, regex, xxhash"
+echo "[install] final restore: transformers/timm + text/hash + data stack"
 _pip --index-url "${PYPI_INDEX_URL}" \
   "transformers>=4.51.0" "tokenizers>=0.19" "timm==1.0.15" \
-  "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
+  "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1" \
+  "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
 _pip --index-url "${PYPI_INDEX_URL}" --force-reinstall --no-deps \
   "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
 
@@ -173,16 +208,26 @@ except Exception as exc:
     print("wandb import warning:", exc)
 import xxhash
 print("xxhash", getattr(xxhash, "__version__", "ok"))
+import pandas
+import pyarrow
+import datasets
+print("pandas", getattr(pandas, "__version__", "ok"))
+print("pyarrow", getattr(pyarrow, "__version__", "ok"))
+print("datasets", getattr(datasets, "__version__", "ok"))
 import importlib.metadata as md
 print("metadata ftfy/regex/xxhash", md.version("ftfy"), md.version("regex"), md.version("xxhash"))
+print("metadata pandas/pyarrow/datasets", md.version("pandas"), md.version("pyarrow"), md.version("datasets"))
 from reward_unified import UnifiedRewardScorer
 print("UnifiedRewardScorer", getattr(UnifiedRewardScorer, "__name__", "ok"))
 PY
 
+echo "[verify] pip check (non-fatal)"
+"${PY}" -m pip check || true
+
 echo "[done] reward dependencies installed"
 
 # Write stamp so ensure_*_runtime functions skip the check on future runs.
-# Delete ~/.cache/sid_deps/reward_deps_ok to force a re-check (e.g. after env rebuild).
-_stamp="${HOME}/.cache/sid_deps/reward_deps_ok"
+# Delete this file to force a re-check (e.g. after env rebuild):
+#   ~/.cache/sid_deps/reward_deps_ok_<STAMP_VERSION>
 mkdir -p "$(dirname "${_stamp}")" && touch "${_stamp}"
 echo "[done] stamp written: ${_stamp}"

@@ -139,7 +139,7 @@ ensure_imagereward_runtime() {
   if [[ "${backend_lc}" != "imagereward" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]] && ! eval_backend_requested "imagereward"; then
     return 0
   fi
-  local _stamp="${HOME}/.cache/sid_deps/reward_deps_ok"
+  local _stamp="${HOME}/.cache/sid_deps/reward_deps_ok_v2"
   if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_stamp}" ]]; then
     return 0
   fi
@@ -197,7 +197,7 @@ ensure_pickscore_runtime() {
   if [[ "${backend_lc}" != "pickscore" && "${backend_lc}" != "auto" ]] && ! eval_backend_requested "pickscore"; then
     return 0
   fi
-  _stamp="${HOME}/.cache/sid_deps/reward_deps_ok"
+  _stamp="${HOME}/.cache/sid_deps/reward_deps_ok_v2"
   if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_stamp}" ]]; then return 0; fi
   if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
 import timm
@@ -220,7 +220,7 @@ ensure_hpsv2_runtime() {
   if [[ "${backend_lc}" != "hpsv2" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]] && ! eval_backend_requested "hpsv2"; then
     return 0
   fi
-  _stamp="${HOME}/.cache/sid_deps/reward_deps_ok"
+  _stamp="${HOME}/.cache/sid_deps/reward_deps_ok_v2"
   if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_stamp}" ]]; then return 0; fi
   if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
 import hpsv2
@@ -241,7 +241,7 @@ ensure_hpsv3_runtime() {
   if [[ "${backend_lc}" != "hpsv3" && "${backend_lc}" != "auto" ]] && ! eval_backend_requested "hpsv3"; then
     return 0
   fi
-  _stamp="${HOME}/.cache/sid_deps/reward_deps_ok"
+  _stamp="${HOME}/.cache/sid_deps/reward_deps_ok_v2"
   if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_stamp}" ]]; then return 0; fi
   if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
 import hpsv3

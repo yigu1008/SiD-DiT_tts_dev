@@ -4,6 +4,8 @@ torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu126
 blobfile==3.0.0
 click==8.2.1
 datasets==2.19.0
+pyarrow>=14.0.2
+pandas>=2.1.4
 diffusers==0.33.1
 ftfy==6.3.1
 regex>=2024.11.6

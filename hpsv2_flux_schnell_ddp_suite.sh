@@ -164,7 +164,7 @@ eval_backend_requested() {
   return 1
 }
 
-_DEPS_STAMP="${HOME}/.cache/sid_deps/reward_deps_ok"
+_DEPS_STAMP="${HOME}/.cache/sid_deps/reward_deps_ok_v2"
 _stamp_deps() { mkdir -p "$(dirname "${_DEPS_STAMP}")" && touch "${_DEPS_STAMP}"; }
 
 ensure_imagereward_runtime() {

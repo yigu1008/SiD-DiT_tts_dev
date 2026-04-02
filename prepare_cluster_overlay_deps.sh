@@ -27,6 +27,9 @@ echo "[overlay] installing runtime deps to overlay"
   "xxhash>=3.4.1" \
   "ftfy>=6.2.3" \
   "regex>=2024.11.6" \
+  "pandas>=2.1.4" \
+  "pyarrow>=14.0.2" \
+  "datasets>=2.19.0" \
   "timm==1.0.15" \
   "wandb" \
   "protobuf>=4.25,<6" \
@@ -46,6 +49,9 @@ PYTHONPATH="${TARGET_DIR}${PYTHONPATH:+:${PYTHONPATH}}" "${PY}" - <<'PY'
 import xxhash
 import ftfy
 import regex
+import pandas
+import pyarrow
+import datasets
 import importlib.metadata as md
 import wandb
 from timm.data import ImageNetInfo
@@ -53,6 +59,9 @@ import torch
 print("xxhash", xxhash.__version__)
 print("ftfy", ftfy.__version__, md.version("ftfy"))
 print("regex", regex.__version__, md.version("regex"))
+print("pandas", pandas.__version__, md.version("pandas"))
+print("pyarrow", pyarrow.__version__, md.version("pyarrow"))
+print("datasets", datasets.__version__, md.version("datasets"))
 print("wandb", wandb.__version__)
 print("timm ImageNetInfo", ImageNetInfo.__name__)
 print("torch", torch.__version__, "from", torch.__file__)

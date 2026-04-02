@@ -40,6 +40,11 @@ EVAL_BACKENDS="${EVAL_BACKENDS:-imagereward hpsv2 pickscore}"
 EVAL_REWARD_DEVICE="${EVAL_REWARD_DEVICE:-cpu}"
 EVAL_ALLOW_MISSING_BACKENDS="${EVAL_ALLOW_MISSING_BACKENDS:-0}"
 
+# Keep ImageReward inference independent from cluster wandb/protobuf drift.
+SID_FORCE_WANDB_STUB="${SID_FORCE_WANDB_STUB:-1}"
+WANDB_DISABLED="${WANDB_DISABLED:-true}"
+export SID_FORCE_WANDB_STUB WANDB_DISABLED
+
 USE_QWEN="${USE_QWEN:-0}"
 N_VARIANTS="${N_VARIANTS:-3}"
 CFG_SCALES="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5}"
@@ -187,8 +192,10 @@ try:
         _tmu.prune_linear_layer=_pll
 except Exception:
     pass
-import ImageReward as RM
-print(getattr(xxhash, '__version__', 'ok'), getattr(RM, "__file__", "ok"))
+import importlib.util as _iu
+if _iu.find_spec("ImageReward") is None:
+    raise RuntimeError("ImageReward module not found")
+print(getattr(xxhash, '__version__', 'ok'), "ImageReward module found")
 PY
   then
     _stamp_deps; return 0

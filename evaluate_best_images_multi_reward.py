@@ -13,6 +13,10 @@ from typing import Any
 
 from PIL import Image
 
+# ImageReward inference does not need wandb logging and wandb can be broken on clusters.
+os.environ.setdefault("WANDB_DISABLED", "true")
+os.environ.setdefault("SID_FORCE_WANDB_STUB", "1")
+
 from reward_unified import UnifiedRewardScorer
 
 

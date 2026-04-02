@@ -42,6 +42,8 @@ search:
       - unset REWARD_BACKEND REWARD_TYPE REWARD_BACKENDS || true
       - export PYTHONNOUSERSITE=1
       - unset PYTHONPATH || true
+      - export SID_FORCE_WANDB_STUB=1
+      - export WANDB_DISABLED=true
       - export PATH=/home/aiscuser/.local/bin:$$PATH
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python

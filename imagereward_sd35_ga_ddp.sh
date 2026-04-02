@@ -19,6 +19,11 @@ if [[ ! -f "${PROMPT_FILE}" ]]; then
 fi
 mkdir -p "${OUT_DIR}"
 
+# Keep ImageReward inference independent from cluster wandb/protobuf drift.
+SID_FORCE_WANDB_STUB="${SID_FORCE_WANDB_STUB:-1}"
+WANDB_DISABLED="${WANDB_DISABLED:-true}"
+export SID_FORCE_WANDB_STUB WANDB_DISABLED
+
 _DEPS_STAMP="${HOME}/.cache/sid_deps/reward_deps_ok_v2"
 _stamp_deps() { mkdir -p "$(dirname "${_DEPS_STAMP}")" && touch "${_DEPS_STAMP}"; }
 
@@ -58,8 +63,10 @@ try:
         _tmu.prune_linear_layer=_pll
 except Exception:
     pass
-import ImageReward as RM
-print(getattr(xxhash, '__version__', 'ok'), getattr(RM, "__file__", "ok"))
+import importlib.util as _iu
+if _iu.find_spec("ImageReward") is None:
+    raise RuntimeError("ImageReward module not found")
+print(getattr(xxhash, '__version__', 'ok'), "ImageReward module found")
 PY
   then
     _stamp_deps; return 0

@@ -98,6 +98,8 @@ class UnifiedRewardScorer:
     )
     _imagereward_install_hint = (
         "Install ImageReward dependencies, e.g.:\n"
+        "  export SID_FORCE_WANDB_STUB=1\n"
+        "  export WANDB_DISABLED=true\n"
         "  pip install -U setuptools\n"
         "  pip install -U xxhash\n"
         "  pip install -U --force-reinstall wandb\n"
@@ -380,10 +382,25 @@ class UnifiedRewardScorer:
             print(f"[Reward] {self._unifiedreward_install_hint}")
 
     def _try_load_imagereward(self) -> None:
+        def _force_wandb_stub_enabled() -> bool:
+            raw = str(os.environ.get("SID_FORCE_WANDB_STUB", "1")).strip().lower()
+            return raw not in {"0", "false", "no", "off"}
+
         def _inject_wandb_stub(reason: str) -> None:
+            import importlib.machinery
             import types
 
-            if "wandb" in sys.modules and bool(getattr(sys.modules["wandb"], "__codex_stub__", False)):
+            existing = sys.modules.get("wandb")
+            if existing is not None and bool(getattr(existing, "__codex_stub__", False)):
+                # Keep old stub object but ensure importlib can inspect it safely.
+                if getattr(existing, "__spec__", None) is None:
+                    existing.__spec__ = importlib.machinery.ModuleSpec(
+                        "wandb", loader=None, is_package=True
+                    )
+                if getattr(existing, "__package__", None) is None:
+                    existing.__package__ = "wandb"
+                if not hasattr(existing, "__path__"):
+                    existing.__path__ = []  # type: ignore[attr-defined]
                 return
 
             def _noop(*args, **kwargs):
@@ -409,12 +426,31 @@ class UnifiedRewardScorer:
             stub.define_metric = _noop
             stub.config = {}
             stub.run = None
+            stub.__package__ = "wandb"
+            stub.__path__ = []  # type: ignore[attr-defined]
+            stub.__spec__ = importlib.machinery.ModuleSpec("wandb", loader=None, is_package=True)
+
+            # Minimal submodule for libs that probe/import wandb.sdk.
+            sdk_stub = types.ModuleType("wandb.sdk")
+            sdk_stub.__package__ = "wandb"
+            sdk_stub.__path__ = []  # type: ignore[attr-defined]
+            sdk_stub.__spec__ = importlib.machinery.ModuleSpec(
+                "wandb.sdk", loader=None, is_package=True
+            )
+            stub.sdk = sdk_stub
             sys.modules["wandb"] = stub
+            sys.modules.setdefault("wandb.sdk", sdk_stub)
             print(f"[Reward] Using wandb stub for ImageReward inference ({reason}).")
 
         def _ensure_wandb_importable() -> None:
+            if _force_wandb_stub_enabled():
+                _inject_wandb_stub("SID_FORCE_WANDB_STUB=1")
+                return
             try:
                 import wandb  # noqa: F401
+                # Some broken envs leave wandb importable but with __spec__ missing.
+                if getattr(wandb, "__spec__", None) is None:
+                    _inject_wandb_stub("wandb.__spec__ is None")
             except Exception as exc:
                 _inject_wandb_stub(str(exc))
 

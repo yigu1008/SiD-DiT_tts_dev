@@ -29,6 +29,11 @@ REWARD_API_MODEL="${REWARD_API_MODEL:-UnifiedReward-7b-v1.5}"
 REWARD_MAX_NEW_TOKENS="${REWARD_MAX_NEW_TOKENS:-512}"
 REWARD_PROMPT_MODE="${REWARD_PROMPT_MODE:-standard}"
 
+# Keep ImageReward inference independent from cluster wandb/protobuf drift.
+SID_FORCE_WANDB_STUB="${SID_FORCE_WANDB_STUB:-1}"
+WANDB_DISABLED="${WANDB_DISABLED:-true}"
+export SID_FORCE_WANDB_STUB WANDB_DISABLED
+
 if [[ ! -f "${PROMPT_FILE}" ]]; then
   echo "Error: PROMPT_FILE does not exist: ${PROMPT_FILE}" >&2
   exit 1
@@ -79,8 +84,10 @@ try:
         _tmu.prune_linear_layer=_pll
 except Exception:
     pass
-import ImageReward as RM
-print(getattr(xxhash, '__version__', 'ok'), getattr(RM, "__file__", "ok"))
+import importlib.util as _iu
+if _iu.find_spec("ImageReward") is None:
+    raise RuntimeError("ImageReward module not found")
+print(getattr(xxhash, '__version__', 'ok'), "ImageReward module found")
 PY
   then
     _stamp_deps; return 0

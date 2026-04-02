@@ -110,24 +110,32 @@ def preload_imagereward() -> None:
         "IMAGEREWARD_CACHE", str(Path.home() / ".cache" / "ImageReward")
     )
     pt_path = Path(cache_dir) / "ImageReward.pt"
+    med_config_path = Path(cache_dir) / "med_config.json"
     sentinel = _sentinel_path("imagereward")
 
-    if pt_path.is_file() and pt_path.stat().st_size > 0:
-        _log(f"ImageReward.pt already cached at {cache_dir}")
+    if pt_path.is_file() and pt_path.stat().st_size > 0 and med_config_path.is_file():
+        _log(f"ImageReward fully cached at {cache_dir}")
         _mark_done("imagereward")
         return
 
     if LOCAL_RANK == 0:
-        _log("downloading ImageReward.pt ...")
+        _log("downloading full THUDM/ImageReward repo ...")
         try:
-            _hf_download("THUDM/ImageReward", "ImageReward.pt", cache_dir)
-            _log(f"ImageReward.pt ready at {cache_dir}")
+            from huggingface_hub import snapshot_download
+            # Download all files (ImageReward.pt, med_config.json, etc.)
+            # so RM.load() can run fully offline without any network access.
+            snapshot_download(
+                "THUDM/ImageReward",
+                local_dir=cache_dir,
+                local_dir_use_symlinks=False,
+            )
+            _log(f"ImageReward fully ready at {cache_dir}")
             _mark_done("imagereward")
         except Exception as exc:
-            _log(f"ERROR downloading ImageReward.pt: {exc}")
+            _log(f"ERROR downloading THUDM/ImageReward: {exc}")
             raise
     else:
-        _wait_for_sentinel(sentinel, "ImageReward.pt")
+        _wait_for_sentinel(sentinel, "ImageReward")
 
 
 # ---------------------------------------------------------------------------

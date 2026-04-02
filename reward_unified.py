@@ -537,6 +537,7 @@ class UnifiedRewardScorer:
             selected = None
             for candidate in candidates:
                 try:
+                    print(f"[Reward] RM.load({candidate!r}, download_root={download_root!r}) ...", flush=True)
                     model = RM.load(candidate, device=self.device, download_root=download_root)
                     selected = candidate
                     break

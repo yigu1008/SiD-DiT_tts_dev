@@ -62,10 +62,11 @@ _BACKEND_CONFIGS: dict[str, dict[str, Any]] = {
         "transformer_subfolder": "SenseFlow-Flux-Schnell/transformer",
         "sigmas": [1.0, 0.75],
         "dtype": "bf16",
-        # SenseFlow examples use guidance_scale=0.0 with the x0 sampler.
+        # SenseFlow transformer predicts x̂₀ directly; use x0 sampler (not flow).
         "baseline_guidance_scale": 0.0,
         "ga_guidance_scales": [0.0],
         "cfg_scales": [0.0],
+        "x0_sampler": True,
     },
 }
 
@@ -314,6 +315,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--smc_guidance_scale", type=float, default=1.25)
     p.add_argument("--smc_chunk", type=int, default=4, help="Transformer batch chunk for particles.")
 
+    p.add_argument(
+        "--x0_sampler",
+        action="store_true",
+        default=False,
+        help="Treat transformer output as a direct x̂₀ prediction instead of flow/velocity. "
+             "Set automatically for senseflow backends.",
+    )
     p.add_argument("--save_first_k", type=int, default=10)
     p.add_argument("--out_dir", default="./flux_sampling_out")
     return _apply_backend_defaults(p.parse_args(argv))
@@ -333,6 +341,8 @@ def _apply_backend_defaults(args: argparse.Namespace) -> argparse.Namespace:
 
     # SenseFlow defaults should apply only when caller kept legacy defaults.
     if (args.backend or "").startswith("senseflow"):
+        if not getattr(args, "x0_sampler", False):
+            args.x0_sampler = bool(cfg.get("x0_sampler", False))
         if list(getattr(args, "ga_guidance_scales", [])) == list(_DEFAULT_GUIDANCE_SCALES):
             args.ga_guidance_scales = list(cfg.get("ga_guidance_scales", [0.0]))
         if getattr(args, "cfg_scales", None) is None:
@@ -764,6 +774,20 @@ def build_action_space(num_variants: int, guidance_bank: list[float]) -> list[tu
     return [(int(vi), float(g)) for vi in range(int(num_variants)) for g in guidance_bank]
 
 
+def _pred_x0(
+    xt: torch.Tensor,
+    t: torch.Tensor,
+    out: torch.Tensor,
+    x0_sampler: bool,
+) -> torch.Tensor:
+    """Convert transformer output to x̂₀.
+
+    Flow sampler (FLUX):     x̂₀ = xt - t * flow
+    X0 sampler (SenseFlow):  x̂₀ = out  (transformer already predicts x̂₀)
+    """
+    return out if x0_sampler else xt - t * out
+
+
 @torch.no_grad()
 def run_action_sequence(
     args: argparse.Namespace,
@@ -796,7 +820,7 @@ def run_action_sequence(
             )
         latents = (1.0 - t_4d) * dx + t_4d * noise
         flow_pred = flux_transformer_step(ctx, latents, embeds[int(variant_idx)], t_val, float(guidance))
-        dx = latents - t_4d * flow_pred
+        dx = _pred_x0(latents, t_4d, flow_pred, args.x0_sampler)
 
     image = decode_to_pil(ctx, dx)
     score = score_image(reward_model, prompt, image)
@@ -845,7 +869,7 @@ def run_greedy(
         for variant_idx, guidance in actions:
             flow_pred = flux_transformer_step(ctx, latents, embeds[int(variant_idx)], float(t_val), float(guidance))
             nfe_total += 1
-            cand_dx = latents - t_4d * flow_pred
+            cand_dx = _pred_x0(latents, t_4d, flow_pred, args.x0_sampler)
             cand_img = decode_to_pil(ctx, cand_dx)
             cand_score = score_image(reward_model, prompt, cand_img)
             del cand_img
@@ -964,7 +988,7 @@ def run_bon(
                 )
             latents = (1.0 - t_4d) * dx + t_4d * noise
             flow = flux_transformer_step(ctx, latents, embeds[variant_idx], float(t_val), guidance)
-            dx = latents - t_4d * flow
+            dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
         img = decode_to_pil(ctx, dx)
         score = score_image(reward_model, prompt, img)
         mark = ""
@@ -1021,7 +1045,7 @@ def run_beam(
             for vi, guidance in actions:
                 flow = flux_transformer_step(ctx, latents_in, embeds[int(vi)], float(t_val), float(guidance))
                 nfe_total += 1
-                cand_dx = latents_in - t_4d * flow
+                cand_dx = _pred_x0(latents_in, t_4d, flow, args.x0_sampler)
                 cand_img = decode_to_pil(ctx, cand_dx)
                 cand_score = score_image(reward_model, prompt, cand_img)
                 del cand_img
@@ -1095,7 +1119,7 @@ def run_mcts(
         t_4d = torch.tensor(t_val, device=ctx.device, dtype=current_latents.dtype).view(1, 1, 1, 1)
         flow = flux_transformer_step(ctx, current_latents, embeds[int(variant_idx)], t_val, float(guidance))
         nfe_total += 1
-        new_dx = current_latents - t_4d * flow
+        new_dx = _pred_x0(current_latents, t_4d, flow, args.x0_sampler)
         next_step = int(step_idx) + 1
         if next_step >= int(args.steps):
             return new_dx, None
@@ -1760,7 +1784,7 @@ def run_smc(
             guidance_scale=float(args.smc_guidance_scale),
             chunk=int(args.smc_chunk),
         )
-        dx = latents - t_4d * flow_pred
+        dx = _pred_x0(latents, t_4d, flow_pred, args.x0_sampler)
 
         if step_idx < start_idx:
             continue

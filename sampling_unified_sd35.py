@@ -132,6 +132,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "[0.0] disables correction. E.g. --correction_strengths 0.0 0.5 1.0. "
              "Requires ImageReward backend.",
     )
+    parser.add_argument(
+        "--x0_sampler",
+        action="store_true",
+        default=False,
+        help="Treat transformer output as a direct x̂₀ prediction instead of flow/velocity. "
+             "Set automatically for senseflow backends.",
+    )
     parser.add_argument("--ga_population", type=int, default=24)
     parser.add_argument("--ga_generations", type=int, default=8)
     parser.add_argument("--ga_elites", type=int, default=3)
@@ -219,6 +226,7 @@ _BACKEND_CONFIGS = {
         "gen_batch_size": 2,
         "cfg_scales": [0.0],  # SenseFlow release uses guidance_scale=0.0
         "baseline_cfg": 0.0,
+        "x0_sampler": True,  # SenseFlow transformer predicts x̂₀ directly, not flow
     },
     "senseflow_medium": {
         "model_id": "stabilityai/stable-diffusion-3.5-medium",
@@ -229,6 +237,7 @@ _BACKEND_CONFIGS = {
         "gen_batch_size": 2,
         "cfg_scales": [0.0],
         "baseline_cfg": 0.0,
+        "x0_sampler": True,  # SenseFlow transformer predicts x̂₀ directly, not flow
     },
 }
 
@@ -247,6 +256,8 @@ def _apply_backend_defaults(args: argparse.Namespace) -> argparse.Namespace:
             args.cfg_scales = list(cfg.get("cfg_scales", [0.0]))
         if float(getattr(args, "baseline_cfg", _DEFAULT_BASELINE_CFG)) == float(_DEFAULT_BASELINE_CFG):
             args.baseline_cfg = float(cfg.get("baseline_cfg", 0.0))
+        if not getattr(args, "x0_sampler", False):
+            args.x0_sampler = bool(cfg.get("x0_sampler", False))
     # Final fallbacks for fields not covered by any backend config.
     if args.model_id is None:
         args.model_id = _BACKEND_CONFIGS["senseflow_large"]["model_id"]
@@ -312,7 +323,8 @@ class PipelineContext:
     device: str
     dtype: torch.dtype
     latent_c: int
-    nfe: int = 0  # incremented by transformer_step: +1 per step (cfg=1.0), +2 (cfg>1.0)
+    nfe: int = 0              # incremented by transformer_step: +1 per step (cfg=1.0), +2 (cfg>1.0)
+    correction_nfe: int = 0   # incremented by apply_reward_correction: +1 per call
 
 
 @dataclass
@@ -712,15 +724,24 @@ def apply_reward_correction(
     prompt: str,
     reward_model: "UnifiedRewardScorer",
     strength: float,
+    cfg: float = 1.0,
 ) -> torch.Tensor:
     """Apply one step of reward-gradient ascent on the predicted x̂₀ (dx).
 
     Computes dR/d(dx) via a differentiable BLIP forward pass through ImageReward,
     then nudges dx in the reward-gradient direction.  No-op when strength <= 0 or
     ImageReward is not loaded.
+
+    The effective strength is scaled by an NFE weighting factor: a CFG step costs
+    2 transformer NFEs vs. 1 for this correction call, so CFG steps get weight 2.0
+    (strength is upscaled proportionally to the transformer compute budget spent).
     """
     if strength <= 0.0:
         return dx
+    # Scale strength by the transformer-NFE cost of this step relative to one correction call.
+    nfe_weight = 2.0 if cfg > 1.0 else 1.0
+    strength = strength * nfe_weight
+    ctx.correction_nfe += 1
     state = getattr(reward_model, "state", None)
     ir = getattr(state, "imagereward", None) if state is not None else None
     if ir is None:
@@ -828,6 +849,20 @@ def step_schedule(
     return sched
 
 
+def _pred_x0(
+    xt: torch.Tensor,
+    t: torch.Tensor,
+    out: torch.Tensor,
+    x0_sampler: bool,
+) -> torch.Tensor:
+    """Convert transformer output to x̂₀.
+
+    Flow sampler (SiD):      x̂₀ = xt - t * flow
+    X0 sampler (SenseFlow):  x̂₀ = out  (transformer already predicts x̂₀)
+    """
+    return out if x0_sampler else xt - t * out
+
+
 def run_baseline(
     args: argparse.Namespace,
     ctx: PipelineContext,
@@ -844,7 +879,7 @@ def run_baseline(
         noise = latents if i == 0 else torch.randn_like(latents)
         latents = (1.0 - t_4d) * dx + t_4d * noise
         flow = transformer_step(args, ctx, latents, emb, 0, t_flat, float(cfg_scale))
-        dx = latents - t_4d * flow
+        dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
     image = decode_to_pil(ctx, dx)
     return image, score_image(reward_model, prompt, image)
 
@@ -896,7 +931,7 @@ def run_baseline_batch(
             )[0]
             flow_u, flow_c = flow_both.chunk(2)
             flow = flow_u + cfg_scale * (flow_c - flow_u)
-        dx = latents - t_4d * flow
+        dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
 
     out: list[tuple[Image.Image, float]] = []
     for j in range(B):
@@ -970,12 +1005,12 @@ def run_greedy_batch(
                 flow_u, flow_c = flow_both.chunk(2)
                 flow = flow_u + cfg * (flow_c - flow_u)
 
-            base_cand_dx = latents - t_4d * flow  # [B, C, H, W] — shared across correction variants
+            base_cand_dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)  # [B, C, H, W] — shared across correction variants
             for cs in corr_strengths:
                 for j in range(B):
                     cand_dx_j = base_cand_dx[j : j + 1].clone()
                     if cs > 0.0:
-                        cand_dx_j = apply_reward_correction(ctx, cand_dx_j, prompts[j], reward_model, cs)
+                        cand_dx_j = apply_reward_correction(ctx, cand_dx_j, prompts[j], reward_model, cs, cfg=cfg)
                     cand_img = decode_to_pil(ctx, cand_dx_j)
                     cand_score = score_image(reward_model, prompts[j], cand_img)
                     if cand_score > best_scores[j]:
@@ -1023,7 +1058,7 @@ def run_bon(
             noise = latents if j == 0 else torch.randn_like(latents)
             latents = (1.0 - t_4d) * dx + t_4d * noise
             flow = transformer_step(args, ctx, latents, emb, variant_idx, t_flat, cfg)
-            dx = latents - t_4d * flow
+            dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
         img = decode_to_pil(ctx, dx)
         score = score_image(reward_model, prompt, img)
         mark = ""
@@ -1084,9 +1119,9 @@ def run_beam(
                 if vc_key not in vc_cache:
                     vc_cache[vc_key] = transformer_step(args, ctx, latents_in, emb, vi, t_flat, cfg)
                 flow = vc_cache[vc_key]
-                cand_dx = latents_in - t_4d * flow
+                cand_dx = _pred_x0(latents_in, t_4d, flow, args.x0_sampler)
                 if cs > 0.0:
-                    cand_dx = apply_reward_correction(ctx, cand_dx, prompt, reward_model, cs)
+                    cand_dx = apply_reward_correction(ctx, cand_dx, prompt, reward_model, cs, cfg=cfg)
                 cand_img = decode_to_pil(ctx, cand_dx)
                 cand_score = score_image(reward_model, prompt, cand_img)
                 candidates.append((cand_score, cand_dx, beam_path + [(vi, cfg, cs)]))
@@ -1154,9 +1189,9 @@ def run_greedy(
             if vc_key not in vc_seen:
                 vc_seen[vc_key] = transformer_step(args, ctx, latents, emb, variant_idx, t_flat, cfg)
             flow = vc_seen[vc_key]
-            cand_dx = latents - t_4d * flow
+            cand_dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
             if cs > 0.0:
-                cand_dx = apply_reward_correction(ctx, cand_dx, prompt, reward_model, cs)
+                cand_dx = apply_reward_correction(ctx, cand_dx, prompt, reward_model, cs, cfg=cfg)
             cand_img = decode_to_pil(ctx, cand_dx)
             cand_score = score_image(reward_model, prompt, cand_img)
             marker = ""
@@ -1205,9 +1240,9 @@ def run_schedule_actions(
         noise = latents if step_idx == 0 else torch.randn_like(latents)
         latents = (1.0 - t_4d) * dx + t_4d * noise
         flow = transformer_step(args, ctx, latents, emb, int(variant_idx), t_flat, float(cfg))
-        dx = latents - t_4d * flow
+        dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
         if float(cs) > 0.0:
-            dx = apply_reward_correction(ctx, dx, prompt, reward_model, float(cs))
+            dx = apply_reward_correction(ctx, dx, prompt, reward_model, float(cs), cfg=float(cfg))
     image = decode_to_pil(ctx, dx)
     score = score_image(reward_model, prompt, image)
     return SearchResult(image=image, score=score, actions=[(int(v), float(c), float(r)) for v, c, r in actions])
@@ -1278,11 +1313,11 @@ def score_schedule_actions_batch(
         latents = (1.0 - t_4d) * dx + t_4d * noise
         step_actions = [actions[step_idx] for actions in actions_batch]
         flow = _batched_flow_for_step_actions(args, ctx, emb, latents, t_flat, step_actions)
-        dx = latents - t_4d * flow
+        dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
         # Apply per-genome correction (uses enable_grad internally, safe under @no_grad).
         for bi, (_vi, _cfg, cs) in enumerate(step_actions):
             if float(cs) > 0.0:
-                dx[bi : bi + 1] = apply_reward_correction(ctx, dx[bi : bi + 1], prompt, reward_model, float(cs))
+                dx[bi : bi + 1] = apply_reward_correction(ctx, dx[bi : bi + 1], prompt, reward_model, float(cs), cfg=float(_cfg))
 
     scores: list[float] = []
     for bi in range(batch_n):
@@ -1737,9 +1772,9 @@ def _expand_child(
     variant_idx, cfg, cs = action
     t_flat, t_4d = sched[node.step]
     flow = transformer_step(args, ctx, node.latents, emb, variant_idx, t_flat, cfg)
-    new_dx = node.latents - t_4d * flow
+    new_dx = _pred_x0(node.latents, t_4d, flow, args.x0_sampler)
     if float(cs) > 0.0:
-        new_dx = apply_reward_correction(ctx, new_dx, prompt, reward_model, float(cs))
+        new_dx = apply_reward_correction(ctx, new_dx, prompt, reward_model, float(cs), cfg=float(cfg))
     next_step = node.step + 1
     if next_step < len(sched):
         _, next_t_4d = sched[next_step]
@@ -1851,9 +1886,9 @@ def run_mcts(
             variant_idx, cfg, cs = actions[np.random.randint(n_actions)]
             t_flat, t_4d = sched[rollout_step]
             flow = transformer_step(args, ctx, rollout_latents, emb, variant_idx, t_flat, cfg)
-            rollout_dx = rollout_latents - t_4d * flow
+            rollout_dx = _pred_x0(rollout_latents, t_4d, flow, args.x0_sampler)
             if float(cs) > 0.0:
-                rollout_dx = apply_reward_correction(ctx, rollout_dx, prompt, reward_model, float(cs))
+                rollout_dx = apply_reward_correction(ctx, rollout_dx, prompt, reward_model, float(cs), cfg=float(cfg))
             rollout_step += 1
             if rollout_step < args.steps:
                 _, next_t_4d = sched[rollout_step]
@@ -1892,9 +1927,9 @@ def run_mcts(
     for step_idx, (variant_idx, cfg, cs) in enumerate(exploit_path):
         t_flat, t_4d = sched[step_idx]
         flow = transformer_step(args, ctx, replay_lat, emb, variant_idx, t_flat, cfg)
-        replay_dx = replay_lat - t_4d * flow
+        replay_dx = _pred_x0(replay_lat, t_4d, flow, args.x0_sampler)
         if float(cs) > 0.0:
-            replay_dx = apply_reward_correction(ctx, replay_dx, prompt, reward_model, float(cs))
+            replay_dx = apply_reward_correction(ctx, replay_dx, prompt, reward_model, float(cs), cfg=float(cfg))
         if step_idx + 1 < args.steps:
             _, next_t_4d = sched[step_idx + 1]
             noise = torch.randn_like(replay_dx)
@@ -1962,9 +1997,9 @@ def run_smc(
         next_dx_parts = []
         for pi in range(k):
             flow = transformer_step(args, ctx, latents[pi : pi + 1], emb, variant_idx, t_flat, cfg)
-            p_dx = latents[pi : pi + 1] - t_4d * flow
+            p_dx = _pred_x0(latents[pi : pi + 1], t_4d, flow, args.x0_sampler)
             if smc_cs > 0.0:
-                p_dx = apply_reward_correction(ctx, p_dx, prompt, reward_model, smc_cs)
+                p_dx = apply_reward_correction(ctx, p_dx, prompt, reward_model, smc_cs, cfg=cfg)
             next_dx_parts.append(p_dx)
         dx = torch.cat(next_dx_parts, dim=0)
 
@@ -2056,6 +2091,8 @@ def run(args: argparse.Namespace) -> None:
     for prompt_idx, prompt in enumerate(prompts):
         slug = f"p{prompt_idx:02d}"
         print(f"\n{'='*72}\n[{slug}] {prompt}\n{'='*72}")
+        ctx.nfe = 0
+        ctx.correction_nfe = 0
         variants = generate_variants(args, prompt, rewrite_cache)
         with open(os.path.join(args.out_dir, f"{slug}_variants.txt"), "w") as f:
             for vi, text in enumerate(variants):
@@ -2103,9 +2140,11 @@ def run(args: argparse.Namespace) -> None:
         search.image.save(search_path)
         save_comparison(comp_path, base_img, search.image, base_score, search.score, search.actions)
 
+        total_nfe = ctx.nfe + ctx.correction_nfe
         print(
             f"baseline={base_score:.4f} {args.search_method}={search.score:.4f} "
-            f"delta={search.score - base_score:+.4f}"
+            f"delta={search.score - base_score:+.4f}  "
+            f"nfe={total_nfe} (T:{ctx.nfe}+R:{ctx.correction_nfe})"
         )
         summary.append(
             {
@@ -2118,6 +2157,9 @@ def run(args: argparse.Namespace) -> None:
                 "delta_IR": search.score - base_score,
                 "actions": [[int(v), float(c), float(cs)] for v, c, cs in search.actions],
                 "search_diagnostics": search.diagnostics,
+                "nfe_transformer": ctx.nfe,
+                "nfe_correction": ctx.correction_nfe,
+                "nfe_total": total_nfe,
             }
         )
 

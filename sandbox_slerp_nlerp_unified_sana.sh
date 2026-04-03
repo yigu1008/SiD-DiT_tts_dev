@@ -107,6 +107,8 @@ PY
 ensure_hpsv3_runtime
 ensure_unifiedreward_runtime
 
+reward_type_lc="$(echo "${REWARD_TYPE:-unifiedreward}" | tr '[:upper:]' '[:lower:]')"
+
 reward_args=(
   --reward_type "${REWARD_TYPE:-unifiedreward}"
   --reward_device "${REWARD_DEVICE:-cpu}"
@@ -161,6 +163,30 @@ if [[ "${ENABLE_PROMPT_WEIGHT_SPSA:-1}" == "0" ]]; then
   algo_args+=(--no-enable_prompt_weight_spsa)
 fi
 
+family_args=()
+if [[ "${reward_type_lc}" == "imagereward" ]]; then
+  echo "[sandbox-slerp-nlerp] REWARD_TYPE=imagereward -> forcing --families nlerp"
+  family_args=(--families nlerp)
+  if [[ "${RUN_MCTS_FAMILY_SPSA_ABLATION:-0}" == "1" ]]; then
+    echo "[sandbox-slerp-nlerp] disabling RUN_MCTS_FAMILY_SPSA_ABLATION for imagereward (slerp arm removed)."
+    filtered_algo_args=()
+    for a in "${algo_args[@]}"; do
+      if [[ "${a}" != "--run_mcts_family_spsa_ablation" ]]; then
+        filtered_algo_args+=("${a}")
+      fi
+    done
+    algo_args=("${filtered_algo_args[@]}")
+  fi
+else
+  families_str="${FAMILIES:-nlerp slerp}"
+  # shellcheck disable=SC2206
+  families_arr=(${families_str})
+  if [[ "${#families_arr[@]}" -eq 0 ]]; then
+    families_arr=(nlerp slerp)
+  fi
+  family_args=(--families "${families_arr[@]}")
+fi
+
 mix_args=()
 if [[ -n "${MIX_WEIGHT_VECTORS:-}" ]]; then
   # shellcheck disable=SC2206
@@ -190,7 +216,7 @@ fi
   --interp_k "${INTERP_K:-4}" \
   --interp_values ${INTERP_VALUES:-0.0 0.25 0.5 0.75 1.0} \
   "${mix_args[@]}" \
-  --families ${FAMILIES:-nlerp slerp} \
+  "${family_args[@]}" \
   --preview_every "${PREVIEW_EVERY:--1}" \
   --ga_population "${GA_POPULATION:-24}" \
   --ga_generations "${GA_GENERATIONS:-8}" \

@@ -150,6 +150,48 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--mcts_ucb_c", type=float, default=1.41)
     p.add_argument("--mcts_log_every", type=int, default=10)
     p.add_argument("--mcts_cache", action=argparse.BooleanOptionalAction, default=True)
+
+    # Root-level SPSA over 4 prompt-weight scalars during MCTS
+    p.add_argument(
+        "--enable_prompt_weight_spsa",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Adapt 4 global prompt-weight scalars online during MCTS blocks.",
+    )
+    p.add_argument(
+        "--num_prompt_weights",
+        type=int,
+        default=4,
+        help="Number of global prompt-weight scalars adapted by SPSA.",
+    )
+    p.add_argument(
+        "--spsa_block_rollouts",
+        type=int,
+        default=8,
+        help="Number of MCTS rollouts run with the current prompt weights before one SPSA update.",
+    )
+    p.add_argument("--spsa_c", type=float, default=0.07, help="SPSA perturbation magnitude in log-weight space.")
+    p.add_argument("--spsa_eta", type=float, default=0.05, help="SPSA learning rate in log-weight space.")
+    p.add_argument("--weight_clip_min", type=float, default=0.5, help="Minimum prompt-weight multiplier after exp(theta).")
+    p.add_argument("--weight_clip_max", type=float, default=2.0, help="Maximum prompt-weight multiplier after exp(theta).")
+    p.add_argument(
+        "--run_mcts_weight_ablation",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Run both fixed-weight MCTS and SPSA-weighted MCTS for comparison.",
+    )
+    p.add_argument(
+        "--run_mcts_design_ablation",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Compare variant-only MCTS against global 4-weight blend MCTS (fixed vs SPSA).",
+    )
+    p.add_argument(
+        "--run_mcts_family_spsa_ablation",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Within design ablation, also run family-specific SPSA arms: nlerp-only and slerp-only.",
+    )
     return p.parse_args(argv)
 
 
@@ -203,6 +245,36 @@ def _normalize_weights(weights: list[float]) -> np.ndarray:
     else:
         arr = arr / s
     return arr
+
+
+def _ones_prompt_weight_vector(n_weights: int) -> np.ndarray:
+    return np.ones((int(n_weights),), dtype=np.float64)
+
+
+def _weight_signature(weights: np.ndarray | None) -> tuple[float, ...]:
+    if weights is None:
+        return ()
+    arr = np.asarray(weights, dtype=np.float64).reshape(-1)
+    return tuple(float(f"{float(x):.8f}") for x in arr.tolist())
+
+
+def _effective_profile_weights(
+    profile_weights: list[float],
+    prompt_weight_multipliers: np.ndarray | None,
+) -> np.ndarray:
+    base = np.asarray(profile_weights, dtype=np.float64).reshape(-1)
+    if prompt_weight_multipliers is None:
+        return base
+    mul = np.asarray(prompt_weight_multipliers, dtype=np.float64).reshape(-1)
+    if base.shape[0] != mul.shape[0]:
+        raise RuntimeError(
+            f"Prompt-weight multiplier length mismatch: profile={base.shape[0]} vs spsa={mul.shape[0]}"
+        )
+    return base * mul
+
+
+def _clip_prompt_weights(theta: np.ndarray, clip_min: float, clip_max: float) -> np.ndarray:
+    return np.clip(np.exp(np.asarray(theta, dtype=np.float64)), float(clip_min), float(clip_max))
 
 
 def _build_weight_profiles(
@@ -275,6 +347,41 @@ def _build_weight_profiles(
         seen.add(key)
         dedup.append(row)
     return dedup
+
+
+def _build_variant_only_weight_profiles(selected_labels: list[str]) -> list[dict[str, Any]]:
+    k = int(len(selected_labels))
+    if k <= 0:
+        raise RuntimeError("Expected at least one selected label for variant-only profiles.")
+    out: list[dict[str, Any]] = []
+    for idx, label in enumerate(selected_labels):
+        vec = np.zeros((k,), dtype=np.float64)
+        vec[idx] = 1.0
+        out.append(
+            {
+                "name": f"variant_{str(label)}",
+                "weights": [float(x) for x in vec.tolist()],
+                "source": "variant_only",
+                "t": 1.0,
+                "focus_label": str(label),
+            }
+        )
+    return out
+
+
+def _build_global_blend_weight_profiles(selected_labels: list[str]) -> list[dict[str, Any]]:
+    k = int(len(selected_labels))
+    if k <= 0:
+        raise RuntimeError("Expected at least one selected label for global blend profile.")
+    return [
+        {
+            "name": "global_blend_uniform",
+            "weights": [float(1.0 / float(k)) for _ in range(k)],
+            "source": "global_blend",
+            "t": None,
+            "focus_label": None,
+        }
+    ]
 
 
 def _action_bank(families: list[str], n_profiles: int, cfg_values: list[float]) -> list[tuple[str, int, float]]:
@@ -359,6 +466,98 @@ def _build_summary_panel(
     canvas.save(out_path)
 
 
+def _write_mcts_weight_history_rows(
+    writer: csv.writer,
+    slug: str,
+    prompt: str,
+    method_name: str,
+    result: dict[str, Any] | None,
+) -> None:
+    if not isinstance(result, dict):
+        return
+    search_space = str(result.get("search_space_name", "unknown"))
+    mode = str(result.get("mode", "fixed"))
+    history = result.get("spsa_history", [])
+    if isinstance(history, list) and len(history) > 0:
+        for row in history:
+            r_plus = row.get("R_plus")
+            r_minus = row.get("R_minus")
+            delta_r = None
+            if r_plus is not None and r_minus is not None:
+                delta_r = float(r_plus) - float(r_minus)
+            writer.writerow(
+                [
+                    slug,
+                    prompt,
+                    method_name,
+                    search_space,
+                    mode,
+                    "spsa_block",
+                    int(row.get("block", -1)),
+                    int(row.get("after_sim", -1)),
+                    f"{float(r_plus):.6f}" if r_plus is not None else "",
+                    f"{float(r_minus):.6f}" if r_minus is not None else "",
+                    f"{float(delta_r):+.6f}" if delta_r is not None else "",
+                    json.dumps(row.get("w_before", [])),
+                    json.dumps(row.get("w_after", [])),
+                    json.dumps(row.get("gradient", [])),
+                    json.dumps(result.get("final_prompt_weights", [])),
+                ]
+            )
+    else:
+        writer.writerow(
+            [
+                slug,
+                prompt,
+                method_name,
+                search_space,
+                mode,
+                "final_only",
+                -1,
+                int(result.get("eval_calls_total", -1)),
+                "",
+                "",
+                "",
+                json.dumps(result.get("best_prompt_weights", [])),
+                json.dumps(result.get("final_prompt_weights", [])),
+                json.dumps([]),
+                json.dumps(result.get("final_prompt_weights", [])),
+            ]
+        )
+
+
+def _summarize_step_actions(step_actions: Any) -> tuple[str, str, str, str]:
+    if not isinstance(step_actions, list) or len(step_actions) <= 0:
+        return ("mixed", "mixed", "mixed", "mixed")
+
+    def _pick_str(key: str) -> str:
+        vals = [str(x.get(key, "")).strip() for x in step_actions if isinstance(x, dict)]
+        vals = [v for v in vals if len(v) > 0]
+        if len(vals) <= 0:
+            return "mixed"
+        uniq = sorted(set(vals))
+        return vals[0] if len(uniq) == 1 else "mixed"
+
+    def _pick_float_str(key: str) -> str:
+        vals: list[float] = []
+        for x in step_actions:
+            if isinstance(x, dict) and x.get(key) is not None:
+                vals.append(float(x.get(key)))
+        if len(vals) <= 0:
+            return "mixed"
+        rounded = [round(v, 6) for v in vals]
+        if len(set(rounded)) == 1:
+            return f"{vals[0]:.2f}"
+        return "mixed"
+
+    return (
+        _pick_str("family"),
+        _pick_str("profile"),
+        _pick_float_str("t"),
+        _pick_float_str("cfg"),
+    )
+
+
 @torch.no_grad()
 def run_stepwise_action_rollout(
     args: argparse.Namespace,
@@ -377,6 +576,7 @@ def run_stepwise_action_rollout(
     action_bank: list[tuple[str, int, float]],
     genome: list[int],
     preview_every: int,
+    prompt_weight_multipliers: np.ndarray | None = None,
     save_path: str | None = None,
     tag: str = "stepwise",
 ) -> ActionRollout:
@@ -389,6 +589,15 @@ def run_stepwise_action_rollout(
 
     pe_bank = [basis_emb.pe_list[int(i)][0] for i in basis_indices]
     pm_bank = [basis_emb.pe_list[int(i)][1] for i in basis_indices]
+    prompt_weights = (
+        _ones_prompt_weight_vector(len(basis_indices))
+        if prompt_weight_multipliers is None
+        else np.asarray(prompt_weight_multipliers, dtype=np.float64).reshape(-1)
+    )
+    if prompt_weights.shape[0] != len(basis_indices):
+        raise RuntimeError(
+            f"Expected {len(basis_indices)} prompt weights, got {prompt_weights.shape[0]}"
+        )
 
     latents = su.make_latents(ctx, int(seed), int(h), int(w), basis_emb.orig_pe.dtype)
     sched = su._step_tensors(ctx, int(args.steps), latents.dtype)
@@ -414,7 +623,8 @@ def run_stepwise_action_rollout(
         a_idx = int(genome[step_idx % len(genome)]) % len(action_bank)
         fam, profile_idx, cfg = action_bank[a_idx]
         profile = weight_profiles[int(profile_idx)]
-        weights_t = torch.tensor(profile["weights"], dtype=pe_bank[0].dtype, device=ctx.device)
+        effective_weights = _effective_profile_weights(profile["weights"], prompt_weights)
+        weights_t = torch.tensor(effective_weights, dtype=pe_bank[0].dtype, device=ctx.device)
         blend = blend_prompt_embeddings(pe_bank, pm_bank, weights_t, fam)
         velocity = su.transformer_step(
             args,
@@ -449,7 +659,9 @@ def run_stepwise_action_rollout(
                 "t": float(profile["t"]) if profile.get("t") is not None else None,
                 "focus_label": str(profile["focus_label"]) if profile.get("focus_label") is not None else None,
                 "cfg": float(cfg),
-                "weights": [float(x) for x in profile["weights"]],
+                "profile_weights": [float(x) for x in profile["weights"]],
+                "prompt_weight_multipliers": [float(x) for x in prompt_weights.tolist()],
+                "effective_weights": [float(x) for x in effective_weights.tolist()],
                 "selected_indices": [int(basis_indices[i]) for i in blend.selected_indices],
                 "selected_labels": [str([basis_emb.labels[j] for j in basis_indices][i]) for i in blend.selected_indices],
                 "selected_weights": [float(x) for x in blend.selected_weights],
@@ -694,6 +906,32 @@ class _MCTSNode:
         return q + float(c) * math.sqrt(math.log(max(1, int(self.N))) / float(n))
 
 
+def _mcts_best_exploit_genome(root: _MCTSNode, steps: int, n_actions: int) -> list[int]:
+    genome: list[int] = []
+    node = root
+    default_action = 0
+    while len(genome) < int(steps):
+        best_action = None
+        best_mean = -float("inf")
+        for action, visits in node.action_N.items():
+            if int(visits) <= 0:
+                continue
+            mean = float(node.action_Q.get(int(action), 0.0)) / float(visits)
+            if mean > best_mean:
+                best_mean = mean
+                best_action = int(action)
+        if best_action is None:
+            break
+        genome.append(int(best_action))
+        child = node.children.get(int(best_action))
+        if child is None:
+            break
+        node = child
+    while len(genome) < int(steps):
+        genome.append(int(default_action % max(1, n_actions)))
+    return genome
+
+
 def run_mcts_search(
     args: argparse.Namespace,
     ctx: su.PipelineContext,
@@ -711,6 +949,10 @@ def run_mcts_search(
     action_bank: list[tuple[str, int, float]],
     prompt_dir: str,
     save_images: bool,
+    *,
+    enable_spsa: bool | None = None,
+    result_prefix: str = "mcts",
+    search_space_name: str = "dynamic_profiles",
 ) -> dict[str, Any]:
     rng = np.random.default_rng(int(seed) + 1777)
     n_actions = int(len(action_bank))
@@ -718,16 +960,40 @@ def run_mcts_search(
     n_sims = max(1, int(args.mcts_n_sims))
     ucb_c = float(args.mcts_ucb_c)
     log_every = max(1, int(args.mcts_log_every))
+    use_spsa = bool(args.enable_prompt_weight_spsa if enable_spsa is None else enable_spsa)
+    num_prompt_weights = int(args.num_prompt_weights)
+    if num_prompt_weights != len(basis_indices):
+        raise RuntimeError(
+            f"MCTS prompt-weight search expects {num_prompt_weights} basis prompts, got {len(basis_indices)}. "
+            "Adjust --num_prompt_weights or --interp_k/--interp_labels."
+        )
+    spsa_block_rollouts = max(1, int(args.spsa_block_rollouts))
+    spsa_c = float(args.spsa_c)
+    spsa_eta = float(args.spsa_eta)
+    weight_clip_min = float(args.weight_clip_min)
+    weight_clip_max = float(args.weight_clip_max)
+    log_clip_min = math.log(max(weight_clip_min, 1e-8))
+    log_clip_max = math.log(max(weight_clip_max, weight_clip_min + 1e-8))
 
-    cache: dict[tuple[int, ...], dict[str, Any]] = {}
+    cache: dict[tuple[tuple[float, ...], tuple[int, ...]], dict[str, Any]] = {}
     history: list[dict[str, Any]] = []
+    spsa_history: list[dict[str, Any]] = []
     eval_calls_total = 0
-    best: dict[str, Any] | None = None
+    search_best: dict[str, Any] | None = None
+    theta = np.zeros((num_prompt_weights,), dtype=np.float64)
+    current_prompt_weights = _clip_prompt_weights(theta, weight_clip_min, weight_clip_max)
 
-    def evaluate(genome: list[int], need_image: bool, sim_idx: int, phase: str) -> dict[str, Any]:
+    def evaluate(
+        genome: list[int],
+        prompt_weights: np.ndarray,
+        need_image: bool,
+        sim_idx: int,
+        phase: str,
+    ) -> dict[str, Any]:
         nonlocal eval_calls_total
         repaired = [int(x) % n_actions for x in genome]
-        key = tuple(repaired)
+        weight_sig = _weight_signature(prompt_weights)
+        key = (weight_sig, tuple(repaired))
         eval_calls_total += 1
         if bool(args.mcts_cache):
             cached = cache.get(key)
@@ -750,6 +1016,7 @@ def run_mcts_search(
             action_bank=action_bank,
             genome=repaired,
             preview_every=int(args.preview_every),
+            prompt_weight_multipliers=prompt_weights,
             save_path=None,
             tag=f"mcts_s{sim_idx}_{phase}",
         )
@@ -759,6 +1026,7 @@ def run_mcts_search(
             "image": trace.final_image if need_image else None,
             "preview_rewards": [float(x) for x in trace.preview_rewards],
             "step_actions": trace.step_actions,
+            "prompt_weights": [float(x) for x in prompt_weights.tolist()],
         }
         if bool(args.mcts_cache):
             cache[key] = payload
@@ -766,102 +1034,202 @@ def run_mcts_search(
 
     root = _MCTSNode(step=0, prefix=())
 
-    for sim in range(n_sims):
-        node = root
-        root.N += 1
-        path: list[tuple[_MCTSNode, int]] = []
+    def maybe_update_search_best(candidate: dict[str, Any], sim_idx: int, phase: str) -> None:
+        nonlocal search_best
+        if search_best is None or float(candidate["score"]) > float(search_best["score"]):
+            search_best = evaluate(
+                candidate["genome"],
+                np.asarray(candidate["prompt_weights"], dtype=np.float64),
+                need_image=save_images,
+                sim_idx=sim_idx,
+                phase=phase,
+            )
 
-        while node.step < steps:
-            untried = node.untried_actions(n_actions)
-            if len(untried) > 0:
-                action = int(untried[int(rng.integers(0, len(untried)))])
+    sim = 0
+    block_idx = 0
+    while sim < n_sims:
+        sims_this_block = min(spsa_block_rollouts, n_sims - sim)
+        for _ in range(sims_this_block):
+            node = root
+            root.N += 1
+            path: list[tuple[_MCTSNode, int]] = []
+
+            while node.step < steps:
+                untried = node.untried_actions(n_actions)
+                if len(untried) > 0:
+                    action = int(untried[int(rng.integers(0, len(untried)))])
+                    child = node.children.get(action)
+                    if child is None:
+                        child = _MCTSNode(step=node.step + 1, prefix=node.prefix + (action,))
+                        node.children[action] = child
+                    path.append((node, action))
+                    node = child
+                    break
+
+                action = max(range(n_actions), key=lambda a: node.ucb(a, ucb_c))
                 child = node.children.get(action)
                 if child is None:
                     child = _MCTSNode(step=node.step + 1, prefix=node.prefix + (action,))
                     node.children[action] = child
-                path.append((node, action))
+                path.append((node, int(action)))
                 node = child
-                break
 
-            action = max(range(n_actions), key=lambda a: node.ucb(a, ucb_c))
-            child = node.children.get(action)
-            if child is None:
-                child = _MCTSNode(step=node.step + 1, prefix=node.prefix + (action,))
-                node.children[action] = child
-            path.append((node, int(action)))
-            node = child
-
-        rollout = [int(x) for x in node.prefix]
-        while len(rollout) < steps:
-            rollout.append(int(rng.integers(0, n_actions)))
-        scored = evaluate(rollout, need_image=False, sim_idx=sim, phase="rollout")
-
-        if best is None or float(scored["score"]) > float(best["score"]):
-            best = evaluate(scored["genome"], need_image=save_images, sim_idx=sim, phase="best")
-
-        score = float(scored["score"])
-        for parent, action in path:
-            parent.action_N[action] = int(parent.action_N.get(action, 0) + 1)
-            parent.action_Q[action] = float(parent.action_Q.get(action, 0.0) + score)
-            child = parent.children[action]
-            child.N = int(child.N + 1)
-
-        if (sim + 1) % log_every == 0 or sim == 0:
-            top_root = []
-            for a, n in root.action_N.items():
-                if int(n) > 0:
-                    top_root.append((float(root.action_Q[a]) / float(n), int(a), int(n)))
-            top_root.sort(reverse=True)
-            top_root = top_root[: max(1, int(args.ga_log_topk))]
-            row = {
-                "sim": int(sim + 1),
-                "best_score": float(best["score"]) if best is not None else None,
-                "root_visits": int(root.N),
-                "eval_calls_total": int(eval_calls_total),
-                "nfe_total": int(eval_calls_total * steps),
-                "root_top": [
-                    dict(
-                        {
-                            "mean_score": float(m),
-                            "visits": int(v),
-                        },
-                        **_action_detail(int(aidx), action_bank, weight_profiles),
-                    )
-                    for m, aidx, v in top_root
-                ],
-            }
-            history.append(row)
-            print(
-                f"  [mcts] sim={sim+1:03d}/{n_sims} "
-                f"best={(float(best['score']) if best is not None else float('-inf')):.4f} "
-                f"evals={eval_calls_total}"
+            rollout = [int(x) for x in node.prefix]
+            while len(rollout) < steps:
+                rollout.append(int(rng.integers(0, n_actions)))
+            scored = evaluate(
+                rollout,
+                current_prompt_weights,
+                need_image=False,
+                sim_idx=sim,
+                phase="rollout",
             )
 
-    if best is None:
+            maybe_update_search_best(scored, sim, "best")
+
+            score = float(scored["score"])
+            for parent, action in path:
+                parent.action_N[action] = int(parent.action_N.get(action, 0) + 1)
+                parent.action_Q[action] = float(parent.action_Q.get(action, 0.0) + score)
+                child = parent.children[action]
+                child.N = int(child.N + 1)
+
+            sim += 1
+            if (sim % log_every) == 0 or sim == 1:
+                top_root = []
+                for a, n in root.action_N.items():
+                    if int(n) > 0:
+                        top_root.append((float(root.action_Q[a]) / float(n), int(a), int(n)))
+                top_root.sort(reverse=True)
+                top_root = top_root[: max(1, int(args.ga_log_topk))]
+                row = {
+                    "sim": int(sim),
+                    "block": int(block_idx),
+                    "mode": "spsa" if use_spsa else "fixed",
+                    "best_score": float(search_best["score"]) if search_best is not None else None,
+                    "root_visits": int(root.N),
+                    "eval_calls_total": int(eval_calls_total),
+                    "nfe_total": int(eval_calls_total * steps),
+                    "theta": [float(x) for x in theta.tolist()],
+                    "prompt_weights": [float(x) for x in current_prompt_weights.tolist()],
+                    "root_top": [
+                        dict(
+                            {
+                                "mean_score": float(m),
+                                "visits": int(v),
+                            },
+                            **_action_detail(int(aidx), action_bank, weight_profiles),
+                        )
+                        for m, aidx, v in top_root
+                    ],
+                }
+                history.append(row)
+                print(
+                    f"  [mcts:{'spsa' if use_spsa else 'fixed'}] sim={sim:03d}/{n_sims} "
+                    f"best={(float(search_best['score']) if search_best is not None else float('-inf')):.4f} "
+                    f"w={[float(x) for x in current_prompt_weights.tolist()]} evals={eval_calls_total}"
+                )
+
+        if use_spsa:
+            delta = rng.choice(np.asarray([-1.0, 1.0], dtype=np.float64), size=num_prompt_weights).astype(np.float64)
+            theta_before = theta.copy()
+            w_before = current_prompt_weights.copy()
+            theta_plus = theta_before + spsa_c * delta
+            theta_minus = theta_before - spsa_c * delta
+            w_plus = _clip_prompt_weights(theta_plus, weight_clip_min, weight_clip_max)
+            w_minus = _clip_prompt_weights(theta_minus, weight_clip_min, weight_clip_max)
+            eval_genome = _mcts_best_exploit_genome(root, steps, n_actions)
+
+            plus = evaluate(eval_genome, w_plus, need_image=False, sim_idx=sim, phase=f"spsa_plus_b{block_idx}")
+            minus = evaluate(eval_genome, w_minus, need_image=False, sim_idx=sim, phase=f"spsa_minus_b{block_idx}")
+            maybe_update_search_best(plus, sim, f"spsa_plus_best_b{block_idx}")
+            maybe_update_search_best(minus, sim, f"spsa_minus_best_b{block_idx}")
+
+            r_plus = float(plus["score"])
+            r_minus = float(minus["score"])
+            grad = ((r_plus - r_minus) / (2.0 * spsa_c)) * delta
+            theta = np.clip(theta_before + spsa_eta * grad, log_clip_min, log_clip_max)
+            current_prompt_weights = _clip_prompt_weights(theta, weight_clip_min, weight_clip_max)
+            spsa_history.append(
+                {
+                    "block": int(block_idx),
+                    "after_sim": int(sim),
+                    "representative_genome": [int(x) for x in eval_genome],
+                    "theta_before": [float(x) for x in theta_before.tolist()],
+                    "theta_after": [float(x) for x in theta.tolist()],
+                    "w_before": [float(x) for x in w_before.tolist()],
+                    "w_after": [float(x) for x in current_prompt_weights.tolist()],
+                    "w_plus": [float(x) for x in w_plus.tolist()],
+                    "w_minus": [float(x) for x in w_minus.tolist()],
+                    "delta": [float(x) for x in delta.tolist()],
+                    "R_plus": float(r_plus),
+                    "R_minus": float(r_minus),
+                    "gradient": [float(x) for x in grad.tolist()],
+                    "eval_calls_total": int(eval_calls_total),
+                }
+            )
+            print(
+                f"  [mcts-spsa] block={block_idx+1:02d} sims={sim} "
+                f"R+={r_plus:.4f} R-={r_minus:.4f} "
+                f"w={[float(x) for x in current_prompt_weights.tolist()]}"
+            )
+        block_idx += 1
+
+    if search_best is None:
         raise RuntimeError("MCTS failed to evaluate any rollout.")
 
-    best_genome = [int(x) for x in best["genome"]]
+    final_genome = _mcts_best_exploit_genome(root, steps, n_actions)
+    final_eval = evaluate(
+        final_genome,
+        current_prompt_weights,
+        need_image=save_images,
+        sim_idx=sim,
+        phase="final",
+    )
+    best_genome = [int(x) for x in final_eval["genome"]]
     best_actions = [
         dict({"step": int(i)}, **_action_detail(int(aidx), action_bank, weight_profiles))
         for i, aidx in enumerate(best_genome)
     ]
     best_img_path = None
-    if save_images and best.get("image") is not None:
-        best_img_path = os.path.join(prompt_dir, "mcts_best.png")
-        best["image"].save(best_img_path)
+    if save_images and final_eval.get("image") is not None:
+        best_img_path = os.path.join(prompt_dir, f"{result_prefix}_best.png")
+        final_eval["image"].save(best_img_path)
 
     result = {
-        "best_score": float(best["score"]),
+        "search_space_name": str(search_space_name),
+        "mode": "spsa" if use_spsa else "fixed",
+        "enable_prompt_weight_spsa": bool(use_spsa),
+        "best_score": float(final_eval["score"]),
         "best_genome": best_genome,
         "best_actions": best_actions,
-        "best_preview_rewards": [float(x) for x in best.get("preview_rewards", [])],
-        "best_step_actions": best.get("step_actions", []),
+        "best_preview_rewards": [float(x) for x in final_eval.get("preview_rewards", [])],
+        "best_step_actions": final_eval.get("step_actions", []),
         "best_image_file": best_img_path,
+        "best_prompt_weights": [float(x) for x in current_prompt_weights.tolist()],
+        "final_score": float(final_eval["score"]),
+        "final_theta": [float(x) for x in theta.tolist()],
+        "final_prompt_weights": [float(x) for x in current_prompt_weights.tolist()],
+        "search_best_score": float(search_best["score"]),
+        "search_best_genome": [int(x) for x in search_best["genome"]],
+        "search_best_prompt_weights": [float(x) for x in search_best.get("prompt_weights", [])],
+        "spsa_config": {
+            "enable_prompt_weight_spsa": bool(use_spsa),
+            "num_prompt_weights": int(num_prompt_weights),
+            "spsa_block_rollouts": int(spsa_block_rollouts),
+            "spsa_c": float(spsa_c),
+            "spsa_eta": float(spsa_eta),
+            "weight_clip_min": float(weight_clip_min),
+            "weight_clip_max": float(weight_clip_max),
+        },
+        "spsa_history": spsa_history,
         "history": history,
         "eval_calls_total": int(eval_calls_total),
         "nfe_total": int(eval_calls_total * steps),
+        "n_actions": int(n_actions),
+        "n_profiles": int(len(weight_profiles)),
     }
-    save_json(os.path.join(prompt_dir, "mcts_action_search.json"), result)
+    save_json(os.path.join(prompt_dir, f"{result_prefix}_action_search.json"), result)
     return result
 
 
@@ -896,31 +1264,99 @@ def main(argv: list[str] | None = None) -> None:
     neg_embeds, neg_mask = su.load_neg_embed(args, ctx)
 
     tsv_path = os.path.join(args.out_dir, "slerp_nlerp_unified_scores.tsv")
+    mcts_weight_tsv_path = os.path.join(args.out_dir, "mcts_weight_factor_changes.tsv")
     all_rows: list[dict[str, Any]] = []
 
-    with open(tsv_path, "w", encoding="utf-8", newline="") as ftsv:
+    with open(tsv_path, "w", encoding="utf-8", newline="") as ftsv, open(
+        mcts_weight_tsv_path, "w", encoding="utf-8", newline=""
+    ) as fwtsv:
         writer = csv.writer(ftsv, delimiter="\t")
+        weight_writer = csv.writer(fwtsv, delimiter="\t")
         writer.writerow(
             [
                 "slug",
                 "prompt",
                 "method",
+                "search_space",
+                "mode",
                 "family",
                 "profile",
                 "t",
                 "cfg",
                 "score",
                 "delta_vs_baseline",
+                "baseline_definition",
+                "final_prompt_weights",
                 "image_file",
                 "genome",
+                "weight_log_file",
             ]
         )
+        weight_writer.writerow(
+            [
+                "slug",
+                "prompt",
+                "method",
+                "search_space",
+                "mode",
+                "event",
+                "block",
+                "after_sim",
+                "R_plus",
+                "R_minus",
+                "delta_R",
+                "w_before",
+                "w_after",
+                "gradient",
+                "final_prompt_weights",
+            ]
+        )
+        def write_score_row(
+            *,
+            slug: str,
+            prompt: str,
+            method: str,
+            search_space: str,
+            mode: str,
+            family: str,
+            profile: str,
+            t: str,
+            cfg: str,
+            score: float,
+            delta_vs_baseline: float,
+            baseline_definition: str,
+            final_prompt_weights: list[float] | None,
+            image_file: str,
+            genome: list[int] | None,
+            weight_log_file: str = "",
+        ) -> None:
+            writer.writerow(
+                [
+                    slug,
+                    prompt,
+                    method,
+                    search_space,
+                    mode,
+                    family,
+                    profile,
+                    t,
+                    cfg,
+                    f"{float(score):.6f}",
+                    f"{float(delta_vs_baseline):+.6f}",
+                    baseline_definition,
+                    json.dumps(final_prompt_weights or []),
+                    image_file or "",
+                    (json.dumps(genome) if genome is not None else ""),
+                    weight_log_file or "",
+                ]
+            )
 
         for i, prompt in enumerate(prompts):
             slug = f"p{i:04d}"
             prompt_dir = os.path.join(args.out_dir, slug)
             ensure_dir(prompt_dir)
             save_this = int(args.save_first_k) < 0 or i < int(args.save_first_k)
+            weight_json_path = os.path.join(prompt_dir, "mcts_weight_factor_changes.json")
 
             print("\n" + "=" * 72)
             print(f"[{slug}] {prompt}")
@@ -939,6 +1375,13 @@ def main(argv: list[str] | None = None) -> None:
             basis_labels = [str(basis_emb.labels[i]) for i in basis_indices]
             weight_profiles = _build_weight_profiles(args, basis_labels, t_values)
             action_bank = _action_bank(families, len(weight_profiles), cfg_values)
+            variant4_weight_profiles = _build_variant_only_weight_profiles(basis_labels)
+            variant4_action_bank = _action_bank(["nlerp"], len(variant4_weight_profiles), cfg_values)
+            global_blend_weight_profiles = _build_global_blend_weight_profiles(basis_labels)
+            global_blend_action_bank = _action_bank(families, len(global_blend_weight_profiles), cfg_values)
+            global_blend_nlerp_action_bank = _action_bank(["nlerp"], len(global_blend_weight_profiles), cfg_values)
+            global_blend_slerp_action_bank = _action_bank(["slerp"], len(global_blend_weight_profiles), cfg_values)
+            default_prompt_weights = [1.0 for _ in range(len(basis_indices))]
             print(
                 f"  blend labels ({len(basis_labels)}): {', '.join(basis_labels)} "
                 f"profiles={len(weight_profiles)} actions={len(action_bank)}"
@@ -970,21 +1413,28 @@ def main(argv: list[str] | None = None) -> None:
             finally:
                 args.guidance_scale = old_guidance
             baseline_score = float(baseline.final_score)
+            baseline_definition = (
+                f"original prompt only; no prompt blending/search; "
+                f"cfg={float(args.baseline_cfg):.2f}; seed={int(args.seed)}"
+            )
             print(f"  baseline={baseline_score:.4f} cfg={float(args.baseline_cfg):.2f}")
-            writer.writerow(
-                [
-                    slug,
-                    prompt,
-                    "baseline",
-                    "baseline",
-                    "baseline",
-                    "baseline",
-                    f"{float(args.baseline_cfg):.2f}",
-                    f"{baseline_score:.6f}",
-                    "+0.000000",
-                    baseline_img_path or "",
-                    "",
-                ]
+            print(f"  baseline_def={baseline_definition}")
+            write_score_row(
+                slug=slug,
+                prompt=prompt,
+                method="baseline",
+                search_space="original_prompt",
+                mode="fixed",
+                family="original",
+                profile="original_prompt",
+                t="",
+                cfg=f"{float(args.baseline_cfg):.2f}",
+                score=baseline_score,
+                delta_vs_baseline=0.0,
+                baseline_definition=baseline_definition,
+                final_prompt_weights=default_prompt_weights,
+                image_file=baseline_img_path or "",
+                genome=None,
             )
 
             sweep_results: list[dict[str, Any]] = []
@@ -1040,20 +1490,22 @@ def main(argv: list[str] | None = None) -> None:
                         "image": trace.final_image,
                     }
                     sweep_results.append(row)
-                    writer.writerow(
-                        [
-                            slug,
-                            prompt,
-                            "sweep",
-                            str(fam),
-                            profile_name,
-                            f"{float(profile_t):.2f}" if profile_t is not None else "",
-                            f"{float(cfg):.2f}",
-                            f"{score:.6f}",
-                            f"{delta:+.6f}",
-                            img_path or "",
-                            json.dumps(genome),
-                        ]
+                    write_score_row(
+                        slug=slug,
+                        prompt=prompt,
+                        method="sweep",
+                        search_space="single_action_profile",
+                        mode="fixed",
+                        family=str(fam),
+                        profile=profile_name,
+                        t=(f"{float(profile_t):.2f}" if profile_t is not None else ""),
+                        cfg=f"{float(cfg):.2f}",
+                        score=score,
+                        delta_vs_baseline=delta,
+                        baseline_definition=baseline_definition,
+                        final_prompt_weights=default_prompt_weights,
+                        image_file=img_path or "",
+                        genome=genome,
                     )
                     print(
                         f"  sweep {fam:>5} profile={profile_name} cfg={float(cfg):.2f} "
@@ -1081,60 +1533,347 @@ def main(argv: list[str] | None = None) -> None:
                     save_images=(save_this and args.save_images),
                 )
                 ga_delta = float(ga_result["best_score"] - baseline_score)
-                writer.writerow(
-                    [
-                        slug,
-                        prompt,
-                        "ga",
-                        "mixed",
-                        "mixed",
-                        "mixed",
-                        "mixed",
-                        f"{float(ga_result['best_score']):.6f}",
-                        f"{ga_delta:+.6f}",
-                        ga_result.get("best_image_file", "") or "",
-                        json.dumps(ga_result["best_genome"]),
-                    ]
+                ga_family, ga_profile, ga_t, ga_cfg = _summarize_step_actions(ga_result.get("best_actions", []))
+                write_score_row(
+                    slug=slug,
+                    prompt=prompt,
+                    method="ga",
+                    search_space="dynamic_profiles",
+                    mode="fixed",
+                    family=ga_family,
+                    profile=ga_profile,
+                    t=ga_t,
+                    cfg=ga_cfg,
+                    score=float(ga_result["best_score"]),
+                    delta_vs_baseline=ga_delta,
+                    baseline_definition=baseline_definition,
+                    final_prompt_weights=default_prompt_weights,
+                    image_file=ga_result.get("best_image_file", "") or "",
+                    genome=[int(x) for x in ga_result["best_genome"]],
                 )
                 print(f"  ga_best={float(ga_result['best_score']):.4f} delta={ga_delta:+.4f}")
 
             mcts_result: dict[str, Any] | None = None
+            mcts_fixed_result: dict[str, Any] | None = None
+            mcts_spsa_result: dict[str, Any] | None = None
+            mcts_variant4_result: dict[str, Any] | None = None
+            mcts_globalblend_fixed_result: dict[str, Any] | None = None
+            mcts_globalblend_spsa_result: dict[str, Any] | None = None
+            mcts_globalblend_nlerp_spsa_result: dict[str, Any] | None = None
+            mcts_globalblend_slerp_spsa_result: dict[str, Any] | None = None
+            mcts_weight_logs: dict[str, Any] = {}
             if bool(args.run_mcts):
-                mcts_result = run_mcts_search(
-                    args=args,
-                    ctx=ctx,
-                    reward_ctx=reward_ctx,
-                    prompt=prompt,
-                    metadata=None,
-                    seed=int(args.seed),
-                    h=h,
-                    w=w,
-                    orig_h=orig_h,
-                    orig_w=orig_w,
-                    basis_emb=basis_emb,
-                    basis_indices=basis_indices,
-                    weight_profiles=weight_profiles,
-                    action_bank=action_bank,
-                    prompt_dir=prompt_dir,
-                    save_images=(save_this and args.save_images),
-                )
-                mcts_delta = float(mcts_result["best_score"] - baseline_score)
-                writer.writerow(
-                    [
-                        slug,
-                        prompt,
-                        "mcts",
-                        "mixed",
-                        "mixed",
-                        "mixed",
-                        "mixed",
-                        f"{float(mcts_result['best_score']):.6f}",
-                        f"{mcts_delta:+.6f}",
-                        mcts_result.get("best_image_file", "") or "",
-                        json.dumps(mcts_result["best_genome"]),
+                if bool(args.run_mcts_design_ablation):
+                    mcts_variant4_result = run_mcts_search(
+                        args=args,
+                        ctx=ctx,
+                        reward_ctx=reward_ctx,
+                        prompt=prompt,
+                        metadata=None,
+                        seed=int(args.seed),
+                        h=h,
+                        w=w,
+                        orig_h=orig_h,
+                        orig_w=orig_w,
+                        basis_emb=basis_emb,
+                        basis_indices=basis_indices,
+                        weight_profiles=variant4_weight_profiles,
+                        action_bank=variant4_action_bank,
+                        prompt_dir=prompt_dir,
+                        save_images=(save_this and args.save_images),
+                        enable_spsa=False,
+                        result_prefix="mcts_variant4",
+                        search_space_name="variant4",
+                    )
+                    mcts_globalblend_fixed_result = run_mcts_search(
+                        args=args,
+                        ctx=ctx,
+                        reward_ctx=reward_ctx,
+                        prompt=prompt,
+                        metadata=None,
+                        seed=int(args.seed),
+                        h=h,
+                        w=w,
+                        orig_h=orig_h,
+                        orig_w=orig_w,
+                        basis_emb=basis_emb,
+                        basis_indices=basis_indices,
+                        weight_profiles=global_blend_weight_profiles,
+                        action_bank=global_blend_action_bank,
+                        prompt_dir=prompt_dir,
+                        save_images=(save_this and args.save_images),
+                        enable_spsa=False,
+                        result_prefix="mcts_globalblend_fixed",
+                        search_space_name="global_blend",
+                    )
+                    if bool(args.enable_prompt_weight_spsa):
+                        mcts_globalblend_spsa_result = run_mcts_search(
+                            args=args,
+                            ctx=ctx,
+                            reward_ctx=reward_ctx,
+                            prompt=prompt,
+                            metadata=None,
+                            seed=int(args.seed),
+                            h=h,
+                            w=w,
+                            orig_h=orig_h,
+                            orig_w=orig_w,
+                            basis_emb=basis_emb,
+                            basis_indices=basis_indices,
+                            weight_profiles=global_blend_weight_profiles,
+                            action_bank=global_blend_action_bank,
+                            prompt_dir=prompt_dir,
+                            save_images=(save_this and args.save_images),
+                            enable_spsa=True,
+                            result_prefix="mcts_globalblend_spsa",
+                            search_space_name="global_blend",
+                        )
+                        if bool(args.run_mcts_family_spsa_ablation):
+                            mcts_globalblend_nlerp_spsa_result = run_mcts_search(
+                                args=args,
+                                ctx=ctx,
+                                reward_ctx=reward_ctx,
+                                prompt=prompt,
+                                metadata=None,
+                                seed=int(args.seed),
+                                h=h,
+                                w=w,
+                                orig_h=orig_h,
+                                orig_w=orig_w,
+                                basis_emb=basis_emb,
+                                basis_indices=basis_indices,
+                                weight_profiles=global_blend_weight_profiles,
+                                action_bank=global_blend_nlerp_action_bank,
+                                prompt_dir=prompt_dir,
+                                save_images=(save_this and args.save_images),
+                                enable_spsa=True,
+                                result_prefix="mcts_globalblend_nlerp_spsa",
+                                search_space_name="global_blend_nlerp",
+                            )
+                            mcts_globalblend_slerp_spsa_result = run_mcts_search(
+                                args=args,
+                                ctx=ctx,
+                                reward_ctx=reward_ctx,
+                                prompt=prompt,
+                                metadata=None,
+                                seed=int(args.seed),
+                                h=h,
+                                w=w,
+                                orig_h=orig_h,
+                                orig_w=orig_w,
+                                basis_emb=basis_emb,
+                                basis_indices=basis_indices,
+                                weight_profiles=global_blend_weight_profiles,
+                                action_bank=global_blend_slerp_action_bank,
+                                prompt_dir=prompt_dir,
+                                save_images=(save_this and args.save_images),
+                                enable_spsa=True,
+                                result_prefix="mcts_globalblend_slerp_spsa",
+                                search_space_name="global_blend_slerp",
+                            )
+                    design_arms = [
+                        ("mcts_variant4", mcts_variant4_result),
+                        ("mcts_globalblend_fixed", mcts_globalblend_fixed_result),
                     ]
-                )
-                print(f"  mcts_best={float(mcts_result['best_score']):.4f} delta={mcts_delta:+.4f}")
+                    if mcts_globalblend_spsa_result is not None:
+                        design_arms.append(("mcts_globalblend_spsa", mcts_globalblend_spsa_result))
+                    if mcts_globalblend_nlerp_spsa_result is not None:
+                        design_arms.append(("mcts_globalblend_nlerp_spsa", mcts_globalblend_nlerp_spsa_result))
+                    if mcts_globalblend_slerp_spsa_result is not None:
+                        design_arms.append(("mcts_globalblend_slerp_spsa", mcts_globalblend_slerp_spsa_result))
+                    for method_name, cur_res in design_arms:
+                        cur_score = float(cur_res.get("final_score", cur_res["best_score"]))
+                        cur_delta = float(cur_score - baseline_score)
+                        cur_family, cur_profile, cur_t, cur_cfg = _summarize_step_actions(cur_res.get("best_actions", []))
+                        _write_mcts_weight_history_rows(weight_writer, slug, prompt, method_name, cur_res)
+                        mcts_weight_logs[method_name] = {
+                            "final_prompt_weights": cur_res.get("final_prompt_weights", []),
+                            "spsa_history": cur_res.get("spsa_history", []),
+                        }
+                        write_score_row(
+                            slug=slug,
+                            prompt=prompt,
+                            method=method_name,
+                            search_space=str(cur_res.get("search_space_name", "mixed")),
+                            mode=str(cur_res.get("mode", "fixed")),
+                            family=cur_family,
+                            profile=cur_profile,
+                            t=cur_t,
+                            cfg=cur_cfg,
+                            score=cur_score,
+                            delta_vs_baseline=cur_delta,
+                            baseline_definition=baseline_definition,
+                            final_prompt_weights=cur_res.get("final_prompt_weights", cur_res.get("best_prompt_weights", [])),
+                            image_file=cur_res.get("best_image_file", "") or "",
+                            genome=[int(x) for x in cur_res["best_genome"]],
+                            weight_log_file=weight_json_path,
+                        )
+                    best_arm_name, mcts_result = max(
+                        design_arms,
+                        key=lambda item: float(item[1].get("final_score", item[1]["best_score"])),
+                    )
+                    print(
+                        "  "
+                        f"variant4={float(mcts_variant4_result.get('final_score', mcts_variant4_result['best_score'])):.4f} "
+                        f"delta={float(mcts_variant4_result.get('final_score', mcts_variant4_result['best_score']) - baseline_score):+.4f}  "
+                        f"global_fixed={float(mcts_globalblend_fixed_result.get('final_score', mcts_globalblend_fixed_result['best_score'])):.4f} "
+                        f"delta={float(mcts_globalblend_fixed_result.get('final_score', mcts_globalblend_fixed_result['best_score']) - baseline_score):+.4f}"
+                        + (
+                            f"  global_spsa={float(mcts_globalblend_spsa_result.get('final_score', mcts_globalblend_spsa_result['best_score'])):.4f} "
+                            f"delta={float(mcts_globalblend_spsa_result.get('final_score', mcts_globalblend_spsa_result['best_score']) - baseline_score):+.4f} "
+                            f"w={mcts_globalblend_spsa_result.get('final_prompt_weights', mcts_globalblend_spsa_result.get('best_prompt_weights', []))}"
+                            if mcts_globalblend_spsa_result is not None
+                            else ""
+                        )
+                        + (
+                            f"  nlerp_spsa={float(mcts_globalblend_nlerp_spsa_result.get('final_score', mcts_globalblend_nlerp_spsa_result['best_score'])):.4f} "
+                            f"delta={float(mcts_globalblend_nlerp_spsa_result.get('final_score', mcts_globalblend_nlerp_spsa_result['best_score']) - baseline_score):+.4f} "
+                            f"w={mcts_globalblend_nlerp_spsa_result.get('final_prompt_weights', mcts_globalblend_nlerp_spsa_result.get('best_prompt_weights', []))}"
+                            if mcts_globalblend_nlerp_spsa_result is not None
+                            else ""
+                        )
+                        + (
+                            f"  slerp_spsa={float(mcts_globalblend_slerp_spsa_result.get('final_score', mcts_globalblend_slerp_spsa_result['best_score'])):.4f} "
+                            f"delta={float(mcts_globalblend_slerp_spsa_result.get('final_score', mcts_globalblend_slerp_spsa_result['best_score']) - baseline_score):+.4f} "
+                            f"w={mcts_globalblend_slerp_spsa_result.get('final_prompt_weights', mcts_globalblend_slerp_spsa_result.get('best_prompt_weights', []))}"
+                            if mcts_globalblend_slerp_spsa_result is not None
+                            else ""
+                        )
+                        + f"  best_arm={best_arm_name}"
+                    )
+                elif bool(args.run_mcts_weight_ablation):
+                    mcts_fixed_result = run_mcts_search(
+                        args=args,
+                        ctx=ctx,
+                        reward_ctx=reward_ctx,
+                        prompt=prompt,
+                        metadata=None,
+                        seed=int(args.seed),
+                        h=h,
+                        w=w,
+                        orig_h=orig_h,
+                        orig_w=orig_w,
+                        basis_emb=basis_emb,
+                        basis_indices=basis_indices,
+                        weight_profiles=weight_profiles,
+                        action_bank=action_bank,
+                        prompt_dir=prompt_dir,
+                        save_images=(save_this and args.save_images),
+                        enable_spsa=False,
+                        result_prefix="mcts_fixed",
+                        search_space_name="dynamic_profiles",
+                    )
+                    mcts_spsa_result = run_mcts_search(
+                        args=args,
+                        ctx=ctx,
+                        reward_ctx=reward_ctx,
+                        prompt=prompt,
+                        metadata=None,
+                        seed=int(args.seed),
+                        h=h,
+                        w=w,
+                        orig_h=orig_h,
+                        orig_w=orig_w,
+                        basis_emb=basis_emb,
+                        basis_indices=basis_indices,
+                        weight_profiles=weight_profiles,
+                        action_bank=action_bank,
+                        prompt_dir=prompt_dir,
+                        save_images=(save_this and args.save_images),
+                        enable_spsa=True,
+                        result_prefix="mcts_spsa",
+                        search_space_name="dynamic_profiles",
+                    )
+                    mcts_result = mcts_spsa_result
+                    for method_name, cur_res in (("mcts_fixed", mcts_fixed_result), ("mcts_spsa", mcts_spsa_result)):
+                        cur_score = float(cur_res.get("final_score", cur_res["best_score"]))
+                        cur_delta = float(cur_score - baseline_score)
+                        cur_family, cur_profile, cur_t, cur_cfg = _summarize_step_actions(cur_res.get("best_actions", []))
+                        _write_mcts_weight_history_rows(weight_writer, slug, prompt, method_name, cur_res)
+                        mcts_weight_logs[method_name] = {
+                            "final_prompt_weights": cur_res.get("final_prompt_weights", []),
+                            "spsa_history": cur_res.get("spsa_history", []),
+                        }
+                        write_score_row(
+                            slug=slug,
+                            prompt=prompt,
+                            method=method_name,
+                            search_space=str(cur_res.get("search_space_name", "mixed")),
+                            mode=str(cur_res.get("mode", "fixed")),
+                            family=cur_family,
+                            profile=cur_profile,
+                            t=cur_t,
+                            cfg=cur_cfg,
+                            score=cur_score,
+                            delta_vs_baseline=cur_delta,
+                            baseline_definition=baseline_definition,
+                            final_prompt_weights=cur_res.get("final_prompt_weights", cur_res.get("best_prompt_weights", [])),
+                            image_file=cur_res.get("best_image_file", "") or "",
+                            genome=[int(x) for x in cur_res["best_genome"]],
+                            weight_log_file=weight_json_path,
+                        )
+                    print(
+                        "  "
+                        f"mcts_fixed={float(mcts_fixed_result.get('final_score', mcts_fixed_result['best_score'])):.4f} "
+                        f"delta={float(mcts_fixed_result.get('final_score', mcts_fixed_result['best_score']) - baseline_score):+.4f} "
+                        f"w={mcts_fixed_result.get('final_prompt_weights', mcts_fixed_result.get('best_prompt_weights', []))}  "
+                        f"mcts_spsa={float(mcts_spsa_result.get('final_score', mcts_spsa_result['best_score'])):.4f} "
+                        f"delta={float(mcts_spsa_result.get('final_score', mcts_spsa_result['best_score']) - baseline_score):+.4f} "
+                        f"w={mcts_spsa_result.get('final_prompt_weights', mcts_spsa_result.get('best_prompt_weights', []))}"
+                    )
+                else:
+                    mcts_result = run_mcts_search(
+                        args=args,
+                        ctx=ctx,
+                        reward_ctx=reward_ctx,
+                        prompt=prompt,
+                        metadata=None,
+                        seed=int(args.seed),
+                        h=h,
+                        w=w,
+                        orig_h=orig_h,
+                        orig_w=orig_w,
+                        basis_emb=basis_emb,
+                        basis_indices=basis_indices,
+                        weight_profiles=weight_profiles,
+                        action_bank=action_bank,
+                        prompt_dir=prompt_dir,
+                        save_images=(save_this and args.save_images),
+                        enable_spsa=bool(args.enable_prompt_weight_spsa),
+                        result_prefix="mcts",
+                        search_space_name="dynamic_profiles",
+                    )
+                    mcts_score = float(mcts_result.get("final_score", mcts_result["best_score"]))
+                    mcts_delta = float(mcts_score - baseline_score)
+                    _write_mcts_weight_history_rows(weight_writer, slug, prompt, "mcts", mcts_result)
+                    mcts_weight_logs["mcts"] = {
+                        "final_prompt_weights": mcts_result.get("final_prompt_weights", []),
+                        "spsa_history": mcts_result.get("spsa_history", []),
+                    }
+                    mcts_family, mcts_profile, mcts_t, mcts_cfg = _summarize_step_actions(mcts_result.get("best_actions", []))
+                    write_score_row(
+                        slug=slug,
+                        prompt=prompt,
+                        method="mcts",
+                        search_space=str(mcts_result.get("search_space_name", "dynamic_profiles")),
+                        mode=str(mcts_result.get("mode", "fixed")),
+                        family=mcts_family,
+                        profile=mcts_profile,
+                        t=mcts_t,
+                        cfg=mcts_cfg,
+                        score=mcts_score,
+                        delta_vs_baseline=mcts_delta,
+                        baseline_definition=baseline_definition,
+                        final_prompt_weights=mcts_result.get("final_prompt_weights", mcts_result.get("best_prompt_weights", [])),
+                        image_file=mcts_result.get("best_image_file", "") or "",
+                        genome=[int(x) for x in mcts_result["best_genome"]],
+                        weight_log_file=weight_json_path,
+                    )
+                    print(
+                        f"  mcts_best={mcts_score:.4f} delta={mcts_delta:+.4f} "
+                        f"mode={mcts_result.get('mode', 'fixed')} "
+                        f"w={mcts_result.get('final_prompt_weights', mcts_result.get('best_prompt_weights', []))}"
+                    )
 
             row_out: dict[str, Any] = {
                 "slug": slug,
@@ -1148,6 +1887,7 @@ def main(argv: list[str] | None = None) -> None:
                 "action_bank": [dict({"action_idx": int(k)}, **_action_detail(int(k), action_bank, weight_profiles)) for k in range(len(action_bank))],
                 "baseline_score": baseline_score,
                 "baseline_cfg": float(args.baseline_cfg),
+                "baseline_definition": baseline_definition,
                 "sweep": [
                     {
                         "family": str(r["family"]),
@@ -1167,12 +1907,59 @@ def main(argv: list[str] | None = None) -> None:
                 ],
                 "ga": ga_result,
                 "mcts": mcts_result,
+                "mcts_mode": (str(mcts_result.get("mode")) if isinstance(mcts_result, dict) and mcts_result.get("mode") is not None else None),
             }
+            if bool(args.run_mcts_design_ablation):
+                row_out["mcts_best_arm"] = (
+                    str(mcts_result.get("search_space_name", "mcts"))
+                    + ":"
+                    + str(mcts_result.get("mode", "fixed"))
+                    if isinstance(mcts_result, dict)
+                    else None
+                )
+                row_out["mcts_design_action_spaces"] = {
+                    "variant4_weight_profiles": variant4_weight_profiles,
+                    "variant4_action_bank": [
+                        dict({"action_idx": int(k)}, **_action_detail(int(k), variant4_action_bank, variant4_weight_profiles))
+                        for k in range(len(variant4_action_bank))
+                    ],
+                    "global_blend_weight_profiles": global_blend_weight_profiles,
+                    "global_blend_action_bank": [
+                        dict({"action_idx": int(k)}, **_action_detail(int(k), global_blend_action_bank, global_blend_weight_profiles))
+                        for k in range(len(global_blend_action_bank))
+                    ],
+                    "global_blend_nlerp_action_bank": [
+                        dict({"action_idx": int(k)}, **_action_detail(int(k), global_blend_nlerp_action_bank, global_blend_weight_profiles))
+                        for k in range(len(global_blend_nlerp_action_bank))
+                    ],
+                    "global_blend_slerp_action_bank": [
+                        dict({"action_idx": int(k)}, **_action_detail(int(k), global_blend_slerp_action_bank, global_blend_weight_profiles))
+                        for k in range(len(global_blend_slerp_action_bank))
+                    ],
+                }
+                row_out["mcts_design_ablation"] = {
+                    "variant4": mcts_variant4_result,
+                    "global_blend_fixed": mcts_globalblend_fixed_result,
+                    "global_blend_spsa": mcts_globalblend_spsa_result,
+                    "global_blend_nlerp_spsa": mcts_globalblend_nlerp_spsa_result,
+                    "global_blend_slerp_spsa": mcts_globalblend_slerp_spsa_result,
+                }
+            if mcts_fixed_result is not None or mcts_spsa_result is not None:
+                row_out["mcts_ablation"] = {
+                    "fixed": mcts_fixed_result,
+                    "spsa": mcts_spsa_result,
+                }
+            if len(mcts_weight_logs) > 0:
+                save_json(weight_json_path, mcts_weight_logs)
+                row_out["mcts_weight_factor_log_file"] = weight_json_path
             if save_this and args.save_images:
                 mcts_panel_item = None
                 if mcts_result is not None and mcts_result.get("best_image_file"):
                     mcts_img = Image.open(mcts_result["best_image_file"]).convert("RGB")
-                    mcts_panel_item = {"image": mcts_img, "score": float(mcts_result["best_score"])}
+                    mcts_panel_item = {
+                        "image": mcts_img,
+                        "score": float(mcts_result.get("final_score", mcts_result["best_score"])),
+                    }
                 ga_panel_item = None
                 if ga_result is not None and ga_result.get("best_image_file"):
                     ga_img = Image.open(ga_result["best_image_file"]).convert("RGB")
@@ -1231,8 +2018,138 @@ def main(argv: list[str] | None = None) -> None:
 
     ga_scores = [float(r["ga"]["best_score"]) for r in all_rows if isinstance(r.get("ga"), dict)]
     ga_deltas = [float(r["ga"]["best_score"]) - float(r["baseline_score"]) for r in all_rows if isinstance(r.get("ga"), dict)]
-    mcts_scores = [float(r["mcts"]["best_score"]) for r in all_rows if isinstance(r.get("mcts"), dict)]
-    mcts_deltas = [float(r["mcts"]["best_score"]) - float(r["baseline_score"]) for r in all_rows if isinstance(r.get("mcts"), dict)]
+    mcts_scores = [
+        float(r["mcts"].get("final_score", r["mcts"]["best_score"]))
+        for r in all_rows
+        if isinstance(r.get("mcts"), dict)
+    ]
+    mcts_deltas = [
+        float(r["mcts"].get("final_score", r["mcts"]["best_score"])) - float(r["baseline_score"])
+        for r in all_rows
+        if isinstance(r.get("mcts"), dict)
+    ]
+    mcts_fixed_scores = [
+        float(r["mcts_ablation"]["fixed"].get("final_score", r["mcts_ablation"]["fixed"]["best_score"]))
+        for r in all_rows
+        if isinstance(r.get("mcts_ablation"), dict) and isinstance(r["mcts_ablation"].get("fixed"), dict)
+    ]
+    mcts_fixed_deltas = [
+        float(r["mcts_ablation"]["fixed"].get("final_score", r["mcts_ablation"]["fixed"]["best_score"])) - float(r["baseline_score"])
+        for r in all_rows
+        if isinstance(r.get("mcts_ablation"), dict) and isinstance(r["mcts_ablation"].get("fixed"), dict)
+    ]
+    mcts_spsa_scores = [
+        float(r["mcts_ablation"]["spsa"].get("final_score", r["mcts_ablation"]["spsa"]["best_score"]))
+        for r in all_rows
+        if isinstance(r.get("mcts_ablation"), dict) and isinstance(r["mcts_ablation"].get("spsa"), dict)
+    ]
+    mcts_spsa_deltas = [
+        float(r["mcts_ablation"]["spsa"].get("final_score", r["mcts_ablation"]["spsa"]["best_score"])) - float(r["baseline_score"])
+        for r in all_rows
+        if isinstance(r.get("mcts_ablation"), dict) and isinstance(r["mcts_ablation"].get("spsa"), dict)
+    ]
+    mcts_spsa_gain_over_fixed = [
+        float(r["mcts_ablation"]["spsa"].get("final_score", r["mcts_ablation"]["spsa"]["best_score"]))
+        - float(r["mcts_ablation"]["fixed"].get("final_score", r["mcts_ablation"]["fixed"]["best_score"]))
+        for r in all_rows
+        if isinstance(r.get("mcts_ablation"), dict)
+        and isinstance(r["mcts_ablation"].get("fixed"), dict)
+        and isinstance(r["mcts_ablation"].get("spsa"), dict)
+    ]
+    mcts_variant4_scores = [
+        float(r["mcts_design_ablation"]["variant4"].get("final_score", r["mcts_design_ablation"]["variant4"]["best_score"]))
+        for r in all_rows
+        if isinstance(r.get("mcts_design_ablation"), dict) and isinstance(r["mcts_design_ablation"].get("variant4"), dict)
+    ]
+    mcts_variant4_deltas = [
+        float(r["mcts_design_ablation"]["variant4"].get("final_score", r["mcts_design_ablation"]["variant4"]["best_score"])) - float(r["baseline_score"])
+        for r in all_rows
+        if isinstance(r.get("mcts_design_ablation"), dict) and isinstance(r["mcts_design_ablation"].get("variant4"), dict)
+    ]
+    mcts_globalblend_fixed_scores = [
+        float(r["mcts_design_ablation"]["global_blend_fixed"].get("final_score", r["mcts_design_ablation"]["global_blend_fixed"]["best_score"]))
+        for r in all_rows
+        if isinstance(r.get("mcts_design_ablation"), dict) and isinstance(r["mcts_design_ablation"].get("global_blend_fixed"), dict)
+    ]
+    mcts_globalblend_fixed_deltas = [
+        float(r["mcts_design_ablation"]["global_blend_fixed"].get("final_score", r["mcts_design_ablation"]["global_blend_fixed"]["best_score"])) - float(r["baseline_score"])
+        for r in all_rows
+        if isinstance(r.get("mcts_design_ablation"), dict) and isinstance(r["mcts_design_ablation"].get("global_blend_fixed"), dict)
+    ]
+    mcts_globalblend_spsa_scores = [
+        float(r["mcts_design_ablation"]["global_blend_spsa"].get("final_score", r["mcts_design_ablation"]["global_blend_spsa"]["best_score"]))
+        for r in all_rows
+        if isinstance(r.get("mcts_design_ablation"), dict) and isinstance(r["mcts_design_ablation"].get("global_blend_spsa"), dict)
+    ]
+    mcts_globalblend_spsa_deltas = [
+        float(r["mcts_design_ablation"]["global_blend_spsa"].get("final_score", r["mcts_design_ablation"]["global_blend_spsa"]["best_score"])) - float(r["baseline_score"])
+        for r in all_rows
+        if isinstance(r.get("mcts_design_ablation"), dict) and isinstance(r["mcts_design_ablation"].get("global_blend_spsa"), dict)
+    ]
+    mcts_globalblend_spsa_gain_over_fixed = [
+        float(r["mcts_design_ablation"]["global_blend_spsa"].get("final_score", r["mcts_design_ablation"]["global_blend_spsa"]["best_score"]))
+        - float(r["mcts_design_ablation"]["global_blend_fixed"].get("final_score", r["mcts_design_ablation"]["global_blend_fixed"]["best_score"]))
+        for r in all_rows
+        if isinstance(r.get("mcts_design_ablation"), dict)
+        and isinstance(r["mcts_design_ablation"].get("global_blend_fixed"), dict)
+        and isinstance(r["mcts_design_ablation"].get("global_blend_spsa"), dict)
+    ]
+    mcts_globalblend_nlerp_spsa_scores = [
+        float(r["mcts_design_ablation"]["global_blend_nlerp_spsa"].get("final_score", r["mcts_design_ablation"]["global_blend_nlerp_spsa"]["best_score"]))
+        for r in all_rows
+        if isinstance(r.get("mcts_design_ablation"), dict)
+        and isinstance(r["mcts_design_ablation"].get("global_blend_nlerp_spsa"), dict)
+    ]
+    mcts_globalblend_nlerp_spsa_deltas = [
+        float(r["mcts_design_ablation"]["global_blend_nlerp_spsa"].get("final_score", r["mcts_design_ablation"]["global_blend_nlerp_spsa"]["best_score"])) - float(r["baseline_score"])
+        for r in all_rows
+        if isinstance(r.get("mcts_design_ablation"), dict)
+        and isinstance(r["mcts_design_ablation"].get("global_blend_nlerp_spsa"), dict)
+    ]
+    mcts_globalblend_slerp_spsa_scores = [
+        float(r["mcts_design_ablation"]["global_blend_slerp_spsa"].get("final_score", r["mcts_design_ablation"]["global_blend_slerp_spsa"]["best_score"]))
+        for r in all_rows
+        if isinstance(r.get("mcts_design_ablation"), dict)
+        and isinstance(r["mcts_design_ablation"].get("global_blend_slerp_spsa"), dict)
+    ]
+    mcts_globalblend_slerp_spsa_deltas = [
+        float(r["mcts_design_ablation"]["global_blend_slerp_spsa"].get("final_score", r["mcts_design_ablation"]["global_blend_slerp_spsa"]["best_score"])) - float(r["baseline_score"])
+        for r in all_rows
+        if isinstance(r.get("mcts_design_ablation"), dict)
+        and isinstance(r["mcts_design_ablation"].get("global_blend_slerp_spsa"), dict)
+    ]
+    mcts_globalblend_nlerp_spsa_gain_over_fixed = [
+        float(r["mcts_design_ablation"]["global_blend_nlerp_spsa"].get("final_score", r["mcts_design_ablation"]["global_blend_nlerp_spsa"]["best_score"]))
+        - float(r["mcts_design_ablation"]["global_blend_fixed"].get("final_score", r["mcts_design_ablation"]["global_blend_fixed"]["best_score"]))
+        for r in all_rows
+        if isinstance(r.get("mcts_design_ablation"), dict)
+        and isinstance(r["mcts_design_ablation"].get("global_blend_nlerp_spsa"), dict)
+        and isinstance(r["mcts_design_ablation"].get("global_blend_fixed"), dict)
+    ]
+    mcts_globalblend_slerp_spsa_gain_over_fixed = [
+        float(r["mcts_design_ablation"]["global_blend_slerp_spsa"].get("final_score", r["mcts_design_ablation"]["global_blend_slerp_spsa"]["best_score"]))
+        - float(r["mcts_design_ablation"]["global_blend_fixed"].get("final_score", r["mcts_design_ablation"]["global_blend_fixed"]["best_score"]))
+        for r in all_rows
+        if isinstance(r.get("mcts_design_ablation"), dict)
+        and isinstance(r["mcts_design_ablation"].get("global_blend_slerp_spsa"), dict)
+        and isinstance(r["mcts_design_ablation"].get("global_blend_fixed"), dict)
+    ]
+    mcts_globalblend_fixed_gain_over_variant4 = [
+        float(r["mcts_design_ablation"]["global_blend_fixed"].get("final_score", r["mcts_design_ablation"]["global_blend_fixed"]["best_score"]))
+        - float(r["mcts_design_ablation"]["variant4"].get("final_score", r["mcts_design_ablation"]["variant4"]["best_score"]))
+        for r in all_rows
+        if isinstance(r.get("mcts_design_ablation"), dict)
+        and isinstance(r["mcts_design_ablation"].get("global_blend_fixed"), dict)
+        and isinstance(r["mcts_design_ablation"].get("variant4"), dict)
+    ]
+    mcts_globalblend_spsa_gain_over_variant4 = [
+        float(r["mcts_design_ablation"]["global_blend_spsa"].get("final_score", r["mcts_design_ablation"]["global_blend_spsa"]["best_score"]))
+        - float(r["mcts_design_ablation"]["variant4"].get("final_score", r["mcts_design_ablation"]["variant4"]["best_score"]))
+        for r in all_rows
+        if isinstance(r.get("mcts_design_ablation"), dict)
+        and isinstance(r["mcts_design_ablation"].get("global_blend_spsa"), dict)
+        and isinstance(r["mcts_design_ablation"].get("variant4"), dict)
+    ]
     baseline_scores = [float(r["baseline_score"]) for r in all_rows]
 
     summary = {
@@ -1250,8 +2167,29 @@ def main(argv: list[str] | None = None) -> None:
             "mean_ga_delta_vs_baseline": float(np.mean(ga_deltas)) if ga_deltas else None,
             "mean_mcts_best": float(np.mean(mcts_scores)) if mcts_scores else None,
             "mean_mcts_delta_vs_baseline": float(np.mean(mcts_deltas)) if mcts_deltas else None,
+            "mean_mcts_fixed_best": float(np.mean(mcts_fixed_scores)) if mcts_fixed_scores else None,
+            "mean_mcts_fixed_delta_vs_baseline": float(np.mean(mcts_fixed_deltas)) if mcts_fixed_deltas else None,
+            "mean_mcts_spsa_best": float(np.mean(mcts_spsa_scores)) if mcts_spsa_scores else None,
+            "mean_mcts_spsa_delta_vs_baseline": float(np.mean(mcts_spsa_deltas)) if mcts_spsa_deltas else None,
+            "mean_mcts_spsa_gain_over_fixed": float(np.mean(mcts_spsa_gain_over_fixed)) if mcts_spsa_gain_over_fixed else None,
+            "mean_mcts_variant4_best": float(np.mean(mcts_variant4_scores)) if mcts_variant4_scores else None,
+            "mean_mcts_variant4_delta_vs_baseline": float(np.mean(mcts_variant4_deltas)) if mcts_variant4_deltas else None,
+            "mean_mcts_globalblend_fixed_best": float(np.mean(mcts_globalblend_fixed_scores)) if mcts_globalblend_fixed_scores else None,
+            "mean_mcts_globalblend_fixed_delta_vs_baseline": float(np.mean(mcts_globalblend_fixed_deltas)) if mcts_globalblend_fixed_deltas else None,
+            "mean_mcts_globalblend_spsa_best": float(np.mean(mcts_globalblend_spsa_scores)) if mcts_globalblend_spsa_scores else None,
+            "mean_mcts_globalblend_spsa_delta_vs_baseline": float(np.mean(mcts_globalblend_spsa_deltas)) if mcts_globalblend_spsa_deltas else None,
+            "mean_mcts_globalblend_spsa_gain_over_fixed": float(np.mean(mcts_globalblend_spsa_gain_over_fixed)) if mcts_globalblend_spsa_gain_over_fixed else None,
+            "mean_mcts_globalblend_nlerp_spsa_best": float(np.mean(mcts_globalblend_nlerp_spsa_scores)) if mcts_globalblend_nlerp_spsa_scores else None,
+            "mean_mcts_globalblend_nlerp_spsa_delta_vs_baseline": float(np.mean(mcts_globalblend_nlerp_spsa_deltas)) if mcts_globalblend_nlerp_spsa_deltas else None,
+            "mean_mcts_globalblend_nlerp_spsa_gain_over_fixed": float(np.mean(mcts_globalblend_nlerp_spsa_gain_over_fixed)) if mcts_globalblend_nlerp_spsa_gain_over_fixed else None,
+            "mean_mcts_globalblend_slerp_spsa_best": float(np.mean(mcts_globalblend_slerp_spsa_scores)) if mcts_globalblend_slerp_spsa_scores else None,
+            "mean_mcts_globalblend_slerp_spsa_delta_vs_baseline": float(np.mean(mcts_globalblend_slerp_spsa_deltas)) if mcts_globalblend_slerp_spsa_deltas else None,
+            "mean_mcts_globalblend_slerp_spsa_gain_over_fixed": float(np.mean(mcts_globalblend_slerp_spsa_gain_over_fixed)) if mcts_globalblend_slerp_spsa_gain_over_fixed else None,
+            "mean_mcts_globalblend_fixed_gain_over_variant4": float(np.mean(mcts_globalblend_fixed_gain_over_variant4)) if mcts_globalblend_fixed_gain_over_variant4 else None,
+            "mean_mcts_globalblend_spsa_gain_over_variant4": float(np.mean(mcts_globalblend_spsa_gain_over_variant4)) if mcts_globalblend_spsa_gain_over_variant4 else None,
         },
         "scores_tsv": tsv_path,
+        "mcts_weight_changes_tsv": mcts_weight_tsv_path,
     }
     summary_path = os.path.join(args.out_dir, "summary.json")
     save_json(summary_path, summary)

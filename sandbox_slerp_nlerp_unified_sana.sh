@@ -43,7 +43,69 @@ PY
   PYTHON_BIN="${PYTHON_BIN}" bash "${SCRIPT_DIR}/install_reward_deps.sh"
 }
 
+ensure_unifiedreward_runtime() {
+  local backend_lc
+  backend_lc="$(echo "${REWARD_TYPE:-unifiedreward}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${backend_lc}" != "unifiedreward" && "${backend_lc}" != "unified" && "${backend_lc}" != "auto" ]]; then
+    return 0
+  fi
+  if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import re
+import transformers
+import tokenizers
+import qwen_vl_utils  # noqa: F401
+parts_t = re.findall(r"\d+", getattr(transformers, "__version__", ""))[:3]
+ver_t = tuple(int(x) for x in (parts_t + ["0", "0", "0"])[:3])
+parts_tok = re.findall(r"\d+", getattr(tokenizers, "__version__", ""))[:3]
+ver_tok = tuple(int(x) for x in (parts_tok + ["0", "0", "0"])[:3])
+ok = (
+    ver_t >= (4, 52, 4)
+    and hasattr(transformers, "Qwen2_5_VLForConditionalGeneration")
+    and (0, 21, 0) <= ver_tok < (0, 22, 0)
+)
+if not ok:
+    raise SystemExit(1)
+print(transformers.__version__)
+PY
+  then
+    return 0
+  fi
+  echo "[deps] UnifiedReward runtime missing/incompatible. Applying lightweight repair ..."
+  if ! "${PYTHON_BIN}" -m pip install --no-cache-dir --no-deps \
+    "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"; then
+    echo "[deps] lightweight repair failed."
+    if [[ "${UNIFIEDREWARD_FULL_REPAIR:-0}" == "1" ]]; then
+      echo "[deps] running full reward deps installer (UNIFIEDREWARD_FULL_REPAIR=1) ..."
+      PYTHON_BIN="${PYTHON_BIN}" FORCE_INSTALL_DEPS=1 bash "${SCRIPT_DIR}/install_reward_deps.sh"
+    else
+      echo "[deps] full reinstall skipped. Set UNIFIEDREWARD_FULL_REPAIR=1 to allow full repair."
+      return 1
+    fi
+  fi
+  if ! "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import re
+import transformers
+import tokenizers
+import qwen_vl_utils  # noqa: F401
+parts_t = re.findall(r"\d+", getattr(transformers, "__version__", ""))[:3]
+ver_t = tuple(int(x) for x in (parts_t + ["0", "0", "0"])[:3])
+parts_tok = re.findall(r"\d+", getattr(tokenizers, "__version__", ""))[:3]
+ver_tok = tuple(int(x) for x in (parts_tok + ["0", "0", "0"])[:3])
+ok = (
+    ver_t >= (4, 52, 4)
+    and hasattr(transformers, "Qwen2_5_VLForConditionalGeneration")
+    and (0, 21, 0) <= ver_tok < (0, 22, 0)
+)
+raise SystemExit(0 if ok else 1)
+PY
+  then
+    echo "[deps] UnifiedReward runtime still incompatible after lightweight repair."
+    return 1
+  fi
+}
+
 ensure_hpsv3_runtime
+ensure_unifiedreward_runtime
 
 reward_args=(
   --reward_type "${REWARD_TYPE:-unifiedreward}"
@@ -86,6 +148,18 @@ fi
 if [[ "${RUN_MCTS:-1}" == "0" ]]; then
   algo_args+=(--no-run_mcts)
 fi
+if [[ "${RUN_MCTS_WEIGHT_ABLATION:-0}" == "1" ]]; then
+  algo_args+=(--run_mcts_weight_ablation)
+fi
+if [[ "${RUN_MCTS_DESIGN_ABLATION:-1}" == "1" ]]; then
+  algo_args+=(--run_mcts_design_ablation)
+fi
+if [[ "${RUN_MCTS_FAMILY_SPSA_ABLATION:-0}" == "1" ]]; then
+  algo_args+=(--run_mcts_family_spsa_ablation)
+fi
+if [[ "${ENABLE_PROMPT_WEIGHT_SPSA:-1}" == "0" ]]; then
+  algo_args+=(--no-enable_prompt_weight_spsa)
+fi
 
 mix_args=()
 if [[ -n "${MIX_WEIGHT_VECTORS:-}" ]]; then
@@ -98,7 +172,7 @@ fi
 
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sandbox_slerp_nlerp_unified_sana.py" \
   --prompt_file "${PROMPT_FILE}" \
-  --max_prompts "${MAX_PROMPTS:-0}" \
+  --max_prompts "${MAX_PROMPTS:-20}" \
   --out_dir "${OUT_DIR}" \
   --model_id "${MODEL_ID:-YGu1998/SiD-DiT-SANA-0.6B-RectifiedFlow}" \
   --dtype "${DTYPE:-bf16}" \
@@ -130,6 +204,12 @@ fi
   --mcts_n_sims "${MCTS_N_SIMS:-50}" \
   --mcts_ucb_c "${MCTS_UCB_C:-1.41}" \
   --mcts_log_every "${MCTS_LOG_EVERY:-10}" \
+  --num_prompt_weights "${NUM_PROMPT_WEIGHTS:-4}" \
+  --spsa_block_rollouts "${SPSA_BLOCK_ROLLOUTS:-8}" \
+  --spsa_c "${SPSA_C:-0.07}" \
+  --spsa_eta "${SPSA_ETA:-0.05}" \
+  --weight_clip_min "${WEIGHT_CLIP_MIN:-0.5}" \
+  --weight_clip_max "${WEIGHT_CLIP_MAX:-2.0}" \
   "${algo_args[@]}" \
   --save_first_k "${SAVE_FIRST_K:-10}" \
   --save_images \

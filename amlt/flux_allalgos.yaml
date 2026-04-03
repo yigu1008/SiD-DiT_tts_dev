@@ -75,7 +75,12 @@ search:
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
       # ── Preload reward models & FLUX weights ──────────────────────────────
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('FLUX.1-schnell cache OK')"
+      # Download FLUX to persistent Azure cache first (survives job restarts)
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('FLUX.1-schnell azure cache OK')"
+      # Copy FLUX to local disk so model loading reads from fast NVMe, not FUSE mount
+      - export FLUX_LOCAL_DIR=/home/aiscuser/.cache/flux_schnell
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', local_dir=os.environ.get('FLUX_LOCAL_DIR','/home/aiscuser/.cache/flux_schnell'), local_dir_use_symlinks=False, token=os.environ.get('HF_TOKEN')); print('FLUX.1-schnell local cache OK')"
+      - export MODEL_ID="$$FLUX_LOCAL_DIR"
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
       # ── Prompt file ────────────────────────────────────────────────────────

@@ -86,6 +86,23 @@ class HierarchyEmbeddingCache:
     orig_pm: torch.Tensor
     orig_ue: torch.Tensor
     orig_um: torch.Tensor
+    # individual hierarchy embeddings stored for SPSA weight adaptation
+    pe_c: torch.Tensor | None = None
+    pm_c: torch.Tensor | None = None
+    pe_m: torch.Tensor | None = None
+    pm_m: torch.Tensor | None = None
+    pe_f: torch.Tensor | None = None
+    pm_f: torch.Tensor | None = None
+
+
+@dataclass
+class SPSAState:
+    """Root-level SPSA state for adapting 4 prompt-weight scalars online."""
+    theta: np.ndarray   # shape (4,), log-space; w_coarse, w_mid, w_fine, w_original
+    w: np.ndarray       # shape (4,), = clip(exp(theta), w_min, w_max)
+    history: list[dict[str, Any]]
+    rollout_count: int
+    update_count: int
 
 
 @dataclass
@@ -292,6 +309,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--controller_rank_pressure", type=float, default=1.7)
     p.add_argument("--controller_tournament_k", type=int, default=3)
 
+    # ── Root-level SPSA for prompt-weight adaptation ──────────────────────────
+    p.add_argument("--enable_prompt_weight_spsa", action=argparse.BooleanOptionalAction, default=True,
+                   help="Enable root-level SPSA to adapt 4 prompt-weight scalars online.")
+    p.add_argument("--num_prompt_weights", type=int, default=4,
+                   help="Number of prompt-weight scalars adapted by SPSA (always 4: coarse, mid, fine, original).")
+    p.add_argument("--spsa_block_rollouts", type=int, default=8,
+                   help="Rollouts per search block before each SPSA weight update.")
+    p.add_argument("--spsa_total_blocks", type=int, default=8,
+                   help="Total number of search blocks (each block = spsa_block_rollouts + 2 SPSA evals).")
+    p.add_argument("--spsa_c", type=float, default=0.07,
+                   help="SPSA perturbation magnitude (log-space).")
+    p.add_argument("--spsa_eta", type=float, default=0.05,
+                   help="SPSA learning rate for theta update.")
+    p.add_argument("--weight_clip_min", type=float, default=0.5,
+                   help="Minimum clamp value for exp(theta) SPSA weights.")
+    p.add_argument("--weight_clip_max", type=float, default=2.0,
+                   help="Maximum clamp value for exp(theta) SPSA weights.")
+
     # Unused placeholders for load_reward(geneval path)
     p.add_argument("--reward_url", type=str, default=None)
     p.add_argument("--geneval_python", type=str, default=None)
@@ -490,6 +525,12 @@ def encode_hierarchy(
         orig_pm=emb_orig.pe_list[0][1],
         orig_ue=emb_orig.ue,
         orig_um=emb_orig.um,
+        pe_c=pe_c,
+        pm_c=pm_c,
+        pe_m=pe_m,
+        pm_m=pm_m,
+        pe_f=pe_f,
+        pm_f=pm_f,
     )
 
 
@@ -1333,6 +1374,230 @@ def run_controller_ga(
     return best_trace, payload
 
 
+def apply_spsa_weights_to_cache(
+    cache: HierarchyEmbeddingCache,
+    w: np.ndarray,
+) -> HierarchyEmbeddingCache:
+    """
+    Return a new HierarchyEmbeddingCache whose action_embeds are recomputed
+    using the 4 global SPSA weight multipliers:
+        w = [w_coarse, w_mid, w_fine, w_original]
+
+    For each action spec the blended embedding becomes:
+        pe = (w[0] * spec.w_coarse) * pe_c
+           + (w[1] * spec.w_mid)    * pe_m
+           + (w[2] * spec.w_fine)   * pe_f
+           + w[3]                   * pe_orig
+    """
+    assert cache.pe_c is not None, "HierarchyEmbeddingCache missing pe_c; re-encode with encode_hierarchy."
+    wc, wm, wf, wo = float(w[0]), float(w[1]), float(w[2]), float(w[3])
+    pe_c, pm_c = cache.pe_c, cache.pm_c
+    pe_m, pm_m = cache.pe_m, cache.pm_m
+    pe_f, pm_f = cache.pe_f, cache.pm_f
+    pe_orig, pm_orig = cache.orig_pe, cache.orig_pm
+
+    new_action_embeds: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+    for action_id, spec in enumerate(cache.action_bank):
+        pe = (
+            (wc * spec.w_coarse) * pe_c
+            + (wm * spec.w_mid) * pe_m
+            + (wf * spec.w_fine) * pe_f
+            + wo * pe_orig
+        )
+        # Mask: union of active components
+        active: list[torch.Tensor] = []
+        if wc * spec.w_coarse > 1e-6:
+            active.append(pm_c)
+        if wm * spec.w_mid > 1e-6:
+            active.append(pm_m)
+        if wf * spec.w_fine > 1e-6:
+            active.append(pm_f)
+        if wo > 1e-6:
+            active.append(pm_orig)
+        if not active:
+            active = [pm_m]
+        pm = active[0]
+        for mask in active[1:]:
+            pm = torch.maximum(pm, mask)
+        new_action_embeds[action_id] = (pe, pm)
+
+    return HierarchyEmbeddingCache(
+        prompts=cache.prompts,
+        action_bank=cache.action_bank,
+        action_embeds=new_action_embeds,
+        action_names=cache.action_names,
+        ue=cache.ue,
+        um=cache.um,
+        orig_pe=cache.orig_pe,
+        orig_pm=cache.orig_pm,
+        orig_ue=cache.orig_ue,
+        orig_um=cache.orig_um,
+        pe_c=cache.pe_c,
+        pm_c=cache.pm_c,
+        pe_m=cache.pe_m,
+        pm_m=cache.pm_m,
+        pe_f=cache.pe_f,
+        pm_f=cache.pm_f,
+    )
+
+
+def run_spsa_search(
+    args: argparse.Namespace,
+    ctx: su.PipelineContext,
+    reward_ctx: su.RewardContext,
+    prompt: str,
+    metadata: dict[str, Any] | None,
+    seed: int,
+    h: int,
+    w: int,
+    orig_h: int,
+    orig_w: int,
+    cache: HierarchyEmbeddingCache,
+    prompt_dir: str,
+    *,
+    enable_spsa: bool = True,
+) -> tuple[RolloutTrace, dict[str, Any]]:
+    """
+    Block-based search with optional root-level SPSA weight adaptation.
+
+    Structure:
+      For each block of `spsa_block_rollouts` random rollouts:
+        1. Run the block using current weights w = exp(theta).
+        2. If enable_spsa: sample Delta ∈ {-1,+1}^4, run 2 perturbed rollouts,
+           estimate gradient g, update theta <- theta + eta * g.
+      Report best rollout seen across all blocks.
+
+    The 4 SPSA weights multiply the embedding contribution of each hierarchy level:
+        [w_coarse, w_mid, w_fine, w_original]
+    These are global across the current prompt's search; the action space is unchanged.
+
+    Ablation: call with enable_spsa=False for a fixed-weight baseline using the
+    same total rollout budget.
+    """
+    rng_np = np.random.default_rng(seed + 3001)
+    n_actions = len(ACTION_BANK)
+    steps = int(args.steps)
+    block_size = int(args.spsa_block_rollouts)
+    total_blocks = int(args.spsa_total_blocks)
+    c = float(args.spsa_c)
+    eta = float(args.spsa_eta)
+    w_min = float(args.weight_clip_min)
+    w_max = float(args.weight_clip_max)
+
+    def _clip_w(w_arr: np.ndarray) -> np.ndarray:
+        return np.clip(np.exp(w_arr), w_min, w_max)
+
+    # SPSA state: theta in log-space, init 0 => w = [1,1,1,1]
+    theta = np.zeros(4, dtype=np.float64)
+    cur_w = _clip_w(theta)
+
+    spsa_history: list[dict[str, Any]] = []
+    eval_calls = 0
+    best_score = -float("inf")
+    best_genome: list[int] | None = None
+    best_trace: RolloutTrace | None = None
+    search_start = time.perf_counter()
+
+    def _evaluate(genome: list[int], weights: np.ndarray, save_path: str | None, tag: str) -> RolloutTrace:
+        nonlocal eval_calls
+        eval_calls += 1
+        mod_cache = apply_spsa_weights_to_cache(cache, weights)
+        return run_rollout_action_sequence(
+            args, ctx, reward_ctx, prompt, metadata, seed, h, w, orig_h, orig_w,
+            mod_cache, genome, save_path, tag,
+        )
+
+    for block_idx in range(total_blocks):
+        block_best_score = -float("inf")
+        block_best_genome: list[int] | None = None
+
+        # ── Block rollouts ──────────────────────────────────────────────────────
+        for rollout_idx in range(block_size):
+            genome = [int(rng_np.integers(0, n_actions)) for _ in range(steps)]
+            trace = _evaluate(genome, cur_w, None, f"spsa_b{block_idx}_r{rollout_idx}")
+            if trace.final_score > block_best_score:
+                block_best_score = float(trace.final_score)
+                block_best_genome = list(genome)
+            if trace.final_score > best_score:
+                best_score = float(trace.final_score)
+                best_genome = list(genome)
+                best_trace = trace
+
+        # ── SPSA update ─────────────────────────────────────────────────────────
+        if enable_spsa:
+            delta = rng_np.choice(np.array([-1.0, 1.0]), size=4).astype(np.float64)
+            theta_plus = theta + c * delta
+            theta_minus = theta - c * delta
+            w_plus = _clip_w(theta_plus)
+            w_minus = _clip_w(theta_minus)
+
+            # Reuse the best genome from this block for the 2 perturbed evals
+            eval_genome = block_best_genome if block_best_genome is not None else [
+                int(rng_np.integers(0, n_actions)) for _ in range(steps)
+            ]
+            trace_plus = _evaluate(eval_genome, w_plus, None, f"spsa_plus_b{block_idx}")
+            trace_minus = _evaluate(eval_genome, w_minus, None, f"spsa_minus_b{block_idx}")
+
+            R_plus = float(trace_plus.final_score)
+            R_minus = float(trace_minus.final_score)
+            grad = ((R_plus - R_minus) / (2.0 * c)) * delta
+            theta = theta + eta * grad
+            cur_w = _clip_w(theta)
+
+            spsa_history.append({
+                "block": int(block_idx),
+                "theta": theta.tolist(),
+                "w": cur_w.tolist(),
+                "R_plus": R_plus,
+                "R_minus": R_minus,
+                "delta": delta.tolist(),
+                "gradient": grad.tolist(),
+                "eval_calls_total": int(eval_calls),
+                "block_best_score": float(block_best_score),
+            })
+            print(
+                f"  [SPSA b{block_idx}] R+={R_plus:.4f} R-={R_minus:.4f} "
+                f"w=[{cur_w[0]:.3f},{cur_w[1]:.3f},{cur_w[2]:.3f},{cur_w[3]:.3f}]"
+            )
+
+    # ── Final best rollout with learned weights ──────────────────────────────
+    assert best_genome is not None and best_trace is not None
+    tag_suffix = "spsa" if enable_spsa else "fixed_w"
+    final_trace = _evaluate(
+        best_genome, cur_w,
+        save_path=os.path.join(prompt_dir, f"{tag_suffix}_best.png"),
+        tag=f"{tag_suffix}_best",
+    )
+
+    payload: dict[str, Any] = {
+        "enable_spsa": bool(enable_spsa),
+        "final_score": float(final_trace.final_score),
+        "best_block_score": float(best_score),
+        "final_theta": theta.tolist(),
+        "final_w": {
+            "w_coarse": float(cur_w[0]),
+            "w_mid": float(cur_w[1]),
+            "w_fine": float(cur_w[2]),
+            "w_original": float(cur_w[3]),
+        },
+        "best_genome": [int(x) for x in best_genome],
+        "best_actions": [ACTION_BANK[int(a)].name for a in best_genome],
+        "best_prompt_actions": [ACTION_BANK[int(a)].prompt_name for a in best_genome],
+        "spsa_config": {
+            "c": c,
+            "eta": eta,
+            "block_rollouts": block_size,
+            "total_blocks": total_blocks,
+            "weight_clip": [w_min, w_max],
+        },
+        "eval_calls_total": int(eval_calls),
+        "nfe_total": int(eval_calls * steps),
+        "wallclock_total_sec": float(time.perf_counter() - search_start),
+        "spsa_history": spsa_history,
+    }
+    return final_trace, payload
+
+
 def save_trace_json(path: str, trace: RolloutTrace) -> None:
     payload = {
         "final_score": float(trace.final_score),
@@ -1590,6 +1855,43 @@ def run(args: argparse.Namespace) -> None:
                 json.dump(option_rows, f, indent=2)
             option_rewards_paths["controller_ga_best"] = op_path
 
+        # 6) root-level SPSA prompt-weight adaptation (+ fixed-weight ablation)
+        trace_spsa: RolloutTrace | None = None
+        spsa_payload: dict[str, Any] | None = None
+        trace_fixed_w: RolloutTrace | None = None
+        fixed_w_payload: dict[str, Any] | None = None
+
+        if args.enable_prompt_weight_spsa:
+            print(f"\n  [SPSA] running SPSA search ({args.spsa_total_blocks} blocks x {args.spsa_block_rollouts} rollouts) ...")
+            trace_spsa, spsa_payload = run_spsa_search(
+                args, ctx, reward_ctx, prompt, None,
+                int(args.seed), h, w, orig_h, orig_w,
+                emb_cache, prompt_dir, enable_spsa=True,
+            )
+            save_trace_json(os.path.join(prompt_dir, "trace_spsa_best.json"), trace_spsa)
+            with open(os.path.join(prompt_dir, "spsa_history.json"), "w", encoding="utf-8") as f:
+                json.dump(spsa_payload, f, indent=2)
+
+            print(f"\n  [SPSA] running fixed-weight ablation (same budget, w=[1,1,1,1]) ...")
+            trace_fixed_w, fixed_w_payload = run_spsa_search(
+                args, ctx, reward_ctx, prompt, None,
+                int(args.seed), h, w, orig_h, orig_w,
+                emb_cache, prompt_dir, enable_spsa=False,
+            )
+            save_trace_json(os.path.join(prompt_dir, "trace_fixed_w_best.json"), trace_fixed_w)
+            with open(os.path.join(prompt_dir, "fixed_w_history.json"), "w", encoding="utf-8") as f:
+                json.dump(fixed_w_payload, f, indent=2)
+
+            print(
+                f"  [SPSA] spsa={trace_spsa.final_score:.4f}  "
+                f"fixed_w={trace_fixed_w.final_score:.4f}  "
+                f"delta={trace_spsa.final_score - trace_fixed_w.final_score:+.4f}  "
+                f"final_w=[{spsa_payload['final_w']['w_coarse']:.3f},"
+                f"{spsa_payload['final_w']['w_mid']:.3f},"
+                f"{spsa_payload['final_w']['w_fine']:.3f},"
+                f"{spsa_payload['final_w']['w_original']:.3f}]"
+            )
+
         score_rows = [
             ("baseline_original", float(trace_original.final_score)),
             ("oneshot_mid", float(trace_one_shot.final_score)),
@@ -1597,6 +1899,11 @@ def run(args: argparse.Namespace) -> None:
             ("openloop_ga_best", float(trace_openloop.final_score)),
             ("controller_ga_best", float(trace_controller.final_score)),
         ]
+        if trace_spsa is not None:
+            score_rows.append(("spsa_best", float(trace_spsa.final_score)))
+        if trace_fixed_w is not None:
+            score_rows.append(("fixed_w_best", float(trace_fixed_w.final_score)))
+
         save_score_board(os.path.join(prompt_dir, "score_board.png"), score_rows)
         baseline_score = float(trace_original.final_score)
 
@@ -1615,6 +1922,8 @@ def run(args: argparse.Namespace) -> None:
             "option_reward_logs": option_rewards_paths,
             "openloop_ga": openloop_payload,
             "controller_ga": controller_payload,
+            "spsa": spsa_payload,
+            "fixed_w_ablation": fixed_w_payload,
         }
         with open(os.path.join(prompt_dir, "summary.json"), "w", encoding="utf-8") as f:
             json.dump(prompt_summary, f, indent=2)
@@ -1626,6 +1935,7 @@ def run(args: argparse.Namespace) -> None:
             f"fixed={trace_fixed.final_score:.4f} "
             f"openloop={trace_openloop.final_score:.4f} "
             f"controller={trace_controller.final_score:.4f}"
+            + (f" spsa={trace_spsa.final_score:.4f}" if trace_spsa else "")
         )
 
     with open(cache_path, "w", encoding="utf-8") as f:

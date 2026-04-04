@@ -76,18 +76,10 @@ search:
       # ── Preload reward models ──────────────────────────────────────────────
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
       # ── Preload SenseFlow base models & transformer ────────────────────────
-      # SD3.5-large base: download everything except the original SD3.5 transformer weights
-      # (VAE + text encoders are needed; transformer is replaced by SenseFlow)
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('stabilityai/stable-diffusion-3.5-large', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), ignore_patterns=['transformer/*']); print('SD3.5-large azure cache OK')"
-      # Copy SD3.5 to local disk for fast loading (avoids FUSE mount latency)
-      - export SD35_LOCAL_DIR=/home/aiscuser/.cache/sd35_large
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('stabilityai/stable-diffusion-3.5-large', local_dir=os.environ.get('SD35_LOCAL_DIR','/home/aiscuser/.cache/sd35_large'), local_dir_use_symlinks=False, token=os.environ.get('HF_TOKEN'), ignore_patterns=['transformer/*']); print('SD3.5-large local cache OK')"
-      # FLUX.1-schnell base — download to persistent Azure cache first
+      # SD3.5-large: download full model to persistent Azure HF cache
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('stabilityai/stable-diffusion-3.5-large', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('SD3.5-large azure cache OK')"
+      # FLUX.1-schnell: download to persistent Azure HF cache
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('FLUX.1-schnell azure cache OK')"
-      # Copy FLUX to local disk so model loading reads from fast NVMe, not FUSE mount
-      - export FLUX_LOCAL_DIR=/home/aiscuser/.cache/flux_schnell
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', local_dir=os.environ.get('FLUX_LOCAL_DIR','/home/aiscuser/.cache/flux_schnell'), local_dir_use_symlinks=False, token=os.environ.get('HF_TOKEN')); print('FLUX.1-schnell local cache OK')"
-      - export MODEL_ID="$$FLUX_LOCAL_DIR"
       # SenseFlow transformer (contains SD35L and Flux-Schnell subfolders)
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('domiso/SenseFlow', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('SenseFlow transformer cache OK')"
       - export HF_HUB_OFFLINE=1
@@ -141,8 +133,6 @@ search:
       - export RUN_FLUX={run_flux}
       - export SD35_BACKEND={sd35_backend}
       - export FLUX_BACKEND={flux_backend}
-      - export SD35_LOCAL_DIR=/home/aiscuser/.cache/sd35_large
-      - export MODEL_ID=/home/aiscuser/.cache/flux_schnell
       - export USE_QWEN={use_qwen}
       - export PRECOMPUTE_REWRITES={precompute_rewrites}
       - export REWRITES_OVERWRITE={rewrites_overwrite}

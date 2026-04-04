@@ -144,7 +144,7 @@ fi
 # Final restore — belt-and-suspenders after all installs complete.
 echo "[install] final restore: transformers/timm + text/hash + data stack"
 _pip --index-url "${PYPI_INDEX_URL}" \
-  "transformers>=4.51.0" "tokenizers>=0.19" "timm==1.0.15" \
+  "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14" "timm==1.0.15" \
   "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1" \
   "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
 _pip --index-url "${PYPI_INDEX_URL}" --force-reinstall --no-deps \

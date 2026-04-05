@@ -352,6 +352,7 @@ summary_tsv = sys.argv[2]
 
 methods = {
     "baseline": [],
+    "variant4": [],
     "gb_fixed": [],
     "gb_spsa": [],
     "gb_nlerp_spsa": [],
@@ -381,6 +382,9 @@ for result_path in sorted(glob.glob(os.path.join(run_dir, "rank_*", "p*", "resul
         methods["baseline"].append(float(base))
 
     da = row.get("mcts_design_ablation") or {}
+    v = _score(da.get("variant4"))
+    if v is not None:
+        methods["variant4"].append(v)
     v = _score(da.get("global_blend_fixed"))
     if v is not None:
         methods["gb_fixed"].append(v)
@@ -396,7 +400,7 @@ for result_path in sorted(glob.glob(os.path.join(run_dir, "rank_*", "p*", "resul
 
 with open(summary_tsv, "w", encoding="utf-8") as f:
     f.write("method\tmean\tn\n")
-    for name in ["baseline", "gb_fixed", "gb_spsa", "gb_nlerp_spsa", "gb_slerp_spsa"]:
+    for name in ["baseline", "variant4", "gb_fixed", "gb_spsa", "gb_nlerp_spsa", "gb_slerp_spsa"]:
         vals = methods[name]
         if vals:
             f.write(f"{name}\t{statistics.fmean(vals):.4f}\t{len(vals)}\n")
@@ -404,7 +408,7 @@ with open(summary_tsv, "w", encoding="utf-8") as f:
             f.write(f"{name}\tNA\t0\n")
 
 print("Aggregate:")
-for name in ["baseline", "gb_fixed", "gb_spsa", "gb_nlerp_spsa", "gb_slerp_spsa"]:
+for name in ["baseline", "variant4", "gb_fixed", "gb_spsa", "gb_nlerp_spsa", "gb_slerp_spsa"]:
     vals = methods[name]
     if vals:
         print(f"  {name:<20} {statistics.fmean(vals):>9.4f} {len(vals):>6d}")

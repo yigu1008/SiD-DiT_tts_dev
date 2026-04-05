@@ -145,6 +145,32 @@ Outputs:
 
 ---
 
+### SANA design SPSA test (`gb_spsa / gb_nlerp_spsa / gb_slerp_spsa`)
+
+Runs the SANA slerp/nlerp sandbox in sharded mode on visible GPUs and writes:
+- per-rank outputs under `rank_*/`
+- combined `design_spsa_summary.tsv`
+
+```bash
+# Default: 10 prompts, MCTS design ablation + family SPSA ablation
+bash ~/SiD-DiT_tts_dev/run_sana_design_spsa_tacc.sh
+
+# Example: 20 prompts, smaller sims for quick test
+NUM_PROMPTS=20 N_SIMS=20 \
+bash ~/SiD-DiT_tts_dev/run_sana_design_spsa_tacc.sh
+```
+
+Useful overrides:
+```bash
+START_INDEX=0 END_INDEX=100
+NUM_GPUS=8
+REWARD_TYPE=imagereward
+FAMILIES="nlerp slerp"
+NO_QWEN=1
+```
+
+---
+
 ### Flux Schnell MCTS ablation (prompt / CFG)
 
 ```bash
@@ -189,6 +215,14 @@ sbatch --nodes=1 --ntasks=1 --cpus-per-task=8 \
        --gres=gpu:a100:8 --time=24:00:00 \
        --partition=gpu \
        --wrap="MCTS_CFG_MODES='fixed adaptive' bash ~/SiD-DiT_tts_dev/run_sd35_dynamic_cfg_tacc.sh"
+```
+
+For SANA design SPSA test:
+```bash
+sbatch --nodes=1 --ntasks=1 --cpus-per-task=8 \
+       --gres=gpu:a100:8 --time=24:00:00 \
+       --partition=gpu \
+       --wrap="NUM_PROMPTS=10 bash ~/SiD-DiT_tts_dev/run_sana_design_spsa_tacc.sh"
 ```
 
 ---

@@ -118,6 +118,7 @@ Runs `sd35_ddp_experiment_dynamic_cfg.py` via:
 
 ```bash
 # Default: adaptive mode, cfg-only action space (no Qwen, no correction)
+# Default prompt range is 10 prompts: [START_INDEX, START_INDEX + NUM_PROMPTS)
 bash ~/SiD-DiT_tts_dev/run_sd35_dynamic_cfg_tacc.sh
 
 # Fixed vs adaptive ablation
@@ -131,6 +132,7 @@ Useful overrides:
 ```bash
 PROMPT_FILE=~/SiD-DiT_tts_dev/hpsv2_subset.txt
 START_INDEX=0 END_INDEX=100
+NUM_PROMPTS=10
 NUM_GPUS=8
 MCTS_CFG_ROOT_BANK="1.0 1.5 2.0"
 MCTS_CFG_ANCHORS="1.0 2.0"

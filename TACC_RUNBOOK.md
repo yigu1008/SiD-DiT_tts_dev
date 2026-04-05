@@ -1,5 +1,44 @@
 # TACC Runbook
 
+## Conda quick start (TACC login node)
+
+Use this when `conda` is not yet available in your shell:
+
+```bash
+# 1) Find conda.sh
+for p in \
+  "$HOME/miniconda3/etc/profile.d/conda.sh" \
+  "$HOME/anaconda3/etc/profile.d/conda.sh" \
+  "/opt/conda/etc/profile.d/conda.sh"; do
+  [[ -f "$p" ]] && echo "$p"
+done
+
+# 2) Source the first one that exists
+CONDA_SH="$(
+  for p in \
+    "$HOME/miniconda3/etc/profile.d/conda.sh" \
+    "$HOME/anaconda3/etc/profile.d/conda.sh" \
+    "/opt/conda/etc/profile.d/conda.sh"; do
+    [[ -f "$p" ]] && { echo "$p"; break; }
+  done
+)"
+if [[ -z "$CONDA_SH" ]]; then
+  echo "No conda.sh found. Install Miniconda or set CONDA_SH manually."
+  exit 1
+fi
+source "$CONDA_SH"
+
+# 3) Activate env
+conda activate sid_dit
+
+# 4) Verify
+which python
+python -V
+conda env list
+```
+
+---
+
 ## One-time setup (login node, done once per env rebuild)
 
 ```bash
@@ -68,6 +107,38 @@ Summary TSV: `$SCRATCH/mcts_ablation/ablation_<timestamp>/ablation_summary.tsv`
 
 ---
 
+### SD3.5 dynamic CFG MCTS (node-adaptive CFG)
+
+Runs `sd35_ddp_experiment_dynamic_cfg.py` via:
+`run_sd35_dynamic_cfg_tacc.sh`
+
+```bash
+# Default: adaptive mode, cfg-only action space (no Qwen, no correction)
+bash ~/SiD-DiT_tts_dev/run_sd35_dynamic_cfg_tacc.sh
+
+# Fixed vs adaptive ablation
+MCTS_CFG_MODES="fixed adaptive" \
+N_SIMS=50 \
+CFG_SCALES="1.0 1.25 1.5 1.75 2.0" \
+bash ~/SiD-DiT_tts_dev/run_sd35_dynamic_cfg_tacc.sh
+```
+
+Useful overrides:
+```bash
+PROMPT_FILE=~/SiD-DiT_tts_dev/hpsv2_subset.txt
+START_INDEX=0 END_INDEX=100
+NUM_GPUS=8
+MCTS_CFG_ROOT_BANK="1.0 1.5 2.0"
+MCTS_CFG_ANCHORS="1.0 2.0"
+MCTS_CFG_MIN_PARENT_VISITS=3
+```
+
+Outputs:
+- Per mode: `$SCRATCH/sd35_dynamic_cfg/sd35_dynamic_cfg_<timestamp>/cfg_mode_<mode>/`
+- Cross-mode summary: `cfg_mode_summary.tsv`
+
+---
+
 ### Flux Schnell MCTS ablation (prompt / CFG)
 
 ```bash
@@ -104,6 +175,14 @@ sbatch --nodes=1 --ntasks=1 --cpus-per-task=8 \
        --gres=gpu:a100:8 --time=24:00:00 \
        --partition=gpu \
        --wrap="bash ~/SiD-DiT_tts_dev/run_tacc.sh"
+```
+
+For dynamic CFG SD3.5:
+```bash
+sbatch --nodes=1 --ntasks=1 --cpus-per-task=8 \
+       --gres=gpu:a100:8 --time=24:00:00 \
+       --partition=gpu \
+       --wrap="MCTS_CFG_MODES='fixed adaptive' bash ~/SiD-DiT_tts_dev/run_sd35_dynamic_cfg_tacc.sh"
 ```
 
 ---

@@ -30,6 +30,11 @@ def _make_patched_parse_args(
             args = original_parse_args()
         finally:
             sys.argv = original_argv
+        # sd35_ddp_experiment parser does not define --x0_sampler, but
+        # sampling_unified_sd35.run_baseline/run_mcts expects args.x0_sampler.
+        # SenseFlow paths may set it in backend defaults; sid needs a safe fallback.
+        if not hasattr(args, "x0_sampler"):
+            setattr(args, "x0_sampler", False)
         for key, value in vars(dynamic_args).items():
             setattr(args, key, value)
         return args

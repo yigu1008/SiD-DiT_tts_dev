@@ -17,9 +17,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export SKIP_INSTALL="${SKIP_INSTALL:-1}"
 source "${SCRIPT_DIR}/tacc_setup.sh"
 
-PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/hpsv2_subset.txt}"
-OUT_ROOT="${OUT_ROOT:-${SCRATCH:-${DATA_ROOT}}/sd35_dynamic_cfg}"
+# Prompt / output dirs (match run_tacc.sh layout)
+_OUT_BASE="${SCRATCH:-${DATA_ROOT}}"
+HPSV2_PROMPT_DIR="${HPSV2_PROMPT_DIR:-${_OUT_BASE}/hpsv2_prompt_cache}"
+export HPSV2_PROMPT_DIR
 RUN_TAG="${RUN_TAG:-sd35_dynamic_cfg}"
+OUT_ROOT="${OUT_ROOT:-${_OUT_BASE}/hpsv2_all_models_runs/${RUN_TAG}}"
+PROMPT_STYLE="${PROMPT_STYLE:-all}"
+USE_SUBSET="${USE_SUBSET:-1}"
+PROMPT_FILE="${PROMPT_FILE:-}"
 START_INDEX="${START_INDEX:-0}"
 END_INDEX="${END_INDEX:--1}"
 NUM_GPUS="${NUM_GPUS:-$(${PYTHON_BIN} -c 'import torch; print(max(torch.cuda.device_count(),1))')}"
@@ -59,6 +65,20 @@ MCTS_CFG_ROUND_NDIGITS="${MCTS_CFG_ROUND_NDIGITS:-6}"
 MCTS_CFG_LOG_ACTION_TOPK="${MCTS_CFG_LOG_ACTION_TOPK:-12}"
 
 SAVE_BEST_IMAGES="${SAVE_BEST_IMAGES:-1}"
+
+# Build prompt file from HPSv2 cache unless PROMPT_FILE was explicitly given.
+if [[ -z "${PROMPT_FILE}" ]]; then
+  mkdir -p "${HPSV2_PROMPT_DIR}"
+  OUT_DIR="${HPSV2_PROMPT_DIR}" STYLE="${PROMPT_STYLE}" bash "${SCRIPT_DIR}/get_hpsv2_prompts.sh"
+  if [[ "${PROMPT_STYLE}" == "all" ]]; then
+    PROMPT_FILE="${HPSV2_PROMPT_DIR}/hpsv2_prompts.txt"
+  else
+    PROMPT_FILE="${HPSV2_PROMPT_DIR}/hpsv2_prompts_${PROMPT_STYLE}.txt"
+  fi
+  if [[ "${USE_SUBSET}" == "1" ]]; then
+    PROMPT_FILE="${SCRIPT_DIR}/hpsv2_subset.txt"
+  fi
+fi
 
 if [[ ! -f "${PROMPT_FILE}" ]]; then
   echo "Error: PROMPT_FILE not found: ${PROMPT_FILE}" >&2

@@ -7,6 +7,8 @@ Use this when `conda` is not yet available in your shell:
 ```bash
 # 1) Find conda.sh
 for p in \
+  "$SCRATCH/miniconda3/etc/profile.d/conda.sh" \
+  "$SCRATCH/anaconda3/etc/profile.d/conda.sh" \
   "$HOME/miniconda3/etc/profile.d/conda.sh" \
   "$HOME/anaconda3/etc/profile.d/conda.sh" \
   "/opt/conda/etc/profile.d/conda.sh"; do
@@ -16,6 +18,8 @@ done
 # 2) Source the first one that exists
 CONDA_SH="$(
   for p in \
+    "$SCRATCH/miniconda3/etc/profile.d/conda.sh" \
+    "$SCRATCH/anaconda3/etc/profile.d/conda.sh" \
     "$HOME/miniconda3/etc/profile.d/conda.sh" \
     "$HOME/anaconda3/etc/profile.d/conda.sh" \
     "/opt/conda/etc/profile.d/conda.sh"; do

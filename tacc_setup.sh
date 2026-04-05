@@ -24,6 +24,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Conda
 CONDA_SH="${CONDA_SH:-}"
 for _candidate in \
+    "${SCRATCH:-}/miniconda3/etc/profile.d/conda.sh" \
+    "${SCRATCH:-}/anaconda3/etc/profile.d/conda.sh" \
     "${HOME}/miniconda3/etc/profile.d/conda.sh" \
     "${HOME}/anaconda3/etc/profile.d/conda.sh" \
     "/opt/conda/etc/profile.d/conda.sh"; do
@@ -38,6 +40,8 @@ fi
 # Python binary — prefer sid_dit env (TACC), then ptca (Azure), then python3
 if [[ -z "${PYTHON_BIN:-}" ]]; then
   for _candidate in \
+      "${SCRATCH:-}/miniconda3/envs/sid_dit/bin/python" \
+      "${SCRATCH:-}/anaconda3/envs/sid_dit/bin/python" \
       "${HOME}/miniconda3/envs/sid_dit/bin/python" \
       "${HOME}/anaconda3/envs/sid_dit/bin/python" \
       "/opt/conda/envs/ptca/bin/python" \

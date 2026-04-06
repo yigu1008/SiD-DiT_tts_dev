@@ -48,7 +48,7 @@ search:
       - export PATH=/home/aiscuser/.local/bin:$$PATH
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
-      - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
+      - export HF_HOME=/home/aiscuser/hf_cache
       - export HF_TOKEN={hf_token}
       - export HUGGING_FACE_HUB_TOKEN={hf_token}
       - export AZFUSE_USE_FUSE=0
@@ -69,15 +69,13 @@ search:
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
-      - mkdir -p /mnt/data/v-yigu/model_cache/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
-      - mkdir -p /home/aiscuser/.cache
+      - mkdir -p /home/aiscuser/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
       - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
       # ── Preload reward models & FLUX weights ──────────────────────────────
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
-      # Download FLUX to persistent Azure HF cache, then copytree snapshot → local NVMe
-      - export FLUX_LOCAL_DIR=/home/aiscuser/.cache/flux_schnell
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, shutil; src=snapshot_download('black-forest-labs/FLUX.1-schnell', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); dst=os.environ['FLUX_LOCAL_DIR']; shutil.copytree(src, dst, dirs_exist_ok=True); print('FLUX.1-schnell local copy OK:', dst)"
+      # Download FLUX directly to local NVMe (HF_HOME=/home/aiscuser/hf_cache)
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('FLUX.1-schnell OK')"
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
       # ── Prompt file ────────────────────────────────────────────────────────
@@ -124,7 +122,6 @@ search:
       - export BON_N={bon_n}
       - export BEAM_WIDTH={beam_width}
       - export SEED={seed}
-      - export MODEL_ID=$$FLUX_LOCAL_DIR
       - export RUN_SANA=0
       - export RUN_SD35=0
       - export RUN_FLUX=1

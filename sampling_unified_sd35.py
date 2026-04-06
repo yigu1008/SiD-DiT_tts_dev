@@ -2066,7 +2066,7 @@ def save_comparison(
     search_img: Image.Image,
     base_score: float,
     search_score: float,
-    actions: list[tuple[int, float]],
+    actions: list[tuple[int, float] | tuple[int, float, float]],
 ) -> None:
     w, h = base_img.size
     header_h = 54
@@ -2078,7 +2078,15 @@ def save_comparison(
     d = search_score - base_score
     col = (100, 255, 100) if d >= 0 else (255, 100, 100)
     draw.text((w + 4, 4), f"search IR={search_score:.3f}  delta={d:+.3f}", fill=col, font=_font(15))
-    acts = " ".join(f"s{i+1}:v{v}/cfg{c:.2f}" for i, (v, c) in enumerate(actions))
+    act_tokens: list[str] = []
+    for i, action in enumerate(actions):
+        if len(action) >= 3:
+            v, c, r = int(action[0]), float(action[1]), float(action[2])
+            act_tokens.append(f"s{i+1}:v{v}/cfg{c:.2f}/cs{r:.2f}")
+        elif len(action) == 2:
+            v, c = int(action[0]), float(action[1])
+            act_tokens.append(f"s{i+1}:v{v}/cfg{c:.2f}")
+    acts = " ".join(act_tokens)
     draw.text((w + 4, 28), acts[:96], fill=(255, 220, 50), font=_font(11))
     comp.save(path)
 

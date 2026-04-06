@@ -20,6 +20,8 @@ from sampling_unified_sd35 import (
     load_reward_model,
     run_baseline,
     run_baseline_batch,
+    run_beam,
+    run_bon,
     run_ga,
     run_greedy,
     run_greedy_batch,
@@ -48,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end_index", type=int, default=-1, help="Exclusive end index; -1 means all.")
     parser.add_argument("--out_dir", default="./sd35_ddp_out")
 
-    parser.add_argument("--modes", nargs="+", choices=["base", "greedy", "mcts", "ga", "smc"], default=["base", "greedy", "mcts", "ga"])
+    parser.add_argument("--modes", nargs="+", choices=["base", "greedy", "mcts", "ga", "smc", "bon", "beam"], default=["base", "greedy", "mcts", "ga"])
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--seed_per_prompt", action="store_true", help="Use seed + prompt_index for each prompt.")
 
@@ -87,6 +89,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resample_start_frac", type=float, default=0.3)
     parser.add_argument("--smc_cfg_scale", type=float, default=1.25)
     parser.add_argument("--smc_variant_idx", type=int, default=0)
+    parser.add_argument("--bon_n", type=int, default=16, help="Number of candidates for Best-of-N search.")
+    parser.add_argument("--beam_width", type=int, default=4, help="Number of beams to keep per step in beam search.")
     parser.add_argument(
         "--correction_strengths",
         nargs="+",
@@ -625,6 +629,48 @@ def main() -> None:
                         "nfe": int(ctx.nfe),
                         "actions": [[int(v), float(c), float(r)] for v, c, r in smc.actions],
                         "search_diagnostics": smc.diagnostics,
+                    })
+                    total_rows_written += 1
+
+                if "bon" in args.modes:
+                    ctx.nfe = 0
+                    bon = run_bon(args, ctx, emb, reward_model, prompt, seed)
+                    if args.save_images or args.save_best_images:
+                        bon.image.save(os.path.join(img_dir, f"{slug}_bon.png"))
+                    if args.save_images:
+                        save_comparison(
+                            os.path.join(img_dir, f"{slug}_bon_comp.png"),
+                            base_img, bon.image, base_score, bon.score, bon.actions,
+                        )
+                    _write_row(rank_log_f, {
+                        "prompt_index": prompt_index, "prompt": prompt, "seed": seed,
+                        "mode": "bon", "score": float(bon.score),
+                        "delta_vs_base": float(bon.score - base_score),
+                        "baseline_score": float(base_score),
+                        "nfe": int(ctx.nfe),
+                        "actions": [[int(v), float(c), float(r)] for v, c, r in bon.actions],
+                        "search_diagnostics": bon.diagnostics,
+                    })
+                    total_rows_written += 1
+
+                if "beam" in args.modes:
+                    ctx.nfe = 0
+                    beam = run_beam(args, ctx, emb, reward_model, prompt, variants, seed)
+                    if args.save_images or args.save_best_images:
+                        beam.image.save(os.path.join(img_dir, f"{slug}_beam.png"))
+                    if args.save_images:
+                        save_comparison(
+                            os.path.join(img_dir, f"{slug}_beam_comp.png"),
+                            base_img, beam.image, base_score, beam.score, beam.actions,
+                        )
+                    _write_row(rank_log_f, {
+                        "prompt_index": prompt_index, "prompt": prompt, "seed": seed,
+                        "mode": "beam", "score": float(beam.score),
+                        "delta_vs_base": float(beam.score - base_score),
+                        "baseline_score": float(base_score),
+                        "nfe": int(ctx.nfe),
+                        "actions": [[int(v), float(c), float(r)] for v, c, r in beam.actions],
+                        "search_diagnostics": beam.diagnostics,
                     })
                     total_rows_written += 1
 

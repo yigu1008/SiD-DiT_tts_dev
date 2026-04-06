@@ -48,7 +48,7 @@ search:
       - export PATH=/home/aiscuser/.local/bin:$$PATH
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
-      - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
+      - export HF_HOME=/home/aiscuser/hf_cache
       - export HF_TOKEN={hf_token}
       - export HUGGING_FACE_HUB_TOKEN={hf_token}
       - export AZFUSE_USE_FUSE=0
@@ -69,23 +69,18 @@ search:
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
-      - mkdir -p /mnt/data/v-yigu/model_cache/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
-      - mkdir -p /home/aiscuser/.cache
+      - mkdir -p /home/aiscuser/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
       - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
       # ── Preload reward models ──────────────────────────────────────────────
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
-      # ── Preload SenseFlow base models & transformer ────────────────────────
+      # ── Preload SenseFlow base models & transformer (all to local NVMe via HF_HOME) ──
       # SD3.5-large: VAE + text encoders only (transformer replaced by SenseFlow)
-      # copytree snapshot → local NVMe to avoid cross-filesystem hardlink failures
-      - export SD35_LOCAL_DIR=/home/aiscuser/.cache/sd35_large
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, shutil; src=snapshot_download('stabilityai/stable-diffusion-3.5-large', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), ignore_patterns=['transformer/*']); dst=os.environ['SD35_LOCAL_DIR']; shutil.copytree(src, dst, dirs_exist_ok=True); print('SD3.5-large local copy OK:', dst)"
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('stabilityai/stable-diffusion-3.5-large', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), ignore_patterns=['transformer/*']); print('SD3.5-large OK')"
       # FLUX.1-schnell
-      - export FLUX_LOCAL_DIR=/home/aiscuser/.cache/flux_schnell
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, shutil; src=snapshot_download('black-forest-labs/FLUX.1-schnell', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); dst=os.environ['FLUX_LOCAL_DIR']; shutil.copytree(src, dst, dirs_exist_ok=True); print('FLUX.1-schnell local copy OK:', dst)"
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('FLUX.1-schnell OK')"
       # SenseFlow transformer (SD35L + Flux-Schnell subfolders)
-      - export SENSEFLOW_LOCAL_DIR=/home/aiscuser/.cache/senseflow
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, shutil; src=snapshot_download('domiso/SenseFlow', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); dst=os.environ['SENSEFLOW_LOCAL_DIR']; shutil.copytree(src, dst, dirs_exist_ok=True); print('SenseFlow local copy OK:', dst)"
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('domiso/SenseFlow', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('SenseFlow OK')"
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
       # ── Prompt file ────────────────────────────────────────────────────────
@@ -133,11 +128,6 @@ search:
       - export BON_N={bon_n}
       - export BEAM_WIDTH={beam_width}
       - export SEED={seed}
-      # ── Local NVMe paths (set in preload, re-export for suite scripts) ──────────
-      - export SD35_LOCAL_DIR=/home/aiscuser/.cache/sd35_large
-      - export SENSEFLOW_LOCAL_DIR=/home/aiscuser/.cache/senseflow
-      - export FLUX_LOCAL_DIR=/home/aiscuser/.cache/flux_schnell
-      - export MODEL_ID=$$FLUX_LOCAL_DIR
       - export RUN_SANA=0
       - export RUN_SD35={run_sd35}
       - export RUN_FLUX={run_flux}
@@ -182,7 +172,7 @@ search:
     - name: use_subset
       values: [ 1 ]
     - name: methods
-      values: [ "baseline greedy mcts ga smc" ]
+      values: [ "baseline greedy mcts ga smc bon beam" ]
     - name: eval_backends
       values: [ "imagereward hpsv2 pickscore" ]
     # Suite scripts auto-override cfg_scales/baseline_cfg to 0.0 for senseflow backends

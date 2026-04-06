@@ -90,6 +90,8 @@ GA_CROSSOVER="${GA_CROSSOVER:-uniform}"
 GA_LOG_TOPK="${GA_LOG_TOPK:-3}"
 GA_EVAL_BATCH="${GA_EVAL_BATCH:-2}"
 GA_PHASE_CONSTRAINTS="${GA_PHASE_CONSTRAINTS:-1}"
+BON_N="${BON_N:-16}"
+BEAM_WIDTH="${BEAM_WIDTH:-4}"
 
 _DEFAULT_CFG_SCALES_STR="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
 if [[ "${SD35_BACKEND}" == "senseflow_large" || "${SD35_BACKEND}" == "senseflow_medium" ]]; then
@@ -512,6 +514,8 @@ run_method() {
     mcts) mode_arg="mcts" ;;
     ga) mode_arg="ga" ;;
     smc) mode_arg="smc" ;;
+    bon) mode_arg="bon" ;;
+    beam) mode_arg="beam" ;;
     *)
       echo "Error: unsupported method '${method}' for SD3.5 suite." >&2
       exit 1
@@ -550,13 +554,6 @@ run_method() {
   fi
   if [[ -n "${SD35_SIGMAS}" ]]; then
     extra+=(--sigmas ${SD35_SIGMAS})
-  fi
-  # Override model_id / transformer_id with local NVMe copies if pre-staged by the cluster job.
-  if [[ -n "${SD35_LOCAL_DIR:-}" ]]; then
-    extra+=(--model_id "${SD35_LOCAL_DIR}")
-  fi
-  if [[ -n "${SENSEFLOW_LOCAL_DIR:-}" ]]; then
-    extra+=(--transformer_id "${SENSEFLOW_LOCAL_DIR}")
   fi
   local begin_ts
   begin_ts="$(date +%s)"
@@ -618,6 +615,8 @@ PY
     --ga_crossover "${GA_CROSSOVER}" \
     --ga_log_topk "${GA_LOG_TOPK}" \
     --ga_eval_batch "${GA_EVAL_BATCH}" \
+    --bon_n "${BON_N}" \
+    --beam_width "${BEAM_WIDTH}" \
     --correction_strengths ${CORRECTION_STRENGTHS} \
     --out_dir "${method_out}" \
     "${extra[@]}"

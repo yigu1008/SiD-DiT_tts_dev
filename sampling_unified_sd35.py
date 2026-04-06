@@ -423,7 +423,25 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
         f"(device={device} cuda_available={cuda_available} device_count={dev_count} "
         f"local_rank={local_rank} cvd={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')} dtype={dtype_str})"
     )
-    pipe = SiDSD3Pipeline.from_pretrained(args.model_id, torch_dtype=dtype).to(device)
+    transformer_id = getattr(args, "transformer_id", None)
+    transformer_subfolder = getattr(args, "transformer_subfolder", None)
+
+    pretrained_kwargs: dict = {"torch_dtype": dtype}
+    if transformer_id:
+        # Load the replacement transformer first and inject it into from_pretrained so
+        # diffusers skips loading the base model's transformer from cache.  This lets
+        # senseflow backends work even when the original SD3.5 transformer weights are
+        # not present in HF_HOME (we only need VAE + text encoders from the base model).
+        from diffusers.models.transformers import SD3Transformer2DModel
+        tf_kwargs: dict = {"torch_dtype": dtype}
+        if transformer_subfolder:
+            tf_kwargs["subfolder"] = transformer_subfolder
+        print(f"Loading transformer from {transformer_id} subfolder={transformer_subfolder}")
+        pretrained_kwargs["transformer"] = SD3Transformer2DModel.from_pretrained(
+            transformer_id, **tf_kwargs
+        ).to(device)
+
+    pipe = SiDSD3Pipeline.from_pretrained(args.model_id, **pretrained_kwargs).to(device)
     if hasattr(pipe, "enable_vae_slicing"):
         pipe.enable_vae_slicing()
     # Normalize text-encoder dtypes explicitly. On some cluster images (Apex fused RMSNorm),
@@ -435,18 +453,7 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
                 enc.to(device=device, dtype=dtype)
             except Exception as exc:
                 print(f"[warn] unable to cast {name} to {dtype}: {exc}")
-
-    transformer_id = getattr(args, "transformer_id", None)
-    transformer_subfolder = getattr(args, "transformer_subfolder", None)
-    if transformer_id:
-        # Load a HuggingFace-hosted transformer (e.g. SenseFlow on domiso/SenseFlow).
-        from diffusers.models.transformers import SD3Transformer2DModel
-        print(f"Loading transformer from {transformer_id} subfolder={transformer_subfolder}")
-        kwargs = {"torch_dtype": dtype}
-        if transformer_subfolder:
-            kwargs["subfolder"] = transformer_subfolder
-        pipe.transformer = SD3Transformer2DModel.from_pretrained(transformer_id, **kwargs).to(device)
-    elif args.ckpt:
+    if args.ckpt:
         print(f"Loading transformer weights from {args.ckpt}")
         raw = torch.load(args.ckpt, map_location=device, weights_only=False)
         state_dict = _unwrap_state_dict(raw)

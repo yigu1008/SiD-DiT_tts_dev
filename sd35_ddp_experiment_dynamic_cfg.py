@@ -13,6 +13,7 @@ def _parse_dynamic_cfg_flags(argv: list[str]) -> tuple[argparse.Namespace, list[
     parser.add_argument("--mcts_cfg_mode", choices=["adaptive", "fixed"], default="adaptive")
     parser.add_argument("--mcts_cfg_root_bank", nargs="+", type=float, default=[1.0, 1.5, 2.0])
     parser.add_argument("--mcts_cfg_anchors", nargs="+", type=float, default=[1.0, 2.0])
+    parser.add_argument("--mcts_cfg_step_anchor_count", type=int, default=2)
     parser.add_argument("--mcts_cfg_min_parent_visits", type=int, default=3)
     parser.add_argument("--mcts_cfg_round_ndigits", type=int, default=6)
     parser.add_argument("--mcts_cfg_log_action_topk", type=int, default=12)

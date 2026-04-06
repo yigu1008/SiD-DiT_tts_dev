@@ -75,8 +75,10 @@ search:
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
       # ── Preload reward models & FLUX weights ──────────────────────────────
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
-      # Download FLUX to persistent Azure HF cache
+      # Download FLUX to persistent Azure HF cache, then copy to local NVMe for fast loading
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('FLUX.1-schnell azure cache OK')"
+      - export FLUX_LOCAL_DIR=/home/aiscuser/.cache/flux_schnell
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', local_dir=os.environ['FLUX_LOCAL_DIR'], local_dir_use_symlinks=False, token=os.environ.get('HF_TOKEN')); print('FLUX.1-schnell local copy OK')"
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
       # ── Prompt file ────────────────────────────────────────────────────────
@@ -95,6 +97,7 @@ search:
       - export REWARD_BACKENDS=imagereward
       - export EVAL_BEST_IMAGES=1
       - export EVAL_BACKENDS='{eval_backends}'
+      - export REWARD_DEVICE=cuda
       - export EVAL_REWARD_DEVICE=cpu
       - export EVAL_ALLOW_MISSING_BACKENDS=0
       - export CFG_SCALES='{cfg_scales}'
@@ -122,6 +125,7 @@ search:
       - export BON_N={bon_n}
       - export BEAM_WIDTH={beam_width}
       - export SEED={seed}
+      - export MODEL_ID=$$FLUX_LOCAL_DIR
       - export RUN_SANA=0
       - export RUN_SD35=0
       - export RUN_FLUX=1

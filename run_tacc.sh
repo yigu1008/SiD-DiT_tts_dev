@@ -55,6 +55,7 @@ export REWARD_TYPE=imagereward
 export REWARD_BACKENDS=imagereward
 export EVAL_BEST_IMAGES="${EVAL_BEST_IMAGES:-1}"
 export EVAL_BACKENDS="${EVAL_BACKENDS:-imagereward hpsv2 pickscore}"
+export REWARD_DEVICE="${REWARD_DEVICE:-cpu}"
 export EVAL_REWARD_DEVICE="${EVAL_REWARD_DEVICE:-cpu}"
 export EVAL_ALLOW_MISSING_BACKENDS="${EVAL_ALLOW_MISSING_BACKENDS:-1}"
 

@@ -551,6 +551,13 @@ run_method() {
   if [[ -n "${SD35_SIGMAS}" ]]; then
     extra+=(--sigmas ${SD35_SIGMAS})
   fi
+  # Override model_id / transformer_id with local NVMe copies if pre-staged by the cluster job.
+  if [[ -n "${SD35_LOCAL_DIR:-}" ]]; then
+    extra+=(--model_id "${SD35_LOCAL_DIR}")
+  fi
+  if [[ -n "${SENSEFLOW_LOCAL_DIR:-}" ]]; then
+    extra+=(--transformer_id "${SENSEFLOW_LOCAL_DIR}")
+  fi
   local begin_ts
   begin_ts="$(date +%s)"
   echo "[$(date '+%F %T')] method=${method} start"

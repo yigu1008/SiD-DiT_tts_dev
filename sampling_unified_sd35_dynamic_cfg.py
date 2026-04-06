@@ -91,6 +91,12 @@ def _parse_cfg_args(argv: list[str] | None) -> argparse.Namespace:
     extra.add_argument("--mcts_cfg_mode", choices=["adaptive", "fixed"], default="adaptive")
     extra.add_argument("--mcts_cfg_root_bank", nargs="+", type=float, default=[1.0, 1.5, 2.0])
     extra.add_argument("--mcts_cfg_anchors", nargs="+", type=float, default=[1.0, 2.0])
+    extra.add_argument(
+        "--mcts_cfg_step_anchor_count",
+        type=int,
+        default=2,
+        help="How many anchors to sample from timestep root bank C_t(0).",
+    )
     extra.add_argument("--mcts_cfg_min_parent_visits", type=int, default=3)
     extra.add_argument("--mcts_cfg_round_ndigits", type=int, default=6)
     extra.add_argument("--mcts_cfg_log_action_topk", type=int, default=12)
@@ -185,6 +191,7 @@ def run_mcts_dynamic_cfg(
     cfg_mode = str(getattr(args, "mcts_cfg_mode", "adaptive")).strip().lower()
     cfg_root_bank = [float(x) for x in getattr(args, "mcts_cfg_root_bank", [1.0, 1.5, 2.0])]
     cfg_anchors = [float(x) for x in getattr(args, "mcts_cfg_anchors", [1.0, 2.0])]
+    cfg_step_anchor_count = max(0, int(getattr(args, "mcts_cfg_step_anchor_count", 2)))
     cfg_min_parent_visits = max(1, int(getattr(args, "mcts_cfg_min_parent_visits", 3)))
     cfg_round_ndigits = max(1, int(getattr(args, "mcts_cfg_round_ndigits", 6)))
     action_topk = max(1, int(getattr(args, "mcts_cfg_log_action_topk", 12)))
@@ -207,10 +214,50 @@ def run_mcts_dynamic_cfg(
     def make_action(variant_idx: int, cfg: float, corr_strength: float) -> tuple[int, float, float]:
         return (int(variant_idx), float(clamp_cfg(cfg)), float(corr_strength))
 
-    root_cfg_values = dedup_cfg(cfg_root_bank + cfg_anchors)
+    root_cfg_values_step0 = dedup_cfg(cfg_root_bank + cfg_anchors)
     fixed_cfg_values = dedup_cfg(global_cfg + cfg_anchors)
     default_cfg = clamp_cfg(float(getattr(args, "baseline_cfg", global_cfg[0])))
     default_action = make_action(prompt_actions[0][0], default_cfg, prompt_actions[0][1])
+    cfg_root_center = float(np.mean(root_cfg_values_step0))
+
+    def timestep_root_bank(step: int) -> dict[str, Any]:
+        t = max(0, int(step))
+        # C_t(0): coarse at t=0 from explicit root bank, then narrowed by timestep delta.
+        if t <= 0:
+            bank_vals = dedup_cfg(cfg_root_bank + cfg_anchors)
+            source = "explicit_root_bank_t0"
+        else:
+            dt = float(_cfg_delta_for_depth(t))
+            bank_vals = dedup_cfg([float(cfg_root_center - dt), float(cfg_root_center), float(cfg_root_center + dt)] + cfg_anchors)
+            source = "timestep_root_bank"
+        return {
+            "step": int(t),
+            "values": [float(x) for x in bank_vals],
+            "source": str(source),
+        }
+
+    def pick_step_anchors(step_root: list[float], extra_anchors: list[float], k: int) -> list[float]:
+        merged = dedup_cfg([float(x) for x in step_root] + [float(x) for x in extra_anchors])
+        if k <= 0 or len(merged) <= 0:
+            return []
+        if len(merged) <= k:
+            return [float(x) for x in merged]
+        # Pick spread anchors (e.g. min/max for k=2).
+        idx = np.linspace(0, len(merged) - 1, num=k, dtype=int).tolist()
+        return [float(merged[i]) for i in sorted(set(int(i) for i in idx))]
+
+    def visit_weighted_center(action_visits: dict[tuple[int, float, float], int]) -> tuple[float | None, int]:
+        total = 0
+        wsum = 0.0
+        for action, visits in action_visits.items():
+            v = int(visits)
+            if v <= 0:
+                continue
+            total += int(v)
+            wsum += float(action[1]) * float(v)
+        if total <= 0:
+            return None, 0
+        return float(wsum / float(total)), int(total)
 
     def parent_best_cfg(parent: DynamicMCTSNode | None) -> float | None:
         if parent is None:
@@ -229,41 +276,52 @@ def run_mcts_dynamic_cfg(
 
     def node_cfg_candidates(node: DynamicMCTSNode) -> dict[str, Any]:
         if cfg_mode == "fixed":
+            step_root = timestep_root_bank(int(node.step))
             return {
                 "cfg_candidates": [float(x) for x in fixed_cfg_values],
                 "center": float(np.mean(fixed_cfg_values)),
                 "delta": 0.0,
                 "center_source": "fixed_global",
+                "step": int(node.step),
+                "step_root_bank": [float(x) for x in step_root["values"]],
+                "step_root_anchors": [],
                 "parent_cfg_visits": int(sum(node.parent.action_visits.values())) if node.parent is not None else 0,
             }
 
-        if int(node.step) <= 0:
+        step = int(node.step)
+        step_root = timestep_root_bank(step)
+        step_root_values = [float(x) for x in step_root["values"]]
+        step_root_anchors = pick_step_anchors(step_root_values, cfg_anchors, cfg_step_anchor_count)
+
+        if step <= 0:
             return {
-                "cfg_candidates": [float(x) for x in root_cfg_values],
-                "center": float(np.mean(root_cfg_values)),
+                "cfg_candidates": [float(x) for x in step_root_values],
+                "center": float(np.mean(step_root_values)),
                 "delta": float(_cfg_delta_for_depth(0)),
-                "center_source": "root_coarse",
+                "center_source": "root_timestep_bank",
+                "step": int(step),
+                "step_root_bank": [float(x) for x in step_root_values],
+                "step_root_anchors": [float(x) for x in step_root_anchors],
                 "parent_cfg_visits": 0,
             }
 
-        delta = float(_cfg_delta_for_depth(int(node.step)))
+        delta = float(_cfg_delta_for_depth(step))
         parent = node.parent
         parent_visits = int(sum(parent.action_visits.values())) if parent is not None else 0
         center = None
-        center_source = "baseline_fallback"
+        center_source = "root_bank_fallback"
 
-        if parent is not None and parent_visits >= cfg_min_parent_visits:
-            wsum = 0.0
-            total = 0
-            for action, visits in parent.action_visits.items():
-                v = int(visits)
-                if v <= 0:
-                    continue
-                wsum += float(action[1]) * float(v)
-                total += int(v)
-            if total > 0:
-                center = float(wsum / float(total))
-                center_source = "parent_visit_weighted"
+        # Local timestep center c_t(n): visit-weighted from node stats when available.
+        local_center, local_visits = visit_weighted_center(node.action_visits)
+        if local_center is not None and local_visits >= cfg_min_parent_visits:
+            center = float(local_center)
+            center_source = "node_visit_weighted"
+
+        if center is None and parent is not None and parent_visits > 0:
+            parent_center, parent_total = visit_weighted_center(parent.action_visits)
+            if parent_center is not None and parent_total >= cfg_min_parent_visits:
+                center = float(parent_center)
+                center_source = "parent_visit_weighted_sparse"
 
         if center is None:
             best_cfg = parent_best_cfg(parent)
@@ -276,15 +334,24 @@ def run_mcts_dynamic_cfg(
             center_source = "incoming_cfg_fallback"
 
         if center is None:
-            center = float(default_cfg)
+            center = float(np.mean(step_root_values)) if len(step_root_values) > 0 else float(default_cfg)
+            center_source = "step_root_mean_fallback"
 
-        cfg_vals = dedup_cfg([float(center - delta), float(center), float(center + delta)] + cfg_anchors)
+        # C_t(n)=DedupClamp({c_t-delta_t,c_t,c_t+delta_t} U anchors_from_C_t(0)).
+        cfg_vals = dedup_cfg(
+            [float(center - delta), float(center), float(center + delta)]
+            + [float(x) for x in step_root_anchors]
+        )
         return {
             "cfg_candidates": [float(x) for x in cfg_vals],
             "center": float(center),
             "delta": float(delta),
             "center_source": str(center_source),
+            "step": int(step),
+            "step_root_bank": [float(x) for x in step_root_values],
+            "step_root_anchors": [float(x) for x in step_root_anchors],
             "parent_cfg_visits": int(parent_visits),
+            "node_cfg_visits": int(local_visits),
         }
 
     def node_actions(node: DynamicMCTSNode) -> tuple[dict[str, Any], list[tuple[int, float, float]]]:
@@ -346,7 +413,11 @@ def run_mcts_dynamic_cfg(
                     "cfg_center": float(cfg_meta["center"]),
                     "cfg_delta": float(cfg_meta["delta"]),
                     "cfg_center_source": str(cfg_meta["center_source"]),
+                    "cfg_step": int(cfg_meta.get("step", path[-1][0].step)),
+                    "cfg_step_root_bank": [float(x) for x in cfg_meta.get("step_root_bank", [])],
+                    "cfg_step_root_anchors": [float(x) for x in cfg_meta.get("step_root_anchors", [])],
                     "parent_cfg_visits": int(cfg_meta["parent_cfg_visits"]),
+                    "node_cfg_visits": int(cfg_meta.get("node_cfg_visits", 0)),
                     "chosen_cfg": float(path[-1][1][1]),
                     "chosen_action": {
                         "variant_idx": int(path[-1][1][0]),
@@ -380,7 +451,11 @@ def run_mcts_dynamic_cfg(
                     "cfg_center": float(cfg_meta["center"]),
                     "cfg_delta": float(cfg_meta["delta"]),
                     "cfg_center_source": str(cfg_meta["center_source"]),
+                    "cfg_step": int(cfg_meta.get("step", node.step)),
+                    "cfg_step_root_bank": [float(x) for x in cfg_meta.get("step_root_bank", [])],
+                    "cfg_step_root_anchors": [float(x) for x in cfg_meta.get("step_root_anchors", [])],
                     "parent_cfg_visits": int(cfg_meta["parent_cfg_visits"]),
+                    "node_cfg_visits": int(cfg_meta.get("node_cfg_visits", 0)),
                     "chosen_cfg": float(action[1]),
                     "chosen_action": {
                         "variant_idx": int(action[0]),
@@ -447,6 +522,8 @@ def run_mcts_dynamic_cfg(
                     "root_cfg_candidates": [float(x) for x in root_meta["cfg_candidates"]],
                     "root_cfg_center": float(root_meta["center"]),
                     "root_cfg_delta": float(root_meta["delta"]),
+                    "root_cfg_step_root_bank": [float(x) for x in root_meta.get("step_root_bank", [])],
+                    "root_cfg_step_root_anchors": [float(x) for x in root_meta.get("step_root_anchors", [])],
                     "root_top_actions": top_rows,
                     "root_candidate_count": int(len(root_candidates)),
                 }
@@ -493,11 +570,16 @@ def run_mcts_dynamic_cfg(
     diagnostics = {
         "mcts_cfg_mode": str(cfg_mode),
         "cfg_range": [float(cfg_min), float(cfg_max)],
-        "cfg_root_bank": [float(x) for x in root_cfg_values],
+        "cfg_root_bank_step0": [float(x) for x in root_cfg_values_step0],
         "cfg_global_bank": [float(x) for x in fixed_cfg_values],
         "cfg_anchors": [float(x) for x in dedup_cfg(cfg_anchors)],
+        "cfg_step_anchor_count": int(cfg_step_anchor_count),
         "cfg_min_parent_visits": int(cfg_min_parent_visits),
         "cfg_delta_by_depth": {"0": 0.50, "1": 0.25, "2+": 0.125},
+        "cfg_step_root_banks": {
+            str(step): timestep_root_bank(step)["values"]
+            for step in range(int(args.steps))
+        },
         "history": history,
         "node_cfg_logs": node_cfg_logs,
         "final_cfg_trajectory": [float(a[1]) for a in out_actions],
@@ -528,4 +610,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-

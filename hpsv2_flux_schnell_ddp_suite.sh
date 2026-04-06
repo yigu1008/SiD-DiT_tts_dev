@@ -594,9 +594,14 @@ for method in ${METHODS}; do
         --ga_guidance_scales ${GA_GUIDANCE_SCALES}
       ;;
     greedy)
+      # Greedy scores every (variant × cfg) combination at every step, so the
+      # search space must be small.  Default to 3 representative CFG values;
+      # override via GREEDY_CFG_SCALES env var.
+      _GREEDY_CFG="${GREEDY_CFG_SCALES:-1.0 1.5 2.0}"
+      _GREEDY_VARIANTS="${GREEDY_N_VARIANTS:-${N_VARIANTS}}"
       run_flux_sharded "greedy" "greedy" \
-        --n_variants "${N_VARIANTS}" \
-        --cfg_scales ${CFG_SCALES}
+        --n_variants "${_GREEDY_VARIANTS}" \
+        --cfg_scales ${_GREEDY_CFG}
       ;;
     mcts)
       run_flux_sharded "mcts" "mcts" \

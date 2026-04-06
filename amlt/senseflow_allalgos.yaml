@@ -76,12 +76,18 @@ search:
       # ── Preload reward models ──────────────────────────────────────────────
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
       # ── Preload SenseFlow base models & transformer ────────────────────────
-      # SD3.5-large: download full model to persistent Azure HF cache
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('stabilityai/stable-diffusion-3.5-large', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('SD3.5-large azure cache OK')"
-      # FLUX.1-schnell: download to persistent Azure HF cache
+      # SD3.5-large: VAE + text encoders only (transformer replaced by SenseFlow)
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('stabilityai/stable-diffusion-3.5-large', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), ignore_patterns=['transformer/*']); print('SD3.5-large azure cache OK')"
+      - export SD35_LOCAL_DIR=/home/aiscuser/.cache/sd35_large
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('stabilityai/stable-diffusion-3.5-large', local_dir=os.environ['SD35_LOCAL_DIR'], local_dir_use_symlinks=False, token=os.environ.get('HF_TOKEN'), ignore_patterns=['transformer/*']); print('SD3.5-large local copy OK')"
+      # FLUX.1-schnell
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('FLUX.1-schnell azure cache OK')"
-      # SenseFlow transformer (contains SD35L and Flux-Schnell subfolders)
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('domiso/SenseFlow', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('SenseFlow transformer cache OK')"
+      - export FLUX_LOCAL_DIR=/home/aiscuser/.cache/flux_schnell
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', local_dir=os.environ['FLUX_LOCAL_DIR'], local_dir_use_symlinks=False, token=os.environ.get('HF_TOKEN')); print('FLUX.1-schnell local copy OK')"
+      # SenseFlow transformer (SD35L + Flux-Schnell subfolders)
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('domiso/SenseFlow', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('SenseFlow azure cache OK')"
+      - export SENSEFLOW_LOCAL_DIR=/home/aiscuser/.cache/senseflow
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('domiso/SenseFlow', local_dir=os.environ['SENSEFLOW_LOCAL_DIR'], local_dir_use_symlinks=False, token=os.environ.get('HF_TOKEN')); print('SenseFlow local copy OK')"
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
       # ── Prompt file ────────────────────────────────────────────────────────
@@ -100,6 +106,7 @@ search:
       - export REWARD_BACKENDS=imagereward
       - export EVAL_BEST_IMAGES=1
       - export EVAL_BACKENDS='{eval_backends}'
+      - export REWARD_DEVICE=cuda
       - export EVAL_REWARD_DEVICE=cpu
       - export EVAL_ALLOW_MISSING_BACKENDS=0
       # SenseFlow uses no CFG; suite scripts auto-override these to 0.0 for senseflow backends
@@ -128,6 +135,11 @@ search:
       - export BON_N={bon_n}
       - export BEAM_WIDTH={beam_width}
       - export SEED={seed}
+      # ── Local NVMe paths (set in preload, re-export for suite scripts) ──────────
+      - export SD35_LOCAL_DIR=/home/aiscuser/.cache/sd35_large
+      - export SENSEFLOW_LOCAL_DIR=/home/aiscuser/.cache/senseflow
+      - export FLUX_LOCAL_DIR=/home/aiscuser/.cache/flux_schnell
+      - export MODEL_ID=$$FLUX_LOCAL_DIR
       - export RUN_SANA=0
       - export RUN_SD35={run_sd35}
       - export RUN_FLUX={run_flux}

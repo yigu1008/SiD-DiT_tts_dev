@@ -61,6 +61,7 @@ USE_QWEN="${USE_QWEN:-0}"
 
 MCTS_CFG_ROOT_BANK="${MCTS_CFG_ROOT_BANK:-1.0 1.5 2.0}"
 MCTS_CFG_ANCHORS="${MCTS_CFG_ANCHORS:-1.0 2.0}"
+MCTS_CFG_STEP_ANCHOR_COUNT="${MCTS_CFG_STEP_ANCHOR_COUNT:-2}"
 MCTS_CFG_MIN_PARENT_VISITS="${MCTS_CFG_MIN_PARENT_VISITS:-3}"
 MCTS_CFG_ROUND_NDIGITS="${MCTS_CFG_ROUND_NDIGITS:-6}"
 MCTS_CFG_LOG_ACTION_TOPK="${MCTS_CFG_LOG_ACTION_TOPK:-12}"
@@ -206,6 +207,7 @@ run_cfg_mode() {
     --mcts_cfg_mode "${cfg_mode}" \
     --mcts_cfg_root_bank "${cfg_root_bank_arr[@]}" \
     --mcts_cfg_anchors "${cfg_anchors_arr[@]}" \
+    --mcts_cfg_step_anchor_count "${MCTS_CFG_STEP_ANCHOR_COUNT}" \
     --mcts_cfg_min_parent_visits "${MCTS_CFG_MIN_PARENT_VISITS}" \
     --mcts_cfg_round_ndigits "${MCTS_CFG_ROUND_NDIGITS}" \
     --mcts_cfg_log_action_topk "${MCTS_CFG_LOG_ACTION_TOPK}" \

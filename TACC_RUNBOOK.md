@@ -188,6 +188,31 @@ Outputs:
 
 ---
 
+### SD3.5 NFE cost scaling (lookahead+reward-correction vs SMC)
+
+Runs a budget sweep on a small prompt subset and writes:
+- per-run raw records (`nfe_cost_scaling_results.json`)
+- aggregated table (`nfe_cost_scaling_summary.tsv`)
+- plot (`imagereward_vs_nfe_reward_reweighted.png`)
+
+```bash
+# Default: 5 prompts, 5 SIM costs, ImageReward backend
+bash ~/SiD-DiT_tts_dev/run_sd35_nfe_cost_scaling_tacc.sh
+
+# Example: custom cost grid and x-axis reward-correction weight
+NUM_PROMPTS=5 \
+SIM_COSTS="5 10 20 35 50 80" \
+REWARD_NFE_WEIGHT=1.0 \
+LOOKAHEAD_MODE=rollout_tree_prior \
+CORRECTION_STRENGTHS="1.0" \
+bash ~/SiD-DiT_tts_dev/run_sd35_nfe_cost_scaling_tacc.sh
+```
+
+Output root:
+`$SCRATCH/hpsv2_all_models_runs/sd35_nfe_cost_scaling/sd35_nfe_cost_scaling_<timestamp>/`
+
+---
+
 ### SANA design SPSA test (`gb_spsa / gb_nlerp_spsa / gb_slerp_spsa`)
 
 Runs the SANA slerp/nlerp sandbox in sharded mode on visible GPUs and writes:
@@ -266,6 +291,14 @@ sbatch --nodes=1 --ntasks=1 --cpus-per-task=8 \
        --gres=gpu:a100:8 --time=24:00:00 \
        --partition=gpu \
        --wrap="LOOKAHEAD_MODES='standard rollout_tree_prior adaptive_cfg_width' NUM_PROMPTS=10 bash ~/SiD-DiT_tts_dev/run_sd35_lookahead_reweighting_tacc.sh"
+```
+
+For SD3.5 NFE cost scaling:
+```bash
+sbatch --nodes=1 --ntasks=1 --cpus-per-task=8 \
+       --gres=gpu:a100:1 --time=24:00:00 \
+       --partition=gpu \
+       --wrap="NUM_PROMPTS=5 SIM_COSTS='5 10 20 35 50' bash ~/SiD-DiT_tts_dev/run_sd35_nfe_cost_scaling_tacc.sh"
 ```
 
 For SANA design SPSA test:

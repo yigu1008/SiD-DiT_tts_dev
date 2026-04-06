@@ -157,7 +157,7 @@ def preload_pickscore() -> None:
         _log(f"downloading PickScore ({model_id}) ...")
         try:
             from huggingface_hub import snapshot_download
-            snapshot_download(model_id, cache_dir=hf_home)
+            snapshot_download(model_id)
             _log(f"PickScore ready")
             _mark_done("pickscore")
         except Exception as exc:

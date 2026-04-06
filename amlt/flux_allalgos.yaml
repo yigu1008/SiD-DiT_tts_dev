@@ -75,7 +75,7 @@ search:
       # ── Preload reward models & FLUX weights ──────────────────────────────
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
       # Download FLUX directly to local NVMe (HF_HOME=/home/aiscuser/hf_cache)
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('FLUX.1-schnell OK')"
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', token=os.environ.get('HF_TOKEN')); print('FLUX.1-schnell OK')"
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
       # ── Prompt file ────────────────────────────────────────────────────────

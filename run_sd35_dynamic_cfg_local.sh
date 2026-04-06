@@ -13,6 +13,9 @@ else
   PROMPT_FILE="${PROMPT_FILE:-${PROMPT_DIR}/hpsv2_prompts.txt}"
 fi
 OUT_DIR="${OUT_DIR:-./sd35_dynamic_cfg_local_out}"
+START_INDEX="${START_INDEX:-0}"
+NUM_PROMPTS="${NUM_PROMPTS:-0}"
+END_INDEX="${END_INDEX:-}"
 
 if [[ ! -f "${PROMPT_FILE}" ]]; then
   echo "[sd35-dynamic-cfg] prompt file not found, exporting HPSv2 prompts first ..."
@@ -22,6 +25,37 @@ fi
 if [[ ! -f "${PROMPT_FILE}" ]]; then
   echo "Error: PROMPT_FILE not found after export: ${PROMPT_FILE}" >&2
   exit 1
+fi
+
+mkdir -p "${OUT_DIR}"
+
+# Optional prompt range slicing for local runs.
+PROMPT_FILE_RUN="${PROMPT_FILE}"
+if [[ -n "${END_INDEX}" || "${START_INDEX}" != "0" || "${NUM_PROMPTS}" != "0" ]]; then
+  if [[ -n "${END_INDEX}" ]]; then
+    SLICE_END="${END_INDEX}"
+  elif (( NUM_PROMPTS > 0 )); then
+    SLICE_END="$(( START_INDEX + NUM_PROMPTS ))"
+  else
+    SLICE_END="-1"
+  fi
+  SLICE_FILE="${OUT_DIR}/prompts_slice_${START_INDEX}_${SLICE_END}.txt"
+  "${PYTHON_BIN}" - <<'PY' "${PROMPT_FILE}" "${SLICE_FILE}" "${START_INDEX}" "${SLICE_END}"
+import sys
+src, dst, start, end = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+with open(src, encoding="utf-8") as f:
+    prompts = [line.strip() for line in f if line.strip()]
+total = len(prompts)
+if end < 0:
+    end = total
+start = max(0, min(start, total))
+end = max(start, min(end, total))
+with open(dst, "w", encoding="utf-8") as f:
+    for p in prompts[start:end]:
+        f.write(p + "\n")
+print(f"[sd35-dynamic-cfg] prompt slice: src={src} range=[{start},{end}) n={end-start} -> {dst}")
+PY
+  PROMPT_FILE_RUN="${SLICE_FILE}"
 fi
 
 CFG_SCALES_STR="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0}"
@@ -85,7 +119,7 @@ fi
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified_sd35_dynamic_cfg.py" \
   --search_method mcts \
   --backend "${SD35_BACKEND:-sid}" \
-  --prompt_file "${PROMPT_FILE}" \
+  --prompt_file "${PROMPT_FILE_RUN}" \
   --steps "${STEPS:-4}" \
   --n_variants "${N_VARIANTS}" \
   --cfg_scales "${CFG_SCALES_ARR[@]}" \

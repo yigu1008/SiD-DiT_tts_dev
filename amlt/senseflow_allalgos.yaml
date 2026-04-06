@@ -81,10 +81,10 @@ search:
       - export SD35_LOCAL_DIR=$$(cat /tmp/sd35_path.txt)
       # FLUX.1-schnell
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; p=snapshot_download('black-forest-labs/FLUX.1-schnell', token=os.environ.get('HF_TOKEN')); open('/tmp/flux_path.txt','w').write(p); print('FLUX.1-schnell OK:', p)"
-      - export FLUX_LOCAL_DIR=$(cat /tmp/flux_path.txt)
+      - export FLUX_LOCAL_DIR=$$(cat /tmp/flux_path.txt)
       # SenseFlow transformer (SD35L + Flux-Schnell subfolders)
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; p=snapshot_download('domiso/SenseFlow', token=os.environ.get('HF_TOKEN')); open('/tmp/senseflow_path.txt','w').write(p); print('SenseFlow OK:', p)"
-      - export SENSEFLOW_LOCAL_DIR=$(cat /tmp/senseflow_path.txt)
+      - export SENSEFLOW_LOCAL_DIR=$$(cat /tmp/senseflow_path.txt)
       - export MODEL_ID=$$FLUX_LOCAL_DIR
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1

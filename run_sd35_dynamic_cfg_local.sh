@@ -32,10 +32,15 @@ mkdir -p "${OUT_DIR}"
 # Optional prompt range slicing for local runs.
 PROMPT_FILE_RUN="${PROMPT_FILE}"
 if [[ -n "${END_INDEX}" || "${START_INDEX}" != "0" || "${NUM_PROMPTS}" != "0" ]]; then
-  if [[ -n "${END_INDEX}" ]]; then
-    SLICE_END="${END_INDEX}"
-  elif (( NUM_PROMPTS > 0 )); then
+  # Prefer NUM_PROMPTS over END_INDEX so one-shot runs are predictable even if
+  # END_INDEX is exported in the shell from earlier experiments.
+  if (( NUM_PROMPTS > 0 )); then
+    if [[ -n "${END_INDEX}" ]]; then
+      echo "[sd35-dynamic-cfg] both NUM_PROMPTS and END_INDEX are set; using NUM_PROMPTS (END_INDEX ignored)."
+    fi
     SLICE_END="$(( START_INDEX + NUM_PROMPTS ))"
+  elif [[ -n "${END_INDEX}" ]]; then
+    SLICE_END="${END_INDEX}"
   else
     SLICE_END="-1"
   fi

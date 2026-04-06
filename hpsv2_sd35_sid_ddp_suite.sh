@@ -555,6 +555,14 @@ run_method() {
   if [[ -n "${SD35_SIGMAS}" ]]; then
     extra+=(--sigmas ${SD35_SIGMAS})
   fi
+  # If snapshot paths were captured during preload, pass them directly so from_pretrained
+  # reads from the exact local path instead of doing a cache lookup in offline mode.
+  if [[ -n "${SD35_LOCAL_DIR:-}" ]]; then
+    extra+=(--model_id "${SD35_LOCAL_DIR}")
+  fi
+  if [[ -n "${SENSEFLOW_LOCAL_DIR:-}" ]]; then
+    extra+=(--transformer_id "${SENSEFLOW_LOCAL_DIR}")
+  fi
   local begin_ts
   begin_ts="$(date +%s)"
   echo "[$(date '+%F %T')] method=${method} start"

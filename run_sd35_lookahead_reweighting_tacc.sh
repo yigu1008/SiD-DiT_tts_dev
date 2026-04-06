@@ -22,7 +22,7 @@ USE_SUBSET="${USE_SUBSET:-1}"
 PROMPT_FILE="${PROMPT_FILE:-}"
 START_INDEX="${START_INDEX:-0}"
 NUM_PROMPTS="${NUM_PROMPTS:-10}"
-END_INDEX="${END_INDEX:-$((START_INDEX + NUM_PROMPTS))}"
+END_INDEX="${END_INDEX:-}"
 NUM_GPUS="${NUM_GPUS:-$(${PYTHON_BIN} -c 'import torch; print(max(torch.cuda.device_count(),1))')}"
 
 SD35_BACKEND="${SD35_BACKEND:-sid}"
@@ -71,6 +71,17 @@ LOOKAHEAD_CFG_WIDTH_MAX="${LOOKAHEAD_CFG_WIDTH_MAX:-7}"
 LOOKAHEAD_CFG_ANCHOR_COUNT="${LOOKAHEAD_CFG_ANCHOR_COUNT:-2}"
 LOOKAHEAD_MIN_VISITS_FOR_CENTER="${LOOKAHEAD_MIN_VISITS_FOR_CENTER:-3}"
 LOOKAHEAD_LOG_ACTION_TOPK="${LOOKAHEAD_LOG_ACTION_TOPK:-12}"
+
+# Prefer NUM_PROMPTS over END_INDEX so short test runs are predictable even if
+# END_INDEX is already exported in the shell.
+if (( NUM_PROMPTS > 0 )); then
+  if [[ -n "${END_INDEX}" ]]; then
+    echo "[lookahead] both NUM_PROMPTS and END_INDEX are set; using NUM_PROMPTS (END_INDEX ignored)."
+  fi
+  END_INDEX="$((START_INDEX + NUM_PROMPTS))"
+elif [[ -z "${END_INDEX}" ]]; then
+  END_INDEX="-1"
+fi
 
 if [[ -z "${PROMPT_FILE}" ]]; then
   mkdir -p "${HPSV2_PROMPT_DIR}"

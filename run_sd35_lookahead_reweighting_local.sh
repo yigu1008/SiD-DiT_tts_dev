@@ -30,10 +30,15 @@ mkdir -p "${OUT_DIR}"
 
 PROMPT_FILE_RUN="${PROMPT_FILE}"
 if [[ -n "${END_INDEX}" || "${START_INDEX}" != "0" || "${NUM_PROMPTS}" != "0" ]]; then
-  if [[ -n "${END_INDEX}" ]]; then
-    SLICE_END="${END_INDEX}"
-  elif (( NUM_PROMPTS > 0 )); then
+  # Prefer NUM_PROMPTS over END_INDEX so quick runs stay stable even if
+  # END_INDEX is still exported in the shell.
+  if (( NUM_PROMPTS > 0 )); then
+    if [[ -n "${END_INDEX}" ]]; then
+      echo "[sd35-lookahead] both NUM_PROMPTS and END_INDEX are set; using NUM_PROMPTS (END_INDEX ignored)."
+    fi
     SLICE_END="$(( START_INDEX + NUM_PROMPTS ))"
+  elif [[ -n "${END_INDEX}" ]]; then
+    SLICE_END="${END_INDEX}"
   else
     SLICE_END="-1"
   fi

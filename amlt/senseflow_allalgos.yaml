@@ -78,7 +78,7 @@ search:
       # Download models; capture exact snapshot paths so from_pretrained reads locally
       # SD3.5-large: VAE + text encoders only (transformer replaced by SenseFlow)
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; p=snapshot_download('stabilityai/stable-diffusion-3.5-large', token=os.environ.get('HF_TOKEN'), ignore_patterns=['transformer/*']); open('/tmp/sd35_path.txt','w').write(p); print('SD3.5-large OK:', p)"
-      - export SD35_LOCAL_DIR=$(cat /tmp/sd35_path.txt)
+      - export SD35_LOCAL_DIR=$$(cat /tmp/sd35_path.txt)
       # FLUX.1-schnell
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; p=snapshot_download('black-forest-labs/FLUX.1-schnell', token=os.environ.get('HF_TOKEN')); open('/tmp/flux_path.txt','w').write(p); print('FLUX.1-schnell OK:', p)"
       - export FLUX_LOCAL_DIR=$(cat /tmp/flux_path.txt)

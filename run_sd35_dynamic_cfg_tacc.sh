@@ -28,7 +28,7 @@ USE_SUBSET="${USE_SUBSET:-1}"
 PROMPT_FILE="${PROMPT_FILE:-}"
 START_INDEX="${START_INDEX:-0}"
 NUM_PROMPTS="${NUM_PROMPTS:-10}"
-END_INDEX="${END_INDEX:-$((START_INDEX + NUM_PROMPTS))}"
+END_INDEX="${END_INDEX:-}"
 NUM_GPUS="${NUM_GPUS:-$(${PYTHON_BIN} -c 'import torch; print(max(torch.cuda.device_count(),1))')}"
 
 SD35_BACKEND="${SD35_BACKEND:-sid}"
@@ -67,6 +67,17 @@ MCTS_CFG_ROUND_NDIGITS="${MCTS_CFG_ROUND_NDIGITS:-6}"
 MCTS_CFG_LOG_ACTION_TOPK="${MCTS_CFG_LOG_ACTION_TOPK:-12}"
 
 SAVE_BEST_IMAGES="${SAVE_BEST_IMAGES:-1}"
+
+# Prefer NUM_PROMPTS over END_INDEX so short test runs are predictable even if
+# END_INDEX is already exported in the shell.
+if (( NUM_PROMPTS > 0 )); then
+  if [[ -n "${END_INDEX}" ]]; then
+    echo "[dynamic-cfg] both NUM_PROMPTS and END_INDEX are set; using NUM_PROMPTS (END_INDEX ignored)."
+  fi
+  END_INDEX="$((START_INDEX + NUM_PROMPTS))"
+elif [[ -z "${END_INDEX}" ]]; then
+  END_INDEX="-1"
+fi
 
 # Build prompt file from HPSv2 cache unless PROMPT_FILE was explicitly given.
 if [[ -z "${PROMPT_FILE}" ]]; then

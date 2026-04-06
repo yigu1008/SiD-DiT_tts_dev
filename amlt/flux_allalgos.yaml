@@ -76,7 +76,7 @@ search:
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
       # Download FLUX; capture exact snapshot path → MODEL_ID so from_pretrained reads locally
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; p=snapshot_download('black-forest-labs/FLUX.1-schnell', token=os.environ.get('HF_TOKEN')); open('/tmp/flux_path.txt','w').write(p); print('FLUX.1-schnell OK:', p)"
-      - export MODEL_ID=$(cat /tmp/flux_path.txt)
+      - export MODEL_ID=$$(cat /tmp/flux_path.txt)
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
       # ── Prompt file ────────────────────────────────────────────────────────

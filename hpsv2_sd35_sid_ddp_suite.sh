@@ -93,6 +93,23 @@ GA_PHASE_CONSTRAINTS="${GA_PHASE_CONSTRAINTS:-1}"
 BON_N="${BON_N:-16}"
 BEAM_WIDTH="${BEAM_WIDTH:-4}"
 
+# Lookahead U-based MCTS + adaptive per-step CFG (new SD3.5 option)
+LOOKAHEAD_METHOD_MODE="${LOOKAHEAD_METHOD_MODE:-rollout_tree_prior_adaptive_cfg}"
+LOOKAHEAD_U_T_DEF="${LOOKAHEAD_U_T_DEF:-latent_delta_rms}"
+LOOKAHEAD_TAU="${LOOKAHEAD_TAU:-0.35}"
+LOOKAHEAD_C_PUCT="${LOOKAHEAD_C_PUCT:-1.20}"
+LOOKAHEAD_U_REF="${LOOKAHEAD_U_REF:-0.0}"
+LOOKAHEAD_W_CFG="${LOOKAHEAD_W_CFG:-1.0}"
+LOOKAHEAD_W_VARIANT="${LOOKAHEAD_W_VARIANT:-0.25}"
+LOOKAHEAD_W_CS="${LOOKAHEAD_W_CS:-0.10}"
+LOOKAHEAD_W_Q="${LOOKAHEAD_W_Q:-0.20}"
+LOOKAHEAD_W_EXPLORE="${LOOKAHEAD_W_EXPLORE:-0.05}"
+LOOKAHEAD_CFG_WIDTH_MIN="${LOOKAHEAD_CFG_WIDTH_MIN:-3}"
+LOOKAHEAD_CFG_WIDTH_MAX="${LOOKAHEAD_CFG_WIDTH_MAX:-7}"
+LOOKAHEAD_CFG_ANCHOR_COUNT="${LOOKAHEAD_CFG_ANCHOR_COUNT:-2}"
+LOOKAHEAD_MIN_VISITS_FOR_CENTER="${LOOKAHEAD_MIN_VISITS_FOR_CENTER:-3}"
+LOOKAHEAD_LOG_ACTION_TOPK="${LOOKAHEAD_LOG_ACTION_TOPK:-12}"
+
 _DEFAULT_CFG_SCALES_STR="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
 if [[ "${SD35_BACKEND}" == "senseflow_large" || "${SD35_BACKEND}" == "senseflow_medium" ]]; then
   if [[ "${CFG_SCALES}" == "${_DEFAULT_CFG_SCALES_STR}" ]]; then
@@ -120,6 +137,9 @@ fi
 echo "SD3.5L SiD DDP suite"
 echo "  prompt_file: ${PROMPT_FILE}"
 echo "  modes: ${METHODS}"
+if [[ "${METHODS}" == *"mcts_lookahead_dynamiccfg"* || "${METHODS}" == *"mcts_lookahead"* ]]; then
+  echo "  lookahead_mode: ${LOOKAHEAD_METHOD_MODE} (u_t_def=${LOOKAHEAD_U_T_DEF})"
+fi
 echo "  sd35_backend: ${SD35_BACKEND} sd35_sigmas: ${SD35_SIGMAS:-<none>}"
 echo "  nproc_per_node: ${NUM_GPUS}"
 echo "  reward_backend: ${REWARD_BACKEND}"
@@ -508,10 +528,15 @@ run_method() {
   local method_out="${RUN_DIR}/${method}"
   mkdir -p "${method_out}"
   local mode_arg
+  local runner_script="${SCRIPT_DIR}/sd35_ddp_experiment.py"
   case "${method}" in
     baseline) mode_arg="base" ;;
     greedy) mode_arg="greedy" ;;
     mcts) mode_arg="mcts" ;;
+    mcts_lookahead_dynamiccfg|mcts_lookahead)
+      mode_arg="mcts"
+      runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_lookahead_reweighting.py"
+      ;;
     ga) mode_arg="ga" ;;
     smc) mode_arg="smc" ;;
     bon) mode_arg="bon" ;;
@@ -555,6 +580,25 @@ run_method() {
   if [[ -n "${SD35_SIGMAS}" ]]; then
     extra+=(--sigmas ${SD35_SIGMAS})
   fi
+  if [[ "${runner_script}" == "${SCRIPT_DIR}/sd35_ddp_experiment_lookahead_reweighting.py" ]]; then
+    extra+=(
+      --lookahead_mode "${LOOKAHEAD_METHOD_MODE}"
+      --lookahead_u_t_def "${LOOKAHEAD_U_T_DEF}"
+      --lookahead_tau "${LOOKAHEAD_TAU}"
+      --lookahead_c_puct "${LOOKAHEAD_C_PUCT}"
+      --lookahead_u_ref "${LOOKAHEAD_U_REF}"
+      --lookahead_w_cfg "${LOOKAHEAD_W_CFG}"
+      --lookahead_w_variant "${LOOKAHEAD_W_VARIANT}"
+      --lookahead_w_cs "${LOOKAHEAD_W_CS}"
+      --lookahead_w_q "${LOOKAHEAD_W_Q}"
+      --lookahead_w_explore "${LOOKAHEAD_W_EXPLORE}"
+      --lookahead_cfg_width_min "${LOOKAHEAD_CFG_WIDTH_MIN}"
+      --lookahead_cfg_width_max "${LOOKAHEAD_CFG_WIDTH_MAX}"
+      --lookahead_cfg_anchor_count "${LOOKAHEAD_CFG_ANCHOR_COUNT}"
+      --lookahead_min_visits_for_center "${LOOKAHEAD_MIN_VISITS_FOR_CENTER}"
+      --lookahead_log_action_topk "${LOOKAHEAD_LOG_ACTION_TOPK}"
+    )
+  fi
   # If snapshot paths were captured during preload, pass them directly so from_pretrained
   # reads from the exact local path instead of doing a cache lookup in offline mode.
   if [[ -n "${SD35_LOCAL_DIR:-}" ]]; then
@@ -578,7 +622,7 @@ if not cuda_ok:
     raise SystemExit("ERROR: CUDA unavailable before torchrun; refusing CPU fp16 SD3.5 run.")
 PY
 
-  torchrun --standalone --nproc_per_node "${NUM_GPUS}" "${SCRIPT_DIR}/sd35_ddp_experiment.py" \
+  torchrun --standalone --nproc_per_node "${NUM_GPUS}" "${runner_script}" \
     --backend "${SD35_BACKEND}" \
     --gen_batch_size "${GEN_BATCH_SIZE}" \
     --prompt_file "${PROMPT_FILE}" \

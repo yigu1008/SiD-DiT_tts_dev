@@ -199,6 +199,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
             "rollout_prior",
             "tree_prior",
             "rollout_tree_prior",
+            "rollout_tree_prior_adaptive_cfg",
             "adaptive_cfg_width",
         ],
         default="rollout_prior",
@@ -242,9 +243,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 def _mode_flags(mode: str) -> dict[str, bool]:
     m = str(mode).strip().lower()
     return {
-        "use_rollout_prior": m in {"rollout_prior", "rollout_tree_prior"},
-        "use_tree_prior": m in {"tree_prior", "rollout_tree_prior"},
-        "adaptive_cfg_width": m in {"adaptive_cfg_width"},
+        "use_rollout_prior": m in {"rollout_prior", "rollout_tree_prior", "rollout_tree_prior_adaptive_cfg"},
+        "use_tree_prior": m in {"tree_prior", "rollout_tree_prior", "rollout_tree_prior_adaptive_cfg"},
+        "adaptive_cfg_width": m in {"adaptive_cfg_width", "rollout_tree_prior_adaptive_cfg"},
         "instrumentation_only": m in {"instrumentation"},
     }
 

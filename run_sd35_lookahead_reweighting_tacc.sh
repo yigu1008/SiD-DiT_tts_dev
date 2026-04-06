@@ -56,7 +56,7 @@ if [[ "${CFG_ONLY:-0}" == "1" ]]; then
   USE_QWEN=0
 fi
 
-LOOKAHEAD_MODES="${LOOKAHEAD_MODES:-standard instrumentation rollout_prior tree_prior rollout_tree_prior adaptive_cfg_width}"
+LOOKAHEAD_MODES="${LOOKAHEAD_MODES:-standard instrumentation rollout_prior tree_prior rollout_tree_prior rollout_tree_prior_adaptive_cfg adaptive_cfg_width}"
 LOOKAHEAD_U_T_DEF="${LOOKAHEAD_U_T_DEF:-latent_delta_rms}"
 LOOKAHEAD_TAU="${LOOKAHEAD_TAU:-0.35}"
 LOOKAHEAD_C_PUCT="${LOOKAHEAD_C_PUCT:-1.20}"

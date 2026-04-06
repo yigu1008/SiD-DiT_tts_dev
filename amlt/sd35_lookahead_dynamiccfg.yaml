@@ -1,4 +1,4 @@
-description: sid-all-models-hpsv2-ddp
+description: sd35-lookahead-u-mcts-dynamic-cfg
 
 target:
   service: sing
@@ -21,7 +21,7 @@ environment:
     - pip list
 
 code:
-  local_dir: ./
+  local_dir: ../
 
 storage:
   output:
@@ -31,7 +31,7 @@ storage:
 
 search:
   job_template:
-    name: allmodels-hpsv2-{run_tag}
+    name: sd35-lookahead-dynamiccfg-{run_tag}
     sku: ${NODES}x${MEM}G${GPUS}-IB
     sla_tier: Standard
     process_count_per_node: 1
@@ -44,56 +44,61 @@ search:
       - unset PYTHONPATH || true
       - export SID_FORCE_WANDB_STUB=1
       - export WANDB_DISABLED=true
+      # ── Paths ──────────────────────────────────────────────────────────────
       - export PATH=/home/aiscuser/.local/bin:$$PATH
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
       - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
+      # Set both token env vars — newer huggingface_hub uses HF_TOKEN, older uses HUGGING_FACE_HUB_TOKEN
       - export HF_TOKEN={hf_token}
       - export HUGGING_FACE_HUB_TOKEN={hf_token}
       - export AZFUSE_USE_FUSE=0
       - export NCCL_ASYNC_ERROR_HANDLING=0
       - export NCCL_P2P_LEVEL=NVL
+      # ── Install deps ───────────────────────────────────────────────────────
       - source /opt/conda/etc/profile.d/conda.sh
       - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
       - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
       - /opt/conda/envs/ptca/bin/python -c "import os, torch; print('[torch-check]', torch.__version__, 'cuda=', torch.version.cuda, 'is_available=', torch.cuda.is_available(), 'count=', torch.cuda.device_count(), 'cvd=', os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')); assert torch.cuda.is_available() and (torch.version.cuda is not None), 'CPU-only torch detected after requirements install'"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
-      - /opt/conda/envs/ptca/bin/python -c "import xformers, xformers.ops; print('xformers ok', xformers.__version__)" || (/opt/conda/envs/ptca/bin/pip uninstall -y xformers && echo 'xformers disabled (fallback path)')
+      - /opt/conda/envs/ptca/bin/python -c "import xformers, xformers.ops; print('xformers ok', xformers.__version__)" || (/opt/conda/envs/ptca/bin/pip uninstall -y xformers && echo 'xformers disabled')
       - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
       - if [ "$$ENABLE_OVERLAY_PYDEPS" = "1" ]; then PYTHON_BIN=/opt/conda/envs/ptca/bin/python SID_OVERLAY_DIR=/tmp/$$USER/sid_pydeps bash prepare_cluster_overlay_deps.sh; export SID_EXTRA_PYTHONPATH=/tmp/$$USER/sid_pydeps/py$$(/opt/conda/envs/ptca/bin/python -c "import sys; print(str(sys.version_info.major)+'.'+str(sys.version_info.minor))"); else unset SID_EXTRA_PYTHONPATH || true; fi
       # Re-install after reward deps in case install_reward_deps.sh overwrote them
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
-      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps core ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
+      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
+      # ── Cache dirs & symlinks ──────────────────────────────────────────────
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
       - mkdir -p /mnt/data/v-yigu/model_cache/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
-      - mkdir -p /home/aiscuser/.cache && ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
+      - mkdir -p /home/aiscuser/.cache
+      - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
+      # Symlink ImageReward fallback so RM.load() finds it even if env var is dropped by subprocess
+      - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
+      # ── Preload reward models & SD3.5 weights ─────────────────────────────
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
-      # ── Preload model weights into HF cache (avoids network hang during main run) ──
-      - if [ "{run_flux}" = "1" ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('FLUX.1-schnell cache OK')"; fi
-      - if [ "{run_sd35}" = "1" ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('YGu1998/SiD-DiT-SD3.5-large', cache_dir=os.environ.get('HF_HOME')); print('SD3.5 cache OK')"; fi
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('YGu1998/SiD-DiT-SD3.5-large', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('SD3.5 cache OK')"
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
+      # ── Prompt file ────────────────────────────────────────────────────────
       - export HPSV2_PROMPT_DIR=/mnt/data/v-yigu/hpsv2_prompt_cache
       - export PROMPT_STYLE={prompt_style}
       - OUT_DIR="$$HPSV2_PROMPT_DIR" STYLE="$$PROMPT_STYLE" bash get_hpsv2_prompts.sh
       - if [ "$$PROMPT_STYLE" = "all" ]; then export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts.txt"; else export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts_$$PROMPT_STYLE.txt"; fi
       - if [ {use_subset} = 1 ]; then export PROMPT_FILE=./hpsv2_subset.txt; fi
+      # ── Run ───────────────────────────────────────────────────────────────
       - export OUT_ROOT=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}
       - export START_INDEX={start_index}
       - export END_INDEX={end_index}
       - export METHODS='{methods}'
-      - export FLUX_METHODS='{flux_methods}'
-      - export SD35_MCTS_OPTION={sd35_mcts_option}
       - export LOOKAHEAD_METHOD_MODE={lookahead_method_mode}
       - export LOOKAHEAD_U_T_DEF={lookahead_u_t_def}
       - export LOOKAHEAD_TAU={lookahead_tau}
       - export LOOKAHEAD_C_PUCT={lookahead_c_puct}
       - export LOOKAHEAD_CFG_WIDTH_MIN={lookahead_cfg_width_min}
       - export LOOKAHEAD_CFG_WIDTH_MAX={lookahead_cfg_width_max}
-      - if [ "$$SD35_MCTS_OPTION" = "lookahead_dynamiccfg" ]; then export METHODS="$$(echo "$$METHODS" | sed 's/\bmcts\b/mcts_lookahead_dynamiccfg/g')"; fi
       - export REWARD_BACKEND=imagereward
       - export REWARD_TYPE=imagereward
       - export REWARD_BACKENDS=imagereward
@@ -124,12 +129,10 @@ search:
       - export GA_LOG_TOPK={ga_log_topk}
       - export GA_EVAL_BATCH={ga_eval_batch}
       - export CORRECTION_STRENGTHS='{correction_strengths}'
-      - export BON_N={bon_n}
-      - export BEAM_WIDTH={beam_width}
       - export SEED={seed}
-      - export RUN_SANA={run_sana}
-      - export RUN_SD35={run_sd35}
-      - export RUN_FLUX={run_flux}
+      - export RUN_SANA=0
+      - export RUN_SD35=1
+      - export RUN_FLUX=0
       - export USE_QWEN={use_qwen}
       - export PRECOMPUTE_REWRITES={precompute_rewrites}
       - export REWRITES_OVERWRITE={rewrites_overwrite}
@@ -157,7 +160,7 @@ search:
   type: grid
   params:
     - name: run_tag
-      values: [ "hpsv2_sd35_flux_allalgos" ]
+      values: [ "sd35_lookahead_dynamiccfg" ]
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: prompt_style
@@ -166,12 +169,10 @@ search:
       values: [ 0 ]
     - name: end_index
       values: [ -1 ]
+    - name: use_subset
+      values: [ 1 ]
     - name: methods
-      values: [ "baseline greedy mcts ga smc" ]
-    - name: flux_methods
-      values: [ "baseline greedy mcts ga smc bon beam" ]
-    - name: sd35_mcts_option
-      values: [ "standard" ]
+      values: [ "baseline greedy mcts mcts_lookahead_dynamiccfg ga smc" ]
     - name: lookahead_method_mode
       values: [ "rollout_tree_prior_adaptive_cfg" ]
     - name: lookahead_u_t_def
@@ -230,19 +231,13 @@ search:
       values: [ 5 ]
     - name: ga_eval_batch
       values: [ 2 ]
-    - name: use_subset
-      values: [ 1 ]
+    - name: correction_strengths
+      values: [ "0.0 1.0" ]
+    - name: seed
+      values: [ 42 ]
     - name: save_images
       values: [ 0 ]
     - name: save_best_images
-      values: [ 1 ]
-    - name: seed
-      values: [ 42 ]
-    - name: run_sana
-      values: [ 0 ]
-    - name: run_sd35
-      values: [ 1 ]
-    - name: run_flux
       values: [ 1 ]
     - name: use_qwen
       values: [ 1 ]
@@ -258,9 +253,3 @@ search:
       values: [ 1 ]
     - name: qwen_precompute_clear_cache
       values: [ 1 ]
-    - name: correction_strengths
-      values: [ "0.0 1.0" ]
-    - name: bon_n
-      values: [ 16 ]
-    - name: beam_width
-      values: [ 4 ]

@@ -18,6 +18,7 @@ def _parse_lookahead_flags(argv: list[str]) -> tuple[argparse.Namespace, list[st
             "rollout_prior",
             "tree_prior",
             "rollout_tree_prior",
+            "rollout_tree_prior_adaptive_cfg",
             "adaptive_cfg_width",
         ],
         default="rollout_prior",

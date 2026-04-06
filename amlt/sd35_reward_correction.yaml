@@ -93,6 +93,14 @@ search:
       - export START_INDEX={start_index}
       - export END_INDEX={end_index}
       - export METHODS='{methods}'
+      - export SD35_MCTS_OPTION={sd35_mcts_option}
+      - export LOOKAHEAD_METHOD_MODE={lookahead_method_mode}
+      - export LOOKAHEAD_U_T_DEF={lookahead_u_t_def}
+      - export LOOKAHEAD_TAU={lookahead_tau}
+      - export LOOKAHEAD_C_PUCT={lookahead_c_puct}
+      - export LOOKAHEAD_CFG_WIDTH_MIN={lookahead_cfg_width_min}
+      - export LOOKAHEAD_CFG_WIDTH_MAX={lookahead_cfg_width_max}
+      - if [ "$$SD35_MCTS_OPTION" = "lookahead_dynamiccfg" ]; then export METHODS="$$(echo "$$METHODS" | sed 's/\bmcts\b/mcts_lookahead_dynamiccfg/g')"; fi
       - export REWARD_BACKEND=imagereward
       - export REWARD_TYPE=imagereward
       - export REWARD_BACKENDS=imagereward
@@ -167,6 +175,20 @@ search:
       values: [ 1 ]
     - name: methods
       values: [ "baseline greedy mcts ga smc" ]
+    - name: sd35_mcts_option
+      values: [ "standard" ]
+    - name: lookahead_method_mode
+      values: [ "rollout_tree_prior_adaptive_cfg" ]
+    - name: lookahead_u_t_def
+      values: [ "latent_delta_rms" ]
+    - name: lookahead_tau
+      values: [ 0.35 ]
+    - name: lookahead_c_puct
+      values: [ 1.20 ]
+    - name: lookahead_cfg_width_min
+      values: [ 3 ]
+    - name: lookahead_cfg_width_max
+      values: [ 7 ]
     - name: eval_backends
       values: [ "imagereward hpsv2 pickscore" ]
     - name: cfg_scales

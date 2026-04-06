@@ -5,6 +5,20 @@
 Use this when `conda` is not yet available in your shell:
 
 ```bash
+# Preferred for this setup: Miniconda is in $SCRATCH/miniconda3
+export CONDA_HOME="${SCRATCH}/miniconda3"
+source "${CONDA_HOME}/etc/profile.d/conda.sh"
+conda activate sid_dit
+
+# Verify
+which python
+python -V
+conda env list
+```
+
+If that path is missing, fallback search:
+
+```bash
 # 1) Find conda.sh
 for p in \
   "$SCRATCH/miniconda3/etc/profile.d/conda.sh" \
@@ -39,6 +53,15 @@ conda activate sid_dit
 which python
 python -V
 conda env list
+```
+
+Persist this for future TACC sessions (`~/.bashrc`):
+
+```bash
+if [[ -f "$SCRATCH/miniconda3/etc/profile.d/conda.sh" ]]; then
+  source "$SCRATCH/miniconda3/etc/profile.d/conda.sh"
+  conda activate sid_dit
+fi
 ```
 
 ---
@@ -319,7 +342,7 @@ sbatch --nodes=1 --ntasks=1 --cpus-per-task=8 \
 | `HF_HOME` | `$WORK/ls6/model_cache/huggingface` |
 | `IMAGEREWARD_CACHE` | `$WORK/ls6/model_cache/ImageReward` |
 | `HPS_ROOT` | `$WORK/ls6/model_cache/hpsv2` |
-| `PYTHON_BIN` | `~/miniconda3/envs/sid_dit/bin/python` |
+| `PYTHON_BIN` | `$SCRATCH/miniconda3/envs/sid_dit/bin/python` (auto-detected by `tacc_setup.sh`) |
 | `SKIP_INSTALL` | `1` (default — skip pip installs) |
 
 Set `SKIP_INSTALL=0` only when rebuilding the environment.

@@ -73,9 +73,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Convenience shortcut: sets --model_id, --transformer_id, --transformer_subfolder, "
              "and --sigmas together. Explicit flags override these defaults.",
     )
-    parser.add_argument("--model_id", default=None)
+    parser.add_argument("--model_id", default=os.environ.get("MODEL_ID"))
     parser.add_argument("--ckpt", default=None)
-    parser.add_argument("--transformer_id", default=None,
+    parser.add_argument("--transformer_id", default=os.environ.get("TRANSFORMER_ID"),
                         help="HuggingFace repo for the transformer (e.g. domiso/SenseFlow).")
     parser.add_argument("--transformer_subfolder", default=None,
                         help="Subfolder within --transformer_id (e.g. SenseFlow-SD35L/transformer).")

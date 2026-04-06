@@ -109,8 +109,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Convenience shortcut: sets model/transformer/sigmas/guidance defaults for FLUX variants.",
     )
-    p.add_argument("--model_id", default=None)
-    p.add_argument("--transformer_id", default=None,
+    p.add_argument("--model_id", default=os.environ.get("MODEL_ID"))
+    p.add_argument("--transformer_id", default=os.environ.get("TRANSFORMER_ID"),
                    help="Optional HuggingFace transformer repo override (e.g. domiso/SenseFlow).")
     p.add_argument("--transformer_subfolder", default=None,
                    help="Optional subfolder inside --transformer_id.")

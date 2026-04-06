@@ -145,6 +145,49 @@ Outputs:
 
 ---
 
+### SD3.5 lookahead reweighting MCTS (u_t-guided prior)
+
+Local single-process runner (good for quick 10-prompt tests on 1 GPU):
+```bash
+# Defaults: NUM_PROMPTS=10, runs standard + A-F ablations in one call.
+NUM_PROMPTS=10 N_SIMS=50 \
+bash ~/SiD-DiT_tts_dev/run_sd35_lookahead_reweighting_local.sh
+
+# Run only one mode (no ablation suite):
+LOOKAHEAD_RUN_ABLATIONS=0 \
+LOOKAHEAD_MODE=rollout_tree_prior \
+NUM_PROMPTS=10 \
+bash ~/SiD-DiT_tts_dev/run_sd35_lookahead_reweighting_local.sh
+```
+
+TACC multi-GPU runner (DDP sharded prompts):
+```bash
+# Defaults: NUM_PROMPTS=10, compares all lookahead modes.
+bash ~/SiD-DiT_tts_dev/run_sd35_lookahead_reweighting_tacc.sh
+
+# Compare only standard vs rollout+tree prior
+LOOKAHEAD_MODES="standard rollout_tree_prior" \
+NUM_PROMPTS=10 N_SIMS=50 \
+bash ~/SiD-DiT_tts_dev/run_sd35_lookahead_reweighting_tacc.sh
+```
+
+Useful overrides:
+```bash
+NUM_GPUS=1
+CFG_ONLY=1
+N_VARIANTS=3
+LOOKAHEAD_U_T_DEF=latent_delta_rms
+LOOKAHEAD_CFG_WIDTH_MIN=3
+LOOKAHEAD_CFG_WIDTH_MAX=7
+```
+
+Outputs:
+- Local runner: `OUT_DIR` (default `./sd35_lookahead_reweighting_local_out`)
+- TACC runner: `$SCRATCH/hpsv2_all_models_runs/sd35_lookahead_reweighting/sd35_lookahead_reweighting_<timestamp>/`
+- TACC cross-mode summary: `lookahead_mode_summary.tsv`
+
+---
+
 ### SANA design SPSA test (`gb_spsa / gb_nlerp_spsa / gb_slerp_spsa`)
 
 Runs the SANA slerp/nlerp sandbox in sharded mode on visible GPUs and writes:
@@ -215,6 +258,14 @@ sbatch --nodes=1 --ntasks=1 --cpus-per-task=8 \
        --gres=gpu:a100:8 --time=24:00:00 \
        --partition=gpu \
        --wrap="MCTS_CFG_MODES='fixed adaptive' bash ~/SiD-DiT_tts_dev/run_sd35_dynamic_cfg_tacc.sh"
+```
+
+For lookahead reweighting SD3.5:
+```bash
+sbatch --nodes=1 --ntasks=1 --cpus-per-task=8 \
+       --gres=gpu:a100:8 --time=24:00:00 \
+       --partition=gpu \
+       --wrap="LOOKAHEAD_MODES='standard rollout_tree_prior adaptive_cfg_width' NUM_PROMPTS=10 bash ~/SiD-DiT_tts_dev/run_sd35_lookahead_reweighting_tacc.sh"
 ```
 
 For SANA design SPSA test:

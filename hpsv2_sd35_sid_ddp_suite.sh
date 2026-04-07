@@ -110,6 +110,15 @@ LOOKAHEAD_CFG_ANCHOR_COUNT="${LOOKAHEAD_CFG_ANCHOR_COUNT:-2}"
 LOOKAHEAD_MIN_VISITS_FOR_CENTER="${LOOKAHEAD_MIN_VISITS_FOR_CENTER:-3}"
 LOOKAHEAD_LOG_ACTION_TOPK="${LOOKAHEAD_LOG_ACTION_TOPK:-12}"
 
+# Dynamic-CFG-only MCTS (no lookahead prior)
+MCTS_CFG_MODE="${MCTS_CFG_MODE:-adaptive}"
+MCTS_CFG_ROOT_BANK="${MCTS_CFG_ROOT_BANK:-1.0 1.5 2.0 2.5}"
+MCTS_CFG_ANCHORS="${MCTS_CFG_ANCHORS:-1.0 2.0}"
+MCTS_CFG_STEP_ANCHOR_COUNT="${MCTS_CFG_STEP_ANCHOR_COUNT:-2}"
+MCTS_CFG_MIN_PARENT_VISITS="${MCTS_CFG_MIN_PARENT_VISITS:-3}"
+MCTS_CFG_ROUND_NDIGITS="${MCTS_CFG_ROUND_NDIGITS:-6}"
+MCTS_CFG_LOG_ACTION_TOPK="${MCTS_CFG_LOG_ACTION_TOPK:-12}"
+
 _DEFAULT_CFG_SCALES_STR="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
 if [[ "${SD35_BACKEND}" == "senseflow_large" || "${SD35_BACKEND}" == "senseflow_medium" ]]; then
   if [[ "${CFG_SCALES}" == "${_DEFAULT_CFG_SCALES_STR}" ]]; then
@@ -137,8 +146,11 @@ fi
 echo "SD3.5L SiD DDP suite"
 echo "  prompt_file: ${PROMPT_FILE}"
 echo "  modes: ${METHODS}"
-if [[ "${METHODS}" == *"mcts_lookahead_dynamiccfg"* || "${METHODS}" == *"mcts_lookahead"* ]]; then
+if [[ "${METHODS}" == *"mcts_lookahead_dynamiccfg"* || "${METHODS}" == *"mcts_lookahead"* || "${METHODS}" == *"mcts_u_lookahead_only"* || "${METHODS}" == *"mcts_dynamiccfg_u_lookahead"* ]]; then
   echo "  lookahead_mode: ${LOOKAHEAD_METHOD_MODE} (u_t_def=${LOOKAHEAD_U_T_DEF})"
+fi
+if [[ "${METHODS}" == *"mcts_dynamiccfg_only"* ]]; then
+  echo "  dynamic_cfg_mode: ${MCTS_CFG_MODE} root_bank=[${MCTS_CFG_ROOT_BANK}] anchors=[${MCTS_CFG_ANCHORS}]"
 fi
 echo "  sd35_backend: ${SD35_BACKEND} sd35_sigmas: ${SD35_SIGMAS:-<none>}"
 echo "  nproc_per_node: ${NUM_GPUS}"
@@ -529,13 +541,31 @@ run_method() {
   mkdir -p "${method_out}"
   local mode_arg
   local runner_script="${SCRIPT_DIR}/sd35_ddp_experiment.py"
+  local lookahead_mode_for_method="${LOOKAHEAD_METHOD_MODE}"
   case "${method}" in
     baseline) mode_arg="base" ;;
     greedy) mode_arg="greedy" ;;
     mcts) mode_arg="mcts" ;;
+    mcts_dynamiccfg_only)
+      mode_arg="mcts"
+      runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_dynamic_cfg.py"
+      ;;
+    mcts_u_lookahead_only)
+      mode_arg="mcts"
+      runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_lookahead_reweighting.py"
+      lookahead_mode_for_method="rollout_tree_prior"
+      ;;
+    mcts_dynamiccfg_u_lookahead)
+      mode_arg="mcts"
+      runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_lookahead_reweighting.py"
+      lookahead_mode_for_method="rollout_tree_prior_adaptive_cfg"
+      ;;
     mcts_lookahead_dynamiccfg|mcts_lookahead)
       mode_arg="mcts"
       runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_lookahead_reweighting.py"
+      if [[ "${method}" == "mcts_lookahead_dynamiccfg" ]]; then
+        lookahead_mode_for_method="rollout_tree_prior_adaptive_cfg"
+      fi
       ;;
     ga) mode_arg="ga" ;;
     smc) mode_arg="smc" ;;
@@ -580,9 +610,20 @@ run_method() {
   if [[ -n "${SD35_SIGMAS}" ]]; then
     extra+=(--sigmas ${SD35_SIGMAS})
   fi
+  if [[ "${runner_script}" == "${SCRIPT_DIR}/sd35_ddp_experiment_dynamic_cfg.py" ]]; then
+    extra+=(
+      --mcts_cfg_mode "${MCTS_CFG_MODE}"
+      --mcts_cfg_root_bank ${MCTS_CFG_ROOT_BANK}
+      --mcts_cfg_anchors ${MCTS_CFG_ANCHORS}
+      --mcts_cfg_step_anchor_count "${MCTS_CFG_STEP_ANCHOR_COUNT}"
+      --mcts_cfg_min_parent_visits "${MCTS_CFG_MIN_PARENT_VISITS}"
+      --mcts_cfg_round_ndigits "${MCTS_CFG_ROUND_NDIGITS}"
+      --mcts_cfg_log_action_topk "${MCTS_CFG_LOG_ACTION_TOPK}"
+    )
+  fi
   if [[ "${runner_script}" == "${SCRIPT_DIR}/sd35_ddp_experiment_lookahead_reweighting.py" ]]; then
     extra+=(
-      --lookahead_mode "${LOOKAHEAD_METHOD_MODE}"
+      --lookahead_mode "${lookahead_mode_for_method}"
       --lookahead_u_t_def "${LOOKAHEAD_U_T_DEF}"
       --lookahead_tau "${LOOKAHEAD_TAU}"
       --lookahead_c_puct "${LOOKAHEAD_C_PUCT}"

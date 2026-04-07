@@ -1,4 +1,4 @@
-description: sd35-lookahead-u-mcts-dynamic-cfg
+description: sd35-dynamiccfg-lookahead-ablation
 
 target:
   service: sing
@@ -99,6 +99,13 @@ search:
       - export LOOKAHEAD_C_PUCT={lookahead_c_puct}
       - export LOOKAHEAD_CFG_WIDTH_MIN={lookahead_cfg_width_min}
       - export LOOKAHEAD_CFG_WIDTH_MAX={lookahead_cfg_width_max}
+      - export MCTS_CFG_MODE={mcts_cfg_mode}
+      - export MCTS_CFG_ROOT_BANK='{mcts_cfg_root_bank}'
+      - export MCTS_CFG_ANCHORS='{mcts_cfg_anchors}'
+      - export MCTS_CFG_STEP_ANCHOR_COUNT={mcts_cfg_step_anchor_count}
+      - export MCTS_CFG_MIN_PARENT_VISITS={mcts_cfg_min_parent_visits}
+      - export MCTS_CFG_ROUND_NDIGITS={mcts_cfg_round_ndigits}
+      - export MCTS_CFG_LOG_ACTION_TOPK={mcts_cfg_log_action_topk}
       - export REWARD_BACKEND=imagereward
       - export REWARD_TYPE=imagereward
       - export REWARD_BACKENDS=imagereward
@@ -160,7 +167,7 @@ search:
   type: grid
   params:
     - name: run_tag
-      values: [ "sd35_lookahead_dynamiccfg" ]
+      values: [ "sd35_dynamiccfg_lookahead_ablation" ]
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: prompt_style
@@ -172,7 +179,7 @@ search:
     - name: use_subset
       values: [ 1 ]
     - name: methods
-      values: [ "baseline greedy mcts mcts_lookahead_dynamiccfg ga smc" ]
+      values: [ "baseline mcts_dynamiccfg_only mcts_u_lookahead_only mcts_dynamiccfg_u_lookahead" ]
     - name: lookahead_method_mode
       values: [ "rollout_tree_prior_adaptive_cfg" ]
     - name: lookahead_u_t_def
@@ -185,6 +192,20 @@ search:
       values: [ 3 ]
     - name: lookahead_cfg_width_max
       values: [ 7 ]
+    - name: mcts_cfg_mode
+      values: [ "adaptive" ]
+    - name: mcts_cfg_root_bank
+      values: [ "1.0 1.5 2.0 2.5" ]
+    - name: mcts_cfg_anchors
+      values: [ "1.0 2.0" ]
+    - name: mcts_cfg_step_anchor_count
+      values: [ 2 ]
+    - name: mcts_cfg_min_parent_visits
+      values: [ 3 ]
+    - name: mcts_cfg_round_ndigits
+      values: [ 6 ]
+    - name: mcts_cfg_log_action_topk
+      values: [ 12 ]
     - name: eval_backends
       values: [ "imagereward hpsv2 pickscore" ]
     - name: cfg_scales
@@ -194,7 +215,7 @@ search:
     - name: steps
       values: [ 4 ]
     - name: n_variants
-      values: [ 3 ]
+      values: [ 4 ]
     - name: n_sims
       values: [ 50 ]
     - name: ucb_c

@@ -61,7 +61,7 @@ PY
   PROMPT_FILE_RUN="${SLICE_FILE}"
 fi
 
-CFG_SCALES_STR="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0}"
+CFG_SCALES_STR="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5}"
 read -r -a CFG_SCALES_ARR <<< "${CFG_SCALES_STR}"
 if [[ "${#CFG_SCALES_ARR[@]}" -eq 0 ]]; then
   echo "Error: CFG_SCALES is empty." >&2
@@ -75,7 +75,7 @@ if [[ "${#CORRECTION_STRENGTHS_ARR[@]}" -eq 0 ]]; then
 fi
 
 CFG_ONLY="${CFG_ONLY:-0}"
-N_VARIANTS="${N_VARIANTS:-3}"
+N_VARIANTS="${N_VARIANTS:-4}"
 USE_QWEN="${USE_QWEN:-1}"
 if [[ "${CFG_ONLY}" == "1" ]]; then
   N_VARIANTS=0

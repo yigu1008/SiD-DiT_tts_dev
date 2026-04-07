@@ -719,7 +719,7 @@ PY
   local elapsed=$(( end_ts - begin_ts ))
   echo "[$(date '+%F %T')] method=${method} done elapsed=${elapsed}s"
 
-  post_eval_best_images "${method_out}" "${method}"
+  post_eval_best_images "${method_out}" "${mode_arg}"
   append_method_summary "${method_out}" "${method}" "${elapsed}"
 }
 

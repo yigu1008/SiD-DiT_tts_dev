@@ -58,14 +58,28 @@ def _slug_to_index(slug: str) -> int:
     return int(m.group(1))
 
 
+def _sd35_mode_key_and_suffix(method: str) -> tuple[str, str]:
+    m = str(method).strip().lower()
+    if m == "baseline":
+        return "base", "base"
+    if m == "base":
+        return "base", "base"
+    if m.startswith("mcts"):
+        # SD3.5 DDP writes mode/image suffix as "mcts" even for method aliases
+        # like mcts_lookahead_dynamiccfg, mcts_dynamiccfg_only, etc.
+        return "mcts", "mcts"
+    if m in {"greedy", "ga", "smc", "bon", "beam"}:
+        return m, m
+    return m, m
+
+
 def _collect_sd35_records(method_out: str, method: str) -> tuple[list[ImageRecord], list[str]]:
     records: list[ImageRecord] = []
     missing: list[str] = []
     logs_dir = os.path.join(method_out, "logs")
     image_dir = os.path.join(method_out, "images")
 
-    suffix = "base" if method == "baseline" else method
-    mode_key = "base" if method == "baseline" else method
+    mode_key, suffix = _sd35_mode_key_and_suffix(method)
 
     for log_path in sorted(glob.glob(os.path.join(logs_dir, "rank_*.jsonl"))):
         if os.path.basename(log_path).endswith("_rewrite_examples.jsonl"):

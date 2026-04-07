@@ -99,6 +99,13 @@ def parse_args() -> argparse.Namespace:
         help="Reward-gradient correction strength values included as actions (like --cfg_scales). "
              "[0.0] disables correction. E.g. --correction_strengths 0.0 0.5 1.0.",
     )
+    parser.add_argument(
+        "--x0_sampler",
+        action="store_true",
+        default=False,
+        help="Treat transformer output as a direct x0 prediction instead of flow/velocity. "
+             "Set automatically for senseflow backends.",
+    )
     parser.add_argument("--ga_population", type=int, default=24)
     parser.add_argument("--ga_generations", type=int, default=8)
     parser.add_argument("--ga_elites", type=int, default=3)

@@ -625,7 +625,7 @@ def encode_variants(ctx: PipelineContext, variants: list[str], max_sequence_leng
     cond_text: list[torch.Tensor] = []
     cond_pooled: list[torch.Tensor] = []
     for variant in variants:
-        pe, pp = ctx.pipe.encode_prompt(
+        enc_out = ctx.pipe.encode_prompt(
             prompt=variant,
             prompt_2=variant,
             prompt_3=variant,
@@ -633,10 +633,12 @@ def encode_variants(ctx: PipelineContext, variants: list[str], max_sequence_leng
             num_images_per_prompt=1,
             max_sequence_length=max_sequence_length,
         )
+        # SiDSD3Pipeline returns (pe, pp); StableDiffusion3Pipeline returns (pe, neg_pe, pp)
+        pe, pp = (enc_out[0], enc_out[-1])
         cond_text.append(pe.detach())
         cond_pooled.append(pp.detach())
 
-    ue, up = ctx.pipe.encode_prompt(
+    enc_out = ctx.pipe.encode_prompt(
         prompt="",
         prompt_2="",
         prompt_3="",
@@ -644,6 +646,7 @@ def encode_variants(ctx: PipelineContext, variants: list[str], max_sequence_leng
         num_images_per_prompt=1,
         max_sequence_length=max_sequence_length,
     )
+    ue, up = (enc_out[0], enc_out[-1])
     return EmbeddingContext(
         cond_text=cond_text,
         cond_pooled=cond_pooled,

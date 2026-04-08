@@ -456,6 +456,24 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
                 tf_kwargs["subfolder"] = transformer_subfolder
         elif transformer_subfolder:
             tf_kwargs["subfolder"] = transformer_subfolder
+        # Some SenseFlow subfolders (e.g. SD35M) ship without config.json.
+        # Fall back to the base model's transformer config so from_pretrained
+        # knows the architecture.  We resolve the base model path via HF cache.
+        if "subfolder" not in tf_kwargs and os.path.isdir(tf_path):
+            cfg_json = os.path.join(tf_path, "config.json")
+            if not os.path.isfile(cfg_json):
+                print(f"[warn] {cfg_json} missing — copying from base model transformer")
+                try:
+                    from huggingface_hub import try_to_load_from_cache
+                    base_cfg = try_to_load_from_cache(
+                        args.model_id, "transformer/config.json"
+                    )
+                    if base_cfg and os.path.isfile(base_cfg):
+                        import shutil
+                        shutil.copy2(base_cfg, cfg_json)
+                        print(f"  copied {base_cfg} -> {cfg_json}")
+                except Exception as exc:
+                    print(f"  [warn] could not copy base config.json: {exc}")
         print(f"Loading transformer from {tf_path} subfolder={tf_kwargs.get('subfolder')}")
         pretrained_kwargs["transformer"] = SD3Transformer2DModel.from_pretrained(
             tf_path, **tf_kwargs

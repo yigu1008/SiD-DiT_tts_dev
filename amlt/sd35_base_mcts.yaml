@@ -1,0 +1,231 @@
+description: sd35-base-mcts-integrated
+
+target:
+  service: sing
+  name: GenAI-Shared-UKSouth2
+  workspace_name: Singularity-GenAI-WS-UKSouth2
+  resource_group: singularity-genai-gpu-uksouth2
+
+env_defaults:
+  service: sing
+  PRIORITY: high
+  NODES: 1
+  GPUS: 8
+  MEM: 80
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - export PATH=/home/aiscuser/.local/bin:$$PATH
+    - pip install --user datasets huggingface_hub hpsv2
+    - pip list
+
+code:
+  local_dir: ../
+
+storage:
+  output:
+    storage_account_name: vigstandard
+    container_name: data
+    mount_dir: /mnt/data
+
+search:
+  job_template:
+    name: sd35-base-mcts-{run_tag}
+    sku: ${NODES}x${MEM}G${GPUS}-IB
+    sla_tier: Standard
+    process_count_per_node: 1
+    priority: high
+    mpi: False
+    command:
+      - set -x
+      - unset REWARD_BACKEND REWARD_TYPE REWARD_BACKENDS || true
+      - export PYTHONNOUSERSITE=1
+      - unset PYTHONPATH || true
+      - export SID_FORCE_WANDB_STUB=1
+      - export WANDB_DISABLED=true
+      # ── Paths ──────────────────────────────────────────────────────────────
+      - export PATH=/home/aiscuser/.local/bin:$$PATH
+      - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
+      - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
+      - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
+      # Set both token env vars — newer huggingface_hub uses HF_TOKEN, older uses HUGGING_FACE_HUB_TOKEN
+      - export HF_TOKEN={hf_token}
+      - export HUGGING_FACE_HUB_TOKEN={hf_token}
+      - export AZFUSE_USE_FUSE=0
+      - export NCCL_ASYNC_ERROR_HANDLING=0
+      - export NCCL_P2P_LEVEL=NVL
+      # ── Install deps ───────────────────────────────────────────────────────
+      - source /opt/conda/etc/profile.d/conda.sh
+      - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
+      - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
+      - /opt/conda/envs/ptca/bin/python -c "import os, torch; print('[torch-check]', torch.__version__, 'cuda=', torch.version.cuda, 'is_available=', torch.cuda.is_available(), 'count=', torch.cuda.device_count(), 'cvd=', os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')); assert torch.cuda.is_available() and (torch.version.cuda is not None), 'CPU-only torch detected after requirements install'"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
+      - /opt/conda/envs/ptca/bin/python -c "import xformers, xformers.ops; print('xformers ok', xformers.__version__)" || (/opt/conda/envs/ptca/bin/pip uninstall -y xformers && echo 'xformers disabled')
+      - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
+      - if [ "$$ENABLE_OVERLAY_PYDEPS" = "1" ]; then PYTHON_BIN=/opt/conda/envs/ptca/bin/python SID_OVERLAY_DIR=/tmp/$$USER/sid_pydeps bash prepare_cluster_overlay_deps.sh; export SID_EXTRA_PYTHONPATH=/tmp/$$USER/sid_pydeps/py$$(/opt/conda/envs/ptca/bin/python -c "import sys; print(str(sys.version_info.major)+'.'+str(sys.version_info.minor))"); else unset SID_EXTRA_PYTHONPATH || true; fi
+      # Re-install after reward deps in case install_reward_deps.sh overwrote them
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
+      # ── Cache dirs & symlinks ──────────────────────────────────────────────
+      - export NUM_GPUS=${GPUS}
+      - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
+      - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
+      - mkdir -p /mnt/data/v-yigu/model_cache/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
+      - mkdir -p /home/aiscuser/.cache
+      - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
+      - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
+      # ── Preload reward models & SD3.5 base weights ─────────────────────────
+      - /opt/conda/envs/ptca/bin/python preload_reward_models.py
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('stabilityai/stable-diffusion-3.5-large', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('SD3.5 base cache OK')"
+      - export HF_HUB_OFFLINE=1
+      - export TRANSFORMERS_OFFLINE=1
+      # ── Prompt file ────────────────────────────────────────────────────────
+      - export HPSV2_PROMPT_DIR=/mnt/data/v-yigu/hpsv2_prompt_cache
+      - export PROMPT_STYLE={prompt_style}
+      - OUT_DIR="$$HPSV2_PROMPT_DIR" STYLE="$$PROMPT_STYLE" bash get_hpsv2_prompts.sh
+      - if [ "$$PROMPT_STYLE" = "all" ]; then export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts.txt"; else export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts_$$PROMPT_STYLE.txt"; fi
+      - if [ {use_subset} = 1 ]; then export PROMPT_FILE=./hpsv2_subset.txt; fi
+      # ── Precompute rewrites ───────────────────────────────────────────────
+      - mkdir -p /mnt/data/v-yigu/hpsv2_rewrite_cache
+      - export REWRITES_FILE=/mnt/data/v-yigu/hpsv2_rewrite_cache/{run_tag}_$$PROMPT_STYLE.json
+      - |
+        if [ {use_qwen} = 1 ] && [ {precompute_rewrites} = 1 ]; then
+          /opt/conda/envs/ptca/bin/python precompute_rewrites.py \
+            --prompt_file "$$PROMPT_FILE" \
+            --output "$$REWRITES_FILE" \
+            --n_variants {n_variants} \
+            --qwen_id "{qwen_id}" \
+            --device {qwen_precompute_device} \
+            --batch_size {qwen_precompute_batch_size} \
+            --save_every {qwen_precompute_save_every} \
+            --overwrite {rewrites_overwrite}
+        fi
+      # ── Run sampling_sd35_base.py directly ─────────────────────────────────
+      - export OUT_DIR=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}
+      - mkdir -p "$$OUT_DIR"
+      # ── Final pin: restore packages that earlier installs may have downgraded ──
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets; print('final pin ok', md.version('ftfy'), md.version('regex'), md.version('xxhash'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'))"
+      - >-
+        /opt/conda/envs/ptca/bin/python sampling_sd35_base.py
+        --search_method {search_method}
+        --prompt_file "$$PROMPT_FILE"
+        --out_dir "$$OUT_DIR"
+        --steps {steps}
+        --cfg_scales {cfg_scales}
+        --baseline_cfg {baseline_cfg}
+        --seed {seed}
+        --n_variants {n_variants}
+        --n_sims {n_sims}
+        --ucb_c {ucb_c}
+        --reward_backend {reward_backend}
+        --image_reward_model {image_reward_model}
+        --lookahead_mode {lookahead_mode}
+        --lookahead_u_t_def {lookahead_u_t_def}
+        --lookahead_tau {lookahead_tau}
+        --lookahead_c_puct {lookahead_c_puct}
+        --lookahead_cfg_width_min {lookahead_cfg_width_min}
+        --lookahead_cfg_width_max {lookahead_cfg_width_max}
+        --lookahead_cfg_anchor_count {lookahead_cfg_anchor_count}
+        --lookahead_min_visits_for_center {lookahead_min_visits_for_center}
+        --lookahead_w_cfg {lookahead_w_cfg}
+        --lookahead_w_variant {lookahead_w_variant}
+        --lookahead_w_q {lookahead_w_q}
+        --lookahead_w_explore {lookahead_w_explore}
+        --mcts_cfg_mode {mcts_cfg_mode}
+        --mcts_cfg_root_bank {mcts_cfg_root_bank}
+        --mcts_cfg_anchors {mcts_cfg_anchors}
+        --mcts_cfg_step_anchor_count {mcts_cfg_step_anchor_count}
+        --mcts_cfg_min_parent_visits {mcts_cfg_min_parent_visits}
+        --rewrites_file "$$REWRITES_FILE"
+
+    submit_args:
+      env:
+        DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: True
+        SHARED_MEMORY_PERCENT: 0.5
+
+  max_trials: 1
+  type: grid
+  params:
+    - name: run_tag
+      values: [ "sd35_base_mcts_integrated" ]
+    - name: hf_token
+      values: [ "YOUR_HF_TOKEN_HERE" ]
+    - name: prompt_style
+      values: [ "all" ]
+    - name: use_subset
+      values: [ 1 ]
+    - name: search_method
+      values: [ "mcts" ]
+    - name: steps
+      values: [ 28 ]
+    - name: cfg_scales
+      values: [ "3.5 4.0 4.5 5.0 5.5 6.0 7.0" ]
+    - name: baseline_cfg
+      values: [ 4.5 ]
+    - name: seed
+      values: [ 42 ]
+    - name: n_variants
+      values: [ 4 ]
+    - name: n_sims
+      values: [ 50 ]
+    - name: ucb_c
+      values: [ 1.41 ]
+    - name: reward_backend
+      values: [ "imagereward" ]
+    - name: image_reward_model
+      values: [ "ImageReward-v1.0" ]
+    # Lookahead MCTS settings
+    - name: lookahead_mode
+      values: [ "rollout_tree_prior_adaptive_cfg" ]
+    - name: lookahead_u_t_def
+      values: [ "latent_delta_rms" ]
+    - name: lookahead_tau
+      values: [ 0.35 ]
+    - name: lookahead_c_puct
+      values: [ 1.20 ]
+    - name: lookahead_cfg_width_min
+      values: [ 3 ]
+    - name: lookahead_cfg_width_max
+      values: [ 7 ]
+    - name: lookahead_cfg_anchor_count
+      values: [ 2 ]
+    - name: lookahead_min_visits_for_center
+      values: [ 3 ]
+    - name: lookahead_w_cfg
+      values: [ 1.0 ]
+    - name: lookahead_w_variant
+      values: [ 0.25 ]
+    - name: lookahead_w_q
+      values: [ 0.20 ]
+    - name: lookahead_w_explore
+      values: [ 0.05 ]
+    # Dynamic CFG settings
+    - name: mcts_cfg_mode
+      values: [ "adaptive" ]
+    - name: mcts_cfg_root_bank
+      values: [ "3.5 5.0 7.0" ]
+    - name: mcts_cfg_anchors
+      values: [ "3.5 7.0" ]
+    - name: mcts_cfg_step_anchor_count
+      values: [ 2 ]
+    - name: mcts_cfg_min_parent_visits
+      values: [ 3 ]
+    # Qwen rewrite settings
+    - name: use_qwen
+      values: [ 1 ]
+    - name: precompute_rewrites
+      values: [ 1 ]
+    - name: rewrites_overwrite
+      values: [ 0 ]
+    - name: qwen_id
+      values: [ "Qwen/Qwen3-4B" ]
+    - name: qwen_precompute_device
+      values: [ "auto" ]
+    - name: qwen_precompute_batch_size
+      values: [ 16 ]
+    - name: qwen_precompute_save_every
+      values: [ 1 ]

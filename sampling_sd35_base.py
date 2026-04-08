@@ -200,28 +200,7 @@ def load_pipeline_sd35base(args: argparse.Namespace) -> su.PipelineContext:
         f"(device={device} dtype={dtype_str} device_count={dev_count} local_rank={local_rank})"
     )
 
-    transformer_id = getattr(args, "transformer_id", None)
-    transformer_subfolder = getattr(args, "transformer_subfolder", None)
-
-    pretrained_kwargs: dict = {"torch_dtype": dtype}
-    if transformer_id:
-        from diffusers.models.transformers import SD3Transformer2DModel
-        tf_kwargs: dict = {"torch_dtype": dtype}
-        tf_path = transformer_id
-        if transformer_subfolder and os.path.isdir(transformer_id):
-            joined = os.path.join(transformer_id, transformer_subfolder)
-            if os.path.isdir(joined):
-                tf_path = joined
-            else:
-                tf_kwargs["subfolder"] = transformer_subfolder
-        elif transformer_subfolder:
-            tf_kwargs["subfolder"] = transformer_subfolder
-        print(f"Loading transformer from {tf_path} subfolder={tf_kwargs.get('subfolder')}")
-        pretrained_kwargs["transformer"] = SD3Transformer2DModel.from_pretrained(
-            tf_path, **tf_kwargs
-        ).to(device)
-
-    pipe = StableDiffusion3Pipeline.from_pretrained(model_id, **pretrained_kwargs).to(device)
+    pipe = StableDiffusion3Pipeline.from_pretrained(model_id, torch_dtype=dtype).to(device)
     if hasattr(pipe, "enable_vae_slicing"):
         pipe.enable_vae_slicing()
 

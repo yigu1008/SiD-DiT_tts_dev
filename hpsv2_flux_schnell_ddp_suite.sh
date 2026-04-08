@@ -464,9 +464,9 @@ run_flux_sharded() {
   if [[ -n "${FLUX_SIGMAS}" ]]; then
     backend_extra+=(--sigmas ${FLUX_SIGMAS})
   fi
-  if [[ -n "${SENSEFLOW_LOCAL_DIR}" ]]; then
-    backend_extra+=(--transformer_id "${SENSEFLOW_LOCAL_DIR}")
-  fi
+  # Do NOT pass SENSEFLOW_LOCAL_DIR as --transformer_id.  The backend config
+  # already sets transformer_id="domiso/SenseFlow" with the correct subfolder.
+  # from_pretrained resolves the HF repo ID from cache in offline mode.
   if [[ -n "${REWARD_API_BASE}" ]]; then
     reward_extra+=(--reward_api_base "${REWARD_API_BASE}")
   fi

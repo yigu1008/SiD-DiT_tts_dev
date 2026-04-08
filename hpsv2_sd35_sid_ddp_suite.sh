@@ -645,9 +645,10 @@ run_method() {
   if [[ -n "${SD35_LOCAL_DIR:-}" ]]; then
     extra+=(--model_id "${SD35_LOCAL_DIR}")
   fi
-  if [[ -n "${SENSEFLOW_LOCAL_DIR:-}" ]]; then
-    extra+=(--transformer_id "${SENSEFLOW_LOCAL_DIR}")
-  fi
+  # Do NOT pass SENSEFLOW_LOCAL_DIR as --transformer_id.  The backend config
+  # already sets transformer_id="domiso/SenseFlow" with the correct subfolder.
+  # from_pretrained resolves the HF repo ID from cache in offline mode; passing
+  # a local snapshot path breaks subfolder resolution for multi-model repos.
   local begin_ts
   begin_ts="$(date +%s)"
   echo "[$(date '+%F %T')] method=${method} start"

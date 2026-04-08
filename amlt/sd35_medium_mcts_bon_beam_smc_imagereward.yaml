@@ -200,14 +200,12 @@ search:
       values: [ 7 ]
     - name: eval_backends
       values: [ "imagereward hpsv2 pickscore" ]
-    # Suite scripts auto-override cfg_scales/baseline_cfg to 0.0 for senseflow backends
     - name: cfg_scales
-      values: [ "0.0" ]
+      values: [ "3.5 4.0 4.5 5.0 5.5 6.0 7.0" ]
     - name: baseline_cfg
-      values: [ 0.0 ]
-    # SenseFlow-medium backend defaults to 4-step sigma schedule.
+      values: [ 4.5 ]
     - name: steps
-      values: [ 4 ]
+      values: [ 28 ]
     - name: n_variants
       values: [ 4 ]
     - name: n_sims
@@ -257,9 +255,9 @@ search:
     - name: run_flux
       values: [ 0 ]
     - name: sd35_backend
-      values: [ "senseflow_medium" ]
+      values: [ "sd35_base" ]
     - name: flux_backend
-      values: [ "senseflow_flux" ]
+      values: [ "flux" ]
     - name: save_images
       values: [ 0 ]
     - name: save_best_images

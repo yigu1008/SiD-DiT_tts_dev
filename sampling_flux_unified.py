@@ -427,13 +427,25 @@ def load_pipeline(args: argparse.Namespace, device: str, dtype: torch.dtype) -> 
         except Exception:
             from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel
         kwargs: dict[str, Any] = {"torch_dtype": dtype}
-        if getattr(args, "transformer_subfolder", None):
-            kwargs["subfolder"] = args.transformer_subfolder
+        tf_path = args.transformer_id
+        transformer_subfolder = getattr(args, "transformer_subfolder", None)
+        # When transformer_id is a local snapshot dir (e.g. from snapshot_download),
+        # from_pretrained looks for config.json at the root before resolving subfolder.
+        # Multi-model repos like domiso/SenseFlow have no root config.json, so join
+        # the path ourselves and skip the subfolder kwarg.
+        if transformer_subfolder and os.path.isdir(args.transformer_id):
+            joined = os.path.join(args.transformer_id, transformer_subfolder)
+            if os.path.isdir(joined):
+                tf_path = joined
+            else:
+                kwargs["subfolder"] = transformer_subfolder
+        elif transformer_subfolder:
+            kwargs["subfolder"] = transformer_subfolder
         print(
-            f"Loading FLUX transformer override: {args.transformer_id} "
-            f"subfolder={getattr(args, 'transformer_subfolder', None)}"
+            f"Loading FLUX transformer override: {tf_path} "
+            f"subfolder={kwargs.get('subfolder')}"
         )
-        pipe.transformer = FluxTransformer2DModel.from_pretrained(args.transformer_id, **kwargs).to(device)
+        pipe.transformer = FluxTransformer2DModel.from_pretrained(tf_path, **kwargs).to(device)
     pipe.transformer.eval().requires_grad_(False)
     pipe.vae.eval().requires_grad_(False)
     if getattr(pipe, "text_encoder", None) is not None:

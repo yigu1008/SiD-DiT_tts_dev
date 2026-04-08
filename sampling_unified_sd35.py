@@ -443,11 +443,22 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
         # not present in HF_HOME (we only need VAE + text encoders from the base model).
         from diffusers.models.transformers import SD3Transformer2DModel
         tf_kwargs: dict = {"torch_dtype": dtype}
-        if transformer_subfolder:
+        # When transformer_id is a local snapshot dir (e.g. from snapshot_download),
+        # diffusers' from_pretrained looks for config.json at the root before resolving
+        # the subfolder.  Multi-model repos like domiso/SenseFlow have no root config.json,
+        # so we must join the path ourselves and skip the subfolder kwarg.
+        tf_path = transformer_id
+        if transformer_subfolder and os.path.isdir(transformer_id):
+            joined = os.path.join(transformer_id, transformer_subfolder)
+            if os.path.isdir(joined):
+                tf_path = joined
+            else:
+                tf_kwargs["subfolder"] = transformer_subfolder
+        elif transformer_subfolder:
             tf_kwargs["subfolder"] = transformer_subfolder
-        print(f"Loading transformer from {transformer_id} subfolder={transformer_subfolder}")
+        print(f"Loading transformer from {tf_path} subfolder={tf_kwargs.get('subfolder')}")
         pretrained_kwargs["transformer"] = SD3Transformer2DModel.from_pretrained(
-            transformer_id, **tf_kwargs
+            tf_path, **tf_kwargs
         ).to(device)
 
     pipe = SiDSD3Pipeline.from_pretrained(args.model_id, **pretrained_kwargs).to(device)

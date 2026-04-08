@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sim_costs", nargs="+", type=int, default=[5, 10, 20, 35, 50])
     parser.add_argument("--out_dir", default="./sd35_nfe_cost_scaling_out")
 
-    parser.add_argument("--backend", choices=["sid", "senseflow_large", "senseflow_medium"], default="sid")
+    parser.add_argument("--backend", choices=["sid", "sd35_base", "senseflow_large", "senseflow_medium"], default="sid")
     parser.add_argument("--steps", type=int, default=4)
     parser.add_argument("--width", type=int, default=1024)
     parser.add_argument("--height", type=int, default=1024)

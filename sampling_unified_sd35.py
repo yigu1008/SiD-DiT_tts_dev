@@ -68,7 +68,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument(
         "--backend",
-        choices=["sid", "senseflow_large", "senseflow_medium"],
+        choices=["sid", "sd35_base", "senseflow_large", "senseflow_medium"],
         default=None,
         help="Convenience shortcut: sets --model_id, --transformer_id, --transformer_subfolder, "
              "and --sigmas together. Explicit flags override these defaults.",
@@ -196,7 +196,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--dtype",
         choices=["float16", "bfloat16"],
         default=None,
-        help="Pipeline/transformer dtype. Defaults to backend setting (float16 for sid, bfloat16 for senseflow).",
+        help="Pipeline/transformer dtype. Defaults to backend setting (float16 for sid/sd35_base, bfloat16 for senseflow).",
     )
     args = parser.parse_args(argv)
     return _apply_backend_defaults(args)
@@ -212,6 +212,15 @@ _BACKEND_CONFIGS = {
         "sigmas": None,       # linear schedule driven by --steps
         "dtype": "float16",
         "gen_batch_size": 2,  # CFG doubles → [4,C,H,W] per step at gbs=2; may OOM on 40GB
+    },
+    # Official SD3.5 Large base model (decoupled from SiD student checkpoint).
+    "sd35_base": {
+        "model_id": "stabilityai/stable-diffusion-3.5-large",
+        "transformer_id": None,
+        "transformer_subfolder": None,
+        "sigmas": None,       # linear schedule driven by --steps
+        "dtype": "float16",
+        "gen_batch_size": 1,  # conservative default for SD3.5L + CFG
     },
     # SenseFlow Large: 2-step, no CFG → no batch doubling → can use larger gen_batch_size.
     # On a 40 GB GPU: ~16 GB transformer + ~14 GB text-encoders + ~0.3 GB VAE ≈ 30 GB static,
@@ -1986,7 +1995,7 @@ def run_smc(
     resample_count = 0
 
     print(
-        f"  smc: K={k} cfg={cfg:.2f} variant={variant_idx} "
+        f"  smc(das): K={k} cfg={cfg:.2f} variant={variant_idx} "
         f"gamma={float(args.smc_gamma):.3f} ess_thr={float(args.ess_threshold):.2f}"
     )
     for step_idx, (t_flat, t_4d) in enumerate(sched):
@@ -2034,6 +2043,7 @@ def run_smc(
     final_scores = [float(score_image(reward_model, prompt, img)) for img in final_images]
     best_idx = int(np.argmax(final_scores))
     diagnostics = {
+        "smc_style": "das_tempered_resampling",
         "smc_k": int(k),
         "smc_cfg_scale": float(cfg),
         "smc_variant_idx": int(variant_idx),

@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="DDP multi-GPU SD3.5 evaluation (base/greedy/mcts/ga/smc).")
     parser.add_argument(
         "--backend",
-        choices=["sid", "senseflow_large", "senseflow_medium"],
+        choices=["sid", "sd35_base", "senseflow_large", "senseflow_medium"],
         default=None,
         help="Convenience shortcut. Sets --model_id, --transformer_id, --sigmas together.",
     )
@@ -206,7 +206,7 @@ def parse_args() -> argparse.Namespace:
         "--dtype",
         choices=["float16", "bfloat16"],
         default=None,
-        help="Pipeline/transformer dtype. Defaults to backend setting (float16 for sid, bfloat16 for senseflow).",
+        help="Pipeline/transformer dtype. Defaults to backend setting (float16 for sid/sd35_base, bfloat16 for senseflow).",
     )
     return _apply_backend_defaults(parser.parse_args())
 

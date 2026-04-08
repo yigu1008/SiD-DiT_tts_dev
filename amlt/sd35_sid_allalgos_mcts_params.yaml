@@ -1,4 +1,4 @@
-description: sd35-sid-allalgos-lookahead-dynamiccfg
+description: sd35-sid-allalgos-mcts-params
 
 target:
   service: sing
@@ -31,7 +31,7 @@ storage:
 
 search:
   job_template:
-    name: sd35-sid-lookahead-dynamiccfg-allalgos-{run_tag}
+    name: sd35-sid-allalgos-{run_tag}
     sku: ${NODES}x${MEM}G${GPUS}-IB
     sla_tier: Standard
     process_count_per_node: 1
@@ -94,14 +94,12 @@ search:
       - export START_INDEX={start_index}
       - export END_INDEX={end_index}
       - export METHODS='{methods}'
-      - export SD35_MCTS_OPTION={sd35_mcts_option}
       - export LOOKAHEAD_METHOD_MODE={lookahead_method_mode}
       - export LOOKAHEAD_U_T_DEF={lookahead_u_t_def}
       - export LOOKAHEAD_TAU={lookahead_tau}
       - export LOOKAHEAD_C_PUCT={lookahead_c_puct}
       - export LOOKAHEAD_CFG_WIDTH_MIN={lookahead_cfg_width_min}
       - export LOOKAHEAD_CFG_WIDTH_MAX={lookahead_cfg_width_max}
-      - if [ "$$SD35_MCTS_OPTION" = "lookahead_dynamiccfg" ]; then export METHODS="$$(echo "$$METHODS" | sed 's/\bmcts\b/mcts_lookahead_dynamiccfg/g')"; fi
       - export MCTS_CFG_MODE={mcts_cfg_mode}
       - export MCTS_CFG_ROOT_BANK='{mcts_cfg_root_bank}'
       - export MCTS_CFG_ANCHORS='{mcts_cfg_anchors}'
@@ -173,7 +171,7 @@ search:
   type: grid
   params:
     - name: run_tag
-      values: [ "sd35_sid_allalgos_lookahead_dynamiccfg" ]
+      values: [ "sd35_sid_allalgos_mcts_params" ]
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: sd35_backend
@@ -188,8 +186,6 @@ search:
       values: [ 1 ]
     - name: methods
       values: [ "baseline greedy mcts ga smc_das bon beam" ]
-    - name: sd35_mcts_option
-      values: [ "lookahead_dynamiccfg" ]
     - name: lookahead_method_mode
       values: [ "rollout_tree_prior_adaptive_cfg" ]
     - name: lookahead_u_t_def

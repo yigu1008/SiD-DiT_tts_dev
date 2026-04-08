@@ -568,7 +568,7 @@ run_method() {
       fi
       ;;
     ga) mode_arg="ga" ;;
-    smc) mode_arg="smc" ;;
+    smc|smc_das) mode_arg="smc" ;;
     bon) mode_arg="bon" ;;
     beam) mode_arg="beam" ;;
     *)

@@ -122,6 +122,7 @@ mkdir -p "${RUN_DIR}"
 
 case "${SD35_BACKEND}" in
   sid) PRELOAD_MODEL_ID="${PRELOAD_MODEL_ID:-YGu1998/SiD-DiT-SD3.5-large}" ;;
+  sd35_base) PRELOAD_MODEL_ID="${PRELOAD_MODEL_ID:-stabilityai/stable-diffusion-3.5-large}" ;;
   senseflow_large) PRELOAD_MODEL_ID="${PRELOAD_MODEL_ID:-stabilityai/stable-diffusion-3.5-large}" ;;
   senseflow_medium) PRELOAD_MODEL_ID="${PRELOAD_MODEL_ID:-stabilityai/stable-diffusion-3.5-medium}" ;;
   *) PRELOAD_MODEL_ID="${PRELOAD_MODEL_ID:-YGu1998/SiD-DiT-SD3.5-large}" ;;

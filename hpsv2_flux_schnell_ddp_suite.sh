@@ -464,6 +464,9 @@ run_flux_sharded() {
   if [[ -n "${FLUX_SIGMAS}" ]]; then
     backend_extra+=(--sigmas ${FLUX_SIGMAS})
   fi
+  if [[ -n "${SENSEFLOW_LOCAL_DIR}" ]]; then
+    backend_extra+=(--transformer_id "${SENSEFLOW_LOCAL_DIR}")
+  fi
   if [[ -n "${REWARD_API_BASE}" ]]; then
     reward_extra+=(--reward_api_base "${REWARD_API_BASE}")
   fi

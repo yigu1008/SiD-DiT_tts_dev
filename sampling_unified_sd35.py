@@ -407,8 +407,6 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
     except Exception:
         pass
 
-    from sid import SiDSD3Pipeline
-
     cuda_available = torch.cuda.is_available()
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
@@ -454,7 +452,12 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
             transformer_id, **tf_kwargs
         ).to(device)
 
-    pipe = SiDSD3Pipeline.from_pretrained(args.model_id, **pretrained_kwargs).to(device)
+    if (args.backend or "sid") == "sid":
+        from sid import SiDSD3Pipeline
+        pipe = SiDSD3Pipeline.from_pretrained(args.model_id, **pretrained_kwargs).to(device)
+    else:
+        from diffusers import StableDiffusion3Pipeline
+        pipe = StableDiffusion3Pipeline.from_pretrained(args.model_id, **pretrained_kwargs).to(device)
     if hasattr(pipe, "enable_vae_slicing"):
         pipe.enable_vae_slicing()
     # Normalize text-encoder dtypes explicitly. On some cluster images (Apex fused RMSNorm),

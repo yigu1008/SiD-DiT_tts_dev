@@ -59,7 +59,7 @@ _BACKEND_CONFIGS: dict[str, dict[str, Any]] = {
     "senseflow_flux": {
         "model_id": "black-forest-labs/FLUX.1-schnell",
         "transformer_id": "domiso/SenseFlow",
-        "transformer_subfolder": "SenseFlow-Flux-Schnell/transformer",
+        "transformer_subfolder": "SenseFlow-FLUX",
         "sigmas": [1.0, 0.75],
         "dtype": "bf16",
         # SenseFlow transformer predicts x̂₀ directly; use x0 sampler (not flow).
@@ -413,14 +413,13 @@ def cuda_free_gb(device: str) -> float | None:
 
 
 def load_pipeline(args: argparse.Namespace, device: str, dtype: torch.dtype) -> FluxContext:
-    from sid import SiDFluxPipeline
-
     print(
         f"Loading FLUX pipeline: {args.model_id} "
         f"(backend={args.backend or 'flux'} "
         f"sigmas={args.sigmas if args.sigmas is not None else f'steps={args.steps}'})"
     )
-    pipe = SiDFluxPipeline.from_pretrained(args.model_id, torch_dtype=dtype).to(device)
+    from diffusers import FluxPipeline
+    pipe = FluxPipeline.from_pretrained(args.model_id, torch_dtype=dtype).to(device)
     if getattr(args, "transformer_id", None):
         try:
             from diffusers.models.transformers import FluxTransformer2DModel

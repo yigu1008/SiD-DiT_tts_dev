@@ -867,8 +867,9 @@ def run_mcts_sd35base(
 
             t_flat, t_4d, dt = sched[rollout_step]
             flow = su.transformer_step(args, ctx, rollout_latents, emb, variant_idx, t_flat, cfg)
-            rollout_dx = rollout_latents - t_4d * flow  # x0 estimate for scoring
+            rollout_dx = rollout_latents - t_4d * flow  # x0 estimate (for u_t only)
             next_latents = rollout_latents + dt * flow   # Euler step
+            rollout_latents = next_latents
             rollout_step += 1
             if rollout_step < int(args.steps):
                 child_u = _compute_u_t(
@@ -887,14 +888,13 @@ def run_mcts_sd35base(
                     incoming_action=(int(variant_idx), float(cfg)),
                     u_t=float(child_u),
                 )
-                rollout_latents = next_latents
 
-        # Score
-        rollout_img = su.decode_to_pil(ctx, rollout_dx)
+        # Score — decode final Euler latent (not intermediate x0 estimate)
+        rollout_img = su.decode_to_pil(ctx, rollout_latents)
         rollout_score = float(su.score_image(reward_model, prompt, rollout_img))
         if rollout_score > best_global_score:
             best_global_score = float(rollout_score)
-            best_global_dx = rollout_dx.clone()
+            best_global_dx = rollout_latents.clone()
             best_global_path = [a for _, a in path]
 
         # BACKPROP

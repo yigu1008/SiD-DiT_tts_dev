@@ -742,7 +742,9 @@ def transformer_step(
     pp = emb.cond_pooled[variant_idx]
     n = latents.shape[0]
 
-    if cfg == 1.0:
+    if cfg == 1.0 or cfg == 0.0:
+        # cfg=1.0: standard conditional-only (no guidance)
+        # cfg=0.0: SenseFlow guidance_scale=0 means "no CFG, run conditional only"
         ctx.nfe += 1
         velocity = ctx.pipe.transformer(
             hidden_states=latents,
@@ -1165,14 +1167,15 @@ def run_greedy_batch(
                     cand_dx_j = cand_dx[j : j + 1].clone()
                     if cs > 0.0:
                         cand_dx_j = apply_reward_correction(ctx, cand_dx_j, prompts[j], reward_model, cs, cfg=cfg)
-                    cand_img = decode_to_pil(ctx, cand_dx_j)
+                    cand_latents_j = (latents[j:j+1] + dt * flow[j:j+1]) if use_euler else latents[j:j+1]
+                    cand_img = decode_to_pil(ctx, _final_decode_tensor(cand_latents_j, cand_dx_j, use_euler))
                     cand_score = score_image(reward_model, prompts[j], cand_img)
                     if cand_score > best_scores[j]:
                         best_scores[j] = cand_score
                         best_actions[j] = (variant_idx, cfg, cs)
                         best_dx_list[j] = cand_dx_j
                         if use_euler:
-                            best_latents_list[j] = (latents[j:j+1] + dt * flow[j:j+1])
+                            best_latents_list[j] = cand_latents_j
 
         if use_euler:
             latents = torch.cat(best_latents_list)
@@ -1285,7 +1288,7 @@ def run_beam(
                 cand_latents = latents_in + dt * flow if use_euler else latents_in
                 if cs > 0.0:
                     cand_dx = apply_reward_correction(ctx, cand_dx, prompt, reward_model, cs, cfg=cfg)
-                cand_img = decode_to_pil(ctx, cand_dx)
+                cand_img = decode_to_pil(ctx, _final_decode_tensor(cand_latents, cand_dx, use_euler))
                 cand_score = score_image(reward_model, prompt, cand_img)
                 candidates.append((cand_score, cand_dx, cand_latents, beam_path + [(vi, cfg, cs)]))
 
@@ -2069,7 +2072,7 @@ def run_mcts(
         rollout_score = score_image(reward_model, prompt, rollout_img)
         if rollout_score > best_global_score:
             best_global_score = rollout_score
-            best_global_dx = rollout_dx.clone()
+            best_global_dx = _final_decode_tensor(rollout_latents, rollout_dx, use_euler).clone()
             best_global_path = [a for _, a in path]
 
         for pnode, paction in path:

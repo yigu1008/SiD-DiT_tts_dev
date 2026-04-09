@@ -50,8 +50,6 @@ REWARD_PROMPT_MODE="${REWARD_PROMPT_MODE:-standard}"
 CORRECTION_STRENGTHS="${CORRECTION_STRENGTHS:-0.0}"
 N_VARIANTS="${N_VARIANTS:-4}"
 USE_QWEN="${USE_QWEN:-1}"
-REWRITE_SCHEME="${REWRITE_SCHEME:-legacy}"
-AXIS_TARGET_SIZE="${AXIS_TARGET_SIZE:-6}"
 if [[ "${CFG_ONLY:-0}" == "1" ]]; then
   N_VARIANTS=0
   CORRECTION_STRENGTHS="0.0"
@@ -134,7 +132,6 @@ echo "[lookahead] run_dir=${RUN_DIR}"
 echo "[lookahead] prompt_file=${PROMPT_FILE} range=[${START_INDEX},${END_INDEX})"
 echo "[lookahead] backend=${SD35_BACKEND} reward_backend=${REWARD_BACKEND} num_gpus=${NUM_GPUS}"
 echo "[lookahead] modes=[${LOOKAHEAD_MODES}] cfg_scales=[${CFG_SCALES}] n_variants=${N_VARIANTS}"
-echo "[lookahead] rewrite_scheme=${REWRITE_SCHEME} axis_target_size=${AXIS_TARGET_SIZE}"
 
 echo "[preload] caching model: ${PRELOAD_MODEL_ID}"
 env -u RANK -u LOCAL_RANK -u WORLD_SIZE -u LOCAL_WORLD_SIZE -u NODE_RANK \
@@ -197,8 +194,6 @@ run_mode() {
     --cfg_scales "${cfg_scales_arr[@]}" \
     --baseline_cfg "${BASELINE_CFG}" \
     --n_variants "${N_VARIANTS}" \
-    --rewrite_scheme "${REWRITE_SCHEME}" \
-    --axis_target_size "${AXIS_TARGET_SIZE}" \
     --correction_strengths "${corr_strengths_arr[@]}" \
     --n_sims "${N_SIMS}" \
     --ucb_c "${UCB_C}" \

@@ -28,8 +28,6 @@ WIDTH="${WIDTH:-1024}"
 HEIGHT="${HEIGHT:-1024}"
 SEED="${SEED:-42}"
 N_VARIANTS="${N_VARIANTS:-3}"
-REWRITE_SCHEME="${REWRITE_SCHEME:-legacy}"
-AXIS_TARGET_SIZE="${AXIS_TARGET_SIZE:-6}"
 CFG_SCALES="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5}"
 BASELINE_CFG="${BASELINE_CFG:-1.0}"
 N_SIMS="${N_SIMS:-50}"
@@ -160,7 +158,6 @@ echo "  reward_backend: ${REWARD_BACKEND}"
 echo "  eval_best_images: ${EVAL_BEST_IMAGES} eval_backends: ${EVAL_BACKENDS} eval_device: ${EVAL_REWARD_DEVICE}"
 echo "  ga: pop=${GA_POPULATION} gens=${GA_GENERATIONS} eval_batch=${GA_EVAL_BATCH}"
 echo "  use_qwen: ${USE_QWEN} (precompute=${PRECOMPUTE_REWRITES})"
-echo "  rewrite_scheme: ${REWRITE_SCHEME} axis_target_size=${AXIS_TARGET_SIZE}"
 echo "  rewrites_file: ${REWRITES_FILE}"
 echo "  out: ${RUN_DIR}"
 
@@ -371,14 +368,6 @@ precompute_rewrites_cache() {
     return 0
   fi
   if [[ "${PRECOMPUTE_REWRITES}" != "1" ]]; then
-    return 0
-  fi
-  if [[ "${REWRITE_SCHEME}" == "axis" ]]; then
-    if [[ -s "${REWRITES_FILE}" ]]; then
-      echo "[rewrites] axis scheme: using existing cache file ${REWRITES_FILE} (skip legacy precompute)."
-    else
-      echo "[rewrites] axis scheme: no axis cache file found; will run Qwen rewrites online per rank."
-    fi
     return 0
   fi
   ensure_qwen_precompute_runtime
@@ -596,7 +585,7 @@ run_method() {
     if [[ "${PRECOMPUTE_REWRITES}" == "1" && -f "${REWRITES_FILE}" ]]; then
       # Cache-only variant path: avoid loading Qwen in each DDP rank.
       extra+=(--no_qwen)
-    elif [[ "${PRECOMPUTE_REWRITES}" == "1" && "${REWRITE_SCHEME}" != "axis" && ! -f "${REWRITES_FILE}" ]]; then
+    elif [[ "${PRECOMPUTE_REWRITES}" == "1" && ! -f "${REWRITES_FILE}" ]]; then
       echo "Error: USE_QWEN=1 with PRECOMPUTE_REWRITES=1 requires rewrites cache file, but not found: ${REWRITES_FILE}" >&2
       exit 1
     fi
@@ -688,8 +677,6 @@ PY
     --cfg_scales ${CFG_SCALES} \
     --baseline_cfg "${BASELINE_CFG}" \
     --n_variants "${N_VARIANTS}" \
-    --rewrite_scheme "${REWRITE_SCHEME}" \
-    --axis_target_size "${AXIS_TARGET_SIZE}" \
     --qwen_id "${QWEN_ID}" \
     --qwen_dtype "${QWEN_DTYPE}" \
     --qwen_timeout_sec "${QWEN_TIMEOUT_SEC}" \

@@ -56,7 +56,7 @@ fi
 if [[ "${REWRITES_OVERWRITE}" == "1" ]]; then
   QWEN_ARGS+=(--rewrites_overwrite)
 else
-  QWEN_ARGS+=(--no_rewrites_overwrite)
+  QWEN_ARGS+=(--no-rewrites_overwrite)
 fi
 if [[ -n "${REWRITES_CACHE_FILE}" ]]; then
   QWEN_ARGS+=(--rewrites_cache_file "${REWRITES_CACHE_FILE}")
@@ -66,17 +66,17 @@ BOOL_ARGS=()
 if [[ "${COMPUTE_IMAGE_DIVERSITY}" == "1" ]]; then
   BOOL_ARGS+=(--compute_image_diversity)
 else
-  BOOL_ARGS+=(--no_compute_image_diversity)
+  BOOL_ARGS+=(--no-compute_image_diversity)
 fi
 if [[ "${RUN_STEPAWARE}" == "1" ]]; then
   BOOL_ARGS+=(--run_stepaware)
 else
-  BOOL_ARGS+=(--no_run_stepaware)
+  BOOL_ARGS+=(--no-run_stepaware)
 fi
 if [[ "${SAVE_IMAGES}" == "1" ]]; then
   BOOL_ARGS+=(--save_images)
 else
-  BOOL_ARGS+=(--no_save_images)
+  BOOL_ARGS+=(--no-save_images)
 fi
 
 mkdir -p "${OUT_DIR}"

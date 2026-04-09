@@ -48,7 +48,7 @@ search:
       - export PATH=/home/aiscuser/.local/bin:$$PATH
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
-      - export HF_HOME=/home/aiscuser/hf_cache
+      - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
       - export HF_TOKEN={hf_token}
       - export HUGGING_FACE_HUB_TOKEN={hf_token}
       - export AZFUSE_USE_FUSE=0
@@ -69,27 +69,17 @@ search:
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
-      - mkdir -p /home/aiscuser/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
+      - mkdir -p /mnt/data/v-yigu/model_cache/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
       - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
       # ── Preload reward models ──────────────────────────────────────────────
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
-      # ── Preload SenseFlow base models & transformer (all to local NVMe via HF_HOME) ──
-      # Download models; capture exact snapshot paths so from_pretrained reads locally
-      # SD3.5-large: VAE + text encoders only (transformer replaced by SenseFlow)
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; p=snapshot_download('stabilityai/stable-diffusion-3.5-large', token=os.environ.get('HF_TOKEN'), ignore_patterns=['transformer/*']); open('/tmp/sd35_path.txt','w').write(p); print('SD3.5-large OK:', p)"
-      - export SD35_LOCAL_DIR=$$(cat /tmp/sd35_path.txt)
-      # FLUX.1-schnell
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; p=snapshot_download('black-forest-labs/FLUX.1-schnell', token=os.environ.get('HF_TOKEN')); open('/tmp/flux_path.txt','w').write(p); print('FLUX.1-schnell OK:', p)"
-      - export FLUX_LOCAL_DIR=$$(cat /tmp/flux_path.txt)
-      # SenseFlow transformer (SD35L + Flux-Schnell subfolders)
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; p=snapshot_download('domiso/SenseFlow', token=os.environ.get('HF_TOKEN')); open('/tmp/senseflow_path.txt','w').write(p); print('SenseFlow OK:', p)"
-      - export SENSEFLOW_LOCAL_DIR=$$(cat /tmp/senseflow_path.txt)
-      - export MODEL_ID=$$FLUX_LOCAL_DIR
-      # ── Preload Qwen for prompt rewrites (must happen before offline mode) ──
-      - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', token=os.environ.get('HF_TOKEN')); print('Qwen cache OK')"; fi
-      - export HF_HUB_OFFLINE=1
-      - export TRANSFORMERS_OFFLINE=1
+      # ── Preload models into persistent HF cache (single-threaded to avoid 503s) ──
+      - export HF_HUB_ENABLE_HF_TRANSFER=0
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('stabilityai/stable-diffusion-3.5-large', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('SD3.5-large cache OK')"
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('FLUX.1-schnell cache OK')"
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('domiso/SenseFlow', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('SenseFlow cache OK')"
+      - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('Qwen cache OK')"; fi
       # ── Prompt file ────────────────────────────────────────────────────────
       - export HPSV2_PROMPT_DIR=/mnt/data/v-yigu/hpsv2_prompt_cache
       - export PROMPT_STYLE={prompt_style}

@@ -367,7 +367,7 @@ def run_mcts_dynamic_cfg(
     latents0 = su.make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx0 = torch.zeros_like(latents0)
     sched = su.step_schedule(ctx.device, latents0.dtype, args.steps, getattr(args, "sigmas", None))
-    _, t0_4d = sched[0]
+    _, t0_4d, _ = sched[0]
     start_latents = (1.0 - t0_4d) * dx0 + t0_4d * latents0
     root = DynamicMCTSNode(0, dx0, start_latents, parent=None, incoming_action=None)
 
@@ -476,14 +476,14 @@ def run_mcts_dynamic_cfg(
         while rollout_step < int(args.steps):
             _, roll_candidates = node_actions(rollout_node)
             variant_idx, cfg, cs = roll_candidates[int(rng.integers(0, len(roll_candidates)))]
-            t_flat, t_4d = sched[rollout_step]
+            t_flat, t_4d, _dt = sched[rollout_step]
             flow = su.transformer_step(args, ctx, rollout_latents, emb, variant_idx, t_flat, cfg)
             rollout_dx = su._pred_x0(rollout_latents, t_4d, flow, args.x0_sampler)
             if float(cs) > 0.0:
                 rollout_dx = su.apply_reward_correction(ctx, rollout_dx, prompt, reward_model, float(cs), cfg=float(cfg))
             rollout_step += 1
             if rollout_step < int(args.steps):
-                _, next_t_4d = sched[rollout_step]
+                _, next_t_4d, _ = sched[rollout_step]
                 noise = torch.randn_like(rollout_dx)
                 rollout_latents = (1.0 - next_t_4d) * rollout_dx + next_t_4d * noise
                 rollout_node = DynamicMCTSNode(
@@ -546,13 +546,13 @@ def run_mcts_dynamic_cfg(
     replay_dx = dx0
     replay_lat = start_latents
     for step_idx, (variant_idx, cfg, cs) in enumerate(exploit_path):
-        t_flat, t_4d = sched[step_idx]
+        t_flat, t_4d, _dt = sched[step_idx]
         flow = su.transformer_step(args, ctx, replay_lat, emb, variant_idx, t_flat, cfg)
         replay_dx = su._pred_x0(replay_lat, t_4d, flow, args.x0_sampler)
         if float(cs) > 0.0:
             replay_dx = su.apply_reward_correction(ctx, replay_dx, prompt, reward_model, float(cs), cfg=float(cfg))
         if step_idx + 1 < int(args.steps):
-            _, next_t_4d = sched[step_idx + 1]
+            _, next_t_4d, _ = sched[step_idx + 1]
             noise = torch.randn_like(replay_dx)
             replay_lat = (1.0 - next_t_4d) * replay_dx + next_t_4d * noise
 

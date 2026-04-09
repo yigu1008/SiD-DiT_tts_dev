@@ -214,13 +214,15 @@ _BACKEND_CONFIGS = {
         "gen_batch_size": 2,  # CFG doubles → [4,C,H,W] per step at gbs=2; may OOM on 40GB
     },
     # Official SD3.5 Large base model (decoupled from SiD student checkpoint).
+    # Uses standard flow-matching Euler ODE solver (NOT SiD re-noising).
     "sd35_base": {
         "model_id": "stabilityai/stable-diffusion-3.5-large",
         "transformer_id": None,
         "transformer_subfolder": None,
-        "sigmas": None,       # linear schedule driven by --steps
-        "dtype": "float16",
+        "sigmas": None,       # will use FlowMatchEulerDiscreteScheduler
+        "dtype": "bfloat16",  # SD3.5 official uses bfloat16
         "gen_batch_size": 1,  # conservative default for SD3.5L + CFG
+        "euler_sampler": True,  # standard Euler ODE stepping, no re-noising
     },
     # SenseFlow Large: 2-step, no CFG → no batch doubling → can use larger gen_batch_size.
     # On a 40 GB GPU: ~16 GB transformer + ~14 GB text-encoders + ~0.3 GB VAE ≈ 30 GB static,
@@ -856,22 +858,45 @@ def step_schedule(
     dtype: torch.dtype,
     steps: int,
     sigmas: list[float] | None = None,
-) -> list[tuple[torch.Tensor, torch.Tensor]]:
-    """Return (t_flat, t_4d) pairs for each denoising step.
+    euler: bool = False,
+    shift: float = 3.0,
+) -> list[tuple[torch.Tensor, torch.Tensor, float]]:
+    """Return (t_flat, t_4d, dt) triples for each denoising step.
+
+    ``dt`` is the Euler step size (sigma_next - sigma_current), negative because
+    sigma decreases.  For SiD/SenseFlow ``dt`` is unused by the caller.
 
     If ``sigmas`` is provided it is used as the sigma schedule directly
     (SenseFlow style: e.g. [1.0, 0.75] for 2-step Large).
-    Otherwise a uniform linear schedule over ``steps`` is used.
+    If ``euler`` is True, use FlowMatchEulerDiscreteScheduler-style shifted
+    schedule (proper for SD3.5 base).
+    Otherwise a uniform linear schedule over ``steps`` is used (SiD).
     """
     if sigmas is not None:
         sigma_list = [float(s) for s in sigmas]
+    elif euler:
+        # Replicate FlowMatchEulerDiscreteScheduler with shift (SD3.5 uses shift=3.0)
+        # timesteps are linearly spaced, then shifted: sigma = shift * t / (1 + (shift-1) * t)
+        ts = torch.linspace(1, 0, steps + 1)  # [1.0, ..., 0.0] with steps+1 points
+        sigmas_raw = ts  # base sigmas = t
+        # Apply shift: sigma = shift * s / (1 + (shift - 1) * s)
+        shifted = shift * sigmas_raw / (1.0 + (shift - 1.0) * sigmas_raw)
+        sigma_list = [float(shifted[i]) for i in range(steps)]
+        sigma_next_list = [float(shifted[i + 1]) for i in range(steps)]
     else:
         sigma_list = [1.0 - float(i) / float(steps) for i in range(steps)]
-    sched: list[tuple[torch.Tensor, torch.Tensor]] = []
-    for s in sigma_list:
+
+    sched: list[tuple[torch.Tensor, torch.Tensor, float]] = []
+    for i, s in enumerate(sigma_list):
         t_flat = torch.full((1,), s, device=device, dtype=dtype)
         t_4d = t_flat.view(1, 1, 1, 1)
-        sched.append((t_flat, t_4d))
+        if euler and sigmas is None:
+            dt = sigma_next_list[i] - s  # negative
+        elif sigmas is not None and i + 1 < len(sigma_list):
+            dt = sigma_list[i + 1] - s
+        else:
+            dt = -s  # last step goes to 0
+        sched.append((t_flat, t_4d, dt))
     return sched
 
 
@@ -889,6 +914,61 @@ def _pred_x0(
     return out if x0_sampler else xt - t * out
 
 
+# ── Denoising step helpers ───────────────────────────────────────────────────
+# These encapsulate the difference between SiD (re-noising + x0 prediction)
+# and standard Euler ODE stepping (for sd35_base).
+
+def _prepare_latents(
+    latents: torch.Tensor,
+    dx: torch.Tensor,
+    noise: torch.Tensor,
+    t_4d: torch.Tensor,
+    step_idx: int,
+    use_euler: bool,
+) -> torch.Tensor:
+    """Prepare noisy latents for the current step.
+
+    Euler:  latents are already at the right noise level (Euler ODE state).
+    SiD:    reconstruct noisy latents from predicted x0 (dx) + noise.
+    """
+    if use_euler:
+        return latents  # already at correct sigma
+    noise_val = latents if step_idx == 0 else noise
+    return (1.0 - t_4d) * dx + t_4d * noise_val
+
+
+def _apply_step(
+    latents: torch.Tensor,
+    flow: torch.Tensor,
+    dx: torch.Tensor,
+    t_4d: torch.Tensor,
+    dt: float,
+    use_euler: bool,
+    x0_sampler: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply one denoising step.  Returns (updated_latents, updated_dx).
+
+    Euler:  latents_next = latents + dt * flow;  dx = latents - t * flow (for scoring)
+    SiD:    dx = pred_x0(latents, t, flow);  latents unchanged (re-noised next iter)
+    """
+    if use_euler:
+        latents_next = latents + dt * flow
+        dx_new = latents - t_4d * flow  # x0 estimate for scoring
+        return latents_next, dx_new
+    else:
+        dx_new = _pred_x0(latents, t_4d, flow, x0_sampler)
+        return latents, dx_new
+
+
+def _final_decode_tensor(
+    latents: torch.Tensor,
+    dx: torch.Tensor,
+    use_euler: bool,
+) -> torch.Tensor:
+    """Return the tensor to pass to VAE decode."""
+    return latents if use_euler else dx
+
+
 def run_baseline(
     args: argparse.Namespace,
     ctx: PipelineContext,
@@ -899,14 +979,24 @@ def run_baseline(
     cfg_scale: float = 1.0,
 ) -> tuple[Image.Image, float]:
     latents = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
-    dx = torch.zeros_like(latents)
-    sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
-    for i, (t_flat, t_4d) in enumerate(sched):
-        noise = latents if i == 0 else torch.randn_like(latents)
-        latents = (1.0 - t_4d) * dx + t_4d * noise
-        flow = transformer_step(args, ctx, latents, emb, 0, t_flat, float(cfg_scale))
-        dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
-    image = decode_to_pil(ctx, dx)
+    use_euler = getattr(args, "euler_sampler", False)
+    sched = step_schedule(ctx.device, latents.dtype, args.steps,
+                          getattr(args, "sigmas", None), euler=use_euler)
+    if use_euler:
+        # Standard Euler ODE: latents starts as pure noise, step forward
+        for i, (t_flat, t_4d, dt) in enumerate(sched):
+            flow = transformer_step(args, ctx, latents, emb, 0, t_flat, float(cfg_scale))
+            latents = latents + dt * flow
+        image = decode_to_pil(ctx, latents)
+    else:
+        # SiD / SenseFlow: re-noise + predict x0
+        dx = torch.zeros_like(latents)
+        for i, (t_flat, t_4d, dt) in enumerate(sched):
+            noise = latents if i == 0 else torch.randn_like(latents)
+            latents = (1.0 - t_4d) * dx + t_4d * noise
+            flow = transformer_step(args, ctx, latents, emb, 0, t_flat, float(cfg_scale))
+            dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
+        image = decode_to_pil(ctx, dx)
     return image, score_image(reward_model, prompt, image)
 
 
@@ -924,8 +1014,9 @@ def run_baseline_batch(
     B = len(prompts)
     dtype = embs[0].cond_text[0].dtype
     latents = torch.cat([make_latents(ctx, s, args.height, args.width, dtype) for s in seeds])
-    dx = torch.zeros_like(latents)
-    sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
+    use_euler = getattr(args, "euler_sampler", False)
+    sched = step_schedule(ctx.device, latents.dtype, args.steps,
+                          getattr(args, "sigmas", None), euler=use_euler)
 
     enc_hs = torch.cat([emb.cond_text[0] for emb in embs])    # [B, seq, dim]
     pooled = torch.cat([emb.cond_pooled[0] for emb in embs])  # [B, dim]
@@ -933,9 +1024,11 @@ def run_baseline_batch(
         uncond_hs = torch.cat([emb.uncond_text for emb in embs])
         uncond_pooled = torch.cat([emb.uncond_pooled for emb in embs])
 
-    for i, (t_flat, t_4d) in enumerate(sched):
-        noise = latents if i == 0 else torch.randn_like(latents)
-        latents = (1.0 - t_4d) * dx + t_4d * noise
+    dx = torch.zeros_like(latents)
+    for i, (t_flat, t_4d, dt) in enumerate(sched):
+        if not use_euler:
+            noise = latents if i == 0 else torch.randn_like(latents)
+            latents = (1.0 - t_4d) * dx + t_4d * noise
         t_batch = t_flat.expand(B)
         if cfg_scale == 1.0:
             ctx.nfe += B
@@ -957,11 +1050,15 @@ def run_baseline_batch(
             )[0]
             flow_u, flow_c = flow_both.chunk(2)
             flow = flow_u + cfg_scale * (flow_c - flow_u)
-        dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
+        if use_euler:
+            latents = latents + dt * flow
+        else:
+            dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
 
+    final = latents if use_euler else dx
     out: list[tuple[Image.Image, float]] = []
     for j in range(B):
-        img = decode_to_pil(ctx, dx[j : j + 1])
+        img = decode_to_pil(ctx, final[j : j + 1])
         out.append((img, score_image(reward_model, prompts[j], img)))
     return out
 
@@ -989,20 +1086,22 @@ def run_greedy_batch(
     ]
     latents = torch.cat([make_latents(ctx, s, args.height, args.width, dtype) for s in seeds])
     dx = torch.zeros_like(latents)
-    sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
+    use_euler = getattr(args, "euler_sampler", False)
+    sched = step_schedule(ctx.device, latents.dtype, args.steps,
+                          getattr(args, "sigmas", None), euler=use_euler)
     chosen_per: list[list[tuple[int, float, float]]] = [[] for _ in range(B)]
 
     # Group actions by (variant_idx, cfg) so each transformer call covers all correction variants.
     # correction is applied after the flow step, so the transformer is called once per (vi, cfg) pair.
     vc_actions: list[tuple[int, float]] = list(dict.fromkeys((vi, cfg) for vi, cfg, _ in actions))
 
-    for step_idx, (t_flat, t_4d) in enumerate(sched):
-        noise = latents if step_idx == 0 else torch.randn_like(latents)
-        latents = (1.0 - t_4d) * dx + t_4d * noise  # [B, C, H, W]
+    for step_idx, (t_flat, t_4d, dt) in enumerate(sched):
+        latents = _prepare_latents(latents, dx, torch.randn_like(latents), t_4d, step_idx, use_euler)
 
         best_scores = [-float("inf")] * B
         best_actions: list[tuple[int, float, float]] = [actions[0]] * B
         best_dx_list = [dx[j : j + 1].clone() for j in range(B)]
+        best_latents_list = [latents[j : j + 1].clone() for j in range(B)]
 
         for variant_idx, cfg in vc_actions:
             enc_hs = torch.cat([embs[j].cond_text[variant_idx] for j in range(B)])
@@ -1031,10 +1130,10 @@ def run_greedy_batch(
                 flow_u, flow_c = flow_both.chunk(2)
                 flow = flow_u + cfg * (flow_c - flow_u)
 
-            base_cand_dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)  # [B, C, H, W] — shared across correction variants
+            _, cand_dx = _apply_step(latents, flow, dx, t_4d, dt, use_euler, args.x0_sampler)
             for cs in corr_strengths:
                 for j in range(B):
-                    cand_dx_j = base_cand_dx[j : j + 1].clone()
+                    cand_dx_j = cand_dx[j : j + 1].clone()
                     if cs > 0.0:
                         cand_dx_j = apply_reward_correction(ctx, cand_dx_j, prompts[j], reward_model, cs, cfg=cfg)
                     cand_img = decode_to_pil(ctx, cand_dx_j)
@@ -1043,14 +1142,19 @@ def run_greedy_batch(
                         best_scores[j] = cand_score
                         best_actions[j] = (variant_idx, cfg, cs)
                         best_dx_list[j] = cand_dx_j
+                        if use_euler:
+                            best_latents_list[j] = (latents[j:j+1] + dt * flow[j:j+1])
 
+        if use_euler:
+            latents = torch.cat(best_latents_list)
         dx = torch.cat(best_dx_list)
         for j in range(B):
             chosen_per[j].append(best_actions[j])
 
     results = []
+    final = _final_decode_tensor(latents, dx, use_euler)
     for j in range(B):
-        img = decode_to_pil(ctx, dx[j : j + 1])
+        img = decode_to_pil(ctx, final[j : j + 1])
         score = score_image(reward_model, prompts[j], img)
         results.append(SearchResult(image=img, score=score, actions=chosen_per[j]))
     return results
@@ -1074,18 +1178,19 @@ def run_bon(
     best_score = -float("inf")
     best_img: Image.Image | None = None
 
-    print(f"  bon: n={n} cfg={cfg:.2f} variant={variant_idx}")
+    use_euler = getattr(args, "euler_sampler", False)
+    print(f"  bon: n={n} cfg={cfg:.2f} variant={variant_idx} euler={use_euler}")
     for i in range(n):
         s = seed + i
         latents = make_latents(ctx, s, args.height, args.width, emb.cond_text[0].dtype)
         dx = torch.zeros_like(latents)
-        sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
-        for j, (t_flat, t_4d) in enumerate(sched):
-            noise = latents if j == 0 else torch.randn_like(latents)
-            latents = (1.0 - t_4d) * dx + t_4d * noise
+        sched = step_schedule(ctx.device, latents.dtype, args.steps,
+                              getattr(args, "sigmas", None), euler=use_euler)
+        for j, (t_flat, t_4d, step_dt) in enumerate(sched):
+            latents = _prepare_latents(latents, dx, torch.randn_like(latents), t_4d, j, use_euler)
             flow = transformer_step(args, ctx, latents, emb, variant_idx, t_flat, cfg)
-            dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
-        img = decode_to_pil(ctx, dx)
+            latents, dx = _apply_step(latents, flow, dx, t_4d, step_dt, use_euler, args.x0_sampler)
+        img = decode_to_pil(ctx, _final_decode_tensor(latents, dx, use_euler))
         score = score_image(reward_model, prompt, img)
         mark = ""
         if score > best_score:
@@ -1123,7 +1228,9 @@ def run_beam(
     ]
     beam_width = max(1, int(args.beam_width))
     dtype = emb.cond_text[0].dtype
-    sched = step_schedule(ctx.device, dtype, args.steps, getattr(args, "sigmas", None))
+    use_euler = getattr(args, "euler_sampler", False)
+    sched = step_schedule(ctx.device, dtype, args.steps,
+                          getattr(args, "sigmas", None), euler=use_euler)
 
     init_latents = make_latents(ctx, seed, args.height, args.width, dtype)
     # beams: list of (dx, latents, path)
@@ -1131,13 +1238,13 @@ def run_beam(
         (torch.zeros_like(init_latents), init_latents, [])
     ]
 
-    print(f"  beam: width={beam_width} actions={len(actions)} steps={args.steps}")
-    for step_idx, (t_flat, t_4d) in enumerate(sched):
-        candidates: list[tuple[float, torch.Tensor, list[tuple[int, float, float]]]] = []
+    print(f"  beam: width={beam_width} actions={len(actions)} steps={args.steps} euler={use_euler}")
+    for step_idx, (t_flat, t_4d, dt) in enumerate(sched):
+        # candidates: (score, dx, latents, path)
+        candidates: list[tuple[float, torch.Tensor, torch.Tensor, list[tuple[int, float, float]]]] = []
 
         for beam_dx, beam_latents, beam_path in beams:
-            noise = beam_latents if step_idx == 0 else torch.randn_like(beam_latents)
-            latents_in = (1.0 - t_4d) * beam_dx + t_4d * noise
+            latents_in = _prepare_latents(beam_latents, beam_dx, torch.randn_like(beam_latents), t_4d, step_idx, use_euler)
             # Cache transformer output per (vi, cfg) to avoid redundant forward passes
             vc_cache: dict[tuple[int, float], torch.Tensor] = {}
             for vi, cfg, cs in actions:
@@ -1145,12 +1252,13 @@ def run_beam(
                 if vc_key not in vc_cache:
                     vc_cache[vc_key] = transformer_step(args, ctx, latents_in, emb, vi, t_flat, cfg)
                 flow = vc_cache[vc_key]
-                cand_dx = _pred_x0(latents_in, t_4d, flow, args.x0_sampler)
+                _, cand_dx = _apply_step(latents_in, flow, beam_dx, t_4d, dt, use_euler, args.x0_sampler)
+                cand_latents = latents_in + dt * flow if use_euler else latents_in
                 if cs > 0.0:
                     cand_dx = apply_reward_correction(ctx, cand_dx, prompt, reward_model, cs, cfg=cfg)
                 cand_img = decode_to_pil(ctx, cand_dx)
                 cand_score = score_image(reward_model, prompt, cand_img)
-                candidates.append((cand_score, cand_dx, beam_path + [(vi, cfg, cs)]))
+                candidates.append((cand_score, cand_dx, cand_latents, beam_path + [(vi, cfg, cs)]))
 
         candidates.sort(key=lambda x: x[0], reverse=True)
         print(
@@ -1158,18 +1266,12 @@ def run_beam(
             f"top={candidates[0][0]:.4f}"
         )
 
-        if step_idx + 1 < args.steps:
-            _, next_t_4d = sched[step_idx + 1]
-            beams = []
-            for _, dx, path in candidates[:beam_width]:
-                noise = torch.randn_like(dx)
-                next_latents = (1.0 - next_t_4d) * dx + next_t_4d * noise
-                beams.append((dx, next_latents, path))
-        else:
-            beams = [(dx, dx, path) for _, dx, path in candidates[:beam_width]]
+        beams = []
+        for _, dx, lat, path in candidates[:beam_width]:
+            beams.append((dx, lat, path))
 
-    best_dx, _, best_path = beams[0]
-    best_img = decode_to_pil(ctx, best_dx)
+    best_dx, best_latents, best_path = beams[0]
+    best_img = decode_to_pil(ctx, _final_decode_tensor(best_latents, best_dx, use_euler))
     final_score = score_image(reward_model, prompt, best_img)
     return SearchResult(
         image=best_img,
@@ -1197,15 +1299,17 @@ def run_greedy(
     ]
     latents = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx = torch.zeros_like(latents)
-    sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
+    use_euler = getattr(args, "euler_sampler", False)
+    sched = step_schedule(ctx.device, latents.dtype, args.steps,
+                          getattr(args, "sigmas", None), euler=use_euler)
     chosen: list[tuple[int, float, float]] = []
-    for step_idx, (t_flat, t_4d) in enumerate(sched):
-        noise = latents if step_idx == 0 else torch.randn_like(latents)
-        latents = (1.0 - t_4d) * dx + t_4d * noise
+    for step_idx, (t_flat, t_4d, dt) in enumerate(sched):
+        latents = _prepare_latents(latents, dx, torch.randn_like(latents), t_4d, step_idx, use_euler)
 
         best_score = -float("inf")
         best_action = actions[0]
         best_dx = None
+        best_latents = None
 
         # Compute transformer flow once per (variant_idx, cfg) pair, then branch on correction.
         vc_seen: dict[tuple[int, float], torch.Tensor] = {}
@@ -1215,7 +1319,7 @@ def run_greedy(
             if vc_key not in vc_seen:
                 vc_seen[vc_key] = transformer_step(args, ctx, latents, emb, variant_idx, t_flat, cfg)
             flow = vc_seen[vc_key]
-            cand_dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
+            _, cand_dx = _apply_step(latents, flow, dx, t_4d, dt, use_euler, args.x0_sampler)
             if cs > 0.0:
                 cand_dx = apply_reward_correction(ctx, cand_dx, prompt, reward_model, cs, cfg=cfg)
             cand_img = decode_to_pil(ctx, cand_dx)
@@ -1225,11 +1329,14 @@ def run_greedy(
                 best_score = cand_score
                 best_action = (variant_idx, cfg, cs)
                 best_dx = cand_dx.clone()
+                best_latents = (latents + dt * flow).clone()
                 marker = " <- best"
             print(f"    v{variant_idx} cfg={cfg:.2f} corr={cs:.2f} IR={cand_score:.4f}{marker}")
 
         assert best_dx is not None
         dx = best_dx
+        if use_euler:
+            latents = best_latents
         chosen.append(best_action)
         preview = variants[best_action[0]][:56]
         print(
@@ -1237,7 +1344,7 @@ def run_greedy(
             f"prompt='{preview}' score={best_score:.4f}"
         )
 
-    final_img = decode_to_pil(ctx, dx)
+    final_img = decode_to_pil(ctx, _final_decode_tensor(latents, dx, use_euler))
     final_score = score_image(reward_model, prompt, final_img)
     return SearchResult(image=final_img, score=final_score, actions=chosen)
 
@@ -1261,15 +1368,16 @@ def run_schedule_actions(
 
     latents = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx = torch.zeros_like(latents)
-    sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
-    for step_idx, ((t_flat, t_4d), (variant_idx, cfg, cs)) in enumerate(zip(sched, actions)):
-        noise = latents if step_idx == 0 else torch.randn_like(latents)
-        latents = (1.0 - t_4d) * dx + t_4d * noise
+    use_euler = getattr(args, "euler_sampler", False)
+    sched = step_schedule(ctx.device, latents.dtype, args.steps,
+                          getattr(args, "sigmas", None), euler=use_euler)
+    for step_idx, ((t_flat, t_4d, dt), (variant_idx, cfg, cs)) in enumerate(zip(sched, actions)):
+        latents = _prepare_latents(latents, dx, torch.randn_like(latents), t_4d, step_idx, use_euler)
         flow = transformer_step(args, ctx, latents, emb, int(variant_idx), t_flat, float(cfg))
-        dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
+        latents, dx = _apply_step(latents, flow, dx, t_4d, dt, use_euler, args.x0_sampler)
         if float(cs) > 0.0:
             dx = apply_reward_correction(ctx, dx, prompt, reward_model, float(cs), cfg=float(cfg))
-    image = decode_to_pil(ctx, dx)
+    image = decode_to_pil(ctx, _final_decode_tensor(latents, dx, use_euler))
     score = score_image(reward_model, prompt, image)
     return SearchResult(image=image, score=score, actions=[(int(v), float(c), float(r)) for v, c, r in actions])
 
@@ -1326,28 +1434,31 @@ def score_schedule_actions_batch(
     base_latents = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     latents = base_latents.repeat(batch_n, 1, 1, 1)
     dx = torch.zeros_like(latents)
-    sched = step_schedule(ctx.device, latents.dtype, steps, sigmas)
+    use_euler = getattr(args, "euler_sampler", False)
+    sched = step_schedule(ctx.device, latents.dtype, steps, sigmas, euler=use_euler)
     shared_noises: list[torch.Tensor] = [base_latents]
     for _ in range(1, steps):
         shared_noises.append(torch.randn_like(base_latents))
 
-    for step_idx, (t_flat, t_4d) in enumerate(sched):
-        if step_idx == 0:
-            noise = latents
-        else:
-            noise = shared_noises[step_idx].expand(batch_n, -1, -1, -1)
-        latents = (1.0 - t_4d) * dx + t_4d * noise
+    for step_idx, (t_flat, t_4d, dt) in enumerate(sched):
+        if not use_euler:
+            if step_idx == 0:
+                noise = latents
+            else:
+                noise = shared_noises[step_idx].expand(batch_n, -1, -1, -1)
+            latents = (1.0 - t_4d) * dx + t_4d * noise
         step_actions = [actions[step_idx] for actions in actions_batch]
         flow = _batched_flow_for_step_actions(args, ctx, emb, latents, t_flat, step_actions)
-        dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
+        latents, dx = _apply_step(latents, flow, dx, t_4d, dt, use_euler, args.x0_sampler)
         # Apply per-genome correction (uses enable_grad internally, safe under @no_grad).
         for bi, (_vi, _cfg, cs) in enumerate(step_actions):
             if float(cs) > 0.0:
                 dx[bi : bi + 1] = apply_reward_correction(ctx, dx[bi : bi + 1], prompt, reward_model, float(cs), cfg=float(_cfg))
 
+    final = _final_decode_tensor(latents, dx, use_euler)
     scores: list[float] = []
     for bi in range(batch_n):
-        image = decode_to_pil(ctx, dx[bi : bi + 1])
+        image = decode_to_pil(ctx, final[bi : bi + 1])
         scores.append(score_image(reward_model, prompt, image))
     return scores
 
@@ -1791,22 +1902,23 @@ def _expand_child(
     emb: EmbeddingContext,
     node: MCTSNode,
     action: tuple[int, float, float],
-    sched: list[tuple[torch.Tensor, torch.Tensor]],
+    sched: list[tuple[torch.Tensor, torch.Tensor, float]],
     reward_model: "UnifiedRewardScorer",
     prompt: str,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    use_euler = getattr(args, "euler_sampler", False)
     variant_idx, cfg, cs = action
-    t_flat, t_4d = sched[node.step]
+    t_flat, t_4d, dt = sched[node.step]
     flow = transformer_step(args, ctx, node.latents, emb, variant_idx, t_flat, cfg)
-    new_dx = _pred_x0(node.latents, t_4d, flow, args.x0_sampler)
+    new_latents, new_dx = _apply_step(node.latents, flow, node.dx, t_4d, dt, use_euler, args.x0_sampler)
     if float(cs) > 0.0:
         new_dx = apply_reward_correction(ctx, new_dx, prompt, reward_model, float(cs), cfg=float(cfg))
     next_step = node.step + 1
-    if next_step < len(sched):
-        _, next_t_4d = sched[next_step]
+    if next_step < len(sched) and not use_euler:
+        _, next_t_4d, _ = sched[next_step]
         noise = torch.randn_like(new_dx)
         new_latents = (1.0 - next_t_4d) * new_dx + next_t_4d * noise
-    else:
+    elif next_step >= len(sched):
         new_latents = None
     return new_dx, new_latents
 
@@ -1875,9 +1987,11 @@ def run_mcts(
     n_actions = len(actions)
     latents0 = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx0 = torch.zeros_like(latents0)
-    sched = step_schedule(ctx.device, latents0.dtype, args.steps, getattr(args, "sigmas", None))
-    _, t0_4d = sched[0]
-    start_latents = (1.0 - t0_4d) * dx0 + t0_4d * latents0
+    use_euler = getattr(args, "euler_sampler", False)
+    sched = step_schedule(ctx.device, latents0.dtype, args.steps,
+                          getattr(args, "sigmas", None), euler=use_euler)
+    _, t0_4d, _ = sched[0]
+    start_latents = _prepare_latents(latents0, dx0, latents0, t0_4d, 0, use_euler)
     root = MCTSNode(0, dx0, start_latents)
 
     best_global_score = -float("inf")
@@ -1910,18 +2024,19 @@ def run_mcts(
         rollout_step = node.step
         while rollout_step < args.steps:
             variant_idx, cfg, cs = actions[np.random.randint(n_actions)]
-            t_flat, t_4d = sched[rollout_step]
+            t_flat, t_4d, dt = sched[rollout_step]
             flow = transformer_step(args, ctx, rollout_latents, emb, variant_idx, t_flat, cfg)
-            rollout_dx = _pred_x0(rollout_latents, t_4d, flow, args.x0_sampler)
+            rollout_latents, rollout_dx = _apply_step(
+                rollout_latents, flow, rollout_dx, t_4d, dt, use_euler, args.x0_sampler)
             if float(cs) > 0.0:
                 rollout_dx = apply_reward_correction(ctx, rollout_dx, prompt, reward_model, float(cs), cfg=float(cfg))
             rollout_step += 1
-            if rollout_step < args.steps:
-                _, next_t_4d = sched[rollout_step]
+            if rollout_step < args.steps and not use_euler:
+                _, next_t_4d, _ = sched[rollout_step]
                 noise = torch.randn_like(rollout_dx)
                 rollout_latents = (1.0 - next_t_4d) * rollout_dx + next_t_4d * noise
 
-        rollout_img = decode_to_pil(ctx, rollout_dx)
+        rollout_img = decode_to_pil(ctx, _final_decode_tensor(rollout_latents, rollout_dx, use_euler))
         rollout_score = score_image(reward_model, prompt, rollout_img)
         if rollout_score > best_global_score:
             best_global_score = rollout_score
@@ -1951,17 +2066,17 @@ def run_mcts(
     replay_dx = dx0
     replay_lat = start_latents
     for step_idx, (variant_idx, cfg, cs) in enumerate(exploit_path):
-        t_flat, t_4d = sched[step_idx]
+        t_flat, t_4d, dt = sched[step_idx]
         flow = transformer_step(args, ctx, replay_lat, emb, variant_idx, t_flat, cfg)
-        replay_dx = _pred_x0(replay_lat, t_4d, flow, args.x0_sampler)
+        replay_lat, replay_dx = _apply_step(replay_lat, flow, replay_dx, t_4d, dt, use_euler, args.x0_sampler)
         if float(cs) > 0.0:
             replay_dx = apply_reward_correction(ctx, replay_dx, prompt, reward_model, float(cs), cfg=float(cfg))
-        if step_idx + 1 < args.steps:
-            _, next_t_4d = sched[step_idx + 1]
+        if step_idx + 1 < args.steps and not use_euler:
+            _, next_t_4d, _ = sched[step_idx + 1]
             noise = torch.randn_like(replay_dx)
             replay_lat = (1.0 - next_t_4d) * replay_dx + next_t_4d * noise
 
-    exploit_img = decode_to_pil(ctx, replay_dx)
+    exploit_img = decode_to_pil(ctx, _final_decode_tensor(replay_lat, replay_dx, use_euler))
     exploit_score = score_image(reward_model, prompt, exploit_img)
 
     if exploit_score >= best_global_score:
@@ -1994,7 +2109,9 @@ def run_smc(
         particle_latents.append(make_latents(ctx, seed + pi, args.height, args.width, emb.cond_text[0].dtype))
     latents = torch.cat(particle_latents, dim=0)
     dx = torch.zeros_like(latents)
-    sched = step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
+    use_euler = getattr(args, "euler_sampler", False)
+    sched = step_schedule(ctx.device, latents.dtype, args.steps,
+                          getattr(args, "sigmas", None), euler=use_euler)
     rng = torch.Generator(device=ctx.device).manual_seed(seed + 6001)
 
     start_idx = int((1.0 - float(args.resample_start_frac)) * int(args.steps))
@@ -2006,33 +2123,43 @@ def run_smc(
 
     print(
         f"  smc(das): K={k} cfg={cfg:.2f} variant={variant_idx} "
-        f"gamma={float(args.smc_gamma):.3f} ess_thr={float(args.ess_threshold):.2f}"
+        f"gamma={float(args.smc_gamma):.3f} ess_thr={float(args.ess_threshold):.2f} euler={use_euler}"
     )
-    for step_idx, (t_flat, t_4d) in enumerate(sched):
-        if step_idx == 0:
-            noise = latents
-        else:
-            noise = torch.randn(
-                latents.shape,
-                device=latents.device,
-                dtype=latents.dtype,
-                generator=rng,
-            )
-        latents = (1.0 - t_4d) * dx + t_4d * noise
+    for step_idx, (t_flat, t_4d, dt) in enumerate(sched):
+        if not use_euler:
+            if step_idx == 0:
+                noise = latents
+            else:
+                noise = torch.randn(
+                    latents.shape,
+                    device=latents.device,
+                    dtype=latents.dtype,
+                    generator=rng,
+                )
+            latents = (1.0 - t_4d) * dx + t_4d * noise
 
         next_dx_parts = []
+        next_latents_parts = []
         for pi in range(k):
             flow = transformer_step(args, ctx, latents[pi : pi + 1], emb, variant_idx, t_flat, cfg)
-            p_dx = _pred_x0(latents[pi : pi + 1], t_4d, flow, args.x0_sampler)
+            if use_euler:
+                p_latents = latents[pi : pi + 1] + dt * flow
+                p_dx = latents[pi : pi + 1] - t_4d * flow  # x0 estimate for scoring
+                next_latents_parts.append(p_latents)
+            else:
+                p_dx = _pred_x0(latents[pi : pi + 1], t_4d, flow, args.x0_sampler)
             if smc_cs > 0.0:
                 p_dx = apply_reward_correction(ctx, p_dx, prompt, reward_model, smc_cs, cfg=cfg)
             next_dx_parts.append(p_dx)
         dx = torch.cat(next_dx_parts, dim=0)
+        if use_euler:
+            latents = torch.cat(next_latents_parts, dim=0)
 
         if step_idx < start_idx:
             continue
 
-        step_images = [decode_to_pil(ctx, dx[pi : pi + 1]) for pi in range(k)]
+        score_tensor = _final_decode_tensor(latents, dx, use_euler)
+        step_images = [decode_to_pil(ctx, score_tensor[pi : pi + 1]) for pi in range(k)]
         step_scores_list = [float(score_image(reward_model, prompt, img)) for img in step_images]
         step_scores = torch.tensor(step_scores_list, device=dx.device, dtype=torch.float32)
         score_hist.append(float(step_scores.mean().item()))
@@ -2049,7 +2176,8 @@ def run_smc(
             log_w = torch.zeros_like(log_w)
             resample_count += 1
 
-    final_images = [decode_to_pil(ctx, dx[pi : pi + 1]) for pi in range(k)]
+    final_tensor = _final_decode_tensor(latents, dx, use_euler)
+    final_images = [decode_to_pil(ctx, final_tensor[pi : pi + 1]) for pi in range(k)]
     final_scores = [float(score_image(reward_model, prompt, img)) for img in final_images]
     best_idx = int(np.argmax(final_scores))
     diagnostics = {

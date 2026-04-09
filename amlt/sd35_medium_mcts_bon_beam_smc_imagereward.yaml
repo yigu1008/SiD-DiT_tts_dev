@@ -48,7 +48,7 @@ search:
       - export PATH=/home/aiscuser/.local/bin:$$PATH
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
-      - export HF_HOME=/home/aiscuser/hf_cache
+      - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
       - export HF_TOKEN={hf_token}
       - export HUGGING_FACE_HUB_TOKEN={hf_token}
       - export AZFUSE_USE_FUSE=0
@@ -74,9 +74,10 @@ search:
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
       # ── Preload reward models ──────────────────────────────────────────────
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
-      # ── Preload SD3.5 + Qwen into HF cache (single process, before torchrun) ──
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('stabilityai/stable-diffusion-3.5-large', token=os.environ.get('HF_TOKEN')); print('SD3.5-large cache OK')"
-      - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', token=os.environ.get('HF_TOKEN')); print('Qwen cache OK')"; fi
+      # ── Preload SD3.5 + Qwen into HF cache (single-threaded to avoid 503s) ──
+      - export HF_HUB_ENABLE_HF_TRANSFER=0
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('stabilityai/stable-diffusion-3.5-large', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('SD3.5-large cache OK')"
+      - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('Qwen cache OK')"; fi
       # ── Prompt file ────────────────────────────────────────────────────────
       - export HPSV2_PROMPT_DIR=/mnt/data/v-yigu/hpsv2_prompt_cache
       - export PROMPT_STYLE={prompt_style}
@@ -178,7 +179,7 @@ search:
     - name: sd35_mcts_option
       values: [ "standard" ]
     - name: lookahead_method_mode
-      values: [ "rollout_tree_prior_adaptive_cfg" ]
+      values: [ "rollout_tree_prior" ]
     - name: lookahead_u_t_def
       values: [ "latent_delta_rms" ]
     - name: lookahead_tau

@@ -54,7 +54,7 @@ def _parse_extra_args(argv: list[str] | None) -> argparse.Namespace:
             "rollout_tree_prior_adaptive_cfg",
             "adaptive_cfg_width",
         ],
-        default="rollout_tree_prior_adaptive_cfg",
+        default="rollout_tree_prior",
     )
     extra.add_argument("--lookahead_u_t_def", choices=["latent_delta_rms", "latent_rms", "dx_rms"], default="latent_delta_rms")
     extra.add_argument("--lookahead_tau", type=float, default=0.35)
@@ -410,18 +410,16 @@ def _expand_child(
     emb: su.EmbeddingContext,
     node: MCTSNode,
     action: tuple[int, float],
-    sched: list[tuple[torch.Tensor, torch.Tensor]],
+    sched: list[tuple[torch.Tensor, torch.Tensor, float]],
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Expand child using Euler ODE step (SD3.5 base)."""
     variant_idx, cfg = action
-    t_flat, t_4d = sched[node.step]
+    t_flat, t_4d, dt = sched[node.step]
     flow = su.transformer_step(args, ctx, node.latents, emb, variant_idx, t_flat, cfg)
-    new_dx = su._pred_x0(node.latents, t_4d, flow, args.x0_sampler)
+    new_latents = node.latents + dt * flow  # Euler step
+    new_dx = node.latents - t_4d * flow     # x0 estimate for scoring
     next_step = node.step + 1
-    if next_step < len(sched):
-        _, next_t_4d = sched[next_step]
-        noise = torch.randn_like(new_dx)
-        new_latents = (1.0 - next_t_4d) * new_dx + next_t_4d * noise
-    else:
+    if next_step >= len(sched):
         new_latents = None
     return new_dx, new_latents
 
@@ -775,9 +773,10 @@ def run_mcts_sd35base(
 
     latents0 = su.make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx0 = torch.zeros_like(latents0)
-    sched = su.step_schedule(ctx.device, latents0.dtype, args.steps, getattr(args, "sigmas", None))
-    _, t0_4d = sched[0]
-    start_latents = (1.0 - t0_4d) * dx0 + t0_4d * latents0
+    sched = su.step_schedule(ctx.device, latents0.dtype, args.steps,
+                              getattr(args, "sigmas", None), euler=True)
+    # SD3.5 base: latents start as pure noise (Euler ODE)
+    start_latents = latents0
     root = MCTSNode(step=0, dx=dx0, latents=start_latents)
 
     best_global_score = -float("inf")
@@ -866,14 +865,12 @@ def run_mcts_sd35base(
             else:
                 variant_idx, cfg = r_candidates[int(rng.integers(0, len(r_candidates)))]
 
-            t_flat, t_4d = sched[rollout_step]
+            t_flat, t_4d, dt = sched[rollout_step]
             flow = su.transformer_step(args, ctx, rollout_latents, emb, variant_idx, t_flat, cfg)
-            rollout_dx = su._pred_x0(rollout_latents, t_4d, flow, args.x0_sampler)
+            rollout_dx = rollout_latents - t_4d * flow  # x0 estimate for scoring
+            next_latents = rollout_latents + dt * flow   # Euler step
             rollout_step += 1
             if rollout_step < int(args.steps):
-                _, next_t_4d = sched[rollout_step]
-                noise = torch.randn_like(rollout_dx)
-                next_latents = (1.0 - next_t_4d) * rollout_dx + next_t_4d * noise
                 child_u = _compute_u_t(
                     str(getattr(args, "lookahead_u_t_def", "latent_delta_rms")),
                     parent_latents=rollout_node.latents,
@@ -931,18 +928,13 @@ def run_mcts_sd35base(
         else:
             break
 
-    replay_dx = dx0
     replay_lat = start_latents
     for step_idx, (variant_idx, cfg) in enumerate(exploit_path):
-        t_flat, t_4d = sched[step_idx]
+        t_flat, t_4d, dt = sched[step_idx]
         flow = su.transformer_step(args, ctx, replay_lat, emb, variant_idx, t_flat, cfg)
-        replay_dx = su._pred_x0(replay_lat, t_4d, flow, args.x0_sampler)
-        if step_idx + 1 < int(args.steps):
-            _, next_t_4d = sched[step_idx + 1]
-            noise = torch.randn_like(replay_dx)
-            replay_lat = (1.0 - next_t_4d) * replay_dx + next_t_4d * noise
+        replay_lat = replay_lat + dt * flow  # Euler step
 
-    exploit_img = su.decode_to_pil(ctx, replay_dx)
+    exploit_img = su.decode_to_pil(ctx, replay_lat)
     exploit_score = float(su.score_image(reward_model, prompt, exploit_img))
 
     out_img = exploit_img

@@ -472,6 +472,33 @@ def _build_stepaware_axis_schedule(
     return axis_schedule
 
 
+def _unpack_schedule_step(step: Any, device: str | torch.device, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
+    """Accept multiple step-schedule formats and return (t_flat, t_4d).
+
+    Compatible with:
+    - (t_flat, t_4d)
+    - (t_flat, t_4d, ...)
+    - scalar sigma/timestep values
+    """
+    if isinstance(step, (tuple, list)):
+        if len(step) >= 2:
+            t_flat, t_4d = step[0], step[1]
+            if not isinstance(t_flat, torch.Tensor):
+                t_flat = torch.as_tensor(t_flat, device=device, dtype=dtype).reshape(1)
+            if not isinstance(t_4d, torch.Tensor):
+                t_4d = torch.as_tensor(t_4d, device=device, dtype=dtype).reshape(1, 1, 1, 1)
+            return t_flat, t_4d
+        if len(step) == 1:
+            step = step[0]
+
+    if not isinstance(step, torch.Tensor):
+        t_flat = torch.as_tensor(step, device=device, dtype=dtype).reshape(1)
+    else:
+        t_flat = step.to(device=device, dtype=dtype).reshape(1)
+    t_4d = t_flat.view(1, 1, 1, 1)
+    return t_flat, t_4d
+
+
 @torch.no_grad()
 def sample_image_with_axis_schedule(
     args: argparse.Namespace,
@@ -484,8 +511,9 @@ def sample_image_with_axis_schedule(
     dtype = emb.cond_text[0].dtype
     latents = su.make_latents(ctx, int(seed), args.height, args.width, dtype)
     dx = torch.zeros_like(latents)
-    sched = su.step_schedule(ctx.device, latents.dtype, args.steps, args.sigmas)
-    for step_idx, (t_flat, t_4d) in enumerate(sched):
+    sched = su.step_schedule(ctx.device, latents.dtype, args.steps, getattr(args, "sigmas", None))
+    for step_idx, raw_step in enumerate(sched):
+        t_flat, t_4d = _unpack_schedule_step(raw_step, ctx.device, latents.dtype)
         noise = latents if step_idx == 0 else torch.randn_like(latents)
         latents = (1.0 - t_4d) * dx + t_4d * noise
         axis = axis_schedule[step_idx]

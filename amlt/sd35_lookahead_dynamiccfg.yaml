@@ -122,6 +122,8 @@ search:
       - export BASELINE_CFG={baseline_cfg}
       - export STEPS={steps}
       - export N_VARIANTS={n_variants}
+      - export REWRITE_SCHEME={rewrite_scheme}
+      - export AXIS_TARGET_SIZE={axis_target_size}
       - export N_SIMS={n_sims}
       - export UCB_C={ucb_c}
       - export SMC_K={smc_k}
@@ -228,6 +230,10 @@ search:
       values: [ 4 ]
     - name: n_variants
       values: [ 4 ]
+    - name: rewrite_scheme
+      values: [ "legacy" ]
+    - name: axis_target_size
+      values: [ 6 ]
     - name: n_sims
       values: [ 50 ]
     - name: ucb_c

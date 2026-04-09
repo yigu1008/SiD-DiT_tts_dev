@@ -69,6 +69,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--time_scale", type=float, default=1000.0)
 
     parser.add_argument("--n_variants", type=int, default=3)
+    parser.add_argument(
+        "--rewrite_scheme",
+        choices=["legacy", "axis"],
+        default="legacy",
+        help="Prompt rewrite scheme for variant bank. "
+             "'legacy' uses generic rewrite styles; 'axis' uses faithful/composition/subject/background/detail/style.",
+    )
+    parser.add_argument(
+        "--axis_target_size",
+        type=int,
+        default=6,
+        help="Variant bank size when --rewrite_scheme axis (includes faithful/original; max 6).",
+    )
     parser.add_argument("--no_qwen", action="store_true")
     parser.add_argument("--qwen_id", default="Qwen/Qwen3-4B")
     parser.add_argument("--qwen_python", default="python3")
@@ -452,12 +465,13 @@ def main() -> None:
             f"Runtime cfg: size={args.width}x{args.height} "
             f"{'sigmas=' + str(args.sigmas) if args.sigmas else 'steps=' + str(args.steps)} "
             f"modes={','.join(args.modes)} reward={args.reward_backend} "
-            f"qwen={'off' if args.no_qwen else 'on'}"
+            f"qwen={'off' if args.no_qwen else 'on'} "
+            f"rewrite_scheme={args.rewrite_scheme} axis_target_size={args.axis_target_size}"
         )
     print(f"[rank {rank}] local_rank={local_rank} assigned_prompts={len(my_entries)}")
 
     try:
-        rewrite_cache: Dict[str, List[str]] = {}
+        rewrite_cache: Dict[str, Any] = {}
         if args.rewrites_file and os.path.exists(args.rewrites_file):
             rewrite_cache = json.load(open(args.rewrites_file, encoding="utf-8"))
 

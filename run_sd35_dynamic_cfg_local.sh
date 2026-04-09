@@ -84,6 +84,8 @@ read -r -a MCTS_CFG_ANCHORS_ARR <<< "${MCTS_CFG_ANCHORS_STR}"
 CFG_ONLY="${CFG_ONLY:-1}"
 N_VARIANTS="${N_VARIANTS:-0}"
 USE_QWEN="${USE_QWEN:-0}"
+REWRITE_SCHEME="${REWRITE_SCHEME:-legacy}"
+AXIS_TARGET_SIZE="${AXIS_TARGET_SIZE:-6}"
 if [[ "${CFG_ONLY}" == "1" ]]; then
   N_VARIANTS=0
   USE_QWEN=0
@@ -127,6 +129,7 @@ echo "[sd35-dynamic-cfg] cfg_mode=${MCTS_CFG_MODE:-adaptive}"
 echo "[sd35-dynamic-cfg] cfg_scales=[${CFG_SCALES_ARR[*]}] baseline_cfg=${BASELINE_CFG:-1.0}"
 echo "[sd35-dynamic-cfg] root_bank=[${MCTS_CFG_ROOT_BANK_ARR[*]}] anchors=[${MCTS_CFG_ANCHORS_ARR[*]}] step_anchor_count=${MCTS_CFG_STEP_ANCHOR_COUNT:-2}"
 echo "[sd35-dynamic-cfg] cfg_only=${CFG_ONLY} n_variants=${N_VARIANTS} use_qwen=${USE_QWEN}"
+echo "[sd35-dynamic-cfg] rewrite_scheme=${REWRITE_SCHEME} axis_target_size=${AXIS_TARGET_SIZE}"
 
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified_sd35_dynamic_cfg.py" \
   --search_method mcts \
@@ -134,6 +137,8 @@ echo "[sd35-dynamic-cfg] cfg_only=${CFG_ONLY} n_variants=${N_VARIANTS} use_qwen=
   --prompt_file "${PROMPT_FILE_RUN}" \
   --steps "${STEPS:-4}" \
   --n_variants "${N_VARIANTS}" \
+  --rewrite_scheme "${REWRITE_SCHEME}" \
+  --axis_target_size "${AXIS_TARGET_SIZE}" \
   --cfg_scales "${CFG_SCALES_ARR[@]}" \
   --baseline_cfg "${BASELINE_CFG:-1.0}" \
   --correction_strengths "${CORRECTION_STRENGTHS_ARR[@]}" \

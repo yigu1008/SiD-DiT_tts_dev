@@ -48,6 +48,34 @@ REWRITE_STYLES = [
     "Change one mood or atmosphere word.",
 ]
 
+AXIS_REWRITE_ORDER = ("faithful", "composition", "subject", "background", "detail", "style")
+AXIS_REWRITE_STYLES = {
+    "faithful": (
+        "Axis=faithful. Do minimal cleanup only. Preserve scene, subject identity, composition, and style."
+    ),
+    "composition": (
+        "Axis=composition. Change framing/crop/viewpoint/camera distance/spatial arrangement. "
+        "Do not significantly change subject identity or background semantics."
+    ),
+    "subject": (
+        "Axis=subject. Sharpen visible subject attributes: face, hair, clothing, pose, held props. "
+        "Do not mainly change framing or background."
+    ),
+    "background": (
+        "Axis=background. Enrich environment/layout/depth/background objects. "
+        "Keep subject identity and shot type stable."
+    ),
+    "detail": (
+        "Axis=detail. Add local textures/materials/fine visible attributes "
+        "(wrinkles, reflections, embroidery, folds, strands). "
+        "Do not change composition or large scene structure."
+    ),
+    "style": (
+        "Axis=style. Change rendering treatment/palette/mood/photographic style "
+        "while keeping core scene semantics stable."
+    ),
+}
+
 _DEFAULT_CFG_SCALES = [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5]
 _DEFAULT_BASELINE_CFG = 1.0
 
@@ -83,6 +111,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--prompt_file", default=None)
 
     parser.add_argument("--n_variants", type=int, default=3)
+    parser.add_argument(
+        "--rewrite_scheme",
+        choices=["legacy", "axis"],
+        default="legacy",
+        help="Prompt rewrite scheme for variant bank. "
+             "'legacy' uses generic rewrite styles; 'axis' uses faithful/composition/subject/background/detail/style.",
+    )
+    parser.add_argument(
+        "--axis_target_size",
+        type=int,
+        default=6,
+        help="Variant bank size when --rewrite_scheme axis (includes faithful/original; max 6).",
+    )
     parser.add_argument("--no_qwen", action="store_true")
     parser.add_argument("--qwen_id", default="Qwen/Qwen3-4B")
     parser.add_argument("--qwen_python", default="python3")
@@ -604,23 +645,138 @@ def sanitize_rewrite_text(candidate: str, fallback: str) -> str:
     return text
 
 
-def generate_variants(args: argparse.Namespace, prompt: str, cache: dict[str, list[str]]) -> list[str]:
-    if prompt in cache:
-        cached = [sanitize_rewrite_text(v, prompt) for v in cache[prompt][: args.n_variants + 1]]
-        dedup: list[str] = []
-        for v in cached:
-            if v not in dedup:
-                dedup.append(v)
-        return dedup if dedup else [prompt]
-    if args.n_variants <= 0 or args.no_qwen:
-        return [prompt]
-    variants = [prompt]
-    styles = (REWRITE_STYLES * ((args.n_variants // len(REWRITE_STYLES)) + 1))[: args.n_variants]
-    for style in styles:
+def _dedup_variants(values: list[str], fallback: str, max_items: int | None = None) -> list[str]:
+    out: list[str] = []
+    for v in values:
+        vv = sanitize_rewrite_text(v, fallback)
+        if vv not in out:
+            out.append(vv)
+        if max_items is not None and len(out) >= int(max_items):
+            break
+    return out if out else [fallback]
+
+
+def _axis_heuristic_rewrite(prompt: str, axis: str) -> str:
+    suffix_map = {
+        "faithful": "Preserve the same scene and identity with minimal wording cleanup.",
+        "composition": "Adjust framing and viewpoint to clarify spatial arrangement and depth.",
+        "subject": "Clarify visible subject traits: facial details, hair, clothing, pose, and held props.",
+        "background": "Enrich environment details, layout depth cues, and consistent background objects.",
+        "detail": "Add concrete fine details: textures, material reflections, seams, folds, and strands.",
+        "style": "Adjust rendering style, palette, and mood while keeping scene semantics unchanged.",
+    }
+    return sanitize_rewrite_text(f"{prompt}. {suffix_map.get(axis, 'Refine visible details.')}", prompt)
+
+
+def _target_axis_bank_size(args: argparse.Namespace) -> int:
+    size = int(getattr(args, "axis_target_size", 6))
+    if size <= 0:
+        size = 6
+    return max(1, min(size, len(AXIS_REWRITE_ORDER)))
+
+
+def _legacy_target_size(args: argparse.Namespace) -> int:
+    return max(1, int(getattr(args, "n_variants", 0)) + 1)
+
+
+def _read_axis_cache_entry(entry: Any, prompt: str) -> list[str] | None:
+    # Direct axis mapping: {"faithful": "...", "composition": "...", ...}
+    if isinstance(entry, dict):
+        axis_map = {str(k): str(v) for k, v in entry.items() if isinstance(k, str)}
+        if any(ax in axis_map for ax in AXIS_REWRITE_ORDER):
+            vals = [prompt]
+            for axis in AXIS_REWRITE_ORDER[1:]:
+                if axis in axis_map:
+                    vals.append(axis_map[axis])
+            return _dedup_variants(vals, prompt, max_items=len(AXIS_REWRITE_ORDER))
+        # Alternate payload shape: {"records":[{"axis":"...","prompt":"..."}]}
+        recs = entry.get("records")
+        if isinstance(recs, list):
+            by_axis: dict[str, str] = {}
+            for r in recs:
+                if not isinstance(r, dict):
+                    continue
+                ax = str(r.get("axis", "")).strip().lower()
+                txt = str(r.get("prompt", "")).strip()
+                if ax and txt:
+                    by_axis[ax] = txt
+            if any(ax in by_axis for ax in AXIS_REWRITE_ORDER):
+                vals = [prompt]
+                for axis in AXIS_REWRITE_ORDER[1:]:
+                    if axis in by_axis:
+                        vals.append(by_axis[axis])
+                return _dedup_variants(vals, prompt, max_items=len(AXIS_REWRITE_ORDER))
+    return None
+
+
+def _read_legacy_cache_entry(entry: Any, prompt: str, target: int) -> list[str] | None:
+    if isinstance(entry, list):
+        vals = [str(v) for v in entry]
+        return _dedup_variants(vals, prompt, max_items=target)
+    if isinstance(entry, dict):
+        raw_variants = entry.get("variants")
+        if isinstance(raw_variants, list):
+            vals = [str(v) for v in raw_variants]
+            return _dedup_variants(vals, prompt, max_items=target)
+    return None
+
+
+def _generate_axis_variants(args: argparse.Namespace, prompt: str) -> list[str]:
+    # Always keep faithful/original at index 0 to preserve downstream assumptions.
+    vals: list[str] = [prompt]
+    if bool(getattr(args, "no_qwen", False)):
+        for axis in AXIS_REWRITE_ORDER[1:]:
+            vals.append(_axis_heuristic_rewrite(prompt, axis))
+        return _dedup_variants(vals, prompt, max_items=_target_axis_bank_size(args))
+
+    for axis in AXIS_REWRITE_ORDER[1:]:
+        style = AXIS_REWRITE_STYLES.get(axis, "")
         rewritten = sanitize_rewrite_text(qwen_rewrite(args, prompt, style), prompt)
-        if rewritten not in variants:
-            variants.append(rewritten)
-    return variants
+        if rewritten == prompt:
+            rewritten = _axis_heuristic_rewrite(prompt, axis)
+        vals.append(rewritten)
+    dedup = _dedup_variants(vals, prompt, max_items=None)
+    # Ensure target size even when Qwen emits duplicates.
+    need = _target_axis_bank_size(args)
+    if len(dedup) < need:
+        for axis in AXIS_REWRITE_ORDER[1:]:
+            cand = _axis_heuristic_rewrite(prompt, axis)
+            if cand not in dedup:
+                dedup.append(cand)
+            if len(dedup) >= need:
+                break
+    return dedup[:need]
+
+
+def _generate_legacy_variants(args: argparse.Namespace, prompt: str) -> list[str]:
+    target = _legacy_target_size(args)
+    if target <= 1 or bool(getattr(args, "no_qwen", False)):
+        return [prompt]
+    vals = [prompt]
+    n_rewrites = max(0, target - 1)
+    styles = (REWRITE_STYLES * ((n_rewrites // len(REWRITE_STYLES)) + 1))[: n_rewrites]
+    for style in styles:
+        vals.append(sanitize_rewrite_text(qwen_rewrite(args, prompt, style), prompt))
+    return _dedup_variants(vals, prompt, max_items=target)
+
+
+def generate_variants(args: argparse.Namespace, prompt: str, cache: dict[str, Any]) -> list[str]:
+    scheme = str(getattr(args, "rewrite_scheme", "legacy")).strip().lower()
+    entry = cache.get(prompt)
+
+    if entry is not None:
+        if scheme == "axis":
+            from_cache = _read_axis_cache_entry(entry, prompt)
+            if from_cache is not None:
+                return _dedup_variants(from_cache, prompt, max_items=_target_axis_bank_size(args))
+        else:
+            from_cache = _read_legacy_cache_entry(entry, prompt, _legacy_target_size(args))
+            if from_cache is not None:
+                return from_cache
+
+    if scheme == "axis":
+        return _generate_axis_variants(args, prompt)
+    return _generate_legacy_variants(args, prompt)
 
 
 def encode_variants(ctx: PipelineContext, variants: list[str], max_sequence_length: int = 256) -> EmbeddingContext:
@@ -2245,7 +2401,7 @@ def run(args: argparse.Namespace) -> None:
     ctx = load_pipeline(args)
     reward_model = load_reward_model(args, ctx.device)
 
-    rewrite_cache: dict[str, list[str]] = {}
+    rewrite_cache: dict[str, Any] = {}
     if args.rewrites_file and os.path.exists(args.rewrites_file):
         rewrite_cache = json.load(open(args.rewrites_file))
         print(f"Loaded rewrite cache for {len(rewrite_cache)} prompts.")

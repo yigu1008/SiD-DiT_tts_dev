@@ -77,6 +77,8 @@ fi
 CFG_ONLY="${CFG_ONLY:-0}"
 N_VARIANTS="${N_VARIANTS:-4}"
 USE_QWEN="${USE_QWEN:-1}"
+REWRITE_SCHEME="${REWRITE_SCHEME:-legacy}"
+AXIS_TARGET_SIZE="${AXIS_TARGET_SIZE:-6}"
 if [[ "${CFG_ONLY}" == "1" ]]; then
   N_VARIANTS=0
   USE_QWEN=0
@@ -164,6 +166,7 @@ echo "[sd35-lookahead] out_dir=${OUT_DIR}"
 echo "[sd35-lookahead] cfg_only=${CFG_ONLY} n_variants=${N_VARIANTS} use_qwen=${USE_QWEN}"
 echo "[sd35-lookahead] cfg_scales=[${CFG_SCALES_ARR[*]}] baseline_cfg=${BASELINE_CFG:-1.0}"
 echo "[sd35-lookahead] mode=${LOOKAHEAD_MODE} run_ablations=${LOOKAHEAD_RUN_ABLATIONS} ablations=[${LOOKAHEAD_ABLATION_SET}]"
+echo "[sd35-lookahead] rewrite_scheme=${REWRITE_SCHEME} axis_target_size=${AXIS_TARGET_SIZE}"
 
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified_sd35_lookahead_reweighting.py" \
   --search_method mcts \
@@ -171,6 +174,8 @@ echo "[sd35-lookahead] mode=${LOOKAHEAD_MODE} run_ablations=${LOOKAHEAD_RUN_ABLA
   --prompt_file "${PROMPT_FILE_RUN}" \
   --steps "${STEPS:-4}" \
   --n_variants "${N_VARIANTS}" \
+  --rewrite_scheme "${REWRITE_SCHEME}" \
+  --axis_target_size "${AXIS_TARGET_SIZE}" \
   --cfg_scales "${CFG_SCALES_ARR[@]}" \
   --baseline_cfg "${BASELINE_CFG:-1.0}" \
   --correction_strengths "${CORRECTION_STRENGTHS_ARR[@]}" \

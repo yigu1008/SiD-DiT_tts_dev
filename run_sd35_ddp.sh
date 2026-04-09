@@ -22,6 +22,8 @@ REWARD_API_KEY="${REWARD_API_KEY:-unifiedreward}"
 REWARD_API_MODEL="${REWARD_API_MODEL:-UnifiedReward-7b-v1.5}"
 REWARD_MAX_NEW_TOKENS="${REWARD_MAX_NEW_TOKENS:-512}"
 REWARD_PROMPT_MODE="${REWARD_PROMPT_MODE:-standard}"
+REWRITE_SCHEME="${REWRITE_SCHEME:-legacy}"
+AXIS_TARGET_SIZE="${AXIS_TARGET_SIZE:-6}"
 
 # Keep ImageReward inference independent from cluster wandb/protobuf drift.
 SID_FORCE_WANDB_STUB="${SID_FORCE_WANDB_STUB:-1}"
@@ -136,6 +138,8 @@ torchrun --standalone --nproc_per_node "${NUM_GPUS}" "${SCRIPT_DIR}/sd35_ddp_exp
   --baseline_cfg "${BASELINE_CFG:-1.0}" \
   --steps "${STEPS:-4}" \
   --n_variants "${N_VARIANTS:-3}" \
+  --rewrite_scheme "${REWRITE_SCHEME}" \
+  --axis_target_size "${AXIS_TARGET_SIZE}" \
   --n_sims "${N_SIMS:-50}" \
   --ucb_c "${UCB_C:-1.41}" \
   --smc_k "${SMC_K:-8}" \

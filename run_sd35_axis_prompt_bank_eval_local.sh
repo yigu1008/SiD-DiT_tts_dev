@@ -27,6 +27,8 @@ ALLOW_MISSING_BACKENDS="${ALLOW_MISSING_BACKENDS:-0}"
 
 OUT_JSON="${OUT_JSON:-${RUN_DIR}/reward_validation.json}"
 OUT_TSV="${OUT_TSV:-${RUN_DIR}/reward_validation.tsv}"
+OUT_FINAL_REWARDS_TXT="${OUT_FINAL_REWARDS_TXT:-${RUN_DIR}/reward_final_output.txt}"
+OUT_SIMPLE_SUMMARY_TXT="${OUT_SIMPLE_SUMMARY_TXT:-${RUN_DIR}/reward_summary_simple.txt}"
 
 extra=()
 if [[ "${ALLOW_MISSING_BACKENDS}" == "1" ]]; then
@@ -43,5 +45,6 @@ echo "[axis-eval] backends=[${BACKENDS}] reward_device=${REWARD_DEVICE} modes=[$
   --include_modes ${INCLUDE_MODES} \
   --out_json "${OUT_JSON}" \
   --out_tsv "${OUT_TSV}" \
+  --out_final_rewards_txt "${OUT_FINAL_REWARDS_TXT}" \
+  --out_simple_summary_txt "${OUT_SIMPLE_SUMMARY_TXT}" \
   "${extra[@]}"
-

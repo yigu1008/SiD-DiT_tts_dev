@@ -47,6 +47,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--reward_prompt_mode", choices=["standard", "strict"], default="standard")
     p.add_argument("--out_json", default=None)
     p.add_argument("--out_tsv", default=None)
+    p.add_argument("--out_final_rewards_txt", default=None, help="Simple per-image final reward output.")
+    p.add_argument("--out_simple_summary_txt", default=None, help="Simple aggregate reward summary.")
     return p.parse_args()
 
 
@@ -137,6 +139,12 @@ def _group_backend_stats(rows: list[dict[str, Any]], key_fn) -> dict[str, dict[s
     return out
 
 
+def _format_score(v: Any) -> str:
+    if isinstance(v, (float, int)):
+        return f"{float(v):.6f}"
+    return "n/a"
+
+
 def main() -> None:
     args = parse_args()
     args.run_dir = str(Path(args.run_dir).expanduser().resolve())
@@ -144,6 +152,10 @@ def main() -> None:
         args.out_json = str(Path(args.run_dir) / "reward_validation.json")
     if args.out_tsv is None:
         args.out_tsv = str(Path(args.run_dir) / "reward_validation.tsv")
+    if args.out_final_rewards_txt is None:
+        args.out_final_rewards_txt = str(Path(args.run_dir) / "reward_final_output.txt")
+    if args.out_simple_summary_txt is None:
+        args.out_simple_summary_txt = str(Path(args.run_dir) / "reward_summary_simple.txt")
 
     records, missing = _load_prompt_bank_records(args.run_dir, set(args.include_modes))
     if not records:
@@ -255,6 +267,32 @@ def main() -> None:
                 ] + [row.get("scores", {}).get(b) for b in args.backends]
             )
 
+    final_txt = Path(args.out_final_rewards_txt)
+    with open(final_txt, "w", encoding="utf-8") as f:
+        for row in out_rows:
+            score_str = " ".join(f"{b}={_format_score(row.get('scores', {}).get(b))}" for b in args.backends)
+            axis = row["axis"] if row["axis"] is not None else "-"
+            line = (
+                f"p{int(row['prompt_index']):04d} mode={row['mode']} axis={axis} seed={int(row['seed'])} "
+                f"{score_str} image={row['image_path']}"
+            )
+            f.write(line + "\n")
+
+    summary_txt = Path(args.out_simple_summary_txt)
+    with open(summary_txt, "w", encoding="utf-8") as f:
+        f.write(f"run_dir: {args.run_dir}\n")
+        f.write(f"num_images_scored: {aggregate['num_images_scored']}\n")
+        f.write(f"num_missing_images: {aggregate['num_missing_images']}\n")
+        for backend in args.backends:
+            st = overall.get(backend, {})
+            f.write(
+                f"{backend}: count={st.get('count', 0)} "
+                f"mean={_format_score(st.get('mean'))} "
+                f"std={_format_score(st.get('std'))} "
+                f"min={_format_score(st.get('min'))} "
+                f"max={_format_score(st.get('max'))}\n"
+            )
+
     print(
         f"[eval-axis] done found={aggregate['num_images_found']} "
         f"scored={aggregate['num_images_scored']} missing={aggregate['num_missing_images']}"
@@ -269,8 +307,9 @@ def main() -> None:
             print(f"[eval-axis] {backend}: count={count} mean={float(mean):.6f}")
     print(f"[eval-axis] json={out_json}")
     print(f"[eval-axis] tsv={out_tsv}")
+    print(f"[eval-axis] final_rewards={final_txt}")
+    print(f"[eval-axis] summary_simple={summary_txt}")
 
 
 if __name__ == "__main__":
     main()
-

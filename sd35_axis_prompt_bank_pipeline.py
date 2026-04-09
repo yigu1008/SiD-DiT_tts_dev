@@ -650,6 +650,12 @@ def _prompt_dir(base_dir: str, prompt_index: int) -> str:
     return str(pdir)
 
 
+def _write_prompt_sidecar(image_path: Path, lines: list[str]) -> str:
+    txt_path = image_path.with_suffix(".txt")
+    txt_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    return str(txt_path)
+
+
 def run() -> None:
     cfg = parse_args()
     cfg.prompt_file = _resolve_path(cfg.prompt_file)
@@ -706,6 +712,7 @@ def run() -> None:
             k=int(cfg.selection_k),
         )
         subbanks = _subbank_from_axes(keep_axes)
+        axis_to_prompt = {axis: keep_prompts[i] for i, axis in enumerate(keep_axes)}
 
         # Prepare embedding context for selected bank.
         emb_sel = su.encode_variants(ctx, keep_prompts, max_sequence_length=cfg.max_sequence_length)
@@ -728,13 +735,26 @@ def run() -> None:
                     seed=int(seed),
                 )
                 out_path = axis_dir / f"seed_{seed}.png"
+                prompt_txt_path = None
                 if cfg.save_images:
                     img.save(out_path)
+                    prompt_txt_path = _write_prompt_sidecar(
+                        out_path,
+                        [
+                            f"prompt_index: {int(p_idx)}",
+                            f"mode: fixed",
+                            f"axis: {axis}",
+                            f"seed: {int(seed)}",
+                            f"original_prompt: {prompt}",
+                            f"prompt: {axis_to_prompt[axis]}",
+                        ],
+                    )
                 rec = {
                     "mode": "fixed",
                     "axis": axis,
                     "seed": int(seed),
                     "path": str(out_path),
+                    "prompt_txt_path": prompt_txt_path,
                     "axis_schedule": axis_schedule,
                 }
                 fixed_manifest.append(rec)
@@ -765,13 +785,31 @@ def run() -> None:
                     seed=int(seed),
                 )
                 out_path = sw_dir / f"seed_{seed}.png"
+                prompt_txt_path = None
                 if cfg.save_images:
                     img.save(out_path)
+                    step_lines = [
+                        f"s{si + 1}:{ax} -> {axis_to_prompt.get(ax, prompt)}"
+                        for si, ax in enumerate(axis_schedule)
+                    ]
+                    prompt_txt_path = _write_prompt_sidecar(
+                        out_path,
+                        [
+                            f"prompt_index: {int(p_idx)}",
+                            f"mode: stepaware",
+                            f"seed: {int(seed)}",
+                            f"original_prompt: {prompt}",
+                            f"axis_schedule: {' '.join(axis_schedule)}",
+                            "step_prompts:",
+                            *step_lines,
+                        ],
+                    )
                 stepaware_manifest.append(
                     {
                         "mode": "stepaware",
                         "seed": int(seed),
                         "path": str(out_path),
+                        "prompt_txt_path": prompt_txt_path,
                         "axis_schedule": axis_schedule,
                     }
                 )

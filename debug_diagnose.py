@@ -58,15 +58,22 @@ def test_senseflow(device, reward_backend="imagereward", prompt="a cat sitting o
     print("TEST: SenseFlow SD3.5-Large")
     print("=" * 60)
 
-    from diffusers import StableDiffusion3Pipeline
+    from diffusers import StableDiffusion3Pipeline, AutoencoderKL
     from diffusers.models.transformers import SD3Transformer2DModel
 
     dtype = torch.bfloat16
 
     import gc
 
+    # Aggressively clear GPU from any prior tests
+    torch.cuda.empty_cache()
+    gc.collect()
+    torch.cuda.empty_cache()
+    print(f"  GPU before start: {torch.cuda.memory_allocated(device) / 1e9:.1f} GB allocated, "
+          f"{torch.cuda.memory_reserved(device) / 1e9:.1f} GB reserved")
+
     # Step 1: Load pipeline to encode prompts on CPU, then destroy it completely
-    print("  Loading SD3.5-Large (text encoding only)...")
+    print("  Loading SD3.5-Large (text encoding only, CPU)...")
     pipe = StableDiffusion3Pipeline.from_pretrained(
         "stabilityai/stable-diffusion-3.5-large",
         torch_dtype=dtype,
@@ -79,34 +86,40 @@ def test_senseflow(device, reward_backend="imagereward", prompt="a cat sitting o
     enc_uncond_sf = pipe.encode_prompt("", "", "")
     pe_uncond_sf = enc_uncond_sf[0].clone().to(dtype=dtype)
 
-    # Save VAE config + weights before destroying pipeline
-    vae = pipe.vae
+    # Save VAE config info before destroying pipeline
+    vae_shift = getattr(pipe.vae.config, "shift_factor", 0.0)
+    vae_scaling = pipe.vae.config.scaling_factor
     image_processor = pipe.image_processor
-    vae.eval().requires_grad_(False)
 
-    # Destroy everything else (frees ~30GB CPU RAM)
-    pipe.text_encoder = None
-    pipe.text_encoder_2 = None
-    pipe.text_encoder_3 = None
-    pipe.tokenizer = None
-    pipe.tokenizer_2 = None
-    pipe.tokenizer_3 = None
-    pipe.transformer = None
+    # Destroy entire pipeline including VAE (frees all CPU RAM)
     del pipe
     gc.collect()
     torch.cuda.empty_cache()
-    print(f"  Freed pipeline. Loading SenseFlow transformer...")
+    print(f"  Freed entire pipeline.")
 
-    # Step 2: Load SenseFlow transformer directly to GPU
+    # Step 2: Load SenseFlow transformer on CPU first, then move to GPU
+    print(f"  Loading SenseFlow transformer...")
     transformer = SD3Transformer2DModel.from_pretrained(
         "domiso/SenseFlow",
         subfolder="SenseFlow-SD35L/transformer",
         torch_dtype=dtype,
-    ).to(device)
+        low_cpu_mem_usage=True,
+    )
     transformer.eval().requires_grad_(False)
-    print(f"  Transformer: {type(transformer).__name__}")
+    param_gb = sum(p.numel() * p.element_size() for p in transformer.parameters()) / 1e9
+    print(f"  Transformer: {type(transformer).__name__} ({param_gb:.1f} GB)")
+    print(f"  GPU before transformer load: {torch.cuda.memory_allocated(device) / 1e9:.1f} GB")
+    transformer.to(device)
+    print(f"  GPU after transformer load: {torch.cuda.memory_allocated(device) / 1e9:.1f} GB")
 
-    # Move VAE to GPU
+    # Step 3: Load VAE separately (much smaller, ~0.3GB)
+    print(f"  Loading VAE...")
+    vae = AutoencoderKL.from_pretrained(
+        "stabilityai/stable-diffusion-3.5-large",
+        subfolder="vae",
+        torch_dtype=dtype,
+    )
+    vae.eval().requires_grad_(False)
     vae.to(device)
     if hasattr(vae, "enable_slicing"):
         vae.enable_slicing()
@@ -141,9 +154,7 @@ def test_senseflow(device, reward_backend="imagereward", prompt="a cat sitting o
             return_dict=False,
         )[0]
         sf_dx = out  # x0_sampler: output IS x0
-    shift_f = getattr(vae.config, "shift_factor", 0.0)
-    scaling_f = vae.config.scaling_factor
-    image = vae.decode((sf_dx / scaling_f) + shift_f, return_dict=False)[0]
+    image = vae.decode((sf_dx / vae_scaling) + vae_shift, return_dict=False)[0]
     img_cond = image_processor.postprocess(image, output_type="pil")[0]
     t1 = time.time()
     img_cond.save("debug_senseflow_cond.png")
@@ -189,7 +200,7 @@ def test_senseflow(device, reward_backend="imagereward", prompt="a cat sitting o
         # Old bug: cfg=0.0 → flow_u + 0*(flow_c - flow_u) = flow_u (unconditional)
         sf_dx2 = out_uncond  # simulating the bug
 
-    image2 = vae.decode((sf_dx2 / scaling_f) + shift_f, return_dict=False)[0]
+    image2 = vae.decode((sf_dx2 / vae_scaling) + vae_shift, return_dict=False)[0]
     img_uncond = image_processor.postprocess(image2, output_type="pil")[0]
     img_uncond.save("debug_senseflow_uncond.png")
 
@@ -287,6 +298,8 @@ def test_sd35_base(device, reward_backend="imagereward", prompt="a cat sitting o
     print(f"  GPU memory: {torch.cuda.memory_allocated() / 1e9:.1f} GB")
 
     latent_c = pipe.transformer.config.in_channels
+    vae = pipe.vae
+    image_processor = pipe.image_processor
     shift_factor = getattr(vae.config, "shift_factor", 0.0)
     scaling_factor = vae.config.scaling_factor
 
@@ -638,16 +651,21 @@ def main():
     # Always run the source code check (no GPU needed)
     test_transformer_step_cfg()
 
-    if args.test in ("senseflow", "all"):
-        test_senseflow(args.device, args.reward_backend, args.prompt)
+    import gc
 
     if args.test in ("sd35base", "all"):
         test_sd35_base(args.device, args.reward_backend, args.prompt,
                        steps=args.steps, n_sims=args.n_sims, skip_reward=args.skip_reward)
+        gc.collect(); torch.cuda.empty_cache()
 
     if args.test in ("sd35mcts", "all"):
         test_sd35_mcts(args.device, args.reward_backend, args.prompt,
                        steps=args.steps, n_sims=args.n_sims)
+        gc.collect(); torch.cuda.empty_cache()
+
+    if args.test in ("senseflow", "all"):
+        test_senseflow(args.device, args.reward_backend, args.prompt)
+        gc.collect(); torch.cuda.empty_cache()
 
     print("\n" + "=" * 60)
     print("DONE — check debug_*.png files for visual inspection")

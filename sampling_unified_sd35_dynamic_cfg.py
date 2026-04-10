@@ -366,9 +366,13 @@ def run_mcts_dynamic_cfg(
 
     latents0 = su.make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx0 = torch.zeros_like(latents0)
-    sched = su.step_schedule(ctx.device, latents0.dtype, args.steps, getattr(args, "sigmas", None))
+    use_euler = getattr(args, "euler_sampler", False)
+    sched = su.step_schedule(ctx.device, latents0.dtype, args.steps, getattr(args, "sigmas", None), euler=use_euler)
     _, t0_4d, _ = sched[0]
-    start_latents = (1.0 - t0_4d) * dx0 + t0_4d * latents0
+    if use_euler:
+        start_latents = latents0
+    else:
+        start_latents = (1.0 - t0_4d) * dx0 + t0_4d * latents0
     root = DynamicMCTSNode(0, dx0, start_latents, parent=None, incoming_action=None)
 
     best_global_score = -float("inf")
@@ -479,13 +483,16 @@ def run_mcts_dynamic_cfg(
             t_flat, t_4d, _dt = sched[rollout_step]
             flow = su.transformer_step(args, ctx, rollout_latents, emb, variant_idx, t_flat, cfg)
             rollout_dx = su._pred_x0(rollout_latents, t_4d, flow, args.x0_sampler)
+            if use_euler:
+                rollout_latents = rollout_latents + _dt * flow
             if float(cs) > 0.0:
                 rollout_dx = su.apply_reward_correction(ctx, rollout_dx, prompt, reward_model, float(cs), cfg=float(cfg))
             rollout_step += 1
-            if rollout_step < int(args.steps):
+            if rollout_step < int(args.steps) and not use_euler:
                 _, next_t_4d, _ = sched[rollout_step]
                 noise = torch.randn_like(rollout_dx)
                 rollout_latents = (1.0 - next_t_4d) * rollout_dx + next_t_4d * noise
+            if rollout_step < int(args.steps):
                 rollout_node = DynamicMCTSNode(
                     step=rollout_step,
                     dx=rollout_dx,
@@ -494,11 +501,12 @@ def run_mcts_dynamic_cfg(
                     incoming_action=(int(variant_idx), float(cfg), float(cs)),
                 )
 
-        rollout_img = su.decode_to_pil(ctx, rollout_dx)
+        rollout_final = su._final_decode_tensor(rollout_latents, rollout_dx, use_euler)
+        rollout_img = su.decode_to_pil(ctx, rollout_final)
         rollout_score = su.score_image(reward_model, prompt, rollout_img)
         if rollout_score > best_global_score:
             best_global_score = float(rollout_score)
-            best_global_dx = rollout_dx.clone()
+            best_global_dx = rollout_final.clone()
             best_global_path = [a for _, a in path]
 
         for pnode, paction in path:
@@ -549,14 +557,16 @@ def run_mcts_dynamic_cfg(
         t_flat, t_4d, _dt = sched[step_idx]
         flow = su.transformer_step(args, ctx, replay_lat, emb, variant_idx, t_flat, cfg)
         replay_dx = su._pred_x0(replay_lat, t_4d, flow, args.x0_sampler)
+        if use_euler:
+            replay_lat = replay_lat + _dt * flow
         if float(cs) > 0.0:
             replay_dx = su.apply_reward_correction(ctx, replay_dx, prompt, reward_model, float(cs), cfg=float(cfg))
-        if step_idx + 1 < int(args.steps):
+        if step_idx + 1 < int(args.steps) and not use_euler:
             _, next_t_4d, _ = sched[step_idx + 1]
             noise = torch.randn_like(replay_dx)
             replay_lat = (1.0 - next_t_4d) * replay_dx + next_t_4d * noise
 
-    exploit_img = su.decode_to_pil(ctx, replay_dx)
+    exploit_img = su.decode_to_pil(ctx, su._final_decode_tensor(replay_lat, replay_dx, use_euler))
     exploit_score = su.score_image(reward_model, prompt, exploit_img)
 
     out_img = exploit_img

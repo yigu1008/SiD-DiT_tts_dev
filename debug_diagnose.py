@@ -105,10 +105,19 @@ def test_senseflow(device, reward_backend="imagereward", prompt="a cat sitting o
         low_cpu_mem_usage=True,
     )
     transformer.eval().requires_grad_(False)
+    # Verify dtype — force bf16 if checkpoint loaded as fp32
+    first_param = next(transformer.parameters())
+    if first_param.dtype != dtype:
+        print(f"  WARNING: transformer loaded as {first_param.dtype}, converting to {dtype}")
+        transformer = transformer.to(dtype=dtype)
     param_gb = sum(p.numel() * p.element_size() for p in transformer.parameters()) / 1e9
-    print(f"  Transformer: {type(transformer).__name__} ({param_gb:.1f} GB)")
+    print(f"  Transformer: {type(transformer).__name__} ({param_gb:.1f} GB, dtype={first_param.dtype})")
     if torch.cuda.is_available():
-        print(f"  GPU before transformer load: {torch.cuda.memory_allocated(device) / 1e9:.1f} GB")
+        free_gb = (torch.cuda.get_device_properties(device).total_mem - torch.cuda.memory_allocated(device)) / 1e9
+        print(f"  GPU before transformer load: {torch.cuda.memory_allocated(device) / 1e9:.1f} GB used, {free_gb:.1f} GB free")
+        if param_gb > free_gb * 0.9:
+            print(f"  WARNING: transformer ({param_gb:.1f} GB) may not fit in free GPU ({free_gb:.1f} GB)")
+            print(f"  Tip: kill other GPU processes or use CUDA_VISIBLE_DEVICES=<other_gpu>")
     transformer.to(device)
     if torch.cuda.is_available():
         print(f"  GPU after transformer load: {torch.cuda.memory_allocated(device) / 1e9:.1f} GB")

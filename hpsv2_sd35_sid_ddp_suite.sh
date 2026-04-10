@@ -558,7 +558,8 @@ run_method() {
     mcts_dynamiccfg_u_lookahead)
       mode_arg="mcts"
       runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_lookahead_reweighting.py"
-      lookahead_mode_for_method="rollout_tree_prior_adaptive_cfg"
+      # Respect LOOKAHEAD_METHOD_MODE env var; default to rollout_tree_prior
+      lookahead_mode_for_method="${LOOKAHEAD_METHOD_MODE:-rollout_tree_prior}"
       ;;
     mcts_lookahead_dynamiccfg|mcts_lookahead)
       mode_arg="mcts"

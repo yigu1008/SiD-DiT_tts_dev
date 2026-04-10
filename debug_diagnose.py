@@ -381,9 +381,192 @@ def test_sd35_base(device, reward_backend="imagereward", prompt="a cat sitting o
     torch.cuda.empty_cache()
 
 
+def test_sd35_mcts(device, reward_backend="imagereward",
+                   prompt="a cat sitting on a windowsill",
+                   steps=28, n_sims=20):
+    """Run actual MCTS code path with detailed per-sim logging."""
+    print("\n" + "=" * 60)
+    print("TEST: SD3.5 Base MCTS — full code path diagnosis")
+    print("=" * 60)
+
+    import sampling_unified_sd35 as su
+    import sampling_sd35_base as sb
+
+    dtype = torch.bfloat16
+    model_id = "stabilityai/stable-diffusion-3.5-large"
+
+    from diffusers import StableDiffusion3Pipeline
+
+    print("  Loading pipeline...")
+    pipe = StableDiffusion3Pipeline.from_pretrained(model_id, torch_dtype=dtype).to(device)
+    pipe.transformer.eval().requires_grad_(False)
+    pipe.vae.eval().requires_grad_(False)
+
+    latent_c = pipe.transformer.config.in_channels
+    ctx = su.PipelineContext(pipe=pipe, device=device, dtype=dtype, latent_c=latent_c)
+
+    # Load reward
+    from reward_unified import UnifiedRewardScorer
+    scorer = UnifiedRewardScorer(device="cpu", backend=reward_backend)
+    print(f"  Reward: {scorer.describe()}")
+
+    # Build args manually (mimics sampling_sd35_base defaults)
+    args = argparse.Namespace(
+        backend="sd35_base",
+        model_id=model_id,
+        steps=steps,
+        cfg_scales=[3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 7.0],
+        baseline_cfg=4.5,
+        correction_strengths=[0.0],
+        x0_sampler=False,
+        euler_sampler=True,
+        sigmas=None,
+        height=1024,
+        width=1024,
+        time_scale=1000.0,
+        n_sims=n_sims,
+        ucb_c=1.41,
+        n_variants=1,
+        seed=42,
+        gen_batch_size=1,
+        # Lookahead args
+        lookahead_mode="rollout_tree_prior",
+        lookahead_u_t_def="latent_delta_rms",
+        lookahead_tau=0.35,
+        lookahead_c_puct=1.20,
+        lookahead_u_ref=0.0,
+        lookahead_w_cfg=1.0,
+        lookahead_w_variant=0.25,
+        lookahead_w_q=0.20,
+        lookahead_w_explore=0.05,
+        lookahead_cfg_width_min=3,
+        lookahead_cfg_width_max=7,
+        lookahead_cfg_anchor_count=2,
+        lookahead_min_visits_for_center=3,
+        lookahead_log_action_topk=12,
+        # Dynamic CFG args
+        mcts_cfg_mode="adaptive",
+        mcts_cfg_root_bank=[3.5, 5.0, 7.0],
+        mcts_cfg_anchors=[3.5, 7.0],
+        mcts_cfg_step_anchor_count=2,
+        mcts_cfg_min_parent_visits=3,
+        mcts_cfg_round_ndigits=6,
+        mcts_cfg_log_action_topk=12,
+        # Interp
+        mcts_interp_family="none",
+        mcts_n_interp=1,
+        # Qwen
+        rewrites_file=None,
+    )
+
+    seed = 42
+    variants = [prompt]
+
+    # ── Step 0: Baseline ──
+    print(f"\n  --- Baseline (cfg=4.5, steps={steps}) ---")
+    emb = su.encode_variants(ctx, variants)
+    ctx.nfe = 0
+    base_img, base_score = su.run_baseline(
+        args, ctx, emb, scorer, prompt, seed, cfg_scale=4.5,
+    )
+    base_img.save("debug_mcts_baseline.png")
+    print(f"  Baseline score: {base_score:.4f}  NFE: {ctx.nfe}")
+
+    # ── Step 1: Run MCTS with verbose logging ──
+    print(f"\n  --- MCTS (n_sims={n_sims}, steps={steps}) ---")
+    ctx.nfe = 0
+    ctx.correction_nfe = 0
+
+    # Monkey-patch to add per-sim logging
+    orig_run = sb.run_mcts_sd35base
+
+    # Instead of monkey-patching, let's run the MCTS manually step by step
+    # to capture more diagnostics
+
+    emb = su.encode_variants(ctx, variants)
+    sched = su.step_schedule(ctx.device, dtype, steps, euler=True, shift=3.0)
+    latents0 = su.make_latents(ctx, seed, args.height, args.width, dtype)
+
+    # Quick check: what does scoring the initial noise give us?
+    noise_img = su.decode_to_pil(ctx, latents0)
+    noise_score = float(scorer.score(prompt, noise_img))
+    print(f"  Pure noise score: {noise_score:.4f} (sanity check)")
+
+    # Run one full Euler trajectory with each CFG to establish reference
+    print(f"\n  --- CFG sweep (single trajectory each) ---")
+    cfg_scores = {}
+    for test_cfg in [3.5, 4.5, 5.5, 7.0]:
+        lat = latents0.clone()
+        for i, (t_flat, t_4d, dt) in enumerate(sched):
+            flow = su.transformer_step(args, ctx, lat, emb, 0, t_flat, test_cfg)
+            lat = lat + dt * flow
+        img = su.decode_to_pil(ctx, lat)
+        s = float(scorer.score(prompt, img))
+        cfg_scores[test_cfg] = s
+        print(f"    cfg={test_cfg:.1f}: score={s:.4f}")
+
+    # Now run actual MCTS
+    print(f"\n  --- Running MCTS ---")
+    ctx.nfe = 0
+    t0 = time.time()
+    mcts_result = sb.run_mcts_sd35base(
+        args, ctx, emb, scorer, prompt, variants, seed,
+    )
+    t1 = time.time()
+    mcts_result.image.save("debug_mcts_result.png")
+    print(f"\n  MCTS completed in {t1 - t0:.1f}s")
+    print(f"  MCTS score:     {mcts_result.score:.4f}")
+    print(f"  Baseline score: {base_score:.4f}")
+    print(f"  Delta:          {mcts_result.score - base_score:+.4f}")
+    print(f"  NFE:            {ctx.nfe}")
+
+    # Print action trajectory
+    print(f"\n  MCTS action trajectory:")
+    for i, (v, c, cs) in enumerate(mcts_result.actions):
+        print(f"    step {i:2d}: variant={v} cfg={c:.2f}")
+
+    # Print diagnostics if available
+    diag = mcts_result.diagnostics or {}
+    if "history" in diag:
+        print(f"\n  MCTS convergence history:")
+        for h in diag["history"]:
+            print(f"    sim {h['sim']:3d}: best={h['best_score']:.4f} "
+                  f"root_visits={h['root_visits']}")
+
+    if "u_t_stats" in diag:
+        u = diag["u_t_stats"]
+        print(f"\n  u_t stats: mean={u['mean']:.4f} std={u['std']:.4f} "
+              f"min={u['min']:.4f} max={u['max']:.4f}")
+
+    if "final_cfg_trajectory" in diag:
+        print(f"  Final CFG trajectory: {diag['final_cfg_trajectory']}")
+    if "exploit_cfg_trajectory" in diag:
+        print(f"  Exploit CFG trajectory: {diag['exploit_cfg_trajectory']}")
+
+    # ── Verdict ──
+    print(f"\n  {'=' * 50}")
+    print(f"  VERDICT:")
+    if mcts_result.score > base_score:
+        print(f"  OK: MCTS improved over baseline by {mcts_result.score - base_score:+.4f}")
+    else:
+        print(f"  PROBLEM: MCTS WORSE than baseline by {mcts_result.score - base_score:+.4f}")
+        best_cfg_val = max(cfg_scores, key=cfg_scores.get)
+        print(f"  Best fixed-CFG was {best_cfg_val} ({cfg_scores[best_cfg_val]:.4f})")
+        if mcts_result.score < cfg_scores[best_cfg_val]:
+            print(f"  MCTS is even worse than best fixed-CFG — search is broken")
+        print(f"  Possible causes:")
+        print(f"    1. Scoring mismatch (x0 vs Euler latent)")
+        print(f"    2. Too few simulations (n_sims={n_sims})")
+        print(f"    3. Action space too large / CFG bank issues")
+        print(f"    4. Rollout randomness dominating signal")
+
+    del pipe
+    torch.cuda.empty_cache()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Diagnose SenseFlow + SD3.5 base issues")
-    parser.add_argument("--test", choices=["senseflow", "sd35base", "all"], default="all")
+    parser.add_argument("--test", choices=["senseflow", "sd35base", "sd35mcts", "all"], default="all")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--reward_backend", default="imagereward")
     parser.add_argument("--prompt", default="a cat sitting on a windowsill")
@@ -407,6 +590,10 @@ def main():
     if args.test in ("sd35base", "all"):
         test_sd35_base(args.device, args.reward_backend, args.prompt,
                        steps=args.steps, n_sims=args.n_sims, skip_reward=args.skip_reward)
+
+    if args.test in ("sd35mcts", "all"):
+        test_sd35_mcts(args.device, args.reward_backend, args.prompt,
+                       steps=args.steps, n_sims=args.n_sims)
 
     print("\n" + "=" * 60)
     print("DONE — check debug_*.png files for visual inspection")

@@ -105,6 +105,38 @@ def _hf_download(repo_id: str, filename: str, local_dir: str) -> str:
 # ImageReward
 # ---------------------------------------------------------------------------
 
+def _preload_clip_weights() -> None:
+    """Pre-download CLIP ViT-H-14 weights that ImageReward needs internally."""
+    clip_cache = os.environ.get(
+        "CLIP_CACHE_DIR",
+        os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")) + "/clip",
+    )
+    Path(clip_cache).mkdir(parents=True, exist_ok=True)
+
+    # ImageReward uses clip.load("ViT-H-14") which downloads from OpenAI
+    # Pre-cache it so it works in offline mode
+    clip_path = Path(clip_cache) / "ViT-H-14.pt"
+    if clip_path.is_file() and clip_path.stat().st_size > 0:
+        _log(f"CLIP ViT-H-14 already cached at {clip_path}")
+        return
+
+    _log("downloading CLIP ViT-H-14 for ImageReward ...")
+    try:
+        import clip
+        clip.load("ViT-H-14", device="cpu", download_root=clip_cache)
+        _log(f"CLIP ViT-H-14 cached at {clip_cache}")
+    except Exception:
+        # clip.load may not support ViT-H-14 directly — try open_clip fallback
+        try:
+            import urllib.request
+            url = "https://huggingface.co/laion/CLIP-ViT-H-14-laion2B-s32B-b79K/resolve/main/open_clip_pytorch_model.bin"
+            _log(f"  downloading from {url}")
+            urllib.request.urlretrieve(url, str(clip_path))
+            _log(f"  CLIP ViT-H-14 downloaded to {clip_path}")
+        except Exception as exc2:
+            _log(f"WARNING: could not pre-cache CLIP ViT-H-14: {exc2}")
+
+
 def preload_imagereward() -> None:
     cache_dir = os.environ.get(
         "IMAGEREWARD_CACHE", str(Path.home() / ".cache" / "ImageReward")
@@ -115,6 +147,8 @@ def preload_imagereward() -> None:
 
     if pt_path.is_file() and pt_path.stat().st_size > 0 and med_config_path.is_file():
         _log(f"ImageReward fully cached at {cache_dir}")
+        # Also ensure CLIP weights are cached
+        _preload_clip_weights()
         _mark_done("imagereward")
         return
 
@@ -129,6 +163,7 @@ def preload_imagereward() -> None:
                 local_dir=cache_dir,
                 local_dir_use_symlinks=False,
             )
+            _preload_clip_weights()
             _log(f"ImageReward fully ready at {cache_dir}")
             _mark_done("imagereward")
         except Exception as exc:

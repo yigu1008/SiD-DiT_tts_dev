@@ -65,10 +65,13 @@ search:
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
+      # ── Disable offline mode (cluster image may set it; we preload caches) ──
+      - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
       # ── Cache dirs & symlinks ──────────────────────────────────────────────
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
+      - export CLIP_CACHE_DIR=/mnt/data/v-yigu/model_cache/clip
       - mkdir -p /mnt/data/v-yigu/model_cache/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
       - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true

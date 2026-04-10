@@ -62,6 +62,7 @@ def test_senseflow(device, reward_backend="imagereward", prompt="a cat sitting o
     from diffusers.models.transformers import SD3Transformer2DModel
 
     dtype = torch.bfloat16
+    model_id = "stabilityai/stable-diffusion-3.5-large"
 
     import gc
 
@@ -69,35 +70,33 @@ def test_senseflow(device, reward_backend="imagereward", prompt="a cat sitting o
     torch.cuda.empty_cache()
     gc.collect()
     torch.cuda.empty_cache()
-    print(f"  GPU before start: {torch.cuda.memory_allocated(device) / 1e9:.1f} GB allocated, "
-          f"{torch.cuda.memory_reserved(device) / 1e9:.1f} GB reserved")
+    if torch.cuda.is_available():
+        print(f"  GPU before start: {torch.cuda.memory_allocated(device) / 1e9:.1f} GB allocated, "
+              f"{torch.cuda.memory_reserved(device) / 1e9:.1f} GB reserved")
 
-    # Step 1: Load pipeline to encode prompts on CPU, then destroy it completely
-    print("  Loading SD3.5-Large (text encoding only, CPU)...")
+    # ── Step 1: Load pipeline WITHOUT transformer to encode prompts on CPU ──
+    # This avoids loading the 8GB base transformer entirely
+    print("  Loading SD3.5-Large pipeline (transformer=None, CPU only)...")
     pipe = StableDiffusion3Pipeline.from_pretrained(
-        "stabilityai/stable-diffusion-3.5-large",
+        model_id,
+        transformer=None,
         torch_dtype=dtype,
     )
 
     print("  Encoding prompt on CPU...")
-    enc_out = pipe.encode_prompt(prompt, prompt, "")
+    enc_out = pipe.encode_prompt(prompt, prompt, prompt)
     pe_sf = enc_out[0].clone().to(dtype=dtype)
     pp_sf = enc_out[-1].clone().to(dtype=dtype)
     enc_uncond_sf = pipe.encode_prompt("", "", "")
     pe_uncond_sf = enc_uncond_sf[0].clone().to(dtype=dtype)
 
-    # Save VAE config info before destroying pipeline
-    vae_shift = getattr(pipe.vae.config, "shift_factor", 0.0)
-    vae_scaling = pipe.vae.config.scaling_factor
-    image_processor = pipe.image_processor
-
-    # Destroy entire pipeline including VAE (frees all CPU RAM)
+    # Destroy entire pipeline (frees text encoders ~20GB CPU RAM)
     del pipe
     gc.collect()
     torch.cuda.empty_cache()
-    print(f"  Freed entire pipeline.")
+    print(f"  Freed pipeline (text encoders only, no transformer was loaded).")
 
-    # Step 2: Load SenseFlow transformer on CPU first, then move to GPU
+    # ── Step 2: Load SenseFlow transformer → GPU ──
     print(f"  Loading SenseFlow transformer...")
     transformer = SD3Transformer2DModel.from_pretrained(
         "domiso/SenseFlow",
@@ -108,26 +107,29 @@ def test_senseflow(device, reward_backend="imagereward", prompt="a cat sitting o
     transformer.eval().requires_grad_(False)
     param_gb = sum(p.numel() * p.element_size() for p in transformer.parameters()) / 1e9
     print(f"  Transformer: {type(transformer).__name__} ({param_gb:.1f} GB)")
-    print(f"  GPU before transformer load: {torch.cuda.memory_allocated(device) / 1e9:.1f} GB")
+    if torch.cuda.is_available():
+        print(f"  GPU before transformer load: {torch.cuda.memory_allocated(device) / 1e9:.1f} GB")
     transformer.to(device)
-    print(f"  GPU after transformer load: {torch.cuda.memory_allocated(device) / 1e9:.1f} GB")
+    if torch.cuda.is_available():
+        print(f"  GPU after transformer load: {torch.cuda.memory_allocated(device) / 1e9:.1f} GB")
 
-    # Step 3: Load VAE separately (much smaller, ~0.3GB)
+    # ── Step 3: Load VAE separately (~0.3GB) ──
     print(f"  Loading VAE...")
-    vae = AutoencoderKL.from_pretrained(
-        "stabilityai/stable-diffusion-3.5-large",
-        subfolder="vae",
-        torch_dtype=dtype,
-    )
+    vae = AutoencoderKL.from_pretrained(model_id, subfolder="vae", torch_dtype=dtype)
     vae.eval().requires_grad_(False)
     vae.to(device)
     if hasattr(vae, "enable_slicing"):
         vae.enable_slicing()
+    from diffusers.image_processor import VaeImageProcessor
+    image_processor = VaeImageProcessor(vae_scale_factor=2 ** (len(vae.config.block_out_channels) - 1))
+    vae_shift = getattr(vae.config, "shift_factor", 0.0)
+    vae_scaling = vae.config.scaling_factor
 
     pe_sf, pp_sf = pe_sf.to(device), pp_sf.to(device)
     pe_uncond_sf = pe_uncond_sf.to(device)
     torch.cuda.empty_cache()
-    print(f"  GPU memory: {torch.cuda.memory_allocated() / 1e9:.1f} GB")
+    if torch.cuda.is_available():
+        print(f"  GPU memory: {torch.cuda.memory_allocated() / 1e9:.1f} GB")
 
     # Test 1: Manual loop with SenseFlow sigmas (ground truth equivalent)
     print("\n  --- Test 1: Manual SenseFlow loop (guidance_scale=0.0) ---")

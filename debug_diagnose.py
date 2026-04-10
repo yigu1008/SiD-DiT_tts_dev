@@ -63,27 +63,17 @@ def test_senseflow(device, reward_backend="imagereward", prompt="a cat sitting o
 
     dtype = torch.bfloat16
 
-    # Load transformer from SenseFlow
-    print("  Loading SenseFlow transformer...")
-    transformer = SD3Transformer2DModel.from_pretrained(
-        "domiso/SenseFlow",
-        subfolder="SenseFlow-SD35L/transformer",
-        torch_dtype=dtype,
-    )
-    print(f"  Transformer loaded: {type(transformer).__name__}")
+    import gc
 
-    # Load pipeline (memory-optimized)
-    print("  Loading SD3.5-Large pipeline (memory-optimized)...")
+    # Step 1: Load pipeline with text encoders only to encode prompts
+    # Load with transformer to avoid errors, but we'll replace it
+    print("  Loading SD3.5-Large (for text encoding)...")
     pipe = StableDiffusion3Pipeline.from_pretrained(
         "stabilityai/stable-diffusion-3.5-large",
-        transformer=transformer,
         torch_dtype=dtype,
     )
 
-    pipe.transformer.eval().requires_grad_(False)
-    pipe.vae.eval().requires_grad_(False)
-
-    # Encode prompt on CPU first
+    # Encode prompt on CPU
     print("  Encoding prompt on CPU...")
     enc_out = pipe.encode_prompt(prompt, prompt, "")
     pe_sf = enc_out[0].to(dtype=dtype)
@@ -91,26 +81,42 @@ def test_senseflow(device, reward_backend="imagereward", prompt="a cat sitting o
     enc_uncond_sf = pipe.encode_prompt("", "", "")
     pe_uncond_sf = enc_uncond_sf[0].to(dtype=dtype)
 
-    # Free text encoders
+    # Free text encoders + base transformer entirely
     pipe.text_encoder = None
     pipe.text_encoder_2 = None
     pipe.text_encoder_3 = None
     pipe.tokenizer = None
     pipe.tokenizer_2 = None
     pipe.tokenizer_3 = None
-    import gc; gc.collect()
+    pipe.transformer = None
+    gc.collect()
+    torch.cuda.empty_cache()
 
-    # Move transformer + VAE to GPU
-    pipe.transformer.to(device)
+    # Step 2: Load SenseFlow transformer directly to GPU
+    print("  Loading SenseFlow transformer...")
+    transformer = SD3Transformer2DModel.from_pretrained(
+        "domiso/SenseFlow",
+        subfolder="SenseFlow-SD35L/transformer",
+        torch_dtype=dtype,
+    ).to(device)
+    transformer.eval().requires_grad_(False)
+    print(f"  Transformer loaded: {type(transformer).__name__}")
+
+    # Move VAE to GPU
     pipe.vae.to(device)
+    pipe.vae.eval().requires_grad_(False)
+    if hasattr(pipe, "enable_vae_slicing"):
+        pipe.enable_vae_slicing()
+
     pe_sf, pp_sf = pe_sf.to(device), pp_sf.to(device)
     pe_uncond_sf = pe_uncond_sf.to(device)
+    torch.cuda.empty_cache()
     print(f"  GPU memory: {torch.cuda.memory_allocated() / 1e9:.1f} GB")
 
     # Test 1: Manual loop with SenseFlow sigmas (ground truth equivalent)
     print("\n  --- Test 1: Manual SenseFlow loop (guidance_scale=0.0) ---")
     t0 = time.time()
-    latent_c = pipe.transformer.config.in_channels
+    latent_c = transformer.config.in_channels
     sf_latents = torch.randn(1, latent_c, 128, 128, device=device, dtype=dtype,
                              generator=torch.Generator(device=device).manual_seed(42))
     sf_sigmas = [1.0, 0.75]
@@ -124,7 +130,7 @@ def test_senseflow(device, reward_backend="imagereward", prompt="a cat sitting o
         else:
             cur_noise = torch.randn_like(sf_dx)
             cur_latents = (1.0 - t_val) * sf_dx + t_val * cur_noise
-        out = pipe.transformer(
+        out = transformer(
             hidden_states=cur_latents,
             encoder_hidden_states=pe_sf,
             pooled_projections=pp_sf,
@@ -155,7 +161,7 @@ def test_senseflow(device, reward_backend="imagereward", prompt="a cat sitting o
             cur_latents = (1.0 - t_val) * sf_dx2 + t_val * cur_noise
 
         # Conditional
-        out_cond = pipe.transformer(
+        out_cond = transformer(
             hidden_states=cur_latents,
             encoder_hidden_states=pe_sf,
             pooled_projections=pp_sf,
@@ -164,7 +170,7 @@ def test_senseflow(device, reward_backend="imagereward", prompt="a cat sitting o
         )[0]
 
         # Unconditional
-        out_uncond = pipe.transformer(
+        out_uncond = transformer(
             hidden_states=cur_latents,
             encoder_hidden_states=pe_uncond_sf.expand_as(pe_sf),
             pooled_projections=torch.zeros_like(pp_sf),

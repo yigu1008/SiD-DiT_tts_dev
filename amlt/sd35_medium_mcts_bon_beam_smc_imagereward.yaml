@@ -216,7 +216,7 @@ search:
     - name: resample_start_frac
       values: [ 0.3 ]
     - name: smc_cfg_scale
-      values: [ 0.0 ]
+      values: [ 4.5 ]
     - name: smc_variant_idx
       values: [ 0 ]
     - name: ga_population

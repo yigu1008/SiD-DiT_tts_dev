@@ -1138,7 +1138,7 @@ def run_greedy_batch(
             enc_hs = torch.cat([embs[j].cond_text[variant_idx] for j in range(B)])
             pooled = torch.cat([embs[j].cond_pooled[variant_idx] for j in range(B)])
             t_batch = t_flat.expand(B)
-            if cfg == 1.0:
+            if cfg == 1.0 or cfg == 0.0:
                 ctx.nfe += B
                 flow = ctx.pipe.transformer(
                     hidden_states=latents,

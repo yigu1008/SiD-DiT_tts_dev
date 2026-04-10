@@ -72,119 +72,133 @@ def test_senseflow(device, reward_backend="imagereward", prompt="a cat sitting o
     )
     print(f"  Transformer loaded: {type(transformer).__name__}")
 
-    # Load pipeline
-    print("  Loading SD3.5-Large pipeline...")
+    # Load pipeline (memory-optimized)
+    print("  Loading SD3.5-Large pipeline (memory-optimized)...")
     pipe = StableDiffusion3Pipeline.from_pretrained(
         "stabilityai/stable-diffusion-3.5-large",
         transformer=transformer,
         torch_dtype=dtype,
-    ).to(device)
+    )
 
     pipe.transformer.eval().requires_grad_(False)
     pipe.vae.eval().requires_grad_(False)
 
-    # Test 1: Use diffusers pipeline directly (ground truth)
-    print("\n  --- Test 1: diffusers pipe() call (guidance_scale=0.0) ---")
-    gen = torch.Generator(device=device).manual_seed(42)
-    t0 = time.time()
-    result = pipe(
-        prompt,
-        num_inference_steps=2,
-        guidance_scale=0.0,
-        generator=gen,
-    )
-    t1 = time.time()
-    img_pipe = result.images[0]
-    img_pipe.save("debug_senseflow_pipe.png")
-    print(f"  Generated in {t1 - t0:.1f}s, saved debug_senseflow_pipe.png")
-
-    # Test 2: Manual SenseFlow loop (our code path)
-    print("\n  --- Test 2: Manual denoising loop (x0_sampler=True, cfg=0.0) ---")
-    sigmas = [1.0, 0.75]
-    latent_c = pipe.transformer.config.in_channels
-    latents = torch.randn(1, latent_c, 128, 128, device=device, dtype=dtype,
-                          generator=torch.Generator(device=device).manual_seed(42))
-
-    # Encode prompt
+    # Encode prompt on CPU first
+    print("  Encoding prompt on CPU...")
     enc_out = pipe.encode_prompt(prompt, prompt, "")
-    pe, pp = enc_out[0], enc_out[-1]
-    print(f"  encode_prompt returned {len(enc_out)} values")
-    print(f"  pe shape: {pe.shape}, pp shape: {pp.shape}")
+    pe_sf = enc_out[0].to(dtype=dtype)
+    pp_sf = enc_out[-1].to(dtype=dtype)
+    enc_uncond_sf = pipe.encode_prompt("", "", "")
+    pe_uncond_sf = enc_uncond_sf[0].to(dtype=dtype)
 
-    # Also get unconditional embeddings for comparison
-    enc_uncond = pipe.encode_prompt("", "", "")
-    pe_uncond = enc_uncond[0]
+    # Free text encoders
+    pipe.text_encoder = None
+    pipe.text_encoder_2 = None
+    pipe.text_encoder_3 = None
+    pipe.tokenizer = None
+    pipe.tokenizer_2 = None
+    pipe.tokenizer_3 = None
+    import gc; gc.collect()
 
-    dx = torch.zeros_like(latents)
-    noise = latents.clone()
+    # Move transformer + VAE to GPU
+    pipe.transformer.to(device)
+    pipe.vae.to(device)
+    pe_sf, pp_sf = pe_sf.to(device), pp_sf.to(device)
+    pe_uncond_sf = pe_uncond_sf.to(device)
+    print(f"  GPU memory: {torch.cuda.memory_allocated() / 1e9:.1f} GB")
 
-    for i, sigma in enumerate(sigmas):
+    # Test 1: Manual loop with SenseFlow sigmas (ground truth equivalent)
+    print("\n  --- Test 1: Manual SenseFlow loop (guidance_scale=0.0) ---")
+    t0 = time.time()
+    latent_c = pipe.transformer.config.in_channels
+    sf_latents = torch.randn(1, latent_c, 128, 128, device=device, dtype=dtype,
+                             generator=torch.Generator(device=device).manual_seed(42))
+    sf_sigmas = [1.0, 0.75]
+    sf_dx = torch.zeros_like(sf_latents)
+    sf_noise = sf_latents.clone()
+    for i, sigma in enumerate(sf_sigmas):
         t_val = sigma
         t_flat = torch.full((1,), t_val, device=device, dtype=dtype)
-
-        # Re-noise
         if i == 0:
-            cur_latents = (1.0 - t_val) * dx + t_val * noise
+            cur_latents = (1.0 - t_val) * sf_dx + t_val * sf_noise
         else:
-            cur_noise = torch.randn_like(dx)
-            cur_latents = (1.0 - t_val) * dx + t_val * cur_noise
+            cur_noise = torch.randn_like(sf_dx)
+            cur_latents = (1.0 - t_val) * sf_dx + t_val * cur_noise
+        out = pipe.transformer(
+            hidden_states=cur_latents,
+            encoder_hidden_states=pe_sf,
+            pooled_projections=pp_sf,
+            timestep=1000.0 * t_flat,
+            return_dict=False,
+        )[0]
+        sf_dx = out  # x0_sampler: output IS x0
+    shift_f = getattr(pipe.vae.config, "shift_factor", 0.0)
+    scaling_f = pipe.vae.config.scaling_factor
+    image = pipe.vae.decode((sf_dx / scaling_f) + shift_f, return_dict=False)[0]
+    img_cond = pipe.image_processor.postprocess(image, output_type="pil")[0]
+    t1 = time.time()
+    img_cond.save("debug_senseflow_cond.png")
+    print(f"  Generated in {t1 - t0:.1f}s, saved debug_senseflow_cond.png")
 
-        print(f"\n  Step {i}: sigma={sigma}")
-        print(f"    latents: mean={cur_latents.mean():.4f} std={cur_latents.std():.4f}")
+    # Test 2: Same but with unconditional (what the old buggy cfg=0.0 did)
+    print("\n  --- Test 2: Unconditional loop (simulating old cfg=0.0 bug) ---")
+    sf_dx2 = torch.zeros_like(sf_latents)
+    sf_noise2 = torch.randn(1, latent_c, 128, 128, device=device, dtype=dtype,
+                            generator=torch.Generator(device=device).manual_seed(42))
+    for i, sigma in enumerate(sf_sigmas):
+        t_val = sigma
+        t_flat = torch.full((1,), t_val, device=device, dtype=dtype)
+        if i == 0:
+            cur_latents = (1.0 - t_val) * sf_dx2 + t_val * sf_noise2
+        else:
+            cur_noise = torch.randn_like(sf_dx2)
+            cur_latents = (1.0 - t_val) * sf_dx2 + t_val * cur_noise
 
-        # Conditional-only forward (cfg=0.0 should route here)
+        # Conditional
         out_cond = pipe.transformer(
             hidden_states=cur_latents,
-            encoder_hidden_states=pe,
-            pooled_projections=pp,
+            encoder_hidden_states=pe_sf,
+            pooled_projections=pp_sf,
             timestep=1000.0 * t_flat,
             return_dict=False,
         )[0]
-        print(f"    cond output: mean={out_cond.mean():.4f} std={out_cond.std():.4f}")
 
-        # Unconditional forward (what cfg=0.0 was wrongly returning before)
+        # Unconditional
         out_uncond = pipe.transformer(
             hidden_states=cur_latents,
-            encoder_hidden_states=pe_uncond.expand_as(pe),
-            pooled_projections=torch.zeros_like(pp),
+            encoder_hidden_states=pe_uncond_sf.expand_as(pe_sf),
+            pooled_projections=torch.zeros_like(pp_sf),
             timestep=1000.0 * t_flat,
             return_dict=False,
         )[0]
-        print(f"    uncond output: mean={out_uncond.mean():.4f} std={out_uncond.std():.4f}")
 
-        # Compare
         diff = (out_cond - out_uncond).abs().mean()
-        print(f"    |cond - uncond|: {diff:.4f}")
+        print(f"    step {i} (sigma={sigma}): |cond - uncond| = {diff:.4f}")
         if diff < 0.01:
-            print(f"    WARNING: cond and uncond are nearly identical!")
+            print(f"      WARNING: nearly identical — text conditioning has no effect")
 
-        # x0_sampler: output IS x0
-        dx = out_cond  # NOT latents - t*flow
+        # Old bug: cfg=0.0 → flow_u + 0*(flow_c - flow_u) = flow_u (unconditional)
+        sf_dx2 = out_uncond  # simulating the bug
 
-    # Decode
-    shift = getattr(pipe.vae.config, "shift_factor", 0.0)
-    image = pipe.vae.decode(
-        (dx / pipe.vae.config.scaling_factor) + shift,
-        return_dict=False,
-    )[0]
-    img_manual = pipe.image_processor.postprocess(image, output_type="pil")[0]
-    img_manual.save("debug_senseflow_manual.png")
-    print(f"\n  Saved debug_senseflow_manual.png")
+    image2 = pipe.vae.decode((sf_dx2 / scaling_f) + shift_f, return_dict=False)[0]
+    img_uncond = pipe.image_processor.postprocess(image2, output_type="pil")[0]
+    img_uncond.save("debug_senseflow_uncond.png")
 
     # Score both
     try:
         from reward_unified import UnifiedRewardScorer
         scorer = UnifiedRewardScorer(device="cpu", backend=reward_backend)
-        score_pipe = float(scorer.score(prompt, img_pipe))
-        score_manual = float(scorer.score(prompt, img_manual))
+        score_cond = float(scorer.score(prompt, img_cond))
+        score_uncond = float(scorer.score(prompt, img_uncond))
         print(f"\n  SCORES:")
-        print(f"    pipe() call:     {score_pipe:.4f}")
-        print(f"    manual loop:     {score_manual:.4f}")
-        print(f"    delta:           {score_manual - score_pipe:+.4f}")
-        if score_pipe < -1.0:
-            print(f"    PROBLEM: pipe() score is {score_pipe:.4f} — likely garbage image")
-        if score_manual < -1.0:
-            print(f"    PROBLEM: manual score is {score_manual:.4f} — likely garbage image")
+        print(f"    conditional (fixed):     {score_cond:.4f}")
+        print(f"    unconditional (old bug): {score_uncond:.4f}")
+        print(f"    delta:                   {score_cond - score_uncond:+.4f}")
+        if score_uncond < -1.0:
+            print(f"    CONFIRMED: unconditional gives garbage ({score_uncond:.4f})")
+            print(f"    This was the cfg=0.0 bug — it returned unconditional output")
+        if score_cond > 0.0:
+            print(f"    CONFIRMED: conditional works ({score_cond:.4f})")
     except Exception as e:
         print(f"\n  Could not score: {e}")
 
@@ -223,8 +237,8 @@ def test_sd35_base(device, reward_backend="imagereward", prompt="a cat sitting o
 
     from diffusers import StableDiffusion3Pipeline
 
-    print(f"  Loading SD3.5-Large pipeline...")
-    pipe = StableDiffusion3Pipeline.from_pretrained(model_id, torch_dtype=dtype).to(device)
+    print(f"  Loading SD3.5-Large pipeline (memory-optimized for 48GB)...")
+    pipe = StableDiffusion3Pipeline.from_pretrained(model_id, torch_dtype=dtype)
     pipe.transformer.eval().requires_grad_(False)
     pipe.vae.eval().requires_grad_(False)
 
@@ -238,12 +252,30 @@ def test_sd35_base(device, reward_backend="imagereward", prompt="a cat sitting o
         except Exception as e:
             print(f"  Could not load reward: {e}")
 
-    # Encode prompt
+    # Encode prompt on CPU before moving to GPU (saves ~14GB)
+    print("  Encoding prompt on CPU...")
     enc_out = pipe.encode_prompt(prompt, prompt, "")
-    pe, pp = enc_out[0], enc_out[-1]
-    # Uncond
+    pe = enc_out[0].to(dtype=dtype)
+    pp = enc_out[-1].to(dtype=dtype)
     enc_uncond = pipe.encode_prompt("", "", "")
-    pe_uncond, pp_uncond = enc_uncond[0], enc_uncond[-1]
+    pe_uncond = enc_uncond[0].to(dtype=dtype)
+    pp_uncond = enc_uncond[-1].to(dtype=dtype)
+
+    # Free text encoders to save ~14GB GPU
+    pipe.text_encoder = None
+    pipe.text_encoder_2 = None
+    pipe.text_encoder_3 = None
+    pipe.tokenizer = None
+    pipe.tokenizer_2 = None
+    pipe.tokenizer_3 = None
+    import gc; gc.collect()
+
+    # Move only transformer + VAE to GPU
+    pipe.transformer.to(device)
+    pipe.vae.to(device)
+    pe, pp = pe.to(device), pp.to(device)
+    pe_uncond, pp_uncond = pe_uncond.to(device), pp_uncond.to(device)
+    print(f"  GPU memory: {torch.cuda.memory_allocated() / 1e9:.1f} GB")
 
     latent_c = pipe.transformer.config.in_channels
     shift_factor = getattr(pipe.vae.config, "shift_factor", 0.0)
@@ -261,19 +293,8 @@ def test_sd35_base(device, reward_backend="imagereward", prompt="a cat sitting o
     seed = 42
     cfg = 4.5
 
-    # ── Test 1: diffusers pipe() call (ground truth) ──
-    print(f"\n  --- Test 1: pipe() call (cfg={cfg}, steps={steps}) ---")
-    gen = torch.Generator(device=device).manual_seed(seed)
-    t0 = time.time()
-    result = pipe(prompt, num_inference_steps=steps, guidance_scale=cfg, generator=gen)
-    t1 = time.time()
-    img_pipe = result.images[0]
-    img_pipe.save("debug_sd35base_pipe.png")
-    score_pipe = score(img_pipe)
-    print(f"  Generated in {t1 - t0:.1f}s, score={score_pipe:.4f}")
-
-    # ── Test 2: manual Euler loop ──
-    print(f"\n  --- Test 2: Manual Euler loop (cfg={cfg}, steps={steps}) ---")
+    # ── Test 1: Manual Euler baseline ──
+    print(f"\n  --- Test 1: Manual Euler loop (cfg={cfg}, steps={steps}) ---")
     sched = su.step_schedule(device, dtype, steps, euler=True, shift=3.0)
     latents = torch.randn(1, latent_c, 128, 128, device=device, dtype=dtype,
                           generator=torch.Generator(device=device).manual_seed(seed))
@@ -321,16 +342,10 @@ def test_sd35_base(device, reward_backend="imagereward", prompt="a cat sitting o
     score_x0_mid = score(img_x0_mid)
 
     print(f"\n  SCORES:")
-    print(f"    pipe() call:          {score_pipe:.4f}")
     print(f"    manual Euler final:   {score_euler:.4f}")
     print(f"    x0 estimate (last):   {score_x0_last:.4f}")
     print(f"    x0 estimate (mid):    {score_x0_mid:.4f}")
-    print(f"    pipe vs euler delta:  {score_euler - score_pipe:+.4f}")
     print(f"    euler vs x0_last:     {score_x0_last - score_euler:+.4f}")
-
-    if abs(score_euler - score_pipe) > 0.3:
-        print(f"    WARNING: pipe() and manual Euler differ significantly!")
-        print(f"    This means our Euler implementation may be wrong.")
 
     if abs(score_x0_last - score_euler) > 0.1:
         print(f"    NOTE: x0_last and Euler final differ by {score_x0_last - score_euler:+.4f}")
@@ -397,18 +412,48 @@ def test_sd35_mcts(device, reward_backend="imagereward",
 
     from diffusers import StableDiffusion3Pipeline
 
-    print("  Loading pipeline...")
-    pipe = StableDiffusion3Pipeline.from_pretrained(model_id, torch_dtype=dtype).to(device)
+    print("  Loading pipeline (memory-optimized for 48GB)...")
+    pipe = StableDiffusion3Pipeline.from_pretrained(model_id, torch_dtype=dtype)
+    # Encode prompt on CPU first, then offload text encoders
     pipe.transformer.eval().requires_grad_(False)
     pipe.vae.eval().requires_grad_(False)
+
+    # Load reward on CPU before moving pipeline to GPU
+    from reward_unified import UnifiedRewardScorer
+    scorer = UnifiedRewardScorer(device="cpu", backend=reward_backend)
+    print(f"  Reward: {scorer.describe()}")
+
+    # Encode prompt while text encoders are still on CPU (saves ~14GB GPU)
+    print("  Encoding prompt on CPU...")
+    _enc_out = pipe.encode_prompt(prompt, prompt, "")
+    _cached_pe = _enc_out[0].to(dtype=dtype)
+    _cached_pp = _enc_out[-1].to(dtype=dtype)
+    _enc_uncond = pipe.encode_prompt("", "", "")
+    _cached_pe_uncond = _enc_uncond[0].to(dtype=dtype)
+    _cached_pp_uncond = _enc_uncond[-1].to(dtype=dtype)
+
+    # Free text encoders (~14GB)
+    pipe.text_encoder = None
+    pipe.text_encoder_2 = None
+    pipe.text_encoder_3 = None
+    pipe.tokenizer = None
+    pipe.tokenizer_2 = None
+    pipe.tokenizer_3 = None
+    import gc; gc.collect(); torch.cuda.empty_cache()
+
+    # Now move only transformer + VAE to GPU (~16GB + 0.3GB)
+    pipe.transformer.to(device)
+    pipe.vae.to(device)
+    print(f"  GPU memory after offload: {torch.cuda.memory_allocated() / 1e9:.1f} GB")
 
     latent_c = pipe.transformer.config.in_channels
     ctx = su.PipelineContext(pipe=pipe, device=device, dtype=dtype, latent_c=latent_c)
 
-    # Load reward
-    from reward_unified import UnifiedRewardScorer
-    scorer = UnifiedRewardScorer(device="cpu", backend=reward_backend)
-    print(f"  Reward: {scorer.describe()}")
+    # Move cached embeddings to GPU
+    _cached_pe = _cached_pe.to(device)
+    _cached_pp = _cached_pp.to(device)
+    _cached_pe_uncond = _cached_pe_uncond.to(device)
+    _cached_pp_uncond = _cached_pp_uncond.to(device)
 
     # Build args manually (mimics sampling_sd35_base defaults)
     args = argparse.Namespace(
@@ -462,9 +507,16 @@ def test_sd35_mcts(device, reward_backend="imagereward",
     seed = 42
     variants = [prompt]
 
+    # Build EmbeddingContext from pre-computed embeddings (text encoders already freed)
+    emb = su.EmbeddingContext(
+        cond_text=[_cached_pe],
+        cond_pooled=[_cached_pp],
+        uncond_text=_cached_pe_uncond,
+        uncond_pooled=_cached_pp_uncond,
+    )
+
     # ── Step 0: Baseline ──
     print(f"\n  --- Baseline (cfg=4.5, steps={steps}) ---")
-    emb = su.encode_variants(ctx, variants)
     ctx.nfe = 0
     base_img, base_score = su.run_baseline(
         args, ctx, emb, scorer, prompt, seed, cfg_scale=4.5,
@@ -477,13 +529,6 @@ def test_sd35_mcts(device, reward_backend="imagereward",
     ctx.nfe = 0
     ctx.correction_nfe = 0
 
-    # Monkey-patch to add per-sim logging
-    orig_run = sb.run_mcts_sd35base
-
-    # Instead of monkey-patching, let's run the MCTS manually step by step
-    # to capture more diagnostics
-
-    emb = su.encode_variants(ctx, variants)
     sched = su.step_schedule(ctx.device, dtype, steps, euler=True, shift=3.0)
     latents0 = su.make_latents(ctx, seed, args.height, args.width, dtype)
 

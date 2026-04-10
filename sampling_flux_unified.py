@@ -567,6 +567,7 @@ def encode_prompt_bank(
     for label, text in prompt_bank:
         pe, ppe, txt_ids = ctx.pipe.encode_prompt(
             prompt=text,
+            prompt_2=text,
             device=ctx.device,
             num_images_per_prompt=1,
             max_sequence_length=int(args.max_sequence_length),

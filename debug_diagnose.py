@@ -81,7 +81,7 @@ def test_senseflow(device, reward_backend="imagereward", prompt="a cat sitting o
 
     # Save VAE config + weights before destroying pipeline
     vae = pipe.vae
-    image_processor = image_processor
+    image_processor = pipe.image_processor
     vae.eval().requires_grad_(False)
 
     # Destroy everything else (frees ~30GB CPU RAM)

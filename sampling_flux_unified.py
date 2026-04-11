@@ -60,13 +60,15 @@ _BACKEND_CONFIGS: dict[str, dict[str, Any]] = {
         "model_id": "black-forest-labs/FLUX.1-schnell",
         "transformer_id": "domiso/SenseFlow",
         "transformer_subfolder": "SenseFlow-FLUX",
-        "sigmas": [1.0, 0.75],
+        "sigmas": [1.0, 0.75, 0.5, 0.25],
         "dtype": "bf16",
         # SenseFlow transformer predicts x̂₀ directly; use x0 sampler (not flow).
+        # Re-noising loop (euler_sampler=False): latents = (1-t)*x0 + t*noise
         "baseline_guidance_scale": 0.0,
         "ga_guidance_scales": [0.0],
         "cfg_scales": [0.0],
         "x0_sampler": True,
+        "euler_sampler": False,
     },
 }
 
@@ -322,6 +324,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Treat transformer output as a direct x̂₀ prediction instead of flow/velocity. "
              "Set automatically for senseflow backends.",
     )
+    p.add_argument(
+        "--euler_sampler",
+        action="store_true",
+        default=False,
+        help="Use Euler ODE stepping (latents += dt*flow) instead of SiD re-noising. "
+             "Set automatically for sd35_base-like backends.",
+    )
     p.add_argument("--save_first_k", type=int, default=10)
     p.add_argument("--out_dir", default="./flux_sampling_out")
     return _apply_backend_defaults(p.parse_args(argv))
@@ -338,6 +347,10 @@ def _apply_backend_defaults(args: argparse.Namespace) -> argparse.Namespace:
     # dtype has a parser default; only force backend dtype when backend explicitly set.
     if args.backend and "dtype" in cfg:
         args.dtype = str(cfg["dtype"])
+
+    # Euler sampler from backend config
+    if not getattr(args, "euler_sampler", False) and cfg.get("euler_sampler", False):
+        args.euler_sampler = True
 
     # SenseFlow defaults should apply only when caller kept legacy defaults.
     if (args.backend or "").startswith("senseflow"):
@@ -789,6 +802,26 @@ def _pred_x0(
     return out if x0_sampler else xt - t * out
 
 
+def _final_decode_tensor(
+    latents: torch.Tensor,
+    dx: torch.Tensor,
+    use_euler: bool,
+) -> torch.Tensor:
+    """Return the tensor to pass to VAE decode.
+
+    Euler: decode the accumulated latents (ODE solution).
+    SiD/SenseFlow re-noising: decode dx (the x̂₀ prediction).
+    """
+    return latents if use_euler else dx
+
+
+def _compute_dt(t_values: list[float], step_idx: int) -> float:
+    """Compute Euler step size dt = t_{next} - t_{current}."""
+    if step_idx + 1 < len(t_values):
+        return float(t_values[step_idx + 1]) - float(t_values[step_idx])
+    return -float(t_values[step_idx])  # last step goes to 0
+
+
 @torch.no_grad()
 def run_action_sequence(
     args: argparse.Namespace,
@@ -802,28 +835,30 @@ def run_action_sequence(
     if len(actions) != int(args.steps):
         raise ValueError(f"Expected {args.steps} actions, got {len(actions)}")
 
+    use_euler = getattr(args, "euler_sampler", False)
     init_latents = make_initial_latents(ctx, seed, args.height, args.width, batch_size=1)
     dx = torch.zeros_like(init_latents)
+    latents = init_latents.clone()
     rng = torch.Generator(device=ctx.device).manual_seed(seed + 2048)
     t_values = build_t_schedule(int(args.steps), getattr(args, "sigmas", None))
 
     for step_idx, (variant_idx, guidance) in enumerate(actions):
         t_val = float(t_values[step_idx])
         t_4d = torch.tensor(t_val, device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
-        if step_idx == 0:
-            noise = init_latents
-        else:
-            noise = torch.randn(
-                init_latents.shape,
-                device=ctx.device,
-                dtype=init_latents.dtype,
-                generator=rng,
-            )
-        latents = (1.0 - t_4d) * dx + t_4d * noise
+        if not use_euler:
+            if step_idx == 0:
+                noise = init_latents
+            else:
+                noise = torch.randn(init_latents.shape, device=ctx.device,
+                                    dtype=init_latents.dtype, generator=rng)
+            latents = (1.0 - t_4d) * dx + t_4d * noise
         flow_pred = flux_transformer_step(ctx, latents, embeds[int(variant_idx)], t_val, float(guidance))
         dx = _pred_x0(latents, t_4d, flow_pred, args.x0_sampler)
+        if use_euler:
+            dt = _compute_dt(t_values, step_idx)
+            latents = latents + dt * flow_pred
 
-    image = decode_to_pil(ctx, dx)
+    image = decode_to_pil(ctx, _final_decode_tensor(latents, dx, use_euler))
     score = score_image(reward_model, prompt, image)
     return SearchResult(image=image, score=float(score), actions=list(actions), diagnostics=None)
 
@@ -842,8 +877,10 @@ def run_greedy(
     if len(actions) == 0:
         raise RuntimeError("Greedy search requires non-empty action space.")
 
+    use_euler = getattr(args, "euler_sampler", False)
     init_latents = make_initial_latents(ctx, seed, args.height, args.width, batch_size=1)
     dx = torch.zeros_like(init_latents)
+    latents = init_latents.clone()
     rng = torch.Generator(device=ctx.device).manual_seed(seed + 2048)
     t_values = build_t_schedule(int(args.steps), getattr(args, "sigmas", None))
     chosen: list[tuple[int, float]] = []
@@ -852,35 +889,48 @@ def run_greedy(
 
     for step_idx, t_val in enumerate(t_values):
         t_4d = torch.tensor(float(t_val), device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
-        if step_idx == 0:
-            noise = init_latents
-        else:
-            noise = torch.randn(
-                init_latents.shape,
-                device=ctx.device,
-                dtype=init_latents.dtype,
-                generator=rng,
-            )
-        latents = (1.0 - t_4d) * dx + t_4d * noise
+        if not use_euler:
+            if step_idx == 0:
+                noise = init_latents
+            else:
+                noise = torch.randn(
+                    init_latents.shape,
+                    device=ctx.device,
+                    dtype=init_latents.dtype,
+                    generator=rng,
+                )
+            latents = (1.0 - t_4d) * dx + t_4d * noise
 
         best_score = -float("inf")
         best_action = actions[0]
         best_dx = None
+        best_latents = None
         print(f"  greedy step {step_idx + 1}/{args.steps} ({len(actions)} actions)")
         for variant_idx, guidance in actions:
             flow_pred = flux_transformer_step(ctx, latents, embeds[int(variant_idx)], float(t_val), float(guidance))
             nfe_total += 1
             cand_dx = _pred_x0(latents, t_4d, flow_pred, args.x0_sampler)
-            cand_img = decode_to_pil(ctx, cand_dx)
+            if use_euler:
+                dt = _compute_dt(t_values, step_idx)
+                cand_latents = latents + dt * flow_pred
+                cand_decode = _final_decode_tensor(cand_latents, cand_dx, use_euler)
+            else:
+                cand_latents = None
+                cand_decode = cand_dx
+            cand_img = decode_to_pil(ctx, cand_decode)
             cand_score = score_image(reward_model, prompt, cand_img)
             del cand_img
             if cand_score > best_score:
                 best_score = float(cand_score)
                 best_action = (int(variant_idx), float(guidance))
                 best_dx = cand_dx.clone()
+                if use_euler:
+                    best_latents = cand_latents.clone()
 
         assert best_dx is not None
         dx = best_dx
+        if use_euler:
+            latents = best_latents
         chosen.append(best_action)
         history.append(
             {
@@ -895,7 +945,7 @@ def run_greedy(
             f"g={best_action[1]:.2f} score={best_score:.4f}"
         )
 
-    final_img = decode_to_pil(ctx, dx)
+    final_img = decode_to_pil(ctx, _final_decode_tensor(latents, dx, use_euler))
     final_score = score_image(reward_model, prompt, final_img)
     diagnostics = {
         "history": history,
@@ -965,6 +1015,7 @@ def run_bon(
 ) -> SearchResult:
     """Best of N: generate N independent samples with baseline guidance, return highest-scoring."""
     n = max(1, int(args.bon_n))
+    use_euler = getattr(args, "euler_sampler", False)
     guidance = float(args.baseline_guidance_scale)
     variant_idx = 0
     fixed_actions: list[tuple[int, float]] = [(variant_idx, guidance)] * int(args.steps)
@@ -973,24 +1024,29 @@ def run_bon(
     best_score = -float("inf")
     best_img: Image.Image | None = None
 
-    print(f"  bon: n={n} guidance={guidance:.2f} variant={variant_idx}")
+    print(f"  bon: n={n} guidance={guidance:.2f} variant={variant_idx} euler={use_euler}")
     for i in range(n):
         s = seed + i
         init_latents = make_initial_latents(ctx, s, args.height, args.width, batch_size=1)
         dx = torch.zeros_like(init_latents)
+        latents = init_latents.clone()
         rng = torch.Generator(device=ctx.device).manual_seed(s + 2048)
         for step_idx, t_val in enumerate(t_values):
             t_4d = torch.tensor(float(t_val), device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
-            if step_idx == 0:
-                noise = init_latents
-            else:
-                noise = torch.randn(
-                    init_latents.shape, device=ctx.device, dtype=init_latents.dtype, generator=rng
-                )
-            latents = (1.0 - t_4d) * dx + t_4d * noise
+            if not use_euler:
+                if step_idx == 0:
+                    noise = init_latents
+                else:
+                    noise = torch.randn(
+                        init_latents.shape, device=ctx.device, dtype=init_latents.dtype, generator=rng
+                    )
+                latents = (1.0 - t_4d) * dx + t_4d * noise
             flow = flux_transformer_step(ctx, latents, embeds[variant_idx], float(t_val), guidance)
             dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
-        img = decode_to_pil(ctx, dx)
+            if use_euler:
+                dt = _compute_dt(t_values, step_idx)
+                latents = latents + dt * flow
+        img = decode_to_pil(ctx, _final_decode_tensor(latents, dx, use_euler))
         score = score_image(reward_model, prompt, img)
         mark = ""
         if score > best_score:
@@ -1022,6 +1078,7 @@ def run_beam(
     actions = build_action_space(len(embeds), guidance_bank)
     if len(actions) == 0:
         raise RuntimeError("Beam search requires non-empty action space.")
+    use_euler = getattr(args, "euler_sampler", False)
     beam_width = max(1, int(args.beam_width))
     t_values = build_t_schedule(int(args.steps), getattr(args, "sigmas", None))
     init_latents = make_initial_latents(ctx, seed, args.height, args.width, batch_size=1)
@@ -1032,25 +1089,35 @@ def run_beam(
         (torch.zeros_like(init_latents), init_latents, [])
     ]
 
-    print(f"  beam: width={beam_width} actions={len(actions)} steps={args.steps}")
+    print(f"  beam: width={beam_width} actions={len(actions)} steps={args.steps} euler={use_euler}")
     for step_idx, t_val in enumerate(t_values):
         t_4d = torch.tensor(float(t_val), device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
-        candidates: list[tuple[float, torch.Tensor, list[tuple[int, float]]]] = []
+        candidates: list[tuple[float, torch.Tensor, torch.Tensor, list[tuple[int, float]]]] = []
 
         for beam_dx, beam_latents, beam_path in beams:
-            if step_idx == 0:
-                noise = beam_latents
+            if not use_euler:
+                if step_idx == 0:
+                    noise = beam_latents
+                else:
+                    noise = torch.randn(beam_latents.shape, device=ctx.device, dtype=beam_latents.dtype)
+                latents_in = (1.0 - t_4d) * beam_dx + t_4d * noise
             else:
-                noise = torch.randn(beam_latents.shape, device=ctx.device, dtype=beam_latents.dtype)
-            latents_in = (1.0 - t_4d) * beam_dx + t_4d * noise
+                latents_in = beam_latents
             for vi, guidance in actions:
                 flow = flux_transformer_step(ctx, latents_in, embeds[int(vi)], float(t_val), float(guidance))
                 nfe_total += 1
                 cand_dx = _pred_x0(latents_in, t_4d, flow, args.x0_sampler)
-                cand_img = decode_to_pil(ctx, cand_dx)
+                if use_euler:
+                    dt = _compute_dt(t_values, step_idx)
+                    cand_latents = latents_in + dt * flow
+                    cand_decode = _final_decode_tensor(cand_latents, cand_dx, use_euler)
+                else:
+                    cand_latents = latents_in
+                    cand_decode = cand_dx
+                cand_img = decode_to_pil(ctx, cand_decode)
                 cand_score = score_image(reward_model, prompt, cand_img)
                 del cand_img
-                candidates.append((cand_score, cand_dx, beam_path + [(vi, guidance)]))
+                candidates.append((cand_score, cand_dx, cand_latents, beam_path + [(vi, guidance)]))
 
         candidates.sort(key=lambda x: x[0], reverse=True)
         print(
@@ -1059,18 +1126,21 @@ def run_beam(
         )
 
         if step_idx + 1 < int(args.steps):
-            next_t = float(t_values[step_idx + 1])
-            next_t_4d = torch.tensor(next_t, device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
-            beams = []
-            for _, dx, path in candidates[:beam_width]:
-                noise = torch.randn(dx.shape, device=ctx.device, dtype=dx.dtype)
-                next_latents = (1.0 - next_t_4d) * dx + next_t_4d * noise
-                beams.append((dx, next_latents, path))
+            if not use_euler:
+                next_t = float(t_values[step_idx + 1])
+                next_t_4d = torch.tensor(next_t, device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
+                beams = []
+                for _, dx, _, path in candidates[:beam_width]:
+                    noise = torch.randn(dx.shape, device=ctx.device, dtype=dx.dtype)
+                    next_latents = (1.0 - next_t_4d) * dx + next_t_4d * noise
+                    beams.append((dx, next_latents, path))
+            else:
+                beams = [(dx, lat, path) for _, dx, lat, path in candidates[:beam_width]]
         else:
-            beams = [(dx, dx, path) for _, dx, path in candidates[:beam_width]]
+            beams = [(dx, lat, path) for _, dx, lat, path in candidates[:beam_width]]
 
-    best_dx, _, best_path = beams[0]
-    best_img = decode_to_pil(ctx, best_dx)
+    best_dx, best_latents, best_path = beams[0]
+    best_img = decode_to_pil(ctx, _final_decode_tensor(best_latents, best_dx, use_euler))
     final_score = score_image(reward_model, prompt, best_img)
     return SearchResult(
         image=best_img,
@@ -1094,12 +1164,16 @@ def run_mcts(
     if len(actions) == 0:
         raise RuntimeError("MCTS requires non-empty action space.")
 
+    use_euler = getattr(args, "euler_sampler", False)
     n_actions = len(actions)
     t_values = build_t_schedule(int(args.steps), getattr(args, "sigmas", None))
     init_latents = make_initial_latents(ctx, seed, args.height, args.width, batch_size=1)
     dx0 = torch.zeros_like(init_latents)
-    t0_4d = torch.tensor(float(t_values[0]), device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
-    start_latents = (1.0 - t0_4d) * dx0 + t0_4d * init_latents
+    if use_euler:
+        start_latents = init_latents
+    else:
+        t0_4d = torch.tensor(float(t_values[0]), device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
+        start_latents = (1.0 - t0_4d) * dx0 + t0_4d * init_latents
     root = MCTSNode(step=0, dx=dx0, latents=start_latents)
 
     np_rng = np.random.default_rng(seed + 1337)
@@ -1122,6 +1196,12 @@ def run_mcts(
         nfe_total += 1
         new_dx = _pred_x0(current_latents, t_4d, flow, args.x0_sampler)
         next_step = int(step_idx) + 1
+        if use_euler:
+            dt = _compute_dt(t_values, step_idx)
+            new_latents = current_latents + dt * flow
+            if next_step >= int(args.steps):
+                return new_dx, new_latents  # keep latents for final decode
+            return new_dx, new_latents
         if next_step >= int(args.steps):
             return new_dx, None
         next_t = float(t_values[next_step])
@@ -1166,7 +1246,7 @@ def run_mcts(
             rollout_dx, rollout_latents = _step_forward(rollout_latents, rollout_step, rollout_action)
             rollout_step += 1
 
-        rollout_img = decode_to_pil(ctx, rollout_dx)
+        rollout_img = decode_to_pil(ctx, _final_decode_tensor(rollout_latents, rollout_dx, use_euler))
         rollout_score = score_image(reward_model, prompt, rollout_img)
         if rollout_score > best_global_score:
             best_global_score = float(rollout_score)
@@ -1755,8 +1835,10 @@ def run_smc(
     seed: int,
 ) -> SearchResult:
     k = max(2, int(args.smc_k))
+    use_euler = getattr(args, "euler_sampler", False)
     init_latents = make_initial_latents(ctx, seed, args.height, args.width, batch_size=k)
     dx = torch.zeros_like(init_latents)
+    latents = init_latents.clone()
     rng = torch.Generator(device=ctx.device).manual_seed(seed + 6001)
     t_values = build_t_schedule(int(args.steps), getattr(args, "sigmas", None))
     start_idx = int((1.0 - float(args.resample_start_frac)) * int(args.steps))
@@ -1767,16 +1849,17 @@ def run_smc(
 
     for step_idx, t_val in enumerate(t_values):
         t_4d = torch.tensor(float(t_val), device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
-        if step_idx == 0:
-            noise = init_latents
-        else:
-            noise = torch.randn(
-                init_latents.shape,
-                device=ctx.device,
-                dtype=init_latents.dtype,
-                generator=rng,
-            )
-        latents = (1.0 - t_4d) * dx + t_4d * noise
+        if not use_euler:
+            if step_idx == 0:
+                noise = init_latents
+            else:
+                noise = torch.randn(
+                    init_latents.shape,
+                    device=ctx.device,
+                    dtype=init_latents.dtype,
+                    generator=rng,
+                )
+            latents = (1.0 - t_4d) * dx + t_4d * noise
         flow_pred = flux_transformer_step_chunked(
             ctx=ctx,
             latents=latents,
@@ -1786,11 +1869,14 @@ def run_smc(
             chunk=int(args.smc_chunk),
         )
         dx = _pred_x0(latents, t_4d, flow_pred, args.x0_sampler)
+        if use_euler:
+            dt = _compute_dt(t_values, step_idx)
+            latents = latents + dt * flow_pred
 
         if step_idx < start_idx:
             continue
 
-        step_scores = score_dx_batch(ctx, reward_model, prompt, dx)
+        step_scores = score_dx_batch(ctx, reward_model, prompt, _final_decode_tensor(latents, dx, use_euler))
         reward_hist.append(float(step_scores.mean().item()))
         lam = (1.0 + float(args.smc_gamma)) ** (int(args.steps) - 1 - step_idx) - 1.0
         log_w = log_w + float(lam) * step_scores
@@ -1800,12 +1886,15 @@ def run_smc(
         if ess < float(args.ess_threshold) * float(k):
             idx = systematic_resample(w)
             dx = dx[idx].clone()
+            if use_euler:
+                latents = latents[idx].clone()
             log_w = torch.zeros_like(log_w)
             resample_count += 1
 
-    final_scores = score_dx_batch(ctx, reward_model, prompt, dx)
+    final_decode = _final_decode_tensor(latents, dx, use_euler)
+    final_scores = score_dx_batch(ctx, reward_model, prompt, final_decode)
     best_idx = int(torch.argmax(final_scores).item())
-    best_img = decode_to_pil(ctx, dx[best_idx : best_idx + 1])
+    best_img = decode_to_pil(ctx, final_decode[best_idx : best_idx + 1])
     diagnostics = {
         "smc_k": int(k),
         "gamma": float(args.smc_gamma),

@@ -118,6 +118,11 @@ MCTS_CFG_STEP_ANCHOR_COUNT="${MCTS_CFG_STEP_ANCHOR_COUNT:-2}"
 MCTS_CFG_MIN_PARENT_VISITS="${MCTS_CFG_MIN_PARENT_VISITS:-3}"
 MCTS_CFG_ROUND_NDIGITS="${MCTS_CFG_ROUND_NDIGITS:-6}"
 MCTS_CFG_LOG_ACTION_TOPK="${MCTS_CFG_LOG_ACTION_TOPK:-12}"
+MCTS_KEY_MODE="${MCTS_KEY_MODE:-count}"
+MCTS_KEY_STEPS="${MCTS_KEY_STEPS:-}"
+MCTS_KEY_STEP_COUNT="${MCTS_KEY_STEP_COUNT:-2}"
+MCTS_KEY_STEP_STRIDE="${MCTS_KEY_STEP_STRIDE:-0}"
+MCTS_KEY_DEFAULT_COUNT="${MCTS_KEY_DEFAULT_COUNT:-2}"
 
 _DEFAULT_CFG_SCALES_STR="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
 if [[ "${SD35_BACKEND}" == "senseflow_large" || "${SD35_BACKEND}" == "senseflow_medium" ]]; then
@@ -151,6 +156,7 @@ if [[ "${METHODS}" == *"mcts_lookahead_dynamiccfg"* || "${METHODS}" == *"mcts_lo
 fi
 if [[ "${METHODS}" == *"mcts_dynamiccfg_only"* ]]; then
   echo "  dynamic_cfg_mode: ${MCTS_CFG_MODE} root_bank=[${MCTS_CFG_ROOT_BANK}] anchors=[${MCTS_CFG_ANCHORS}]"
+  echo "  dynamic_cfg_key_steps: mode=${MCTS_KEY_MODE} steps='${MCTS_KEY_STEPS}' count=${MCTS_KEY_STEP_COUNT} stride=${MCTS_KEY_STEP_STRIDE}"
 fi
 echo "  sd35_backend: ${SD35_BACKEND} sd35_sigmas: ${SD35_SIGMAS:-<none>}"
 echo "  nproc_per_node: ${NUM_GPUS}"
@@ -620,7 +626,14 @@ run_method() {
       --mcts_cfg_min_parent_visits "${MCTS_CFG_MIN_PARENT_VISITS}"
       --mcts_cfg_round_ndigits "${MCTS_CFG_ROUND_NDIGITS}"
       --mcts_cfg_log_action_topk "${MCTS_CFG_LOG_ACTION_TOPK}"
+      --mcts_key_mode "${MCTS_KEY_MODE}"
+      --mcts_key_step_count "${MCTS_KEY_STEP_COUNT}"
+      --mcts_key_step_stride "${MCTS_KEY_STEP_STRIDE}"
+      --mcts_key_default_count "${MCTS_KEY_DEFAULT_COUNT}"
     )
+    if [[ -n "${MCTS_KEY_STEPS}" ]]; then
+      extra+=(--mcts_key_steps "${MCTS_KEY_STEPS}")
+    fi
   fi
   if [[ "${runner_script}" == "${SCRIPT_DIR}/sd35_ddp_experiment_lookahead_reweighting.py" ]]; then
     extra+=(

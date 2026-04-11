@@ -31,7 +31,7 @@ NUM_PROMPTS="${NUM_PROMPTS:-10}"
 END_INDEX="${END_INDEX:-}"
 NUM_GPUS="${NUM_GPUS:-$(${PYTHON_BIN} -c 'import torch; print(max(torch.cuda.device_count(),1))')}"
 
-SD35_BACKEND="${SD35_BACKEND:-sid}"
+SD35_BACKEND="${SD35_BACKEND:-sd35_base}"
 SD35_SIGMAS="${SD35_SIGMAS:-}"
 STEPS="${STEPS:-4}"
 SEED="${SEED:-42}"
@@ -65,6 +65,11 @@ MCTS_CFG_STEP_ANCHOR_COUNT="${MCTS_CFG_STEP_ANCHOR_COUNT:-2}"
 MCTS_CFG_MIN_PARENT_VISITS="${MCTS_CFG_MIN_PARENT_VISITS:-3}"
 MCTS_CFG_ROUND_NDIGITS="${MCTS_CFG_ROUND_NDIGITS:-6}"
 MCTS_CFG_LOG_ACTION_TOPK="${MCTS_CFG_LOG_ACTION_TOPK:-12}"
+MCTS_KEY_MODE="${MCTS_KEY_MODE:-count}"
+MCTS_KEY_STEPS="${MCTS_KEY_STEPS:-}"
+MCTS_KEY_STEP_COUNT="${MCTS_KEY_STEP_COUNT:-2}"
+MCTS_KEY_STEP_STRIDE="${MCTS_KEY_STEP_STRIDE:-0}"
+MCTS_KEY_DEFAULT_COUNT="${MCTS_KEY_DEFAULT_COUNT:-2}"
 
 SAVE_BEST_IMAGES="${SAVE_BEST_IMAGES:-1}"
 
@@ -139,6 +144,7 @@ echo "[dynamic-cfg] run_dir=${RUN_DIR}"
 echo "[dynamic-cfg] prompt_file=${PROMPT_FILE} range=[${START_INDEX},${END_INDEX})"
 echo "[dynamic-cfg] backend=${SD35_BACKEND} reward_backend=${REWARD_BACKEND} num_gpus=${NUM_GPUS}"
 echo "[dynamic-cfg] cfg_scales=[${CFG_SCALES}] modes=[${MCTS_CFG_MODES}] cfg_only=${CFG_ONLY}"
+echo "[dynamic-cfg] key_mode=${MCTS_KEY_MODE} key_steps='${MCTS_KEY_STEPS}' key_step_count=${MCTS_KEY_STEP_COUNT} key_step_stride=${MCTS_KEY_STEP_STRIDE}"
 
 echo "[preload] caching model: ${PRELOAD_MODEL_ID}"
 env -u RANK -u LOCAL_RANK -u WORLD_SIZE -u LOCAL_WORLD_SIZE -u NODE_RANK \
@@ -182,6 +188,15 @@ run_cfg_mode() {
   fi
   if [[ -n "${SD35_SIGMAS}" ]]; then
     extra_args+=(--sigmas ${SD35_SIGMAS})
+  fi
+  extra_args+=(
+    --mcts_key_mode "${MCTS_KEY_MODE}"
+    --mcts_key_step_count "${MCTS_KEY_STEP_COUNT}"
+    --mcts_key_step_stride "${MCTS_KEY_STEP_STRIDE}"
+    --mcts_key_default_count "${MCTS_KEY_DEFAULT_COUNT}"
+  )
+  if [[ -n "${MCTS_KEY_STEPS}" ]]; then
+    extra_args+=(--mcts_key_steps "${MCTS_KEY_STEPS}")
   fi
 
   IMAGEREWARD_CACHE="${IMAGEREWARD_CACHE}" \

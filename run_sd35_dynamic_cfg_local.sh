@@ -80,6 +80,11 @@ MCTS_CFG_ROOT_BANK_STR="${MCTS_CFG_ROOT_BANK:-1.0 1.5 2.0 2.5}"
 read -r -a MCTS_CFG_ROOT_BANK_ARR <<< "${MCTS_CFG_ROOT_BANK_STR}"
 MCTS_CFG_ANCHORS_STR="${MCTS_CFG_ANCHORS:-1.0 2.0}"
 read -r -a MCTS_CFG_ANCHORS_ARR <<< "${MCTS_CFG_ANCHORS_STR}"
+MCTS_KEY_MODE="${MCTS_KEY_MODE:-count}"
+MCTS_KEY_STEPS="${MCTS_KEY_STEPS:-}"
+MCTS_KEY_STEP_COUNT="${MCTS_KEY_STEP_COUNT:-2}"
+MCTS_KEY_STEP_STRIDE="${MCTS_KEY_STEP_STRIDE:-0}"
+MCTS_KEY_DEFAULT_COUNT="${MCTS_KEY_DEFAULT_COUNT:-2}"
 
 CFG_ONLY="${CFG_ONLY:-1}"
 N_VARIANTS="${N_VARIANTS:-0}"
@@ -113,6 +118,16 @@ if [[ -n "${SIGMAS:-}" ]]; then
   fi
 fi
 
+key_args=(
+  --mcts_key_mode "${MCTS_KEY_MODE}"
+  --mcts_key_step_count "${MCTS_KEY_STEP_COUNT}"
+  --mcts_key_step_stride "${MCTS_KEY_STEP_STRIDE}"
+  --mcts_key_default_count "${MCTS_KEY_DEFAULT_COUNT}"
+)
+if [[ -n "${MCTS_KEY_STEPS}" ]]; then
+  key_args+=(--mcts_key_steps "${MCTS_KEY_STEPS}")
+fi
+
 reward_weights_str="${REWARD_WEIGHTS:-1.0 1.0}"
 # shellcheck disable=SC2206
 reward_weights_arr=(${reward_weights_str})
@@ -126,11 +141,12 @@ echo "[sd35-dynamic-cfg] out_dir=${OUT_DIR}"
 echo "[sd35-dynamic-cfg] cfg_mode=${MCTS_CFG_MODE:-adaptive}"
 echo "[sd35-dynamic-cfg] cfg_scales=[${CFG_SCALES_ARR[*]}] baseline_cfg=${BASELINE_CFG:-1.0}"
 echo "[sd35-dynamic-cfg] root_bank=[${MCTS_CFG_ROOT_BANK_ARR[*]}] anchors=[${MCTS_CFG_ANCHORS_ARR[*]}] step_anchor_count=${MCTS_CFG_STEP_ANCHOR_COUNT:-2}"
+echo "[sd35-dynamic-cfg] key_mode=${MCTS_KEY_MODE} key_steps='${MCTS_KEY_STEPS}' key_step_count=${MCTS_KEY_STEP_COUNT} key_step_stride=${MCTS_KEY_STEP_STRIDE}"
 echo "[sd35-dynamic-cfg] cfg_only=${CFG_ONLY} n_variants=${N_VARIANTS} use_qwen=${USE_QWEN}"
 
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified_sd35_dynamic_cfg.py" \
   --search_method mcts \
-  --backend "${SD35_BACKEND:-sid}" \
+  --backend "${SD35_BACKEND:-sd35_base}" \
   --prompt_file "${PROMPT_FILE_RUN}" \
   --steps "${STEPS:-4}" \
   --n_variants "${N_VARIANTS}" \
@@ -161,6 +177,7 @@ echo "[sd35-dynamic-cfg] cfg_only=${CFG_ONLY} n_variants=${N_VARIANTS} use_qwen=
   --mcts_cfg_min_parent_visits "${MCTS_CFG_MIN_PARENT_VISITS:-3}" \
   --mcts_cfg_round_ndigits "${MCTS_CFG_ROUND_NDIGITS:-6}" \
   --mcts_cfg_log_action_topk "${MCTS_CFG_LOG_ACTION_TOPK:-12}" \
+  "${key_args[@]}" \
   "${extra_args[@]}" \
   --out_dir "${OUT_DIR}" \
   "$@"

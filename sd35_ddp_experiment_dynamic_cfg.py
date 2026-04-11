@@ -17,6 +17,9 @@ def _parse_dynamic_cfg_flags(argv: list[str]) -> tuple[argparse.Namespace, list[
     parser.add_argument("--mcts_cfg_min_parent_visits", type=int, default=3)
     parser.add_argument("--mcts_cfg_round_ndigits", type=int, default=6)
     parser.add_argument("--mcts_cfg_log_action_topk", type=int, default=12)
+    parser.add_argument("--mcts_key_mode", choices=["all", "manual", "count", "stride"], default="count")
+    parser.add_argument("--mcts_key_step_stride", type=int, default=0)
+    parser.add_argument("--mcts_key_default_count", type=int, default=2)
     return parser.parse_known_args(argv)
 
 

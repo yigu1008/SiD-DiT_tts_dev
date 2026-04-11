@@ -100,11 +100,95 @@ def _parse_cfg_args(argv: list[str] | None) -> argparse.Namespace:
     extra.add_argument("--mcts_cfg_min_parent_visits", type=int, default=3)
     extra.add_argument("--mcts_cfg_round_ndigits", type=int, default=6)
     extra.add_argument("--mcts_cfg_log_action_topk", type=int, default=12)
+    extra.add_argument(
+        "--mcts_key_mode",
+        choices=["all", "manual", "count", "stride"],
+        default="count",
+        help="How to choose branching key steps. "
+             "all=every step, manual=--mcts_key_steps, "
+             "count=evenly-spaced key steps using --mcts_key_step_count "
+             "(or --mcts_key_default_count when unset), "
+             "stride=every K steps using --mcts_key_step_stride.",
+    )
+    extra.add_argument(
+        "--mcts_key_step_stride",
+        type=int,
+        default=0,
+        help="Stride K for --mcts_key_mode stride. 0 disables stride mode.",
+    )
+    extra.add_argument(
+        "--mcts_key_default_count",
+        type=int,
+        default=2,
+        help="Fallback key-step count when --mcts_key_mode count and --mcts_key_step_count<=0.",
+    )
     cfg_args, remaining = extra.parse_known_args(argv)
     base_args = su.parse_args(remaining)
     for k, v in vars(cfg_args).items():
         setattr(base_args, k, v)
     return base_args
+
+
+def _sanitize_key_steps(steps: list[int], total_steps: int) -> list[int]:
+    total = max(1, int(total_steps))
+    out = sorted(set(int(s) for s in steps if 0 <= int(s) < total))
+    if 0 not in out:
+        out = [0] + out
+    if len(out) <= 0:
+        out = [0]
+    return out
+
+
+def _key_steps_by_count(total_steps: int, count: int) -> list[int]:
+    total = max(1, int(total_steps))
+    c = max(1, int(count))
+    if c >= total:
+        return list(range(total))
+    if c == 1:
+        return [0]
+    idx = sorted(set(int(round(i * (total - 1) / (c - 1))) for i in range(c)))
+    return _sanitize_key_steps(idx, total)
+
+
+def _resolve_key_steps(args: argparse.Namespace, total_steps: int) -> tuple[list[int], dict[str, Any]]:
+    total = max(1, int(total_steps))
+    mode = str(getattr(args, "mcts_key_mode", "count")).strip().lower()
+
+    if mode == "all":
+        ks = list(range(total))
+        return ks, {"mode": "all", "count": int(len(ks))}
+
+    if mode == "manual":
+        raw = str(getattr(args, "mcts_key_steps", "")).strip()
+        if not raw:
+            raise RuntimeError("--mcts_key_mode manual requires --mcts_key_steps")
+        parsed = su._parse_key_steps(args)
+        if parsed is None:
+            ks = list(range(total))
+            return ks, {"mode": "manual", "raw": raw, "fallback": "all_steps", "count": int(len(ks))}
+        ks = _sanitize_key_steps(parsed, total)
+        return ks, {"mode": "manual", "raw": raw, "count": int(len(ks))}
+
+    if mode == "stride":
+        stride = int(getattr(args, "mcts_key_step_stride", 0))
+        if stride <= 0:
+            raise RuntimeError("--mcts_key_mode stride requires --mcts_key_step_stride > 0")
+        ks = list(range(0, total, stride))
+        if (total - 1) not in ks:
+            ks.append(total - 1)
+        ks = _sanitize_key_steps(ks, total)
+        return ks, {"mode": "stride", "stride": int(stride), "count": int(len(ks))}
+
+    # default: count
+    count = int(getattr(args, "mcts_key_step_count", 0))
+    default_count = max(1, int(getattr(args, "mcts_key_default_count", 2)))
+    if count <= 0:
+        count = default_count
+        source = "default"
+    else:
+        source = "explicit"
+    ks = _key_steps_by_count(total, count)
+    return ks, {"mode": "count", "count": int(len(ks)), "requested_count": int(count), "count_source": str(source)}
 
 
 def _cfg_stats(node: DynamicMCTSNode) -> list[dict[str, Any]]:
@@ -368,6 +452,7 @@ def run_mcts_dynamic_cfg(
     dx0 = torch.zeros_like(latents0)
     use_euler = getattr(args, "euler_sampler", False)
     sched = su.step_schedule(ctx.device, latents0.dtype, args.steps, getattr(args, "sigmas", None), euler=use_euler)
+    total_steps = int(len(sched))
     _, t0_4d, _ = sched[0]
     if use_euler:
         start_latents = latents0
@@ -384,15 +469,29 @@ def run_mcts_dynamic_cfg(
     rng = np.random.default_rng(int(seed) + 2026)
     n_sims = max(1, int(getattr(args, "n_sims", 50)))
     ucb_c = float(getattr(args, "ucb_c", 1.41))
+
+    # --- Key-step branching setup ---
+    key_steps, key_step_meta = _resolve_key_steps(args, total_steps)
+    n_key = len(key_steps)
+    key_segments: list[tuple[int, int]] = []
+    for i in range(n_key):
+        seg_start = key_steps[i]
+        seg_end = key_steps[i + 1] if i + 1 < n_key else int(total_steps)
+        key_segments.append((seg_start, seg_end))
+
     log_every = 10
-    print(f"  mcts: sims={n_sims} steps={int(args.steps)} cfg_mode={cfg_mode} cfg_range=[{cfg_min:.3f},{cfg_max:.3f}]")
+    print(
+        f"  mcts: sims={n_sims} steps={int(total_steps)} key_steps={key_steps} ({n_key} branch points) "
+        f"key_mode={key_step_meta.get('mode', 'count')} "
+        f"cfg_mode={cfg_mode} cfg_range=[{cfg_min:.3f},{cfg_max:.3f}]"
+    )
 
     for sim in range(n_sims):
         node = root
         path: list[tuple[DynamicMCTSNode, tuple[int, float, float]]] = []
         sim_logs: list[dict[str, Any]] = []
 
-        while not node.is_leaf(args.steps):
+        while not node.is_leaf(n_key):
             cfg_meta, candidates = node_actions(node)
             untried = node.untried_actions(candidates)
             if len(untried) > 0:
@@ -434,10 +533,13 @@ def run_mcts_dynamic_cfg(
                 }
             )
 
-        if not node.is_leaf(args.steps):
+        if not node.is_leaf(n_key):
             cfg_meta, _ = node_actions(node)
             if action not in node.children:
-                child_dx, child_lat = su._expand_child(args, ctx, emb, node, action, sched, reward_model, prompt)
+                seg_start, seg_end = key_segments[node.step]
+                child_lat, child_dx = su._run_segment(
+                    args, ctx, emb, reward_model, prompt,
+                    node.latents, node.dx, action, sched, seg_start, seg_end)
                 node.children[action] = DynamicMCTSNode(
                     step=node.step + 1,
                     dx=child_dx,
@@ -475,30 +577,24 @@ def run_mcts_dynamic_cfg(
 
         rollout_dx = node.dx
         rollout_latents = node.latents
-        rollout_step = node.step
+        rollout_key_idx = node.step
         rollout_node = node
-        while rollout_step < int(args.steps):
+        while rollout_key_idx < n_key:
             _, roll_candidates = node_actions(rollout_node)
             variant_idx, cfg, cs = roll_candidates[int(rng.integers(0, len(roll_candidates)))]
-            t_flat, t_4d, _dt = sched[rollout_step]
-            flow = su.transformer_step(args, ctx, rollout_latents, emb, variant_idx, t_flat, cfg)
-            rollout_dx = su._pred_x0(rollout_latents, t_4d, flow, args.x0_sampler)
-            if use_euler:
-                rollout_latents = rollout_latents + _dt * flow
-            if float(cs) > 0.0:
-                rollout_dx = su.apply_reward_correction(ctx, rollout_dx, prompt, reward_model, float(cs), cfg=float(cfg))
-            rollout_step += 1
-            if rollout_step < int(args.steps) and not use_euler:
-                _, next_t_4d, _ = sched[rollout_step]
-                noise = torch.randn_like(rollout_dx)
-                rollout_latents = (1.0 - next_t_4d) * rollout_dx + next_t_4d * noise
-            if rollout_step < int(args.steps):
+            seg_start, seg_end = key_segments[rollout_key_idx]
+            rollout_action = (int(variant_idx), float(cfg), float(cs))
+            rollout_latents, rollout_dx = su._run_segment(
+                args, ctx, emb, reward_model, prompt,
+                rollout_latents, rollout_dx, rollout_action, sched, seg_start, seg_end)
+            rollout_key_idx += 1
+            if rollout_key_idx < n_key:
                 rollout_node = DynamicMCTSNode(
-                    step=rollout_step,
+                    step=rollout_key_idx,
                     dx=rollout_dx,
                     latents=rollout_latents,
                     parent=rollout_node,
-                    incoming_action=(int(variant_idx), float(cfg), float(cs)),
+                    incoming_action=rollout_action,
                 )
 
         rollout_final = su._final_decode_tensor(rollout_latents, rollout_dx, use_euler)
@@ -540,7 +636,7 @@ def run_mcts_dynamic_cfg(
 
     exploit_path: list[tuple[int, float, float]] = []
     node = root
-    for _ in range(int(args.steps)):
+    for _ in range(n_key):
         _, candidates = node_actions(node)
         action = node.best_exploit(candidates)
         if action is None:
@@ -551,20 +647,23 @@ def run_mcts_dynamic_cfg(
         else:
             break
 
+    # Replay key-step policy exactly through denoising segments.
     replay_dx = dx0
     replay_lat = start_latents
-    for step_idx, (variant_idx, cfg, cs) in enumerate(exploit_path):
-        t_flat, t_4d, _dt = sched[step_idx]
-        flow = su.transformer_step(args, ctx, replay_lat, emb, variant_idx, t_flat, cfg)
-        replay_dx = su._pred_x0(replay_lat, t_4d, flow, args.x0_sampler)
-        if use_euler:
-            replay_lat = replay_lat + _dt * flow
-        if float(cs) > 0.0:
-            replay_dx = su.apply_reward_correction(ctx, replay_dx, prompt, reward_model, float(cs), cfg=float(cfg))
-        if step_idx + 1 < int(args.steps) and not use_euler:
-            _, next_t_4d, _ = sched[step_idx + 1]
-            noise = torch.randn_like(replay_dx)
-            replay_lat = (1.0 - next_t_4d) * replay_dx + next_t_4d * noise
+    for key_idx, action in enumerate(exploit_path):
+        seg_start, seg_end = key_segments[key_idx]
+        replay_lat, replay_dx = su._run_segment(
+            args, ctx, emb, reward_model, prompt,
+            replay_lat, replay_dx, action, sched, seg_start, seg_end,
+        )
+    # Fill missing tail with baseline action if exploit path is short.
+    fallback_action = make_action(prompt_actions[0][0], default_cfg, prompt_actions[0][1])
+    for key_idx in range(len(exploit_path), n_key):
+        seg_start, seg_end = key_segments[key_idx]
+        replay_lat, replay_dx = su._run_segment(
+            args, ctx, emb, reward_model, prompt,
+            replay_lat, replay_dx, fallback_action, sched, seg_start, seg_end,
+        )
 
     exploit_img = su.decode_to_pil(ctx, su._final_decode_tensor(replay_lat, replay_dx, use_euler))
     exploit_score = su.score_image(reward_model, prompt, exploit_img)
@@ -579,6 +678,10 @@ def run_mcts_dynamic_cfg(
 
     diagnostics = {
         "mcts_cfg_mode": str(cfg_mode),
+        "mcts_key_mode": str(key_step_meta.get("mode", "count")),
+        "mcts_key_step_meta": key_step_meta,
+        "mcts_key_steps": [int(x) for x in key_steps],
+        "mcts_key_segments": [[int(a), int(b)] for a, b in key_segments],
         "cfg_range": [float(cfg_min), float(cfg_max)],
         "cfg_root_bank_step0": [float(x) for x in root_cfg_values_step0],
         "cfg_global_bank": [float(x) for x in fixed_cfg_values],
@@ -588,7 +691,7 @@ def run_mcts_dynamic_cfg(
         "cfg_delta_by_depth": {"0": 0.50, "1": 0.25, "2+": 0.125},
         "cfg_step_root_banks": {
             str(step): timestep_root_bank(step)["values"]
-            for step in range(int(args.steps))
+            for step in range(int(total_steps))
         },
         "history": history,
         "node_cfg_logs": node_cfg_logs,

@@ -631,9 +631,24 @@ def run_mcts_lookahead(
             }
         )
 
+    # --- Key-step branching setup ---
+    key_steps = su._parse_key_steps(args)
+    if key_steps is None:
+        key_steps = list(range(int(args.steps)))
+    if 0 not in key_steps:
+        key_steps = [0] + key_steps
+    key_steps = sorted(set(key_steps))
+    n_key = len(key_steps)
+    key_segments: list[tuple[int, int]] = []
+    for i in range(n_key):
+        seg_start = key_steps[i]
+        seg_end = key_steps[i + 1] if i + 1 < n_key else int(args.steps)
+        key_segments.append((seg_start, seg_end))
+
     log_every = 10
     print(
         f"  mcts: sims={n_sims} actions={len(global_actions)} steps={int(args.steps)} "
+        f"key_steps={key_steps} ({n_key} branch points) "
         f"lookahead_mode={args.lookahead_mode} u_t_def={args.lookahead_u_t_def}"
     )
     for sim in range(n_sims):
@@ -647,7 +662,7 @@ def run_mcts_lookahead(
         logits = np.zeros((0,), dtype=np.float64)
         prior = np.zeros((0,), dtype=np.float64)
 
-        while not node.is_leaf(args.steps):
+        while not node.is_leaf(n_key):
             candidate_meta, candidates = node_candidates(node)
             logits = compute_action_logits(node, candidates)
             prior = _softmax_prior(logits, tau=tau)
@@ -685,9 +700,12 @@ def run_mcts_lookahead(
         if action is None:
             raise RuntimeError("Tree search failed to pick an action.")
 
-        if not node.is_leaf(args.steps):
+        if not node.is_leaf(n_key):
             if action not in node.children:
-                child_dx, child_lat = su._expand_child(args, ctx, emb, node, action, sched, reward_model, prompt)
+                seg_start, seg_end = key_segments[node.step]
+                child_lat, child_dx = su._run_segment(
+                    args, ctx, emb, reward_model, prompt,
+                    node.latents, node.dx, action, sched, seg_start, seg_end)
                 child_u = _compute_u_t(
                     str(getattr(args, "lookahead_u_t_def", "latent_delta_rms")),
                     parent_latents=node.latents,
@@ -726,9 +744,9 @@ def run_mcts_lookahead(
 
         rollout_dx = node.dx
         rollout_latents = node.latents
-        rollout_step = node.step
+        rollout_key_idx = node.step
         rollout_node = node
-        while rollout_step < int(args.steps):
+        while rollout_key_idx < n_key:
             r_meta, r_candidates = node_candidates(rollout_node)
             r_logits = compute_action_logits(rollout_node, r_candidates)
             r_prior = _softmax_prior(r_logits, tau=tau)
@@ -753,20 +771,11 @@ def run_mcts_lookahead(
                 preview_reward=None,
             )
 
-            t_flat, t_4d, _dt = sched[rollout_step]
-            flow = su.transformer_step(args, ctx, rollout_latents, emb, variant_idx, t_flat, cfg)
-            rollout_dx = su._pred_x0(rollout_latents, t_4d, flow, args.x0_sampler)
-            if use_euler:
-                rollout_latents = rollout_latents + _dt * flow
-            if float(cs) > 0.0:
-                rollout_dx = su.apply_reward_correction(ctx, rollout_dx, prompt, reward_model, float(cs), cfg=float(cfg))
-            rollout_step += 1
-            if rollout_step < int(args.steps) and not use_euler:
-                _, next_t_4d, _ = sched[rollout_step]
-                noise = torch.randn_like(rollout_dx)
-                next_latents = (1.0 - next_t_4d) * rollout_dx + next_t_4d * noise
-            else:
-                next_latents = rollout_latents
+            seg_start, seg_end = key_segments[rollout_key_idx]
+            rollout_action = (int(variant_idx), float(cfg), float(cs))
+            next_latents, rollout_dx = su._run_segment(
+                args, ctx, emb, reward_model, prompt,
+                rollout_latents, rollout_dx, rollout_action, sched, seg_start, seg_end)
             child_u = _compute_u_t(
                 str(getattr(args, "lookahead_u_t_def", "latent_delta_rms")),
                 parent_latents=rollout_node.latents,
@@ -775,16 +784,17 @@ def run_mcts_lookahead(
             )
             if np.isfinite(child_u) and child_u > 0.0:
                 u_values_seen.append(float(child_u))
-            if rollout_step < int(args.steps):
+            rollout_key_idx += 1
+            if rollout_key_idx < n_key:
                 rollout_node = LookaheadMCTSNode(
-                    step=rollout_step,
+                    step=rollout_key_idx,
                     dx=rollout_dx,
                     latents=next_latents,
                     parent=rollout_node,
-                    incoming_action=(int(variant_idx), float(cfg), float(cs)),
+                    incoming_action=rollout_action,
                     u_t=float(child_u),
                 )
-                rollout_latents = next_latents
+            rollout_latents = next_latents
 
         rollout_final = su._final_decode_tensor(rollout_latents, rollout_dx, use_euler)
         rollout_img = su.decode_to_pil(ctx, rollout_final)
@@ -836,7 +846,7 @@ def run_mcts_lookahead(
 
     exploit_path: list[tuple[int, float, float]] = []
     node = root
-    for _ in range(int(args.steps)):
+    for _ in range(n_key):
         _, candidates = node_candidates(node)
         action = node.best_exploit(candidates)
         if action is None:
@@ -847,20 +857,20 @@ def run_mcts_lookahead(
         else:
             break
 
-    replay_dx = dx0
     replay_lat = start_latents
-    for step_idx, (variant_idx, cfg, cs) in enumerate(exploit_path):
-        t_flat, t_4d, _dt = sched[step_idx]
-        flow = su.transformer_step(args, ctx, replay_lat, emb, variant_idx, t_flat, cfg)
-        replay_dx = su._pred_x0(replay_lat, t_4d, flow, args.x0_sampler)
-        if use_euler:
-            replay_lat = replay_lat + _dt * flow
-        if float(cs) > 0.0:
-            replay_dx = su.apply_reward_correction(ctx, replay_dx, prompt, reward_model, float(cs), cfg=float(cfg))
-        if step_idx + 1 < int(args.steps) and not use_euler:
-            _, next_t_4d, _ = sched[step_idx + 1]
-            noise = torch.randn_like(replay_dx)
-            replay_lat = (1.0 - next_t_4d) * replay_dx + next_t_4d * noise
+    replay_dx = dx0
+    for key_idx, exploit_action in enumerate(exploit_path):
+        seg_start, seg_end = key_segments[key_idx]
+        replay_lat, replay_dx = su._run_segment(
+            args, ctx, emb, reward_model, prompt,
+            replay_lat, replay_dx, exploit_action, sched, seg_start, seg_end)
+    # Fill remaining key steps with fallback
+    for key_idx in range(len(exploit_path), n_key):
+        fallback = global_actions[0]
+        seg_start, seg_end = key_segments[key_idx]
+        replay_lat, replay_dx = su._run_segment(
+            args, ctx, emb, reward_model, prompt,
+            replay_lat, replay_dx, fallback, sched, seg_start, seg_end)
 
     exploit_img = su.decode_to_pil(ctx, su._final_decode_tensor(replay_lat, replay_dx, use_euler))
     exploit_score = float(su.score_image(reward_model, prompt, exploit_img))
@@ -876,6 +886,8 @@ def run_mcts_lookahead(
     u_arr = np.asarray(u_values_seen, dtype=np.float64) if len(u_values_seen) > 0 else np.asarray([], dtype=np.float64)
     diagnostics = {
         "lookahead_mode": str(getattr(args, "lookahead_mode", "rollout_prior")),
+        "key_steps": [int(x) for x in key_steps],
+        "n_key": int(n_key),
         "lookahead_flags": {
             "use_rollout_prior": bool(use_rollout_prior),
             "use_tree_prior": bool(use_tree_prior),

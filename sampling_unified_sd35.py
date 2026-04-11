@@ -113,6 +113,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument("--n_sims", type=int, default=50)
     parser.add_argument("--ucb_c", type=float, default=1.41)
+    parser.add_argument(
+        "--mcts_key_steps",
+        default="",
+        help="Comma-separated key step indices for MCTS branching (e.g. '0,7,14,21'). "
+             "Empty = branch at every step (original behavior).",
+    )
+    parser.add_argument(
+        "--mcts_key_step_count",
+        type=int,
+        default=0,
+        help="Auto-compute N evenly-spaced key steps. 0 = disabled (use --mcts_key_steps or branch at every step).",
+    )
     parser.add_argument("--bon_n", type=int, default=16,
                         help="Number of independent samples for best-of-N search.")
     parser.add_argument("--beam_width", type=int, default=4,
@@ -1928,6 +1940,27 @@ class MCTSNode:
         return best
 
 
+def _parse_key_steps(args: argparse.Namespace) -> list[int] | None:
+    """Return sorted list of key step indices, or None to branch at every step."""
+    raw = str(getattr(args, "mcts_key_steps", "")).strip()
+    count = int(getattr(args, "mcts_key_step_count", 0))
+    total = int(args.steps)
+    if count > 0:
+        # Auto-compute evenly-spaced key steps (always includes 0)
+        if count == 1:
+            return [0]
+        if count >= total:
+            return None  # branch at every step
+        indices = sorted(set(int(round(i * (total - 1) / (count - 1))) for i in range(count)))
+        return indices
+    if raw:
+        indices = sorted(set(int(x.strip()) for x in raw.split(",") if x.strip().isdigit()))
+        if not indices:
+            return None
+        return [i for i in indices if 0 <= i < total]
+    return None  # default: branch at every step
+
+
 def _expand_child(
     args: argparse.Namespace,
     ctx: PipelineContext,
@@ -1995,6 +2028,38 @@ def expand_emb_with_interp(
     )
 
 
+def _run_segment(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    emb: EmbeddingContext,
+    reward_model: "UnifiedRewardScorer",
+    prompt: str,
+    latents: torch.Tensor,
+    dx: torch.Tensor,
+    action: tuple[int, float, float],
+    sched: list[tuple[torch.Tensor, torch.Tensor, float]],
+    start_step: int,
+    end_step: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run denoising steps [start_step, end_step) with a fixed action.
+
+    Returns (latents, dx) after the segment.
+    """
+    use_euler = getattr(args, "euler_sampler", False)
+    variant_idx, cfg, cs = action
+    for step_idx in range(start_step, end_step):
+        t_flat, t_4d, dt = sched[step_idx]
+        flow = transformer_step(args, ctx, latents, emb, variant_idx, t_flat, cfg)
+        latents, dx = _apply_step(latents, flow, dx, t_4d, dt, use_euler, args.x0_sampler)
+        if float(cs) > 0.0:
+            dx = apply_reward_correction(ctx, dx, prompt, reward_model, float(cs), cfg=float(cfg))
+        if step_idx + 1 < int(args.steps) and not use_euler:
+            _, next_t_4d, _ = sched[step_idx + 1]
+            noise = torch.randn_like(dx)
+            latents = (1.0 - next_t_4d) * dx + next_t_4d * noise
+    return latents, dx
+
+
 def run_mcts(
     args: argparse.Namespace,
     ctx: PipelineContext,
@@ -2024,18 +2089,39 @@ def run_mcts(
                           getattr(args, "sigmas", None), euler=use_euler)
     _, t0_4d, _ = sched[0]
     start_latents = _prepare_latents(latents0, dx0, latents0, t0_4d, 0, use_euler)
+
+    # --- Key-step branching setup ---
+    key_steps = _parse_key_steps(args)
+    if key_steps is None:
+        # Original behavior: branch at every step
+        key_steps = list(range(int(args.steps)))
+    # Ensure step 0 is included
+    if 0 not in key_steps:
+        key_steps = [0] + key_steps
+    key_steps = sorted(set(key_steps))
+    n_key = len(key_steps)
+    # For each key step k, the segment runs from key_steps[k] to key_steps[k+1] (or args.steps)
+    key_segments: list[tuple[int, int]] = []
+    for i in range(n_key):
+        seg_start = key_steps[i]
+        seg_end = key_steps[i + 1] if i + 1 < n_key else int(args.steps)
+        key_segments.append((seg_start, seg_end))
+
     root = MCTSNode(0, dx0, start_latents)
 
     best_global_score = -float("inf")
     best_global_dx = None
     best_global_path: list[tuple[int, float, float]] = []
 
-    print(f"  mcts: sims={args.n_sims} actions={n_actions} steps={args.steps}")
+    print(
+        f"  mcts: sims={args.n_sims} actions={n_actions} steps={args.steps} "
+        f"key_steps={key_steps} ({n_key} branch points)"
+    )
     for sim in range(args.n_sims):
         node = root
         path: list[tuple[MCTSNode, tuple[int, float, float]]] = []
 
-        while not node.is_leaf(args.steps):
+        while not node.is_leaf(n_key):
             untried = node.untried_actions(actions)
             if untried:
                 action = untried[np.random.randint(len(untried))]
@@ -2044,29 +2130,28 @@ def run_mcts(
             path.append((node, action))
             node = node.children[action]
 
-        if not node.is_leaf(args.steps):
+        if not node.is_leaf(n_key):
             if action not in node.children:
-                child_dx, child_lat = _expand_child(args, ctx, emb, node, action, sched, reward_model, prompt)
+                # Expand: run the segment from key_steps[node.step] to key_steps[node.step+1]
+                seg_start, seg_end = key_segments[node.step]
+                child_lat, child_dx = _run_segment(
+                    args, ctx, emb, reward_model, prompt,
+                    node.latents, node.dx, action, sched, seg_start, seg_end)
                 node.children[action] = MCTSNode(node.step + 1, child_dx, child_lat)
             path.append((node, action))
             node = node.children[action]
 
+        # Rollout from node to terminal
         rollout_dx = node.dx
         rollout_latents = node.latents
-        rollout_step = node.step
-        while rollout_step < args.steps:
-            variant_idx, cfg, cs = actions[np.random.randint(n_actions)]
-            t_flat, t_4d, dt = sched[rollout_step]
-            flow = transformer_step(args, ctx, rollout_latents, emb, variant_idx, t_flat, cfg)
-            rollout_latents, rollout_dx = _apply_step(
-                rollout_latents, flow, rollout_dx, t_4d, dt, use_euler, args.x0_sampler)
-            if float(cs) > 0.0:
-                rollout_dx = apply_reward_correction(ctx, rollout_dx, prompt, reward_model, float(cs), cfg=float(cfg))
-            rollout_step += 1
-            if rollout_step < args.steps and not use_euler:
-                _, next_t_4d, _ = sched[rollout_step]
-                noise = torch.randn_like(rollout_dx)
-                rollout_latents = (1.0 - next_t_4d) * rollout_dx + next_t_4d * noise
+        rollout_key_idx = node.step
+        while rollout_key_idx < n_key:
+            rollout_action = actions[np.random.randint(n_actions)]
+            seg_start, seg_end = key_segments[rollout_key_idx]
+            rollout_latents, rollout_dx = _run_segment(
+                args, ctx, emb, reward_model, prompt,
+                rollout_latents, rollout_dx, rollout_action, sched, seg_start, seg_end)
+            rollout_key_idx += 1
 
         rollout_img = decode_to_pil(ctx, _final_decode_tensor(rollout_latents, rollout_dx, use_euler))
         rollout_score = score_image(reward_model, prompt, rollout_img)
@@ -2083,9 +2168,10 @@ def run_mcts(
         if (sim + 1) % 10 == 0 or sim == 0:
             print(f"    sim {sim + 1:3d}/{args.n_sims} best={best_global_score:.4f}")
 
+    # Exploit: extract best action per key step
     exploit_path: list[tuple[int, float, float]] = []
     node = root
-    for _ in range(args.steps):
+    for _ in range(n_key):
         action = node.best_exploit(actions)
         if action is None:
             break
@@ -2095,18 +2181,21 @@ def run_mcts(
         else:
             break
 
-    replay_dx = dx0
+    # Replay exploit path through all denoising steps
     replay_lat = start_latents
-    for step_idx, (variant_idx, cfg, cs) in enumerate(exploit_path):
-        t_flat, t_4d, dt = sched[step_idx]
-        flow = transformer_step(args, ctx, replay_lat, emb, variant_idx, t_flat, cfg)
-        replay_lat, replay_dx = _apply_step(replay_lat, flow, replay_dx, t_4d, dt, use_euler, args.x0_sampler)
-        if float(cs) > 0.0:
-            replay_dx = apply_reward_correction(ctx, replay_dx, prompt, reward_model, float(cs), cfg=float(cfg))
-        if step_idx + 1 < args.steps and not use_euler:
-            _, next_t_4d, _ = sched[step_idx + 1]
-            noise = torch.randn_like(replay_dx)
-            replay_lat = (1.0 - next_t_4d) * replay_dx + next_t_4d * noise
+    replay_dx = dx0
+    for key_idx, exploit_action in enumerate(exploit_path):
+        seg_start, seg_end = key_segments[key_idx]
+        replay_lat, replay_dx = _run_segment(
+            args, ctx, emb, reward_model, prompt,
+            replay_lat, replay_dx, exploit_action, sched, seg_start, seg_end)
+    # If exploit path is shorter than n_key, fill remaining with baseline
+    for key_idx in range(len(exploit_path), n_key):
+        fallback = actions[0]
+        seg_start, seg_end = key_segments[key_idx]
+        replay_lat, replay_dx = _run_segment(
+            args, ctx, emb, reward_model, prompt,
+            replay_lat, replay_dx, fallback, sched, seg_start, seg_end)
 
     exploit_img = decode_to_pil(ctx, _final_decode_tensor(replay_lat, replay_dx, use_euler))
     exploit_score = score_image(reward_model, prompt, exploit_img)

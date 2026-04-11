@@ -1051,7 +1051,7 @@ def run_baseline_batch(
 
     enc_hs = torch.cat([emb.cond_text[0] for emb in embs])    # [B, seq, dim]
     pooled = torch.cat([emb.cond_pooled[0] for emb in embs])  # [B, dim]
-    if cfg_scale != 1.0:
+    if cfg_scale != 1.0 and cfg_scale != 0.0:
         uncond_hs = torch.cat([emb.uncond_text for emb in embs])
         uncond_pooled = torch.cat([emb.uncond_pooled for emb in embs])
 
@@ -1061,7 +1061,7 @@ def run_baseline_batch(
             noise = latents if i == 0 else torch.randn_like(latents)
             latents = (1.0 - t_4d) * dx + t_4d * noise
         t_batch = t_flat.expand(B)
-        if cfg_scale == 1.0:
+        if cfg_scale == 1.0 or cfg_scale == 0.0:
             ctx.nfe += B
             flow = ctx.pipe.transformer(
                 hidden_states=latents,

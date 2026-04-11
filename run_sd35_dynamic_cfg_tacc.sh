@@ -33,7 +33,7 @@ NUM_GPUS="${NUM_GPUS:-$(${PYTHON_BIN} -c 'import torch; print(max(torch.cuda.dev
 
 SD35_BACKEND="${SD35_BACKEND:-sd35_base}"
 SD35_SIGMAS="${SD35_SIGMAS:-}"
-STEPS="${STEPS:-4}"
+STEPS="${STEPS:-28}"
 SEED="${SEED:-42}"
 GEN_BATCH_SIZE="${GEN_BATCH_SIZE:-1}"
 BASELINE_CFG="${BASELINE_CFG:-1.0}"
@@ -111,6 +111,36 @@ if [[ "${CFG_ONLY}" == "1" ]]; then
   N_VARIANTS=0
   CORRECTION_STRENGTHS="0.0"
   USE_QWEN=0
+fi
+
+# Backend-aware guidance defaults: keep SID scales for sid, use SD3.5-base scales otherwise.
+if [[ -z "${CFG_SCALES:-}" || "${CFG_SCALES}" == "1.0 1.25 1.5 1.75 2.0 2.25 2.5" ]]; then
+  if [[ "${SD35_BACKEND}" == "sid" ]]; then
+    CFG_SCALES="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
+  else
+    CFG_SCALES="3.5 4.0 4.5 5.0 5.5 6.0 7.0"
+  fi
+fi
+if [[ -z "${BASELINE_CFG:-}" || "${BASELINE_CFG}" == "1.0" ]]; then
+  if [[ "${SD35_BACKEND}" == "sid" ]]; then
+    BASELINE_CFG="1.0"
+  else
+    BASELINE_CFG="4.5"
+  fi
+fi
+if [[ -z "${MCTS_CFG_ROOT_BANK:-}" || "${MCTS_CFG_ROOT_BANK}" == "1.0 1.5 2.0 2.5" ]]; then
+  if [[ "${SD35_BACKEND}" == "sid" ]]; then
+    MCTS_CFG_ROOT_BANK="1.0 1.5 2.0 2.5"
+  else
+    MCTS_CFG_ROOT_BANK="4.0 4.5 5.0 5.5"
+  fi
+fi
+if [[ -z "${MCTS_CFG_ANCHORS:-}" || "${MCTS_CFG_ANCHORS}" == "1.0 2.0" ]]; then
+  if [[ "${SD35_BACKEND}" == "sid" ]]; then
+    MCTS_CFG_ANCHORS="1.0 2.0"
+  else
+    MCTS_CFG_ANCHORS="3.5 7.0"
+  fi
 fi
 
 read -r -a cfg_scales_arr <<< "${CFG_SCALES}"

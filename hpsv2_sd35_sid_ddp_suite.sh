@@ -134,6 +134,25 @@ if [[ "${SD35_BACKEND}" == "senseflow_large" || "${SD35_BACKEND}" == "senseflow_
   fi
 fi
 
+# SD3.5-base guidance defaults (keep SID defaults unchanged).
+if [[ "${SD35_BACKEND}" == "sd35_base" ]]; then
+  if [[ "${CFG_SCALES}" == "${_DEFAULT_CFG_SCALES_STR}" ]]; then
+    CFG_SCALES="3.5 4.0 4.5 5.0 5.5 6.0 7.0"
+  fi
+  if [[ "${BASELINE_CFG}" == "1.0" ]]; then
+    BASELINE_CFG="4.5"
+  fi
+  if [[ "${MCTS_CFG_ROOT_BANK}" == "1.0 1.5 2.0 2.5" ]]; then
+    MCTS_CFG_ROOT_BANK="4.0 4.5 5.0 5.5"
+  fi
+  if [[ "${MCTS_CFG_ANCHORS}" == "1.0 2.0" ]]; then
+    MCTS_CFG_ANCHORS="3.5 7.0"
+  fi
+  if [[ "${SMC_CFG_SCALE}" == "1.25" ]]; then
+    SMC_CFG_SCALE="4.5"
+  fi
+fi
+
 if [[ ! -f "${PROMPT_FILE}" ]]; then
   echo "Error: PROMPT_FILE not found: ${PROMPT_FILE}" >&2
   exit 1

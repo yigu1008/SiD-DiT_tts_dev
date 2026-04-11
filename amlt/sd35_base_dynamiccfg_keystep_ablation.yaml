@@ -193,9 +193,9 @@ search:
     - name: mcts_cfg_mode
       values: [ "adaptive" ]
     - name: mcts_cfg_root_bank
-      values: [ "1.0 1.5 2.0 2.5" ]
+      values: [ "4.0 4.5 5.0 5.5" ]
     - name: mcts_cfg_anchors
-      values: [ "1.0 2.0" ]
+      values: [ "3.5 7.0" ]
     - name: mcts_cfg_step_anchor_count
       values: [ 2 ]
     - name: mcts_cfg_min_parent_visits
@@ -217,11 +217,11 @@ search:
     - name: eval_backends
       values: [ "imagereward hpsv2 pickscore" ]
     - name: cfg_scales
-      values: [ "1.0 1.25 1.5 1.75 2.0 2.25 2.5" ]
+      values: [ "3.5 4.0 4.5 5.0 5.5 6.0 7.0" ]
     - name: baseline_cfg
-      values: [ 1.0 ]
+      values: [ 4.5 ]
     - name: steps
-      values: [ 4 ]
+      values: [ 28 ]
     - name: n_variants
       values: [ 4 ]
     - name: n_sims
@@ -237,7 +237,7 @@ search:
     - name: resample_start_frac
       values: [ 0.3 ]
     - name: smc_cfg_scale
-      values: [ 1.25 ]
+      values: [ 4.5 ]
     - name: smc_variant_idx
       values: [ 0 ]
     - name: ga_population

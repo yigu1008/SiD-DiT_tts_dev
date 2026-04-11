@@ -16,6 +16,9 @@ import torch
 
 import sampling_unified_sd35 as su
 
+_SID_CFG_DEFAULTS = [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5]
+_BASE_CFG_DEFAULTS = [3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 7.0]
+
 
 class DynamicMCTSNode:
     __slots__ = (
@@ -267,14 +270,32 @@ def run_mcts_dynamic_cfg(
     if len(prompt_actions) <= 0:
         raise RuntimeError("MCTS requires at least one prompt action.")
 
+    backend_name = str(getattr(args, "backend", "")).strip().lower()
     global_cfg = [float(x) for x in getattr(args, "cfg_scales", [1.0])]
     if len(global_cfg) <= 0:
         global_cfg = [float(getattr(args, "baseline_cfg", 1.0))]
+    baseline_cfg = float(getattr(args, "baseline_cfg", 1.0))
+
+    # SD3.5-base uses a higher guidance regime than SiD; remap only when
+    # values are still at legacy SID defaults.
+    if backend_name == "sd35_base":
+        if all(any(abs(a - b) < 1e-8 for b in _SID_CFG_DEFAULTS) for a in global_cfg):
+            global_cfg = list(_BASE_CFG_DEFAULTS)
+        if abs(baseline_cfg - 1.0) < 1e-8:
+            baseline_cfg = 4.5
+
     cfg_min = float(min(global_cfg))
     cfg_max = float(max(global_cfg))
     cfg_mode = str(getattr(args, "mcts_cfg_mode", "adaptive")).strip().lower()
     cfg_root_bank = [float(x) for x in getattr(args, "mcts_cfg_root_bank", [1.0, 1.5, 2.0])]
     cfg_anchors = [float(x) for x in getattr(args, "mcts_cfg_anchors", [1.0, 2.0])]
+
+    if backend_name == "sd35_base":
+        if cfg_root_bank in ([1.0, 1.5, 2.0], [1.0, 1.5, 2.0, 2.5]):
+            cfg_root_bank = [4.0, 4.5, 5.0, 5.5]
+        if cfg_anchors == [1.0, 2.0]:
+            cfg_anchors = [3.5, 7.0]
+
     cfg_step_anchor_count = max(0, int(getattr(args, "mcts_cfg_step_anchor_count", 2)))
     cfg_min_parent_visits = max(1, int(getattr(args, "mcts_cfg_min_parent_visits", 3)))
     cfg_round_ndigits = max(1, int(getattr(args, "mcts_cfg_round_ndigits", 6)))
@@ -300,7 +321,7 @@ def run_mcts_dynamic_cfg(
 
     root_cfg_values_step0 = dedup_cfg(cfg_root_bank + cfg_anchors)
     fixed_cfg_values = dedup_cfg(global_cfg + cfg_anchors)
-    default_cfg = clamp_cfg(float(getattr(args, "baseline_cfg", global_cfg[0])))
+    default_cfg = clamp_cfg(float(baseline_cfg))
     default_action = make_action(prompt_actions[0][0], default_cfg, prompt_actions[0][1])
     cfg_root_center = float(np.mean(root_cfg_values_step0))
 

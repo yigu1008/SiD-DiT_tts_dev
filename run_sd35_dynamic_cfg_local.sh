@@ -63,7 +63,18 @@ PY
   PROMPT_FILE_RUN="${SLICE_FILE}"
 fi
 
-CFG_SCALES_STR="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5}"
+SD35_BACKEND_VAL="${SD35_BACKEND:-sd35_base}"
+if [[ "${SD35_BACKEND_VAL}" == "sid" ]]; then
+  CFG_SCALES_STR="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5}"
+  BASELINE_CFG_VAL="${BASELINE_CFG:-1.0}"
+  MCTS_CFG_ROOT_BANK_STR="${MCTS_CFG_ROOT_BANK:-1.0 1.5 2.0 2.5}"
+  MCTS_CFG_ANCHORS_STR="${MCTS_CFG_ANCHORS:-1.0 2.0}"
+else
+  CFG_SCALES_STR="${CFG_SCALES:-3.5 4.0 4.5 5.0 5.5 6.0 7.0}"
+  BASELINE_CFG_VAL="${BASELINE_CFG:-4.5}"
+  MCTS_CFG_ROOT_BANK_STR="${MCTS_CFG_ROOT_BANK:-4.0 4.5 5.0 5.5}"
+  MCTS_CFG_ANCHORS_STR="${MCTS_CFG_ANCHORS:-3.5 7.0}"
+fi
 read -r -a CFG_SCALES_ARR <<< "${CFG_SCALES_STR}"
 if [[ "${#CFG_SCALES_ARR[@]}" -eq 0 ]]; then
   echo "Error: CFG_SCALES is empty." >&2
@@ -76,9 +87,7 @@ if [[ "${#CORRECTION_STRENGTHS_ARR[@]}" -eq 0 ]]; then
   CORRECTION_STRENGTHS_ARR=(0.0)
 fi
 
-MCTS_CFG_ROOT_BANK_STR="${MCTS_CFG_ROOT_BANK:-1.0 1.5 2.0 2.5}"
 read -r -a MCTS_CFG_ROOT_BANK_ARR <<< "${MCTS_CFG_ROOT_BANK_STR}"
-MCTS_CFG_ANCHORS_STR="${MCTS_CFG_ANCHORS:-1.0 2.0}"
 read -r -a MCTS_CFG_ANCHORS_ARR <<< "${MCTS_CFG_ANCHORS_STR}"
 MCTS_KEY_MODE="${MCTS_KEY_MODE:-count}"
 MCTS_KEY_STEPS="${MCTS_KEY_STEPS:-}"
@@ -139,19 +148,20 @@ fi
 echo "[sd35-dynamic-cfg] prompt_file=${PROMPT_FILE_RUN}"
 echo "[sd35-dynamic-cfg] out_dir=${OUT_DIR}"
 echo "[sd35-dynamic-cfg] cfg_mode=${MCTS_CFG_MODE:-adaptive}"
-echo "[sd35-dynamic-cfg] cfg_scales=[${CFG_SCALES_ARR[*]}] baseline_cfg=${BASELINE_CFG:-1.0}"
+echo "[sd35-dynamic-cfg] backend=${SD35_BACKEND_VAL}"
+echo "[sd35-dynamic-cfg] cfg_scales=[${CFG_SCALES_ARR[*]}] baseline_cfg=${BASELINE_CFG_VAL}"
 echo "[sd35-dynamic-cfg] root_bank=[${MCTS_CFG_ROOT_BANK_ARR[*]}] anchors=[${MCTS_CFG_ANCHORS_ARR[*]}] step_anchor_count=${MCTS_CFG_STEP_ANCHOR_COUNT:-2}"
 echo "[sd35-dynamic-cfg] key_mode=${MCTS_KEY_MODE} key_steps='${MCTS_KEY_STEPS}' key_step_count=${MCTS_KEY_STEP_COUNT} key_step_stride=${MCTS_KEY_STEP_STRIDE}"
 echo "[sd35-dynamic-cfg] cfg_only=${CFG_ONLY} n_variants=${N_VARIANTS} use_qwen=${USE_QWEN}"
 
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified_sd35_dynamic_cfg.py" \
   --search_method mcts \
-  --backend "${SD35_BACKEND:-sd35_base}" \
+  --backend "${SD35_BACKEND_VAL}" \
   --prompt_file "${PROMPT_FILE_RUN}" \
-  --steps "${STEPS:-4}" \
+  --steps "${STEPS:-28}" \
   --n_variants "${N_VARIANTS}" \
   --cfg_scales "${CFG_SCALES_ARR[@]}" \
-  --baseline_cfg "${BASELINE_CFG:-1.0}" \
+  --baseline_cfg "${BASELINE_CFG_VAL}" \
   --correction_strengths "${CORRECTION_STRENGTHS_ARR[@]}" \
   --n_sims "${N_SIMS:-50}" \
   --ucb_c "${UCB_C:-1.41}" \

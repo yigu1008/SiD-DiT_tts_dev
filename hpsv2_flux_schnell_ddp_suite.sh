@@ -88,7 +88,7 @@ if [[ "${FLUX_BACKEND}" == "senseflow_flux" ]]; then
     SMC_GUIDANCE_SCALE="0.0"
   fi
   if [[ -z "${FLUX_SIGMAS}" ]]; then
-    FLUX_SIGMAS="1.0 0.75"
+    FLUX_SIGMAS="1.0 0.75 0.5 0.25"
   fi
 fi
 

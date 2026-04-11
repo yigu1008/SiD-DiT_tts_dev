@@ -202,9 +202,9 @@ search:
       values: [ "0.0" ]
     - name: baseline_cfg
       values: [ 0.0 ]
-    # SenseFlow-large and SenseFlow-Flux use 2 steps (sigmas=[1.0, 0.75])
+    # SenseFlow uses 4 steps (sigmas=[1.0, 0.75, 0.5, 0.25]); backend config overrides
     - name: steps
-      values: [ 2 ]
+      values: [ 4 ]
     - name: n_variants
       values: [ 3 ]
     - name: n_sims

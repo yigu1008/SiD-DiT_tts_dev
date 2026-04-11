@@ -244,23 +244,28 @@ _BACKEND_CONFIGS = {
         "model_id": "stabilityai/stable-diffusion-3.5-large",
         "transformer_id": "domiso/SenseFlow",
         "transformer_subfolder": "SenseFlow-SD35L/transformer",
-        "sigmas": [1.0, 0.75],
+        "sigmas": [1.0, 0.75, 0.5, 0.25],
         "dtype": "bfloat16",  # SenseFlow official scripts use bfloat16
         "gen_batch_size": 2,
         "cfg_scales": [0.0],  # SenseFlow release uses guidance_scale=0.0
         "baseline_cfg": 0.0,
-        "x0_sampler": True,  # SenseFlow transformer predicts x̂₀ directly, not flow
+        # SenseFlow transformer outputs flow/velocity (same as base SD3.5).
+        # The SiD pipeline derives x0 = xt - t*flow for re-noising, but
+        # the native SD3Pipeline uses Euler stepping which works correctly.
+        "x0_sampler": False,
+        "euler_sampler": True,
     },
     "senseflow_medium": {
         "model_id": "stabilityai/stable-diffusion-3.5-medium",
         "transformer_id": "domiso/SenseFlow",
         "transformer_subfolder": "SenseFlow-SD35M/transformer",
-        "sigmas": [1.0, 0.9, 0.75, 0.5],
+        "sigmas": [1.0, 0.75, 0.5, 0.25],
         "dtype": "bfloat16",
         "gen_batch_size": 2,
         "cfg_scales": [0.0],
         "baseline_cfg": 0.0,
-        "x0_sampler": True,  # SenseFlow transformer predicts x̂₀ directly, not flow
+        "x0_sampler": False,
+        "euler_sampler": True,
     },
 }
 

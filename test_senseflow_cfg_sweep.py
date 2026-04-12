@@ -152,8 +152,8 @@ def main() -> None:
         print(f"GPU memory: {torch.cuda.memory_allocated() / 1e9:.1f} GB")
 
     # Build schedule
-    sched = su.step_schedule(su_args)
     use_euler = getattr(su_args, "euler_sampler", False)
+    sched = su.step_schedule(args.device, dtype, su_args.steps, euler=use_euler)
     print(f"Schedule: {len(sched)} steps, euler={use_euler}")
 
     for pi, prompt in enumerate(prompts):

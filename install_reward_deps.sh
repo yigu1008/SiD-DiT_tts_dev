@@ -116,13 +116,20 @@ if ! _pip --no-deps --index-url "${PYPI_INDEX_URL}" "hpsv3"; then
   echo "[install] warning: hpsv3 install failed; continuing."
 fi
 # hpsv3 runtime deps (installed separately since hpsv3 uses --no-deps).
-# peft, trl, einops are needed by hpsv3's model loading / inference code.
-# fire is needed by hpsv3's arg parser.  deepspeed is training-only but
-# imported at module level; install to avoid ImportError.
+# Declared deps missing due to --no-deps:
+#   fire (arg parser), omegaconf/hydra-core (config), peft/trl (model loading),
+#   einops (tensor ops), opencv-python (image I/O), deepspeed (module-level import),
+#   qwen-vl-utils (VL model), safetensors (weight loading), accelerate (device map)
+# Undeclared imports found in hpsv3 source:
+#   matplotlib (visualization), prettytable (formatting), pandas (data handling),
+#   pydantic (validation), requests (HTTP)
 if ! _pip --index-url "${PYPI_INDEX_URL}" \
   "fire" "omegaconf>=2.3.0" "hydra-core>=1.3.2" \
   "peft>=0.8.0" "trl>=0.7.0" "einops>=0.6.0" \
-  "opencv-python>=4.5.0" "deepspeed>=0.12.0"; then
+  "opencv-python>=4.5.0" "deepspeed>=0.12.0" \
+  "safetensors>=0.3.0" "accelerate>=0.20.0" \
+  "qwen-vl-utils>=0.0.8" \
+  "matplotlib" "prettytable" "pandas" "pydantic" "requests"; then
   echo "[install] warning: hpsv3 runtime deps partially failed; continuing."
 fi
 # hpsv2x is a drop-in replacement for hpsv2 that includes the missing BPE vocab file

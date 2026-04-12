@@ -143,8 +143,9 @@ def main() -> None:
     # Load pipeline
     print("Loading pipeline...")
     t0 = time.time()
+    su_args.device = args.device
+    ctx = su.load_pipeline(su_args)
     dtype = torch.bfloat16 if su_args.dtype == "bfloat16" else torch.float16
-    ctx = su.load_pipeline(su_args, device=args.device, dtype=dtype)
     print(f"Pipeline loaded in {time.time() - t0:.1f}s")
 
     if torch.cuda.is_available() and "cuda" in args.device:

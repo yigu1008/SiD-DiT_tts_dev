@@ -230,6 +230,51 @@ def preload_hpsv2() -> None:
 
 
 # ---------------------------------------------------------------------------
+# HPSv3
+# ---------------------------------------------------------------------------
+
+def preload_hpsv3() -> None:
+    """Pre-initialise HPSv3 so it downloads its open_clip backbone weights."""
+    sentinel = _sentinel_path("hpsv3")
+
+    if LOCAL_RANK == 0:
+        _log("initialising HPSv3 (downloads open_clip weights on first use) ...")
+        try:
+            import hpsv3  # noqa: F811
+
+            inferencer_cls = getattr(hpsv3, "HPSv3RewardInferencer", None)
+            if inferencer_cls is None:
+                _log("WARNING: hpsv3 module does not expose HPSv3RewardInferencer; skipping preload")
+                _mark_done("hpsv3")
+                return
+
+            # Try to instantiate on CPU to trigger weight download
+            inferencer = None
+            for kwargs in ({"device": "cpu"}, {}):
+                try:
+                    inferencer = inferencer_cls(**kwargs)
+                    break
+                except Exception:
+                    pass
+
+            if inferencer is not None:
+                _log("HPSv3 weights cached successfully")
+                del inferencer
+            else:
+                _log("WARNING: HPSv3RewardInferencer() init failed on CPU; weights may download at runtime")
+
+            _mark_done("hpsv3")
+        except ImportError:
+            _log("WARNING: hpsv3 not installed; skipping preload")
+            _mark_done("hpsv3")
+        except Exception as exc:
+            _log(f"WARNING: HPSv3 preload error (non-fatal): {exc}")
+            _mark_done("hpsv3")
+    else:
+        _wait_for_sentinel(sentinel, "HPSv3")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -242,6 +287,8 @@ def main() -> None:
         preload_pickscore()
     if "hpsv2" in BACKENDS:
         preload_hpsv2()
+    if "hpsv3" in BACKENDS:
+        preload_hpsv3()
 
     _log("done")
 

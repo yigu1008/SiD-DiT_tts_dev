@@ -18,6 +18,7 @@ environment:
   setup:
     - export PATH=/home/aiscuser/.local/bin:$$PATH
     - pip install --user datasets huggingface_hub hpsv2
+    - pip list
 
 code:
   local_dir: ../
@@ -57,14 +58,14 @@ search:
       - source /opt/conda/etc/profile.d/conda.sh
       - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
       - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
-      - /opt/conda/envs/ptca/bin/python -c "import os, torch; print('[torch-check]', torch.__version__, 'cuda=', torch.version.cuda, 'is_available=', torch.cuda.is_available(), 'count=', torch.cuda.device_count(), 'cvd=', os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')); assert torch.cuda.is_available() and (torch.version.cuda is not None), 'CPU-only torch detected after requirements install'"
+      - /opt/conda/envs/ptca/bin/python -c "import os, torch; print('[torch-check]', torch.__version__, 'cuda=', torch.version.cuda, 'is_available=', torch.cuda.is_available(), 'count=', torch.cuda.device_count()); assert torch.cuda.is_available() and (torch.version.cuda is not None), 'CPU-only torch detected'"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
       - /opt/conda/envs/ptca/bin/python -c "import xformers, xformers.ops; print('xformers ok', xformers.__version__)" || (/opt/conda/envs/ptca/bin/pip uninstall -y xformers && echo 'xformers disabled')
       - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
-      # ── Disable offline mode ──────────────────────────────────────────────
+      # ── Disable offline mode (cluster image may set it; we preload caches) ──
       - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
       # ── Cache dirs & symlinks ──────────────────────────────────────────────
       - export NUM_GPUS=${GPUS}
@@ -74,10 +75,9 @@ search:
       - mkdir -p /mnt/data/v-yigu/model_cache/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
       - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
-      # ── Preload reward models (hpsv3 for search, others for eval) ──────────
+      # ── Preload reward models (hpsv3 for search + others for eval) & FLUX weights ──
       - export REWARD_BACKENDS="hpsv3 imagereward hpsv2 pickscore"
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
-      # ── Preload FLUX + Qwen into HF cache ─────────────────────────────────
       - export HF_HUB_ENABLE_HF_TRANSFER=0
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('FLUX.1-schnell cache OK')"
       - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('Qwen cache OK')"; fi
@@ -87,21 +87,7 @@ search:
       - OUT_DIR="$$HPSV2_PROMPT_DIR" STYLE="$$PROMPT_STYLE" bash get_hpsv2_prompts.sh
       - if [ "$$PROMPT_STYLE" = "all" ]; then export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts.txt"; else export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts_$$PROMPT_STYLE.txt"; fi
       - if [ {use_subset} = 1 ]; then export PROMPT_FILE=./hpsv2_subset.txt; fi
-      # ── Final pin ─────────────────────────────────────────────────────────
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
-      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets; print('final pin ok', md.version('ftfy'), md.version('regex'), md.version('xxhash'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'))"
-      # ── Qwen precompute ────────────────────────────────────────────────────
-      - mkdir -p /mnt/data/v-yigu/hpsv2_rewrite_cache
-      - export REWRITES_FILE=/mnt/data/v-yigu/hpsv2_rewrite_cache/{run_tag}_$$PROMPT_STYLE_{start_index}_{end_index}.json
-      - export USE_QWEN={use_qwen}
-      - export PRECOMPUTE_REWRITES={precompute_rewrites}
-      - export REWRITES_OVERWRITE={rewrites_overwrite}
-      - export QWEN_PRECOMPUTE_DEVICE={qwen_precompute_device}
-      - export QWEN_PRECOMPUTE_BATCH_SIZE={qwen_precompute_batch_size}
-      - export QWEN_PRECOMPUTE_SAVE_EVERY={qwen_precompute_save_every}
-      - export QWEN_PRECOMPUTE_CLEAR_CACHE={qwen_precompute_clear_cache}
-      # ── Run: FLUX Schnell with HPSv3 reward ───────────────────────────────
+      # ── Run ───────────────────────────────────────────────────────────────
       - export OUT_ROOT=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}
       - export START_INDEX={start_index}
       - export END_INDEX={end_index}
@@ -142,10 +128,22 @@ search:
       - export RUN_SANA=0
       - export RUN_SD35=0
       - export RUN_FLUX=1
-      - export FLUX_BACKEND={flux_backend}
-      - export SAVE_IMAGES=0
-      - export SAVE_BEST_IMAGES=1
+      - export USE_QWEN={use_qwen}
+      - export PRECOMPUTE_REWRITES={precompute_rewrites}
+      - export REWRITES_OVERWRITE={rewrites_overwrite}
+      - export QWEN_PRECOMPUTE_DEVICE={qwen_precompute_device}
+      - export QWEN_PRECOMPUTE_BATCH_SIZE={qwen_precompute_batch_size}
+      - export QWEN_PRECOMPUTE_SAVE_EVERY={qwen_precompute_save_every}
+      - export QWEN_PRECOMPUTE_CLEAR_CACHE={qwen_precompute_clear_cache}
+      - mkdir -p /mnt/data/v-yigu/hpsv2_rewrite_cache
+      - export REWRITES_FILE=/mnt/data/v-yigu/hpsv2_rewrite_cache/{run_tag}_$$PROMPT_STYLE_{start_index}_{end_index}.json
+      - export SAVE_IMAGES={save_images}
+      - export SAVE_BEST_IMAGES={save_best_images}
       - export SAVE_VARIANTS=0
+      # ── Final pin: restore packages that earlier installs may have downgraded ──
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets; print('final pin ok', md.version('ftfy'), md.version('regex'), md.version('xxhash'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'))"
       - bash hpsv2_sd35_flux_allalgos.sh
 
     submit_args:
@@ -222,8 +220,6 @@ search:
       values: [ 4 ]
     - name: seed
       values: [ 42 ]
-    - name: flux_backend
-      values: [ "flux" ]
     - name: save_images
       values: [ 0 ]
     - name: save_best_images

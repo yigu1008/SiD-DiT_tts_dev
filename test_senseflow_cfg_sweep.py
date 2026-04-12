@@ -162,7 +162,7 @@ def main() -> None:
         print(f"{'='*60}")
 
         # Encode prompt (single variant, no Qwen rewrite)
-        emb = su.encode_variants(su_args, ctx, [prompt], dtype)
+        emb = su.encode_variants(ctx, [prompt])
 
         # Generate initial latents (same seed for all CFG values → fair comparison)
         latents_init = su.make_latents(ctx, args.seed, args.height, args.width, dtype)

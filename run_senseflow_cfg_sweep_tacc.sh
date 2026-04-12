@@ -28,9 +28,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export SKIP_INSTALL="${SKIP_INSTALL:-1}"
 source "${SCRIPT_DIR}/tacc_setup.sh"
 
+# ── Clean up stale HF cache in home1 (quota-limited) ────────────────────────
+# Models should live under $DATA_ROOT (WORK/SCRATCH), not $HOME.
+if [[ -d "${HOME}/.cache/huggingface/hub" ]]; then
+  _home_hf="${HOME}/.cache/huggingface"
+  if [[ "${HF_HOME}" != "${_home_hf}"* ]]; then
+    echo "[senseflow-sweep] WARNING: stale HF cache found at ${_home_hf}"
+    echo "[senseflow-sweep] HF_HOME is set to ${HF_HOME}"
+    echo "[senseflow-sweep] removing ${_home_hf} to free home1 quota ..."
+    rm -rf "${_home_hf}"
+    echo "[senseflow-sweep] cleaned up home1 HF cache"
+  fi
+fi
+
 # ── Preload SenseFlow model weights ──────────────────────────────────────────
 BACKEND="${BACKEND:-senseflow_large}"
 
+echo "[senseflow-sweep] HF_HOME=${HF_HOME}"
 echo "[senseflow-sweep] preloading model weights ..."
 "${PYTHON_BIN}" -c "
 from huggingface_hub import snapshot_download

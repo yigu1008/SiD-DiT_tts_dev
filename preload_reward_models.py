@@ -234,42 +234,48 @@ def preload_hpsv2() -> None:
 # ---------------------------------------------------------------------------
 
 def preload_hpsv3() -> None:
-    """Pre-initialise HPSv3 so it downloads its open_clip backbone weights."""
+    """Pre-download HPSv3 checkpoint and base model weights."""
     sentinel = _sentinel_path("hpsv3")
 
     if LOCAL_RANK == 0:
-        _log("initialising HPSv3 (downloads open_clip weights on first use) ...")
+        _log("pre-downloading HPSv3 model weights ...")
+
+        # Step 1: always download the HPSv3 checkpoint via huggingface_hub
+        # (works even if hpsv3 deps are partially broken)
+        try:
+            from huggingface_hub import hf_hub_download, snapshot_download
+
+            hf_hub_download("MizzenAI/HPSv3", "HPSv3.safetensors", repo_type="model")
+            _log("HPSv3 checkpoint downloaded")
+
+            # HPSv3 uses Qwen2-VL-7B-Instruct as its base model
+            snapshot_download("Qwen/Qwen2-VL-7B-Instruct", max_workers=1)
+            _log("Qwen2-VL-7B-Instruct (HPSv3 base) cached")
+        except Exception as exc:
+            _log(f"WARNING: HPSv3 weight download error (non-fatal): {exc}")
+
+        # Step 2: try full init to validate all deps work
         try:
             import hpsv3  # noqa: F811
 
             inferencer_cls = getattr(hpsv3, "HPSv3RewardInferencer", None)
-            if inferencer_cls is None:
-                _log("WARNING: hpsv3 module does not expose HPSv3RewardInferencer; skipping preload")
-                _mark_done("hpsv3")
-                return
-
-            # Try to instantiate on CPU to trigger weight download
-            inferencer = None
-            for kwargs in ({"device": "cpu"}, {}):
-                try:
-                    inferencer = inferencer_cls(**kwargs)
-                    break
-                except Exception:
-                    pass
-
-            if inferencer is not None:
-                _log("HPSv3 weights cached successfully")
-                del inferencer
-            else:
-                _log("WARNING: HPSv3RewardInferencer() init failed on CPU; weights may download at runtime")
-
-            _mark_done("hpsv3")
-        except ImportError:
-            _log("WARNING: hpsv3 not installed; skipping preload")
-            _mark_done("hpsv3")
+            if inferencer_cls is not None:
+                inferencer = None
+                for kwargs in ({"device": "cpu"}, {}):
+                    try:
+                        inferencer = inferencer_cls(**kwargs)
+                        break
+                    except Exception:
+                        pass
+                if inferencer is not None:
+                    _log("HPSv3 full init OK on CPU")
+                    del inferencer
+                else:
+                    _log("WARNING: HPSv3RewardInferencer init failed on CPU; will retry on GPU at runtime")
         except Exception as exc:
-            _log(f"WARNING: HPSv3 preload error (non-fatal): {exc}")
-            _mark_done("hpsv3")
+            _log(f"WARNING: HPSv3 import/init check failed (non-fatal): {exc}")
+
+        _mark_done("hpsv3")
     else:
         _wait_for_sentinel(sentinel, "HPSv3")
 

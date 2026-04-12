@@ -656,6 +656,12 @@ run_method() {
   fi
   if [[ "${runner_script}" == "${SCRIPT_DIR}/sd35_ddp_experiment_lookahead_reweighting.py" ]]; then
     extra+=(
+      --mcts_key_step_count "${MCTS_KEY_STEP_COUNT}"
+    )
+    if [[ -n "${MCTS_KEY_STEPS}" ]]; then
+      extra+=(--mcts_key_steps "${MCTS_KEY_STEPS}")
+    fi
+    extra+=(
       --lookahead_mode "${lookahead_mode_for_method}"
       --lookahead_u_t_def "${LOOKAHEAD_U_T_DEF}"
       --lookahead_tau "${LOOKAHEAD_TAU}"

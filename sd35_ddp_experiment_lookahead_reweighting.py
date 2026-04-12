@@ -43,6 +43,12 @@ def _parse_lookahead_flags(argv: list[str]) -> tuple[argparse.Namespace, list[st
     parser.add_argument("--lookahead_cfg_anchor_count", type=int, default=2)
     parser.add_argument("--lookahead_min_visits_for_center", type=int, default=3)
     parser.add_argument("--lookahead_log_action_topk", type=int, default=-1)
+
+    # Key-step branching (shared with dynamic_cfg variant)
+    parser.add_argument("--mcts_key_steps", default="",
+                        help="Comma-separated key step indices for MCTS branching.")
+    parser.add_argument("--mcts_key_step_count", type=int, default=0,
+                        help="Auto-compute N evenly-spaced key steps. 0 = branch at every step.")
     return parser.parse_known_args(argv)
 
 

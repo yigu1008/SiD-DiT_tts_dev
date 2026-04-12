@@ -1,4 +1,4 @@
-description: sd35-base-keystep-mcts
+description: sd35-base-keystep-mcts-ablation
 
 target:
   service: sing
@@ -30,7 +30,7 @@ storage:
 
 search:
   job_template:
-    name: sd35-base-keystep-{run_tag}
+    name: sd35-base-keystep-ablation-{run_tag}
     sku: ${NODES}x${MEM}G${GPUS}-IB
     sla_tier: Standard
     process_count_per_node: 1
@@ -86,11 +86,23 @@ search:
       - OUT_DIR="$$HPSV2_PROMPT_DIR" STYLE="$$PROMPT_STYLE" bash get_hpsv2_prompts.sh
       - if [ "$$PROMPT_STYLE" = "all" ]; then export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts.txt"; else export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts_$$PROMPT_STYLE.txt"; fi
       - if [ {use_subset} = 1 ]; then export PROMPT_FILE=./hpsv2_subset.txt; fi
-      # ── Run ───────────────────────────────────────────────────────────────
-      - export OUT_ROOT=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}
+      # ── Final pin ─────────────────────────────────────────────────────────
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets; print('final pin ok', md.version('ftfy'), md.version('regex'), md.version('xxhash'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'))"
+      # ── Qwen precompute (shared across all ablation runs) ─────────────────
+      - mkdir -p /mnt/data/v-yigu/hpsv2_rewrite_cache
+      - export REWRITES_FILE=/mnt/data/v-yigu/hpsv2_rewrite_cache/{run_tag}_$$PROMPT_STYLE_{start_index}_{end_index}.json
+      - export USE_QWEN={use_qwen}
+      - export PRECOMPUTE_REWRITES={precompute_rewrites}
+      - export REWRITES_OVERWRITE={rewrites_overwrite}
+      - export QWEN_PRECOMPUTE_DEVICE={qwen_precompute_device}
+      - export QWEN_PRECOMPUTE_BATCH_SIZE={qwen_precompute_batch_size}
+      - export QWEN_PRECOMPUTE_SAVE_EVERY={qwen_precompute_save_every}
+      - export QWEN_PRECOMPUTE_CLEAR_CACHE={qwen_precompute_clear_cache}
+      # ── Shared env for all ablation runs ──────────────────────────────────
       - export START_INDEX={start_index}
       - export END_INDEX={end_index}
-      - export METHODS='{methods}'
       - export SD35_MCTS_OPTION={sd35_mcts_option}
       - export LOOKAHEAD_METHOD_MODE={lookahead_method_mode}
       - export LOOKAHEAD_U_T_DEF={lookahead_u_t_def}
@@ -98,7 +110,6 @@ search:
       - export LOOKAHEAD_C_PUCT={lookahead_c_puct}
       - export LOOKAHEAD_CFG_WIDTH_MIN={lookahead_cfg_width_min}
       - export LOOKAHEAD_CFG_WIDTH_MAX={lookahead_cfg_width_max}
-      - if [ "$$SD35_MCTS_OPTION" = "lookahead_dynamiccfg" ]; then export METHODS="$$(echo "$$METHODS" | sed 's/\bmcts\b/mcts_lookahead_dynamiccfg/g')"; fi
       - export REWARD_BACKEND=imagereward
       - export REWARD_TYPE=imagereward
       - export REWARD_BACKENDS=imagereward
@@ -113,7 +124,6 @@ search:
       - export N_VARIANTS={n_variants}
       - export N_SIMS={n_sims}
       - export UCB_C={ucb_c}
-      - export MCTS_KEY_STEP_COUNT={mcts_key_step_count}
       - export SMC_K={smc_k}
       - export SMC_GAMMA={smc_gamma}
       - export ESS_THRESHOLD={ess_threshold}
@@ -134,38 +144,45 @@ search:
       - export BEAM_WIDTH={beam_width}
       - export SEED={seed}
       - export RUN_SANA=0
-      - export RUN_SD35={run_sd35}
-      - export RUN_FLUX={run_flux}
+      - export RUN_SD35=1
+      - export RUN_FLUX=0
       - export SD35_BACKEND={sd35_backend}
-      - export FLUX_BACKEND={flux_backend}
-      - export USE_QWEN={use_qwen}
-      - export PRECOMPUTE_REWRITES={precompute_rewrites}
-      - export REWRITES_OVERWRITE={rewrites_overwrite}
-      - export QWEN_PRECOMPUTE_DEVICE={qwen_precompute_device}
-      - export QWEN_PRECOMPUTE_BATCH_SIZE={qwen_precompute_batch_size}
-      - export QWEN_PRECOMPUTE_SAVE_EVERY={qwen_precompute_save_every}
-      - export QWEN_PRECOMPUTE_CLEAR_CACHE={qwen_precompute_clear_cache}
-      - mkdir -p /mnt/data/v-yigu/hpsv2_rewrite_cache
-      - export REWRITES_FILE=/mnt/data/v-yigu/hpsv2_rewrite_cache/{run_tag}_$$PROMPT_STYLE_{start_index}_{end_index}.json
-      - export SAVE_IMAGES={save_images}
-      - export SAVE_BEST_IMAGES={save_best_images}
+      - export FLUX_BACKEND=flux
+      - export SAVE_IMAGES=0
+      - export SAVE_BEST_IMAGES=1
       - export SAVE_VARIANTS=0
-      # ── Final pin ─────────────────────────────────────────────────────────
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
-      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets; print('final pin ok', md.version('ftfy'), md.version('regex'), md.version('xxhash'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'))"
-      - bash hpsv2_sd35_flux_allalgos.sh
+      # ── Key-step ablation loop ────────────────────────────────────────────
+      - |
+        for KS in 4 7 0; do
+          echo "============================================================"
+          echo "KEY-STEP ABLATION: MCTS_KEY_STEP_COUNT=$${KS}"
+          echo "============================================================"
+          if [ "$$KS" = "0" ]; then
+            TAG="allsteps"
+          else
+            TAG="k$${KS}"
+          fi
+          export MCTS_KEY_STEP_COUNT="$$KS"
+          export METHODS="baseline mcts_dynamiccfg_u_lookahead"
+          export OUT_ROOT="/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}_$${TAG}"
+          echo "  OUT_ROOT=$$OUT_ROOT"
+          echo "  MCTS_KEY_STEP_COUNT=$$MCTS_KEY_STEP_COUNT"
+          bash hpsv2_sd35_flux_allalgos.sh
+          echo "KEY-STEP ABLATION $${TAG} DONE (exit=$$?)"
+          echo ""
+        done
+      - echo "ALL KEY-STEP ABLATIONS COMPLETE"
 
     submit_args:
       env:
         DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: True
         SHARED_MEMORY_PERCENT: 0.5
 
-  max_trials: 3
+  max_trials: 1
   type: grid
   params:
     - name: run_tag
-      values: [ "sd35_base_keystep_k4", "sd35_base_keystep_k7", "sd35_base_keystep_allsteps" ]
+      values: [ "sd35_base_keystep_ablation" ]
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: prompt_style
@@ -176,8 +193,6 @@ search:
       values: [ -1 ]
     - name: use_subset
       values: [ 1 ]
-    - name: methods
-      values: [ "baseline mcts_dynamiccfg_u_lookahead" ]
     - name: sd35_mcts_option
       values: [ "standard" ]
     - name: lookahead_method_mode
@@ -206,9 +221,6 @@ search:
       values: [ 50 ]
     - name: ucb_c
       values: [ 1.41 ]
-    # Key-step branching: 4, 7, or 0 (=all steps, original behavior)
-    - name: mcts_key_step_count
-      values: [ 4, 7, 0 ]
     - name: smc_k
       values: [ 8 ]
     - name: smc_gamma
@@ -247,18 +259,8 @@ search:
       values: [ 4 ]
     - name: seed
       values: [ 42 ]
-    - name: run_sd35
-      values: [ 1 ]
-    - name: run_flux
-      values: [ 0 ]
     - name: sd35_backend
       values: [ "sd35_base" ]
-    - name: flux_backend
-      values: [ "flux" ]
-    - name: save_images
-      values: [ 0 ]
-    - name: save_best_images
-      values: [ 1 ]
     - name: use_qwen
       values: [ 1 ]
     - name: precompute_rewrites

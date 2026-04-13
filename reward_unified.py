@@ -470,12 +470,25 @@ class UnifiedRewardScorer:
 
                 # 2. additional_special_tokens_ids removed as property in newer transformers.
                 #    BertTokenizer (used by ImageReward) accesses this attribute.
-                from transformers import PreTrainedTokenizer
-                if not hasattr(PreTrainedTokenizer, "additional_special_tokens_ids"):
-                    @property
-                    def _additional_special_tokens_ids(self):
-                        return [self.convert_tokens_to_ids(t) for t in self.additional_special_tokens]
-                    PreTrainedTokenizer.additional_special_tokens_ids = _additional_special_tokens_ids
+                #    Patch every tokenizer base class in the MRO to be safe.
+                @property
+                def _additional_special_tokens_ids(self):
+                    return [self.convert_tokens_to_ids(t) for t in self.additional_special_tokens]
+
+                _tok_classes_to_patch = []
+                for _cls_name in (
+                    "PreTrainedTokenizerBase",  # root base — covers everything
+                    "PreTrainedTokenizer",
+                    "PreTrainedTokenizerFast",
+                    "BertTokenizer",
+                    "BertTokenizerFast",
+                ):
+                    _cls = getattr(transformers, _cls_name, None)
+                    if _cls is not None:
+                        _tok_classes_to_patch.append(_cls)
+                for _cls in _tok_classes_to_patch:
+                    if not hasattr(_cls, "additional_special_tokens_ids"):
+                        _cls.additional_special_tokens_ids = _additional_special_tokens_ids
 
                 # 3. apply_chunking_to_forward removed from transformers.modeling_utils in newer versions.
                 import transformers.modeling_utils as _tmu

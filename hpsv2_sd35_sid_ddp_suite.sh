@@ -772,8 +772,8 @@ precompute_rewrites_cache
 if [[ "${DOWNGRADE_TRANSFORMERS:-1}" == "1" ]]; then
   echo "[deps] downgrading transformers to 4.45.2 for reward model compat ..."
   "${PYTHON_BIN}" -m pip install --no-cache-dir \
-    "transformers==4.45.2" "tokenizers==0.20.3" 2>&1 | tail -3
-  echo "[deps] transformers=$(${PYTHON_BIN} -c 'import transformers; print(transformers.__version__)')"
+    "transformers==4.45.2" "tokenizers==0.20.3" "trl==0.12.2" 2>&1 | tail -5
+  echo "[deps] transformers=$(${PYTHON_BIN} -c 'import transformers; print(transformers.__version__)') trl=$(${PYTHON_BIN} -c 'import importlib.metadata; print(importlib.metadata.version(\"trl\"))')"
 fi
 
 for method in ${METHODS}; do

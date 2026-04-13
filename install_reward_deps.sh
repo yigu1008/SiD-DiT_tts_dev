@@ -38,7 +38,7 @@ PY
 
 # --constraint enforces lower bounds on ftfy/regex/xxhash throughout all installs.
 # No individual package can silently downgrade them.
-_pip() { "${PY}" -m pip install --no-cache-dir --constraint "${CONSTRAINTS}" "$@"; }
+_pip() { "${PY}" -m pip install --user --no-cache-dir --constraint "${CONSTRAINTS}" "$@"; }
 
 echo "[install] python: ${PY}"
 "${PY}" -V
@@ -52,7 +52,7 @@ if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_stamp}" ]]; then
 fi
 
 echo "[install] build tooling"
-"${PY}" -m pip install --no-cache-dir --upgrade "setuptools>=70,<76" wheel
+"${PY}" -m pip install --user --no-cache-dir --upgrade "setuptools>=70,<76" wheel
 
 echo "[install] core runtime deps (ImageReward transitive deps)"
 _pip --index-url "${PYPI_INDEX_URL}" \

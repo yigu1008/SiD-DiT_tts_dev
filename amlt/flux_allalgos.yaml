@@ -62,8 +62,8 @@ search:
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
       - /opt/conda/envs/ptca/bin/python -c "import xformers, xformers.ops; print('xformers ok', xformers.__version__)" || (/opt/conda/envs/ptca/bin/pip uninstall -y xformers && echo 'xformers disabled')
       - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/pip install --user --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
+      - /opt/conda/envs/ptca/bin/pip install --user --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
       # ── Disable offline mode (cluster image may set it; we preload caches) ──
       - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
@@ -140,8 +140,8 @@ search:
       - export SAVE_BEST_IMAGES={save_best_images}
       - export SAVE_VARIANTS=0
       # ── Final pin: restore packages that earlier installs may have downgraded ──
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/pip install --user --no-cache-dir --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
+      - /opt/conda/envs/ptca/bin/pip install --user --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets; print('final pin ok', md.version('ftfy'), md.version('regex'), md.version('xxhash'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'))"
       - bash hpsv2_sd35_flux_allalgos.sh
 

@@ -623,6 +623,58 @@ class UnifiedRewardScorer:
 
     def _try_load_hpsv3(self) -> None:
         try:
+            # Compat shim: hpsv3/model/qwen2vl_trainer.py imports many names from
+            # transformers.trainer that were removed/moved in newer transformers (>=4.50).
+            # We only use hpsv3 for inference, so stubs are safe.
+            try:
+                import transformers.trainer as _trainer_mod
+                from collections import namedtuple as _nt
+
+                class _DummyGatherer:
+                    def __init__(self, *a, **kw): pass
+                    def add_arrays(self, *a, **kw): pass
+                    def finalize(self): return []
+
+                _stubs = {
+                    "DistributedTensorGatherer": _DummyGatherer,
+                    "SequentialDistributedSampler": type("SequentialDistributedSampler", (), {"__init__": lambda s, *a, **k: None}),
+                    "nested_concat": lambda *a, **k: a[0] if a else None,
+                    "EvalLoopOutput": _nt("EvalLoopOutput", ["predictions", "label_ids", "metrics", "num_samples"]),
+                    "EvalLoopContainer": type("EvalLoopContainer", (), {"__init__": lambda s, *a, **k: None}),
+                    "PredictionOutput": _nt("PredictionOutput", ["predictions", "label_ids", "metrics"]),
+                    "EvalPrediction": _nt("EvalPrediction", ["predictions", "label_ids"]),
+                    "denumpify_detensorize": lambda x: x,
+                    "has_length": lambda x: hasattr(x, "__len__"),
+                    "speed_metrics": lambda *a, **k: {},
+                    "deepspeed_init": lambda *a, **k: None,
+                    "is_sagemaker_mp_enabled": lambda: False,
+                    "is_peft_available": lambda: True,
+                    "is_datasets_available": lambda: True,
+                    "is_torch_xla_available": lambda: False,
+                    # logger used by hpsv3's trainer
+                    "logger": __import__("logging").getLogger("transformers.trainer"),
+                    # String constants used by hpsv3's trainer for checkpoint saving
+                    "WEIGHTS_NAME": "pytorch_model.bin",
+                    "TRAINING_ARGS_NAME": "training_args.bin",
+                    "SAFE_WEIGHTS_NAME": "model.safetensors",
+                    "TRAINER_STATE_NAME": "trainer_state.json",
+                    "PREFIX_CHECKPOINT_DIR": "checkpoint",
+                }
+                for _name, _val in _stubs.items():
+                    if not hasattr(_trainer_mod, _name):
+                        setattr(_trainer_mod, _name, _val)
+
+                # Also patch trainer_utils in case hpsv3 imports from there too
+                try:
+                    import transformers.trainer_utils as _tru
+                    for _name in ("EvalLoopOutput", "EvalPrediction", "PredictionOutput",
+                                  "denumpify_detensorize", "speed_metrics", "has_length"):
+                        if not hasattr(_tru, _name) and _name in _stubs:
+                            setattr(_tru, _name, _stubs[_name])
+                except Exception:
+                    pass
+            except Exception:
+                pass
             import hpsv3
 
             inferencer_cls = getattr(hpsv3, "HPSv3RewardInferencer", None)

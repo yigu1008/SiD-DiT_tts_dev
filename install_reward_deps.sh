@@ -38,7 +38,7 @@ PY
 
 # --constraint enforces lower bounds on ftfy/regex/xxhash throughout all installs.
 # No individual package can silently downgrade them.
-_pip() { "${PY}" -m pip install --user --no-cache-dir --constraint "${CONSTRAINTS}" "$@"; }
+_pip() { "${PY}" -m pip install --no-cache-dir --constraint "${CONSTRAINTS}" "$@"; }
 
 echo "[install] python: ${PY}"
 "${PY}" -V
@@ -52,7 +52,7 @@ if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_stamp}" ]]; then
 fi
 
 echo "[install] build tooling"
-"${PY}" -m pip install --user --no-cache-dir --upgrade "setuptools>=70,<76" wheel
+"${PY}" -m pip install --no-cache-dir --upgrade "setuptools>=70,<76" wheel
 
 echo "[install] core runtime deps (ImageReward transitive deps)"
 _pip --index-url "${PYPI_INDEX_URL}" \
@@ -91,7 +91,7 @@ if ! _pip --index-url "${PYPI_INDEX_URL}" "open-clip-torch"; then
 fi
 
 echo "[install] wandb (required by ImageReward import path)"
-if ! _pip --force-reinstall "wandb"; then
+if ! _pip "wandb"; then
   echo "[install] warning: wandb reinstall failed (likely permissions)."
   echo "[install] warning: trying user-writable overlay install for cluster ..."
   if PYTHON_BIN="${PY}" SID_OVERLAY_DIR="${SID_OVERLAY_DIR:-$HOME/.sid_pydeps}" bash "${SCRIPT_DIR}/prepare_cluster_overlay_deps.sh"; then
@@ -143,6 +143,8 @@ if ! _pip --index-url "${PYPI_INDEX_URL}" "hpsv2x"; then
     echo "[install] warning: hpsv2 install also failed; continuing."
   fi
 fi
+# hpsv2 depends on clint (for clint.textui.progress) but doesn't always pull it in
+_pip --index-url "${PYPI_INDEX_URL}" "clint" || echo "[install] warning: clint install failed; hpsv2 may be broken."
 
 echo "[install] restoring protobuf/wandb compatibility (hpsv2 may downgrade protobuf)"
 # Use >=4.25 only — no upper bound. requirements.txt pins protobuf==6.31.1, so
@@ -152,7 +154,7 @@ echo "[install] restoring protobuf/wandb compatibility (hpsv2 may downgrade prot
 if ! _pip --index-url "${PYPI_INDEX_URL}" "protobuf>=4.25"; then
   echo "[install] warning: protobuf restore failed; continuing."
 fi
-if ! _pip --index-url "${PYPI_INDEX_URL}" --force-reinstall "wandb>=0.19,<0.21"; then
+if ! _pip --index-url "${PYPI_INDEX_URL}" "wandb>=0.19,<0.21"; then
   echo "[install] warning: wandb reinstall failed."
 fi
 
@@ -162,7 +164,7 @@ _pip --index-url "${PYPI_INDEX_URL}" \
   "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14" "timm==1.0.15" \
   "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1" \
   "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
-_pip --index-url "${PYPI_INDEX_URL}" --force-reinstall --no-deps \
+_pip --index-url "${PYPI_INDEX_URL}" --no-deps \
   "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
 
 echo "[verify] imports"

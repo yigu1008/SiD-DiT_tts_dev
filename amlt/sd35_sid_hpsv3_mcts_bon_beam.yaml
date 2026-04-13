@@ -61,9 +61,9 @@ search:
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
       - /opt/conda/envs/ptca/bin/python -c "import xformers, xformers.ops; print('xformers ok', xformers.__version__)" || (/opt/conda/envs/ptca/bin/pip uninstall -y xformers && echo 'xformers disabled')
       - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
-      - /opt/conda/envs/ptca/bin/pip install --user --no-cache-dir "fire" "peft>=0.8.0" "trl>=0.7.0" "einops>=0.6.0" "opencv-python>=4.5.0" "deepspeed>=0.12.0" "safetensors>=0.3.0" "accelerate>=0.20.0" "qwen-vl-utils>=0.0.8" "matplotlib" "prettytable" "pandas" "pydantic" "requests" "tensorboard" "packaging" || true
-      - /opt/conda/envs/ptca/bin/pip install --user --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
-      - /opt/conda/envs/ptca/bin/pip install --user --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "fire" "peft>=0.8.0" "trl>=0.7.0" "einops>=0.6.0" "opencv-python>=4.5.0" "deepspeed>=0.12.0" "safetensors>=0.3.0" "accelerate>=0.20.0" "qwen-vl-utils>=0.0.8" "matplotlib" "prettytable" "pandas" "pydantic" "requests" "tensorboard" "packaging" || true
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
       # ── Disable offline mode ──────────────────────────────────────────────
       - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
@@ -90,8 +90,8 @@ search:
       - if [ "$$PROMPT_STYLE" = "all" ]; then export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts.txt"; else export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts_$$PROMPT_STYLE.txt"; fi
       - if [ {use_subset} = 1 ]; then export PROMPT_FILE=./hpsv2_subset.txt; fi
       # ── Final pin ─────────────────────────────────────────────────────────
-      - /opt/conda/envs/ptca/bin/pip install --user --no-cache-dir --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
-      - /opt/conda/envs/ptca/bin/pip install --user --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets; print('final pin ok', md.version('ftfy'), md.version('regex'), md.version('xxhash'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'))"
       # ── Qwen precompute ────────────────────────────────────────────────────
       - mkdir -p /mnt/data/v-yigu/hpsv2_rewrite_cache

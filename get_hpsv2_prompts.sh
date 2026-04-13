@@ -18,6 +18,8 @@ then
   if ! "${PYTHON_BIN}" -m pip install --no-cache-dir --no-deps hpsv2; then
     "${PYTHON_BIN}" -m pip install --no-cache-dir hpsv2
   fi
+  # hpsv2 depends on clint (clint.textui.progress) but --no-deps skips it
+  "${PYTHON_BIN}" -m pip install --no-cache-dir clint || true
 fi
 
 "${PYTHON_BIN}" "${SCRIPT_DIR}/export_hpsv2_prompts.py" \

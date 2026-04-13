@@ -430,16 +430,31 @@ class UnifiedRewardScorer:
             stub.__path__ = []  # type: ignore[attr-defined]
             stub.__spec__ = importlib.machinery.ModuleSpec("wandb", loader=None, is_package=True)
 
-            # Minimal submodule for libs that probe/import wandb.sdk.
-            sdk_stub = types.ModuleType("wandb.sdk")
-            sdk_stub.__package__ = "wandb"
-            sdk_stub.__path__ = []  # type: ignore[attr-defined]
-            sdk_stub.__spec__ = importlib.machinery.ModuleSpec(
-                "wandb.sdk", loader=None, is_package=True
-            )
+            # Minimal submodules for libs that probe/import wandb internals.
+            # trl imports wandb.proto.wandb_telemetry_pb2.Imports
+            def _make_sub(name, parent_pkg="wandb"):
+                sub = types.ModuleType(name)
+                sub.__package__ = parent_pkg
+                sub.__path__ = []
+                sub.__spec__ = importlib.machinery.ModuleSpec(name, loader=None, is_package=True)
+                sub.__getattr__ = lambda self_name: _noop  # any missing attr → noop
+                return sub
+
+            sdk_stub = _make_sub("wandb.sdk")
             stub.sdk = sdk_stub
+
+            # wandb.proto and its telemetry module (needed by trl)
+            proto_stub = _make_sub("wandb.proto")
+            telemetry_stub = _make_sub("wandb.proto.wandb_telemetry_pb2", parent_pkg="wandb.proto")
+            # trl accesses wandb.proto.wandb_telemetry_pb2.Imports
+            telemetry_stub.Imports = type("Imports", (), {"__getattr__": lambda s, n: _noop})()
+            proto_stub.wandb_telemetry_pb2 = telemetry_stub
+            stub.proto = proto_stub
+
             sys.modules["wandb"] = stub
             sys.modules.setdefault("wandb.sdk", sdk_stub)
+            sys.modules.setdefault("wandb.proto", proto_stub)
+            sys.modules.setdefault("wandb.proto.wandb_telemetry_pb2", telemetry_stub)
             print(f"[Reward] Using wandb stub for ImageReward inference ({reason}).")
 
         def _ensure_wandb_importable() -> None:
@@ -475,7 +490,9 @@ class UnifiedRewardScorer:
                 def _additional_special_tokens_ids(self):
                     return [self.convert_tokens_to_ids(t) for t in self.additional_special_tokens]
 
-                _tok_classes_to_patch = []
+                # Force-override on ALL tokenizer base classes unconditionally.
+                # In transformers >=4.47 the property may exist but raise AttributeError
+                # when accessed (hasattr returns True at class level, fails on instance).
                 for _cls_name in (
                     "PreTrainedTokenizerBase",  # root base — covers everything
                     "PreTrainedTokenizer",
@@ -485,9 +502,6 @@ class UnifiedRewardScorer:
                 ):
                     _cls = getattr(transformers, _cls_name, None)
                     if _cls is not None:
-                        _tok_classes_to_patch.append(_cls)
-                for _cls in _tok_classes_to_patch:
-                    if not hasattr(_cls, "additional_special_tokens_ids"):
                         _cls.additional_special_tokens_ids = _additional_special_tokens_ids
 
                 # 3. apply_chunking_to_forward removed from transformers.modeling_utils in newer versions.
@@ -636,6 +650,49 @@ class UnifiedRewardScorer:
 
     def _try_load_hpsv3(self) -> None:
         try:
+            # Ensure wandb stub is active before importing hpsv3/trl.
+            # trl imports wandb.proto.wandb_telemetry_pb2.Imports at module level;
+            # broken wandb versions on the cluster raise ImportError.
+            raw = str(os.environ.get("SID_FORCE_WANDB_STUB", "1")).strip().lower()
+            if raw not in {"0", "false", "no", "off"}:
+                existing = sys.modules.get("wandb")
+                if existing is None or not bool(getattr(existing, "__codex_stub__", False)):
+                    # Direct stub injection for wandb
+                    import importlib.machinery
+                    import types
+                    def _noop(*args, **kwargs):
+                        return None
+                    class _DummyRun:
+                        def log(self, *a, **kw): return None
+                        def finish(self, *a, **kw): return None
+                        def __getattr__(self, _n): return _noop
+                    stub = types.ModuleType("wandb")
+                    stub.__codex_stub__ = True
+                    stub.init = lambda *a, **kw: _DummyRun()
+                    stub.log = _noop; stub.finish = _noop; stub.login = _noop
+                    stub.watch = _noop; stub.define_metric = _noop
+                    stub.config = {}; stub.run = None
+                    stub.__package__ = "wandb"
+                    stub.__path__ = []
+                    stub.__spec__ = importlib.machinery.ModuleSpec("wandb", loader=None, is_package=True)
+                    def _make_sub(name, parent_pkg="wandb"):
+                        sub = types.ModuleType(name)
+                        sub.__package__ = parent_pkg
+                        sub.__path__ = []
+                        sub.__spec__ = importlib.machinery.ModuleSpec(name, loader=None, is_package=True)
+                        sub.__getattr__ = lambda self_name: _noop
+                        return sub
+                    sdk_stub = _make_sub("wandb.sdk"); stub.sdk = sdk_stub
+                    proto_stub = _make_sub("wandb.proto")
+                    telem_stub = _make_sub("wandb.proto.wandb_telemetry_pb2", "wandb.proto")
+                    telem_stub.Imports = type("Imports", (), {"__getattr__": lambda s, n: _noop})()
+                    proto_stub.wandb_telemetry_pb2 = telem_stub; stub.proto = proto_stub
+                    sys.modules["wandb"] = stub
+                    sys.modules.setdefault("wandb.sdk", sdk_stub)
+                    sys.modules.setdefault("wandb.proto", proto_stub)
+                    sys.modules.setdefault("wandb.proto.wandb_telemetry_pb2", telem_stub)
+                    print("[Reward] Using wandb stub for HPSv3/trl (SID_FORCE_WANDB_STUB=1).")
+
             # Compat shim: hpsv3/model/qwen2vl_trainer.py imports many names from
             # transformers.trainer that were removed/moved in newer transformers (>=4.50).
             # We only use hpsv3 for inference, so stubs are safe.

@@ -389,43 +389,6 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
     except Exception:
         pass
 
-    # Compat shims: constants/functions removed from transformers in newer versions
-    # but still imported by older diffusers/ImageReward code.
-    try:
-        import transformers.utils as _tu
-        if not hasattr(_tu, "FLAX_WEIGHTS_NAME"):
-            _tu.FLAX_WEIGHTS_NAME = "flax_model.msgpack"
-        import transformers.modeling_utils as _tmu
-        if not hasattr(_tmu, "apply_chunking_to_forward"):
-            def _apply_chunking_to_forward(forward_fn, chunk_size, chunk_dim, *input_tensors):
-                if chunk_size > 0:
-                    tensor_shape = input_tensors[0].shape[chunk_dim]
-                    if tensor_shape % chunk_size != 0:
-                        raise ValueError(
-                            f"tensor shape {tensor_shape} not divisible by chunk_size {chunk_size}"
-                        )
-                    num_chunks = tensor_shape // chunk_size
-                    return torch.cat(
-                        [forward_fn(*[t.narrow(chunk_dim, c * chunk_size, chunk_size) for t in input_tensors])
-                         for c in range(num_chunks)],
-                        dim=chunk_dim,
-                    )
-                return forward_fn(*input_tensors)
-            _tmu.apply_chunking_to_forward = _apply_chunking_to_forward
-        if not hasattr(_tmu, "find_pruneable_heads_and_indices"):
-            def _find_pruneable_heads_and_indices(heads, n_heads, head_size, already_pruned_heads):
-                mask = torch.ones(n_heads, head_size)
-                heads = set(heads) - already_pruned_heads
-                for head in sorted(heads):
-                    head -= sum(1 for h in sorted(already_pruned_heads) if h < head)
-                    mask[head] = 0
-                mask = mask.view(-1).eq(1)
-                index = torch.arange(len(mask))[mask].long()
-                return heads, index
-            _tmu.find_pruneable_heads_and_indices = _find_pruneable_heads_and_indices
-    except Exception:
-        pass
-
     cuda_available = torch.cuda.is_available()
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))

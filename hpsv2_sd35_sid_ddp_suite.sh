@@ -765,6 +765,17 @@ PY
 
 precompute_rewrites_cache
 
+# ── Downgrade transformers for reward model compatibility ────────────────────
+# Qwen3 precompute (above) needs transformers>=4.51.  ImageReward and hpsv3
+# need transformers<=4.46 (removed APIs: additional_special_tokens_ids,
+# DistributedTensorGatherer, etc.).  Now that precompute is done, pin 4.45.2.
+if [[ "${DOWNGRADE_TRANSFORMERS:-1}" == "1" ]]; then
+  echo "[deps] downgrading transformers to 4.45.2 for reward model compat ..."
+  "${PYTHON_BIN}" -m pip install --no-cache-dir \
+    "transformers==4.45.2" "tokenizers==0.20.3" 2>&1 | tail -3
+  echo "[deps] transformers=$(${PYTHON_BIN} -c 'import transformers; print(transformers.__version__)')"
+fi
+
 for method in ${METHODS}; do
   run_method "${method}"
 done

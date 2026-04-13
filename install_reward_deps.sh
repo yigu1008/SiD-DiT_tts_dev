@@ -122,14 +122,16 @@ fi
 #   qwen-vl-utils (VL model), safetensors (weight loading), accelerate (device map)
 # Undeclared imports found in hpsv3 source:
 #   matplotlib (visualization), prettytable (formatting), pandas (data handling),
-#   pydantic (validation), requests (HTTP)
+#   pydantic (validation), requests (HTTP), tensorboard (torch.utils.tensorboard),
+#   packaging (version checks)
 if ! _pip --index-url "${PYPI_INDEX_URL}" \
   "fire" "omegaconf>=2.3.0" "hydra-core>=1.3.2" \
   "peft>=0.8.0" "trl>=0.7.0" "einops>=0.6.0" \
   "opencv-python>=4.5.0" "deepspeed>=0.12.0" \
   "safetensors>=0.3.0" "accelerate>=0.20.0" \
   "qwen-vl-utils>=0.0.8" \
-  "matplotlib" "prettytable" "pandas" "pydantic" "requests"; then
+  "matplotlib" "prettytable" "pandas" "pydantic" "requests" \
+  "tensorboard" "packaging"; then
   echo "[install] warning: hpsv3 runtime deps partially failed; continuing."
 fi
 # hpsv2x is a drop-in replacement for hpsv2 that includes the missing BPE vocab file

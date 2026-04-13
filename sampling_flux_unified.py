@@ -31,6 +31,28 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
+# Compat shims: constants/functions removed from transformers in newer versions
+# but still imported by older diffusers code.
+try:
+    import transformers.utils as _tu
+    if not hasattr(_tu, "FLAX_WEIGHTS_NAME"):
+        _tu.FLAX_WEIGHTS_NAME = "flax_model.msgpack"
+    import transformers.modeling_utils as _tmu
+    if not hasattr(_tmu, "apply_chunking_to_forward"):
+        def _apply_chunking_to_forward(forward_fn, chunk_size, chunk_dim, *input_tensors):
+            if chunk_size > 0:
+                tensor_shape = input_tensors[0].shape[chunk_dim]
+                if tensor_shape % chunk_size != 0:
+                    raise ValueError(f"dimension {chunk_dim} ({tensor_shape}) is not divisible by chunk_size {chunk_size}")
+                num_chunks = tensor_shape // chunk_size
+                input_chunks = tuple(t.chunk(num_chunks, dim=chunk_dim) for t in input_tensors)
+                output_chunks = [forward_fn(*ic) for ic in zip(*input_chunks)]
+                return torch.cat(output_chunks, dim=chunk_dim)
+            return forward_fn(*input_tensors)
+        _tmu.apply_chunking_to_forward = _apply_chunking_to_forward
+except Exception:
+    pass
+
 from reward_unified import UnifiedRewardScorer
 
 

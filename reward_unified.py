@@ -468,7 +468,16 @@ class UnifiedRewardScorer:
 
                     bert_cls.all_tied_weights_keys = property(_all_tied_keys)  # type: ignore[attr-defined]
 
-                # 2. apply_chunking_to_forward removed from transformers.modeling_utils in newer versions.
+                # 2. additional_special_tokens_ids removed as property in newer transformers.
+                #    BertTokenizer (used by ImageReward) accesses this attribute.
+                from transformers import PreTrainedTokenizer
+                if not hasattr(PreTrainedTokenizer, "additional_special_tokens_ids"):
+                    @property
+                    def _additional_special_tokens_ids(self):
+                        return [self.convert_tokens_to_ids(t) for t in self.additional_special_tokens]
+                    PreTrainedTokenizer.additional_special_tokens_ids = _additional_special_tokens_ids
+
+                # 3. apply_chunking_to_forward removed from transformers.modeling_utils in newer versions.
                 import transformers.modeling_utils as _tmu
                 if not hasattr(_tmu, "apply_chunking_to_forward"):
                     def _apply_chunking_to_forward(forward_fn, chunk_size, chunk_dim, *input_tensors):
@@ -487,7 +496,7 @@ class UnifiedRewardScorer:
                         return forward_fn(*input_tensors)
                     _tmu.apply_chunking_to_forward = _apply_chunking_to_forward
 
-                # 3. find_pruneable_heads_and_indices removed from transformers.modeling_utils in newer versions.
+                # 4. find_pruneable_heads_and_indices removed from transformers.modeling_utils in newer versions.
                 if not hasattr(_tmu, "find_pruneable_heads_and_indices"):
                     def _find_pruneable_heads_and_indices(heads, n_heads, head_size, already_pruned_heads):
                         mask = torch.ones(n_heads, head_size)
@@ -500,7 +509,7 @@ class UnifiedRewardScorer:
                         return heads, index
                     _tmu.find_pruneable_heads_and_indices = _find_pruneable_heads_and_indices
 
-                # 4. prune_linear_layer removed from transformers.modeling_utils in newer versions.
+                # 5. prune_linear_layer removed from transformers.modeling_utils in newer versions.
                 if not hasattr(_tmu, "prune_linear_layer"):
                     import torch.nn as _nn
                     def _prune_linear_layer(layer, index, dim=0):

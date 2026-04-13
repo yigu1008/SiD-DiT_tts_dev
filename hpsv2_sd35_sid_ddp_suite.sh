@@ -771,9 +771,12 @@ precompute_rewrites_cache
 # DistributedTensorGatherer, etc.).  Now that precompute is done, pin 4.45.2.
 if [[ "${DOWNGRADE_TRANSFORMERS:-1}" == "1" ]]; then
   echo "[deps] downgrading transformers to 4.45.2 for reward model compat ..."
-  "${PYTHON_BIN}" -m pip install --no-cache-dir \
+  # Use --no-deps to avoid pip cascading downgrades that break torch/torchvision
+  "${PYTHON_BIN}" -m pip install --no-cache-dir --no-deps \
     "transformers==4.45.2" "tokenizers==0.20.3" "trl==0.12.2" 2>&1 | tail -5
-  echo "[deps] transformers=$(${PYTHON_BIN} -c 'import transformers; print(transformers.__version__)') trl=$(${PYTHON_BIN} -c 'import importlib.metadata; print(importlib.metadata.version(\"trl\"))')"
+  "${PYTHON_BIN}" -c "import transformers, trl; print(f'[deps] transformers={transformers.__version__} trl={trl.__version__}')"
+  # Verify torch/torchvision still work
+  "${PYTHON_BIN}" -c "import torch, torchvision; print(f'[deps] torch={torch.__version__} torchvision={torchvision.__version__}')"
 fi
 
 for method in ${METHODS}; do

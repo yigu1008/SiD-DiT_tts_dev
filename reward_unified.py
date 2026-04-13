@@ -401,6 +401,8 @@ class UnifiedRewardScorer:
                     existing.__package__ = "wandb"
                 if not hasattr(existing, "__path__"):
                     existing.__path__ = []  # type: ignore[attr-defined]
+                if not hasattr(existing, "__file__"):
+                    existing.__file__ = ""
                 return
 
             def _noop(*args, **kwargs):
@@ -428,6 +430,7 @@ class UnifiedRewardScorer:
             stub.run = None
             stub.__package__ = "wandb"
             stub.__path__ = []  # type: ignore[attr-defined]
+            stub.__file__ = ""
             stub.__spec__ = importlib.machinery.ModuleSpec("wandb", loader=None, is_package=True)
 
             # Minimal submodules for libs that probe/import wandb internals.
@@ -436,8 +439,8 @@ class UnifiedRewardScorer:
                 sub = types.ModuleType(name)
                 sub.__package__ = parent_pkg
                 sub.__path__ = []
+                sub.__file__ = ""
                 sub.__spec__ = importlib.machinery.ModuleSpec(name, loader=None, is_package=True)
-                sub.__getattr__ = lambda self_name: _noop  # any missing attr → noop
                 return sub
 
             sdk_stub = _make_sub("wandb.sdk")
@@ -585,13 +588,14 @@ class UnifiedRewardScorer:
                     stub.config = {}; stub.run = None
                     stub.__package__ = "wandb"
                     stub.__path__ = []
+                    stub.__file__ = ""
                     stub.__spec__ = importlib.machinery.ModuleSpec("wandb", loader=None, is_package=True)
                     def _make_sub(name, parent_pkg="wandb"):
                         sub = types.ModuleType(name)
                         sub.__package__ = parent_pkg
                         sub.__path__ = []
+                        sub.__file__ = ""
                         sub.__spec__ = importlib.machinery.ModuleSpec(name, loader=None, is_package=True)
-                        sub.__getattr__ = lambda self_name: _noop
                         return sub
                     sdk_stub = _make_sub("wandb.sdk"); stub.sdk = sdk_stub
                     proto_stub = _make_sub("wandb.proto")
@@ -604,7 +608,34 @@ class UnifiedRewardScorer:
                     sys.modules.setdefault("wandb.proto.wandb_telemetry_pb2", telem_stub)
                     print("[Reward] Using wandb stub for HPSv3/trl (SID_FORCE_WANDB_STUB=1).")
 
+            # Pre-resolve HPSv3 checkpoint path BEFORE importing hpsv3.
+            # hpsv3's import chain (trl → wandb) can corrupt module state,
+            # causing huggingface_hub.hf_hub_download to return garbage.
+            import huggingface_hub as _hfhub
+            # Save key huggingface_hub functions so we can restore after import
+            _hfhub_saved = {
+                fn: getattr(_hfhub, fn) for fn in
+                ("hf_hub_download", "snapshot_download", "cached_download",
+                 "model_info", "repo_info", "HfApi")
+                if hasattr(_hfhub, fn)
+            }
+            _hpsv3_ckpt = _hfhub.hf_hub_download("MizzenAI/HPSv3", "HPSv3.safetensors", repo_type="model")
+            assert isinstance(_hpsv3_ckpt, str) and _hpsv3_ckpt.endswith(".safetensors"), \
+                f"hf_hub_download returned unexpected type: {type(_hpsv3_ckpt)}"
+            print(f"[Reward] HPSv3 checkpoint pre-resolved: {_hpsv3_ckpt}")
+
             import hpsv3
+
+            # Restore huggingface_hub functions if hpsv3's import chain corrupted them.
+            # The import chain (hpsv3 → trl → wandb stub) can replace real
+            # functions with the stub's _noop, breaking downstream downloads.
+            _corrupted = []
+            for _fn_name, _saved in _hfhub_saved.items():
+                if getattr(_hfhub, _fn_name, None) is not _saved:
+                    _corrupted.append(_fn_name)
+                    setattr(_hfhub, _fn_name, _saved)
+            if _corrupted:
+                print(f"[Reward] Restored corrupted huggingface_hub functions: {_corrupted}")
 
             inferencer_cls = getattr(hpsv3, "HPSv3RewardInferencer", None)
             if inferencer_cls is None:
@@ -613,9 +644,9 @@ class UnifiedRewardScorer:
             inferencer = None
             errors: List[str] = []
             for kwargs in (
-                {"device": self._hf_device},
-                {"device": self.device},
-                {},
+                {"device": self._hf_device, "checkpoint_path": _hpsv3_ckpt},
+                {"device": self.device, "checkpoint_path": _hpsv3_ckpt},
+                {"checkpoint_path": _hpsv3_ckpt},
             ):
                 try:
                     inferencer = inferencer_cls(**kwargs)

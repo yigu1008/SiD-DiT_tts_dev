@@ -49,6 +49,73 @@ SID_FORCE_WANDB_STUB="${SID_FORCE_WANDB_STUB:-1}"
 WANDB_DISABLED="${WANDB_DISABLED:-true}"
 export SID_FORCE_WANDB_STUB WANDB_DISABLED
 
+# ── Reward server (two-env architecture) ──────────────────────────────────────
+USE_REWARD_SERVER="${USE_REWARD_SERVER:-0}"
+REWARD_SERVER_PORT="${REWARD_SERVER_PORT:-5100}"
+REWARD_SERVER_DEVICE="${REWARD_SERVER_DEVICE:-cuda:0}"
+REWARD_SERVER_BACKENDS="${REWARD_SERVER_BACKENDS:-hpsv3 imagereward}"
+REWARD_ENV_NAME="${REWARD_ENV_NAME:-reward}"
+REWARD_ENV_CONDA_BASE="${REWARD_ENV_CONDA_BASE:-/opt/conda}"
+REWARD_SERVER_PID=""
+
+start_reward_server() {
+  if [[ "${USE_REWARD_SERVER}" != "1" ]]; then return 0; fi
+
+  local reward_py="${REWARD_ENV_CONDA_BASE}/envs/${REWARD_ENV_NAME}/bin/python"
+  if [[ ! -x "${reward_py}" ]]; then
+    echo "[reward-server] Reward env not found at ${reward_py}. Setting up ..."
+    CONDA_BASE="${REWARD_ENV_CONDA_BASE}" REWARD_ENV_NAME="${REWARD_ENV_NAME}" \
+      bash "${SCRIPT_DIR}/setup_reward_env.sh"
+  fi
+
+  echo "[reward-server] Starting reward server on port ${REWARD_SERVER_PORT} ..."
+  "${reward_py}" -u "${SCRIPT_DIR}/reward_server.py" \
+    --port "${REWARD_SERVER_PORT}" \
+    --device "${REWARD_SERVER_DEVICE}" \
+    --backends ${REWARD_SERVER_BACKENDS} \
+    --image_reward_model "${IMAGE_REWARD_MODEL}" \
+    --pickscore_model "${PICKSCORE_MODEL}" \
+    &>"${RUN_DIR}/reward_server.log" &
+  REWARD_SERVER_PID="$!"
+  echo "[reward-server] PID=${REWARD_SERVER_PID} log=${RUN_DIR}/reward_server.log"
+
+  local max_wait=120
+  local waited=0
+  while (( waited < max_wait )); do
+    if ! kill -0 "${REWARD_SERVER_PID}" 2>/dev/null; then
+      echo "[reward-server] ERROR: server process died. Check ${RUN_DIR}/reward_server.log" >&2
+      tail -20 "${RUN_DIR}/reward_server.log" >&2
+      exit 1
+    fi
+    if curl -s "http://localhost:${REWARD_SERVER_PORT}/health" >/dev/null 2>&1; then
+      echo "[reward-server] Server healthy after ${waited}s"
+      break
+    fi
+    sleep 2
+    waited=$(( waited + 2 ))
+  done
+  if (( waited >= max_wait )); then
+    echo "[reward-server] ERROR: server not healthy after ${max_wait}s" >&2
+    tail -20 "${RUN_DIR}/reward_server.log" >&2
+    kill "${REWARD_SERVER_PID}" 2>/dev/null || true
+    exit 1
+  fi
+
+  export REWARD_SERVER_URL="http://localhost:${REWARD_SERVER_PORT}"
+  echo "[reward-server] REWARD_SERVER_URL=${REWARD_SERVER_URL}"
+}
+
+stop_reward_server() {
+  if [[ -n "${REWARD_SERVER_PID}" ]] && kill -0 "${REWARD_SERVER_PID}" 2>/dev/null; then
+    echo "[reward-server] Stopping server PID=${REWARD_SERVER_PID} ..."
+    kill "${REWARD_SERVER_PID}" 2>/dev/null || true
+    wait "${REWARD_SERVER_PID}" 2>/dev/null || true
+    REWARD_SERVER_PID=""
+  fi
+}
+
+trap stop_reward_server EXIT
+
 GA_POPULATION="${GA_POPULATION:-24}"
 GA_GENERATIONS="${GA_GENERATIONS:-8}"
 GA_ELITES="${GA_ELITES:-3}"
@@ -100,6 +167,7 @@ if [[ ! -f "${PROMPT_FILE}" ]]; then
 fi
 
 mkdir -p "${OUT_ROOT}"
+chmod -R u+rwX "${OUT_ROOT}" 2>/dev/null || true
 RUN_TS="$(date +%Y%m%d_%H%M%S)"
 RUN_DIR="${OUT_ROOT}/run_${RUN_TS}"
 mkdir -p "${RUN_DIR}"
@@ -571,9 +639,16 @@ PY
   append_method_summary "${method_out}" "${method_name}" "${elapsed}"
 }
 
+# ── Start reward server (if two-env mode) ──────────────────────────────────────
+start_reward_server
+
 # ── Downgrade transformers for reward model compatibility ────────────────────
 # ImageReward and hpsv3 need transformers<=4.46 (removed APIs in newer versions).
-if [[ "${DOWNGRADE_TRANSFORMERS:-1}" == "1" ]]; then
+# Skip the downgrade when using the reward server — the reward env has its own
+# transformers==4.45.2, and the main env can keep transformers>=4.51.
+if [[ "${USE_REWARD_SERVER}" == "1" ]]; then
+  echo "[deps] Skipping transformers downgrade — reward server handles reward model deps."
+elif [[ "${DOWNGRADE_TRANSFORMERS:-1}" == "1" ]]; then
   echo "[deps] downgrading transformers to 4.45.2 for reward model compat ..."
   # Use --no-deps to avoid pip cascading downgrades that break torch/torchvision
   "${PYTHON_BIN}" -m pip install --no-cache-dir --no-deps \

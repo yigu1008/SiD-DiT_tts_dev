@@ -151,6 +151,13 @@ search:
       - export SAVE_IMAGES={save_images}
       - export SAVE_BEST_IMAGES={save_best_images}
       - export SAVE_VARIANTS=0
+      # ── Two-env reward server (avoids transformers version conflict) ──
+      - export USE_REWARD_SERVER={use_reward_server}
+      - export REWARD_SERVER_PORT=5100
+      - export REWARD_SERVER_DEVICE=cuda:0
+      - export REWARD_SERVER_BACKENDS='imagereward hpsv3 hpsv2 pickscore'
+      - export REWARD_ENV_CONDA_BASE=/opt/conda
+      - if [ {use_reward_server} = 1 ]; then CONDA_BASE=/opt/conda bash setup_reward_env.sh; fi
       # ── Final pin: restore packages that earlier installs may have downgraded ──
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
@@ -270,4 +277,6 @@ search:
     - name: qwen_precompute_save_every
       values: [ 1 ]
     - name: qwen_precompute_clear_cache
+      values: [ 1 ]
+    - name: use_reward_server
       values: [ 1 ]

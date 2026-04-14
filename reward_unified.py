@@ -166,6 +166,60 @@ class UnifiedRewardScorer:
             return "cuda:0"
         return device
 
+    # ── Reward server (remote scoring via HTTP) ─────────────────────────
+
+    def _probe_reward_server(self) -> List[str]:
+        """Check which backends the reward server has loaded."""
+        url = f"{self._reward_server_url}/health"
+        try:
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            backends = data.get("backends", [])
+            print(f"[Reward] Reward server OK: {url} → backends={backends}")
+            return backends
+        except Exception as exc:
+            print(f"[Reward] Reward server probe failed ({url}): {exc}")
+            return []
+
+    def _score_via_server(self, prompt: str, image: Image.Image, backend: str) -> float:
+        """Score an image via the reward server HTTP API."""
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        image_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        payload = json.dumps({
+            "prompt": prompt,
+            "image_b64": image_b64,
+            "backend": backend,
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            f"{self._reward_server_url}/score",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        if "error" in data:
+            raise RuntimeError(f"Reward server error ({backend}): {data['error']}")
+        return float(data["score"])
+
+    def _is_server_backend(self, backend: str) -> bool:
+        """Check if a backend is served by the reward server (not loaded locally)."""
+        if not self._reward_server_url:
+            return False
+        # If the backend is available but not in local state, it's from the server
+        local_state_map = {
+            "imagereward": self.state.imagereward,
+            "hpsv3": self.state.hpsv3_inferencer,
+            "hpsv2": self.state.hps_model or self.state.hps_module,
+            "pickscore": self.state.pickscore_model,
+        }
+        return backend in self.available and local_state_map.get(backend) is None
+
     def _load_backends(self) -> None:
         target = "unifiedreward" if self.backend == "unified" else self.backend
         need_unifiedreward = target in {"unifiedreward", "auto"}
@@ -173,6 +227,24 @@ class UnifiedRewardScorer:
         need_pickscore = target in {"pickscore", "auto", "all"}
         need_hpsv3 = target in {"hpsv3", "blend", "auto", "all"}
         need_hpsv2 = target in {"hpsv2", "blend", "auto", "all"}
+
+        # ── Reward server (separate conda env) ──────────────────────────
+        self._reward_server_url = os.environ.get("REWARD_SERVER_URL", "").rstrip("/")
+        if self._reward_server_url:
+            server_backends = self._probe_reward_server()
+            for sb in server_backends:
+                if sb not in self.available:
+                    self.available.append(sb)
+                    print(f"[Reward] {sb} available via reward server at {self._reward_server_url}")
+            # Skip local loading for backends the server provides
+            if "imagereward" in server_backends:
+                need_imagereward = False
+            if "hpsv3" in server_backends:
+                need_hpsv3 = False
+            if "hpsv2" in server_backends:
+                need_hpsv2 = False
+            if "pickscore" in server_backends:
+                need_pickscore = False
 
         if need_unifiedreward:
             self._try_load_unifiedreward()
@@ -721,11 +793,15 @@ class UnifiedRewardScorer:
 
     @torch.no_grad()
     def _score_imagereward(self, prompt: str, image: Image.Image) -> float:
+        if self._is_server_backend("imagereward"):
+            return self._score_via_server(prompt, image, "imagereward")
         assert self.state.imagereward is not None
         return float(self.state.imagereward.score(prompt, image))
 
     @torch.no_grad()
     def _score_hpsv2(self, prompt: str, image: Image.Image) -> float:
+        if self._is_server_backend("hpsv2"):
+            return self._score_via_server(prompt, image, "hpsv2")
         # Fast path: model loaded directly via old hpsv2 API.
         if self.state.hps_model is not None:
             assert self.state.open_clip is not None
@@ -770,6 +846,8 @@ class UnifiedRewardScorer:
 
     @torch.no_grad()
     def _score_hpsv3(self, prompt: str, image: Image.Image) -> float:
+        if self._is_server_backend("hpsv3"):
+            return self._score_via_server(prompt, image, "hpsv3")
         inferencer = self.state.hpsv3_inferencer
         if inferencer is None:
             raise RuntimeError("HPSv3 inferencer is not loaded.")
@@ -944,6 +1022,8 @@ class UnifiedRewardScorer:
 
     @torch.no_grad()
     def _score_pickscore(self, prompt: str, image: Image.Image) -> float:
+        if self._is_server_backend("pickscore"):
+            return self._score_via_server(prompt, image, "pickscore")
         model = self.state.pickscore_model
         processor = self.state.pickscore_processor
         if model is None or processor is None:

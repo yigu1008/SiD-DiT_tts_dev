@@ -725,13 +725,16 @@ def main() -> None:
             if rewrite_summary:
                 print(f"Rewrite examples: {rewrite_summary}")
     except Exception as exc:
-        err_path = os.path.join(log_dir, f"rank_{rank:03d}_error.txt")
-        with open(err_path, "w", encoding="utf-8") as f:
-            f.write(f"rank={rank} local_rank={local_rank} world_size={world_size}\n")
-            f.write(f"error_type={type(exc).__name__}\n")
-            f.write(f"error={exc}\n")
         print(f"[rank {rank}] ERROR: {type(exc).__name__}: {exc}")
-        print(f"[rank {rank}] wrote error log: {err_path}")
+        try:
+            err_path = os.path.join(log_dir, f"rank_{rank:03d}_error.txt")
+            with open(err_path, "w", encoding="utf-8") as f:
+                f.write(f"rank={rank} local_rank={local_rank} world_size={world_size}\n")
+                f.write(f"error_type={type(exc).__name__}\n")
+                f.write(f"error={exc}\n")
+            print(f"[rank {rank}] wrote error log: {err_path}")
+        except Exception as log_exc:
+            print(f"[rank {rank}] could not write error log: {log_exc}")
         try:
             rank_log_f.close()
         except Exception:

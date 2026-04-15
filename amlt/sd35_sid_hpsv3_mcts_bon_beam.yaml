@@ -20,7 +20,7 @@ environment:
     - pip install --user datasets huggingface_hub hpsv2
 
 code:
-  local_dir: ../
+  local_dir: ./
 
 storage:
   output:

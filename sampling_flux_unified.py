@@ -63,14 +63,13 @@ _BACKEND_CONFIGS: dict[str, dict[str, Any]] = {
         "sigmas": [1.0, 0.75, 0.5, 0.25],
         "dtype": "bf16",
         # SenseFlow transformer outputs flow/velocity (same as standard FLUX).
-        # The SiD pipeline computes x0 = xt - t*flow for re-noising, but the
-        # native FluxPipeline uses Euler stepping which works correctly.
-        # Use Euler: latents = latents + dt * flow (matches native pipeline).
+        # x0 prediction sampler: derive x̂₀ = xt - t*flow, then re-noise.
+        # Gives clean x̂₀ at every intermediate step for reward scoring.
         "baseline_guidance_scale": 0.0,
         "ga_guidance_scales": [0.0],
         "cfg_scales": [0.0],
         "x0_sampler": False,
-        "euler_sampler": True,
+        "euler_sampler": False,
     },
 }
 

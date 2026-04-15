@@ -21,7 +21,7 @@ environment:
     - pip list
 
 code:
-  local_dir: ../
+  local_dir: ./
 
 storage:
   output:

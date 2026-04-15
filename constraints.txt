@@ -4,3 +4,6 @@
 ftfy>=6.2.3
 regex>=2024.11.6
 xxhash>=3.4.1
+# Prevent image-reward / hpsv3 / trl from dragging in old transformers
+# which causes torchvision circular import.  The base image ships >=4.51.
+transformers>=4.51.0

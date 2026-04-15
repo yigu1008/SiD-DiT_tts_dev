@@ -23,7 +23,7 @@ echo "[setup_reward_env] Creating conda env '${ENV_NAME}' (python=${PYTHON_VERSI
 
 # Create env if it doesn't exist
 if [ ! -d "${CONDA_BASE}/envs/${ENV_NAME}" ]; then
-    "${CONDA}" create -y -n "${ENV_NAME}" python="${PYTHON_VERSION}"
+    "${CONDA}" create -y -n "${ENV_NAME}" python="${PYTHON_VERSION}" pip
 else
     echo "[setup_reward_env] Env '${ENV_NAME}' already exists, updating ..."
 fi

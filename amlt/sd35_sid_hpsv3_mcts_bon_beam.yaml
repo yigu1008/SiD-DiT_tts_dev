@@ -61,10 +61,10 @@ search:
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
       - /opt/conda/envs/ptca/bin/python -c "import xformers, xformers.ops; print('xformers ok', xformers.__version__)" || (/opt/conda/envs/ptca/bin/pip uninstall -y xformers && echo 'xformers disabled')
       - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "fire" "peft>=0.8.0" "trl>=0.7.0" "einops>=0.6.0" "opencv-python>=4.5.0" "deepspeed>=0.12.0" "safetensors>=0.3.0" "accelerate>=0.20.0" "qwen-vl-utils>=0.0.8" "matplotlib" "prettytable" "pandas" "pydantic" "requests" "tensorboard" "packaging" || true
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "fire" "peft>=0.8.0" "trl>=0.7.0" "einops>=0.6.0" "opencv-python>=4.5.0" "deepspeed>=0.12.0" "safetensors>=0.3.0" "accelerate>=0.20.0" "qwen-vl-utils>=0.0.8" "matplotlib" "prettytable" "pandas" "pydantic" "requests" "tensorboard" "packaging" || true
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
-      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets, torch, torchvision, transformers; from timm.data import ImageNetInfo; print('reward deps ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__); print('torch/torchvision/transformers ok', torch.__version__, torchvision.__version__, transformers.__version__); assert int(transformers.__version__.split('.')[1]) >= 51, f'transformers too old: {transformers.__version__}'"
       # ── Disable offline mode ──────────────────────────────────────────────
       - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
       # ── Cache dirs & symlinks ──────────────────────────────────────────────
@@ -76,7 +76,7 @@ search:
       - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
       # ── Preload reward models (hpsv3 for search, others for eval) ──────────
-      - export REWARD_BACKENDS="hpsv3 imagereward hpsv2 pickscore"
+      - export REWARD_BACKENDS="{preload_backends}"
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
       # ── Preload SD3.5 + Qwen into HF cache ────────────────────────────────
       - export HF_HUB_ENABLE_HF_TRANSFER=0
@@ -118,6 +118,8 @@ search:
       - export REWARD_BACKEND=hpsv3
       - export REWARD_TYPE=hpsv3
       - export REWARD_BACKENDS=hpsv3
+      - export SID_HPSV3_IMPL={hpsv3_impl}
+      - export DOWNGRADE_TRANSFORMERS={downgrade_transformers}
       - export EVAL_BEST_IMAGES=1
       - export EVAL_BACKENDS='{eval_backends}'
       - export REWARD_DEVICE=cuda
@@ -156,7 +158,7 @@ search:
       - export SAVE_IMAGES=0
       - export SAVE_BEST_IMAGES=1
       - export SAVE_VARIANTS=0
-      # ── Two-env reward server (hpsv3 needs transformers==4.45.2) ──
+      # ── Optional reward server (disabled for one-env imscore flow) ──
       - export USE_REWARD_SERVER={use_reward_server}
       - export REWARD_SERVER_PORT=5100
       - export REWARD_SERVER_BACKENDS='{reward_server_backends}'
@@ -202,6 +204,12 @@ search:
       values: [ 7 ]
     - name: eval_backends
       values: [ "hpsv3 imagereward hpsv2 pickscore" ]
+    - name: preload_backends
+      values: [ "hpsv3 imagereward hpsv2 pickscore" ]
+    - name: hpsv3_impl
+      values: [ "imscore" ]
+    - name: downgrade_transformers
+      values: [ 0 ]
     - name: cfg_scales
       values: [ "1.0 1.25 1.5 1.75 2.0 2.25 2.5" ]
     - name: baseline_cfg
@@ -269,6 +277,6 @@ search:
     - name: qwen_precompute_clear_cache
       values: [ 1 ]
     - name: use_reward_server
-      values: [ 1 ]
+      values: [ 0 ]
     - name: reward_server_backends
       values: [ "hpsv3 imagereward hpsv2 pickscore" ]

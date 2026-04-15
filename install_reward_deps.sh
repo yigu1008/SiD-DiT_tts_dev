@@ -71,9 +71,10 @@ echo "[install] timm==1.0.15 (PickScore-compatible)"
 _pip --index-url "${PYPI_INDEX_URL}" "timm==1.0.15"
 
 echo "[install] image-reward (PyPI), fallback to THUDM/ImageReward"
-if ! _pip --index-url "${PYPI_INDEX_URL}" "image-reward==1.5"; then
-  if ! _pip --index-url "${PYPI_INDEX_URL}" "setuptools==75.8.0" || \
-     ! _pip --no-build-isolation "git+https://github.com/THUDM/ImageReward.git"; then
+# --no-deps: image-reward pins old transformers which would break torchvision.
+# Runtime deps (CLIP, torch, transformers, etc.) are already installed.
+if ! _pip --no-deps --index-url "${PYPI_INDEX_URL}" "image-reward==1.5"; then
+  if ! _pip --no-deps --no-build-isolation "git+https://github.com/THUDM/ImageReward.git"; then
     echo "[install] warning: image-reward install failed (PyPI and git); ImageReward backend unavailable."
   fi
 fi

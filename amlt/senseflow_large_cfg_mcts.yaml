@@ -65,7 +65,7 @@ search:
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
-      - /opt/conda/envs/ptca/bin/python -c "import torch, torchvision; print('torch/torchvision import ok', torch.__version__, torchvision.__version__)"
+      - /opt/conda/envs/ptca/bin/python -c "import torch, torchvision, transformers; print('torch/torchvision/transformers ok', torch.__version__, torchvision.__version__, transformers.__version__); assert int(transformers.__version__.split('.')[1]) >= 51, f'transformers too old: {transformers.__version__} — reward deps may have downgraded it'"
       # ── Disable offline mode ──────────────────────────────────────────────
       - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
       # ── Cache dirs & symlinks ──────────────────────────────────────────────

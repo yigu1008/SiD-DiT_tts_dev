@@ -81,30 +81,75 @@ export SID_FORCE_WANDB_STUB WANDB_DISABLED
 
 # ── Reward server (two-env architecture) ──────────────────────────────────────
 # When USE_REWARD_SERVER=1, a separate conda env (with transformers==4.45.2)
-# runs reward_server.py.  The main env talks to it via HTTP, avoiding the
-# transformers version conflict entirely.
+# runs reward_server.py on a dedicated GPU.  The main env talks to it via HTTP,
+# avoiding the transformers version conflict entirely.
+#
+# GPU allocation: the LAST visible GPU is reserved for the reward server.
+# NUM_GPUS is decremented by 1 so torchrun only uses the remaining GPUs.
 USE_REWARD_SERVER="${USE_REWARD_SERVER:-0}"
 REWARD_SERVER_PORT="${REWARD_SERVER_PORT:-5100}"
-REWARD_SERVER_DEVICE="${REWARD_SERVER_DEVICE:-cuda:0}"
 REWARD_SERVER_BACKENDS="${REWARD_SERVER_BACKENDS:-hpsv3 imagereward}"
 REWARD_ENV_NAME="${REWARD_ENV_NAME:-reward}"
 REWARD_ENV_CONDA_BASE="${REWARD_ENV_CONDA_BASE:-/opt/conda}"
 REWARD_SERVER_PID=""
+REWARD_SERVER_GPU=""
+
+_resolve_reward_server_gpu() {
+  # Determine which physical GPU the reward server gets (last visible GPU).
+  # Updates NUM_GPUS and CUDA_VISIBLE_DEVICES so generation excludes that GPU.
+  local all_gpus
+  all_gpus="$("${PYTHON_BIN}" - <<'PY'
+import os, torch
+cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+if cvd:
+    ids = [x.strip() for x in cvd.split(",") if x.strip()]
+else:
+    ids = [str(i) for i in range(torch.cuda.device_count())]
+print(",".join(ids))
+PY
+)"
+  IFS=',' read -r -a _all <<< "${all_gpus}"
+  local n="${#_all[@]}"
+  if (( n < 2 )); then
+    # Single GPU: share it (reward server + generation both on GPU 0)
+    echo "[reward-server] Only 1 GPU available — sharing it between reward server and generation."
+    REWARD_SERVER_GPU="${_all[0]}"
+    # NUM_GPUS stays as-is (1)
+    return
+  fi
+  # Reserve the last GPU for the reward server
+  REWARD_SERVER_GPU="${_all[$((n-1))]}"
+  # Generation gets all GPUs except the last
+  local gen_gpus=("${_all[@]:0:$((n-1))}")
+  export CUDA_VISIBLE_DEVICES="$(IFS=','; echo "${gen_gpus[*]}")"
+  NUM_GPUS="${#gen_gpus[@]}"
+  echo "[reward-server] Reserved GPU ${REWARD_SERVER_GPU} for reward server"
+  echo "[reward-server] Generation GPUs (${NUM_GPUS}): ${CUDA_VISIBLE_DEVICES}"
+}
 
 start_reward_server() {
   if [[ "${USE_REWARD_SERVER}" != "1" ]]; then return 0; fi
+
+  _resolve_reward_server_gpu
 
   local reward_py="${REWARD_ENV_CONDA_BASE}/envs/${REWARD_ENV_NAME}/bin/python"
   if [[ ! -x "${reward_py}" ]]; then
     echo "[reward-server] Reward env not found at ${reward_py}. Setting up ..."
     CONDA_BASE="${REWARD_ENV_CONDA_BASE}" REWARD_ENV_NAME="${REWARD_ENV_NAME}" \
       bash "${SCRIPT_DIR}/setup_reward_env.sh"
+    if [[ ! -x "${reward_py}" ]]; then
+      echo "[reward-server] ERROR: setup_reward_env.sh finished but ${reward_py} not found." >&2
+      exit 1
+    fi
   fi
 
-  echo "[reward-server] Starting reward server on port ${REWARD_SERVER_PORT} ..."
-  "${reward_py}" -u "${SCRIPT_DIR}/reward_server.py" \
+  echo "[reward-server] Starting on GPU ${REWARD_SERVER_GPU}, port ${REWARD_SERVER_PORT} ..."
+  echo "[reward-server] Backends: ${REWARD_SERVER_BACKENDS}"
+  # Give the server its own CUDA_VISIBLE_DEVICES so it sees exactly 1 GPU as cuda:0
+  CUDA_VISIBLE_DEVICES="${REWARD_SERVER_GPU}" \
+    "${reward_py}" -u "${SCRIPT_DIR}/reward_server.py" \
     --port "${REWARD_SERVER_PORT}" \
-    --device "${REWARD_SERVER_DEVICE}" \
+    --device "cuda:0" \
     --backends ${REWARD_SERVER_BACKENDS} \
     --image_reward_model "${IMAGE_REWARD_MODEL}" \
     --pickscore_model "${PICKSCORE_MODEL}" \
@@ -112,25 +157,29 @@ start_reward_server() {
   REWARD_SERVER_PID="$!"
   echo "[reward-server] PID=${REWARD_SERVER_PID} log=${RUN_DIR}/reward_server.log"
 
-  # Wait for server to become healthy
-  local max_wait=120
+  # Wait for server to become healthy (models need time to load)
+  local max_wait=300
   local waited=0
   while (( waited < max_wait )); do
     if ! kill -0 "${REWARD_SERVER_PID}" 2>/dev/null; then
-      echo "[reward-server] ERROR: server process died. Check ${RUN_DIR}/reward_server.log" >&2
-      tail -20 "${RUN_DIR}/reward_server.log" >&2
+      echo "[reward-server] ERROR: server process died during startup." >&2
+      echo "[reward-server] Last 30 lines of log:" >&2
+      tail -30 "${RUN_DIR}/reward_server.log" >&2
       exit 1
     fi
     if curl -s "http://localhost:${REWARD_SERVER_PORT}/health" >/dev/null 2>&1; then
-      echo "[reward-server] Server healthy after ${waited}s"
+      local health
+      health="$(curl -s "http://localhost:${REWARD_SERVER_PORT}/health")"
+      echo "[reward-server] Healthy after ${waited}s — ${health}"
       break
     fi
-    sleep 2
-    waited=$(( waited + 2 ))
+    sleep 3
+    waited=$(( waited + 3 ))
   done
   if (( waited >= max_wait )); then
-    echo "[reward-server] ERROR: server not healthy after ${max_wait}s" >&2
-    tail -20 "${RUN_DIR}/reward_server.log" >&2
+    echo "[reward-server] ERROR: server not healthy after ${max_wait}s." >&2
+    echo "[reward-server] Last 30 lines of log:" >&2
+    tail -30 "${RUN_DIR}/reward_server.log" >&2
     kill "${REWARD_SERVER_PID}" 2>/dev/null || true
     exit 1
   fi

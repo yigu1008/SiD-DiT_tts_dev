@@ -191,6 +191,18 @@ def _inject_wandb_stub():
 # ---------------------------------------------------------------------------
 
 _scorers: Dict[str, Any] = {}
+_request_count = 0
+
+
+def _resolve_backend(backend: Optional[str]) -> tuple:
+    """Resolve backend name to (scorer_fn, backend_name) or (None, error_msg)."""
+    if backend and backend in _scorers:
+        return _scorers[backend], backend
+    elif backend:
+        return None, f"backend {backend!r} not loaded"
+    else:
+        name = next(iter(_scorers.keys()))
+        return _scorers[name], name
 
 
 class RewardHandler(BaseHTTPRequestHandler):
@@ -204,46 +216,87 @@ class RewardHandler(BaseHTTPRequestHandler):
     }
     → {"score": 1.234, "backend": "hpsv3"}
 
+    POST /score_batch
+    {
+        "items": [
+            {"prompt": "a cat", "image_b64": "..."},
+            {"prompt": "a dog", "image_b64": "..."}
+        ],
+        "backend": "hpsv3"          # optional
+    }
+    → {"scores": [{"score": 1.2, "backend": "hpsv3"}, ...]}
+
     GET /health
-    → {"status": "ok", "backends": ["hpsv3", "imagereward"]}
+    → {"status": "ok", "backends": ["hpsv3", "imagereward"], "requests_served": 42}
     """
 
     def do_GET(self):
         if self.path == "/health":
-            self._json_response({"status": "ok", "backends": list(_scorers.keys())})
+            self._json_response({
+                "status": "ok",
+                "backends": list(_scorers.keys()),
+                "requests_served": _request_count,
+            })
         else:
             self._json_response({"error": "not found"}, 404)
 
     def do_POST(self):
-        if self.path != "/score":
-            self._json_response({"error": "not found"}, 404)
-            return
+        global _request_count
 
+        if self.path == "/score":
+            self._handle_score()
+        elif self.path == "/score_batch":
+            self._handle_score_batch()
+        else:
+            self._json_response({"error": "not found"}, 404)
+
+    def _handle_score(self):
+        global _request_count
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length))
             prompt = body["prompt"]
             image_b64 = body["image_b64"]
-            backend = body.get("backend")
 
             image = Image.open(io.BytesIO(base64.b64decode(image_b64))).convert("RGB")
-
-            if backend and backend in _scorers:
-                fn = _scorers[backend]
-            elif backend:
-                self._json_response({"error": f"backend {backend!r} not loaded"}, 400)
+            fn, backend = _resolve_backend(body.get("backend"))
+            if fn is None:
+                self._json_response({"error": backend}, 400)
                 return
-            else:
-                # Use first available
-                fn = next(iter(_scorers.values()))
-                backend = next(iter(_scorers.keys()))
 
             score = fn(prompt, image)
+            _request_count += 1
             self._json_response({"score": float(score), "backend": backend})
 
         except Exception as exc:
             tb = traceback.format_exc()
-            print(f"[reward_server] ERROR: {exc}\n{tb}")
+            print(f"[reward_server] ERROR in /score: {exc}\n{tb}")
+            self._json_response({"error": str(exc), "traceback": tb}, 500)
+
+    def _handle_score_batch(self):
+        global _request_count
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length))
+            items = body["items"]
+            fn, backend = _resolve_backend(body.get("backend"))
+            if fn is None:
+                self._json_response({"error": backend}, 400)
+                return
+
+            results = []
+            for item in items:
+                image = Image.open(
+                    io.BytesIO(base64.b64decode(item["image_b64"]))
+                ).convert("RGB")
+                score = fn(item["prompt"], image)
+                results.append({"score": float(score), "backend": backend})
+            _request_count += len(items)
+            self._json_response({"scores": results})
+
+        except Exception as exc:
+            tb = traceback.format_exc()
+            print(f"[reward_server] ERROR in /score_batch: {exc}\n{tb}")
             self._json_response({"error": str(exc), "traceback": tb}, 500)
 
     def _json_response(self, data: dict, status: int = 200):

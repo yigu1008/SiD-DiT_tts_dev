@@ -287,7 +287,14 @@ class UnifiedRewardScorer:
             if "imagereward" not in self.available and "hpsv2" not in self.available and "hpsv3" not in self.available:
                 raise RuntimeError("Requested backend=blend, but ImageReward/HPS backends are unavailable.")
         if target == "auto" and not self.available:
-            raise RuntimeError("No reward backend available.")
+            raise RuntimeError(
+                "No reward backend available.\n"
+                "Tip: if local loading fails due to transformers/torchvision conflicts, "
+                "use the two-env reward server:\n"
+                "  export USE_REWARD_SERVER=1  # in suite script\n"
+                "  # or manually: python reward_server.py --port 5100 --backends hpsv3 imagereward\n"
+                "  # then: export REWARD_SERVER_URL=http://localhost:5100"
+            )
 
     def _candidate_unifiedreward_model_ids(self) -> List[str]:
         requested = str(self.unifiedreward_model).strip() or DEFAULT_UNIFIEDREWARD_MODEL

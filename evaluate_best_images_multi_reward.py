@@ -15,7 +15,9 @@ from PIL import Image
 
 # ImageReward inference does not need wandb logging and wandb can be broken on clusters.
 os.environ.setdefault("WANDB_DISABLED", "true")
-os.environ.setdefault("SID_FORCE_WANDB_STUB", "1")
+# Do not inherit a globally forced stub from generation jobs by default.
+# If needed, callers can override with SID_EVAL_FORCE_WANDB_STUB=1.
+os.environ["SID_FORCE_WANDB_STUB"] = os.environ.get("SID_EVAL_FORCE_WANDB_STUB", "0")
 
 from reward_unified import UnifiedRewardScorer
 
@@ -32,6 +34,9 @@ class ImageRecord:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Post-evaluate generated best images with multiple reward backends.")
+    allow_missing_default = str(os.environ.get("EVAL_ALLOW_MISSING_BACKENDS", "1")).strip().lower() not in {
+        "0", "false", "no", "off"
+    }
     p.add_argument("--layout", choices=["sd35", "sana", "flux"], required=True)
     p.add_argument("--method_out", required=True, help="Method output directory (e.g., .../run_xxx/ga)")
     p.add_argument("--method", required=True, help="Method name: baseline|greedy|mcts|ga|smc")
@@ -45,7 +50,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--reward_api_model", default="UnifiedReward-7b-v1.5")
     p.add_argument("--reward_max_new_tokens", type=int, default=512)
     p.add_argument("--reward_prompt_mode", choices=["standard", "strict"], default="standard")
-    p.add_argument("--allow_missing_backends", action="store_true")
+    p.add_argument(
+        "--allow_missing_backends",
+        action=argparse.BooleanOptionalAction,
+        default=allow_missing_default,
+        help="Allow requested backends to fail init/eval without aborting.",
+    )
     p.add_argument("--out_json", default=None)
     p.add_argument("--out_aggregate", default=None)
     return p.parse_args()

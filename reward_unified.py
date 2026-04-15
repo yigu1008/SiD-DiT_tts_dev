@@ -469,6 +469,24 @@ class UnifiedRewardScorer:
             raw = str(os.environ.get("SID_FORCE_WANDB_STUB", "1")).strip().lower()
             return raw not in {"0", "false", "no", "off"}
 
+        def _clear_wandb_stubs() -> None:
+            # Avoid leaking the wandb stub into later backend loaders
+            # (hpsv2/pickscore), which can trigger importlib "built-in module"
+            # errors in partially initialized module trees.
+            for mod_name in (
+                "wandb",
+                "wandb.sdk",
+                "wandb.sdk.lib",
+                "wandb.sdk.lib.telemetry",
+                "wandb.proto",
+                "wandb.proto.wandb_telemetry_pb2",
+                "wandb.env",
+                "wandb.errors",
+            ):
+                mod = sys.modules.get(mod_name)
+                if mod is not None and bool(getattr(mod, "__codex_stub__", False)):
+                    sys.modules.pop(mod_name, None)
+
         def _inject_wandb_stub(reason: str) -> None:
             import importlib.machinery
             import types
@@ -480,6 +498,7 @@ class UnifiedRewardScorer:
                     existing.__spec__ = importlib.machinery.ModuleSpec(
                         "wandb", loader=None, is_package=True
                     )
+                    existing.__spec__.origin = "sid_wandb_stub"
                 if getattr(existing, "__package__", None) is None:
                     existing.__package__ = "wandb"
                 if not hasattr(existing, "__path__"):
@@ -515,6 +534,7 @@ class UnifiedRewardScorer:
             stub.__path__ = []  # type: ignore[attr-defined]
             stub.__file__ = ""
             stub.__spec__ = importlib.machinery.ModuleSpec("wandb", loader=None, is_package=True)
+            stub.__spec__.origin = "sid_wandb_stub"
             # Catch-all: any attribute access on the stub returns _noop
             # so `wandb.whatever` never raises AttributeError
             stub.__getattr__ = lambda name: _noop
@@ -529,6 +549,7 @@ class UnifiedRewardScorer:
                 sub.__path__ = []
                 sub.__file__ = ""
                 sub.__spec__ = importlib.machinery.ModuleSpec(name, loader=None, is_package=True)
+                sub.__spec__.origin = "sid_wandb_stub"
                 # Return noop for any attribute access so deep imports don't fail
                 sub.__getattr__ = lambda self_or_name: _noop
                 return sub
@@ -555,13 +576,14 @@ class UnifiedRewardScorer:
             stub.errors = errors_stub
 
             sys.modules["wandb"] = stub
-            sys.modules.setdefault("wandb.sdk", sdk_stub)
-            sys.modules.setdefault("wandb.sdk.lib", sdk_lib_stub)
-            sys.modules.setdefault("wandb.sdk.lib.telemetry", sdk_lib_stub.telemetry)
-            sys.modules.setdefault("wandb.proto", proto_stub)
-            sys.modules.setdefault("wandb.proto.wandb_telemetry_pb2", telemetry_stub)
-            sys.modules.setdefault("wandb.env", env_stub)
-            sys.modules.setdefault("wandb.errors", errors_stub)
+            # Overwrite any partially-imported/broken wandb modules.
+            sys.modules["wandb.sdk"] = sdk_stub
+            sys.modules["wandb.sdk.lib"] = sdk_lib_stub
+            sys.modules["wandb.sdk.lib.telemetry"] = sdk_lib_stub.telemetry
+            sys.modules["wandb.proto"] = proto_stub
+            sys.modules["wandb.proto.wandb_telemetry_pb2"] = telemetry_stub
+            sys.modules["wandb.env"] = env_stub
+            sys.modules["wandb.errors"] = errors_stub
             print(f"[Reward] Using wandb stub for ImageReward inference ({reason}).")
 
         def _ensure_wandb_importable() -> None:
@@ -578,30 +600,33 @@ class UnifiedRewardScorer:
 
         def _load() -> tuple[object, Optional[str]]:
             _ensure_wandb_importable()
-            import ImageReward as RM
+            try:
+                import ImageReward as RM
 
-            tried_errors: List[str] = []
-            candidates = [self.image_reward_model]
-            if self.image_reward_model != "ImageReward-v1.0":
-                candidates.append("ImageReward-v1.0")
+                tried_errors: List[str] = []
+                candidates = [self.image_reward_model]
+                if self.image_reward_model != "ImageReward-v1.0":
+                    candidates.append("ImageReward-v1.0")
 
-            download_root = os.environ.get("IMAGEREWARD_CACHE") or None
+                download_root = os.environ.get("IMAGEREWARD_CACHE") or None
 
-            model = None
-            selected = None
-            for candidate in candidates:
-                try:
-                    print(f"[Reward] RM.load({candidate!r}, download_root={download_root!r}) ...", flush=True)
-                    model = RM.load(candidate, device=self.device, download_root=download_root)
-                    selected = candidate
-                    break
-                except Exception as exc:
-                    tried_errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+                model = None
+                selected = None
+                for candidate in candidates:
+                    try:
+                        print(f"[Reward] RM.load({candidate!r}, download_root={download_root!r}) ...", flush=True)
+                        model = RM.load(candidate, device=self.device, download_root=download_root)
+                        selected = candidate
+                        break
+                    except Exception as exc:
+                        tried_errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
 
-            if model is None:
-                joined = " | ".join(tried_errors) if tried_errors else "unknown error"
-                raise RuntimeError(f"Unable to load ImageReward model. {joined}")
-            return model, selected
+                if model is None:
+                    joined = " | ".join(tried_errors) if tried_errors else "unknown error"
+                    raise RuntimeError(f"Unable to load ImageReward model. {joined}")
+                return model, selected
+            finally:
+                _clear_wandb_stubs()
 
         try:
             try:
@@ -703,6 +728,7 @@ class UnifiedRewardScorer:
                     stub.__path__ = []
                     stub.__file__ = ""
                     stub.__spec__ = importlib.machinery.ModuleSpec("wandb", loader=None, is_package=True)
+                    stub.__spec__.origin = "sid_wandb_stub"
                     stub.__getattr__ = lambda name: _noop
                     def _make_sub(name, parent_pkg="wandb"):
                         sub = types.ModuleType(name)
@@ -711,6 +737,7 @@ class UnifiedRewardScorer:
                         sub.__path__ = []
                         sub.__file__ = ""
                         sub.__spec__ = importlib.machinery.ModuleSpec(name, loader=None, is_package=True)
+                        sub.__spec__.origin = "sid_wandb_stub"
                         sub.__getattr__ = lambda self_or_name: _noop
                         return sub
                     sdk_stub = _make_sub("wandb.sdk"); stub.sdk = sdk_stub
@@ -725,13 +752,13 @@ class UnifiedRewardScorer:
                     errors_stub = _make_sub("wandb.errors")
                     errors_stub.Error = type("Error", (Exception,), {}); stub.errors = errors_stub
                     sys.modules["wandb"] = stub
-                    sys.modules.setdefault("wandb.sdk", sdk_stub)
-                    sys.modules.setdefault("wandb.sdk.lib", sdk_lib_stub)
-                    sys.modules.setdefault("wandb.sdk.lib.telemetry", sdk_lib_stub.telemetry)
-                    sys.modules.setdefault("wandb.proto", proto_stub)
-                    sys.modules.setdefault("wandb.proto.wandb_telemetry_pb2", telem_stub)
-                    sys.modules.setdefault("wandb.env", env_stub)
-                    sys.modules.setdefault("wandb.errors", errors_stub)
+                    sys.modules["wandb.sdk"] = sdk_stub
+                    sys.modules["wandb.sdk.lib"] = sdk_lib_stub
+                    sys.modules["wandb.sdk.lib.telemetry"] = sdk_lib_stub.telemetry
+                    sys.modules["wandb.proto"] = proto_stub
+                    sys.modules["wandb.proto.wandb_telemetry_pb2"] = telem_stub
+                    sys.modules["wandb.env"] = env_stub
+                    sys.modules["wandb.errors"] = errors_stub
                     print("[Reward] Using wandb stub for HPSv3/trl (SID_FORCE_WANDB_STUB=1).")
 
             # Pre-resolve HPSv3 checkpoint path BEFORE importing hpsv3.

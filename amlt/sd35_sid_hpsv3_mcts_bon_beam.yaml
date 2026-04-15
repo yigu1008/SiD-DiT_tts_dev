@@ -123,7 +123,7 @@ search:
       - export EVAL_BACKENDS='{eval_backends}'
       - export REWARD_DEVICE=cuda
       - export EVAL_REWARD_DEVICE=cpu
-      - export EVAL_ALLOW_MISSING_BACKENDS=0
+      - export EVAL_ALLOW_MISSING_BACKENDS=1
       - export CFG_SCALES='{cfg_scales}'
       - export BASELINE_CFG={baseline_cfg}
       - export STEPS={steps}

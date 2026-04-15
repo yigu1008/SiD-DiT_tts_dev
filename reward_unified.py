@@ -515,18 +515,28 @@ class UnifiedRewardScorer:
             stub.__path__ = []  # type: ignore[attr-defined]
             stub.__file__ = ""
             stub.__spec__ = importlib.machinery.ModuleSpec("wandb", loader=None, is_package=True)
+            # Catch-all: any attribute access on the stub returns _noop
+            # so `wandb.whatever` never raises AttributeError
+            stub.__getattr__ = lambda name: _noop
 
             # Minimal submodules for libs that probe/import wandb internals.
             # trl imports wandb.proto.wandb_telemetry_pb2.Imports
+            # ImageReward/hpsv2/pickscore may access deeper wandb.sdk.* attrs.
             def _make_sub(name, parent_pkg="wandb"):
                 sub = types.ModuleType(name)
+                sub.__codex_stub__ = True
                 sub.__package__ = parent_pkg
                 sub.__path__ = []
                 sub.__file__ = ""
                 sub.__spec__ = importlib.machinery.ModuleSpec(name, loader=None, is_package=True)
+                # Return noop for any attribute access so deep imports don't fail
+                sub.__getattr__ = lambda self_or_name: _noop
                 return sub
 
             sdk_stub = _make_sub("wandb.sdk")
+            sdk_lib_stub = _make_sub("wandb.sdk.lib", parent_pkg="wandb.sdk")
+            sdk_lib_stub.telemetry = _make_sub("wandb.sdk.lib.telemetry", parent_pkg="wandb.sdk.lib")
+            sdk_stub.lib = sdk_lib_stub
             stub.sdk = sdk_stub
 
             # wandb.proto and its telemetry module (needed by trl)
@@ -537,10 +547,21 @@ class UnifiedRewardScorer:
             proto_stub.wandb_telemetry_pb2 = telemetry_stub
             stub.proto = proto_stub
 
+            # wandb.env, wandb.errors — accessed by some packages
+            env_stub = _make_sub("wandb.env")
+            errors_stub = _make_sub("wandb.errors")
+            errors_stub.Error = type("Error", (Exception,), {})
+            stub.env = env_stub
+            stub.errors = errors_stub
+
             sys.modules["wandb"] = stub
             sys.modules.setdefault("wandb.sdk", sdk_stub)
+            sys.modules.setdefault("wandb.sdk.lib", sdk_lib_stub)
+            sys.modules.setdefault("wandb.sdk.lib.telemetry", sdk_lib_stub.telemetry)
             sys.modules.setdefault("wandb.proto", proto_stub)
             sys.modules.setdefault("wandb.proto.wandb_telemetry_pb2", telemetry_stub)
+            sys.modules.setdefault("wandb.env", env_stub)
+            sys.modules.setdefault("wandb.errors", errors_stub)
             print(f"[Reward] Using wandb stub for ImageReward inference ({reason}).")
 
         def _ensure_wandb_importable() -> None:
@@ -682,22 +703,35 @@ class UnifiedRewardScorer:
                     stub.__path__ = []
                     stub.__file__ = ""
                     stub.__spec__ = importlib.machinery.ModuleSpec("wandb", loader=None, is_package=True)
+                    stub.__getattr__ = lambda name: _noop
                     def _make_sub(name, parent_pkg="wandb"):
                         sub = types.ModuleType(name)
+                        sub.__codex_stub__ = True
                         sub.__package__ = parent_pkg
                         sub.__path__ = []
                         sub.__file__ = ""
                         sub.__spec__ = importlib.machinery.ModuleSpec(name, loader=None, is_package=True)
+                        sub.__getattr__ = lambda self_or_name: _noop
                         return sub
                     sdk_stub = _make_sub("wandb.sdk"); stub.sdk = sdk_stub
+                    sdk_lib_stub = _make_sub("wandb.sdk.lib", "wandb.sdk")
+                    sdk_lib_stub.telemetry = _make_sub("wandb.sdk.lib.telemetry", "wandb.sdk.lib")
+                    sdk_stub.lib = sdk_lib_stub
                     proto_stub = _make_sub("wandb.proto")
                     telem_stub = _make_sub("wandb.proto.wandb_telemetry_pb2", "wandb.proto")
                     telem_stub.Imports = type("Imports", (), {"__getattr__": lambda s, n: _noop})()
                     proto_stub.wandb_telemetry_pb2 = telem_stub; stub.proto = proto_stub
+                    env_stub = _make_sub("wandb.env"); stub.env = env_stub
+                    errors_stub = _make_sub("wandb.errors")
+                    errors_stub.Error = type("Error", (Exception,), {}); stub.errors = errors_stub
                     sys.modules["wandb"] = stub
                     sys.modules.setdefault("wandb.sdk", sdk_stub)
+                    sys.modules.setdefault("wandb.sdk.lib", sdk_lib_stub)
+                    sys.modules.setdefault("wandb.sdk.lib.telemetry", sdk_lib_stub.telemetry)
                     sys.modules.setdefault("wandb.proto", proto_stub)
                     sys.modules.setdefault("wandb.proto.wandb_telemetry_pb2", telem_stub)
+                    sys.modules.setdefault("wandb.env", env_stub)
+                    sys.modules.setdefault("wandb.errors", errors_stub)
                     print("[Reward] Using wandb stub for HPSv3/trl (SID_FORCE_WANDB_STUB=1).")
 
             # Pre-resolve HPSv3 checkpoint path BEFORE importing hpsv3.

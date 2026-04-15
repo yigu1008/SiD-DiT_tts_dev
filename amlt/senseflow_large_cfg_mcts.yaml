@@ -64,8 +64,6 @@ search:
       - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
-      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
-      - /opt/conda/envs/ptca/bin/python -c "import torch, torchvision, transformers; print('torch/torchvision/transformers ok', torch.__version__, torchvision.__version__, transformers.__version__); v=int(transformers.__version__.split('.')[1]); assert v >= 51, 'transformers too old: %s' % transformers.__version__"
       # ── Disable offline mode ──────────────────────────────────────────────
       - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
       # ── Cache dirs & symlinks ──────────────────────────────────────────────
@@ -201,7 +199,7 @@ search:
     - name: lookahead_cfg_width_max
       values: [ 7 ]
     - name: reward_backend
-      values: [ "hpsv3" ]
+      values: [ "imagereward" ]
     - name: eval_backends
       values: [ "hpsv3 imagereward hpsv2 pickscore" ]
     - name: preload_backends

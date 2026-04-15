@@ -62,10 +62,6 @@ search:
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
       - /opt/conda/envs/ptca/bin/python -c "import xformers, xformers.ops; print('xformers ok', xformers.__version__)" || (/opt/conda/envs/ptca/bin/pip uninstall -y xformers && echo 'xformers disabled')
       - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
-      # Re-pin torch stack because reward deps may pull incompatible torchvision wheels.
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu126
-      - /opt/conda/envs/ptca/bin/python -c "import torch, torchvision; print('torch/vision repin ok', torch.__version__, torchvision.__version__, 'cuda=', torch.version.cuda)"
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "fire" "peft>=0.8.0" "trl>=0.7.0" "einops>=0.6.0" "opencv-python>=4.5.0" "deepspeed>=0.12.0" "safetensors>=0.3.0" "accelerate>=0.20.0" "qwen-vl-utils>=0.0.8" "matplotlib" "prettytable" "pandas" "pydantic" "requests" "tensorboard" "packaging" || true
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
@@ -81,11 +77,10 @@ search:
       - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
       # ── Preload reward models ──────────────────────────────────────────────
-      - export REWARD_BACKENDS="hpsv3 imagereward hpsv2 pickscore"
+      - export REWARD_BACKENDS="imagereward hpsv2 pickscore"
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
       # ── Preload models ─────────────────────────────────────────────────────
       - export HF_HUB_ENABLE_HF_TRANSFER=0
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download, hf_hub_download; import os; hf_hub_download('MizzenAI/HPSv3', 'HPSv3.safetensors', repo_type='model'); snapshot_download('Qwen/Qwen2-VL-7B-Instruct', max_workers=1); print('HPSv3 + Qwen2-VL base cached OK')"
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('stabilityai/stable-diffusion-3.5-large', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('SD3.5-large cache OK')"
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('domiso/SenseFlow', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('SenseFlow cache OK')"
       - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('Qwen cache OK')"; fi
@@ -128,7 +123,7 @@ search:
       - export EVAL_BACKENDS='{eval_backends}'
       - export REWARD_DEVICE=cuda
       - export EVAL_REWARD_DEVICE=cpu
-      - export EVAL_ALLOW_MISSING_BACKENDS=1
+      - export EVAL_ALLOW_MISSING_BACKENDS=0
       # CFG sweep range for SenseFlow (0.0-2.0 validated as usable)
       # NOTE: these are NON-default values so suite scripts will NOT override to 0.0
       - export CFG_SCALES='{cfg_scales}'
@@ -164,13 +159,6 @@ search:
       - export SAVE_IMAGES={save_images}
       - export SAVE_BEST_IMAGES={save_best_images}
       - export SAVE_VARIANTS=0
-      # ── Two-env reward server (for hpsv3 / avoiding torchvision conflict) ──
-      - export USE_REWARD_SERVER={use_reward_server}
-      - export REWARD_SERVER_PORT=5100
-      - export REWARD_SERVER_DEVICE=cuda:0
-      - export REWARD_SERVER_BACKENDS='{reward_server_backends}'
-      - export REWARD_ENV_CONDA_BASE=/opt/conda
-      - if [ {use_reward_server} = 1 ]; then CONDA_BASE=/opt/conda bash setup_reward_env.sh; fi
       - bash hpsv2_sd35_flux_allalgos.sh
 
     submit_args:
@@ -210,9 +198,9 @@ search:
     - name: lookahead_cfg_width_max
       values: [ 7 ]
     - name: reward_backend
-      values: [ "hpsv3" ]
+      values: [ "imagereward" ]
     - name: eval_backends
-      values: [ "hpsv3 imagereward hpsv2 pickscore" ]
+      values: [ "imagereward hpsv2 pickscore" ]
     # CFG sweep: 0.0-2.0 (validated range for SenseFlow)
     # Non-default string → suite scripts will NOT auto-override to 0.0
     - name: cfg_scales
@@ -283,7 +271,3 @@ search:
       values: [ 1 ]
     - name: qwen_precompute_clear_cache
       values: [ 1 ]
-    - name: use_reward_server
-      values: [ 1 ]
-    - name: reward_server_backends
-      values: [ "hpsv3 imagereward hpsv2 pickscore" ]

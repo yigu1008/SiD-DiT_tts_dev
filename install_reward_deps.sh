@@ -115,6 +115,11 @@ echo "[install] optional HPS backends (hpsv3/hpsv2)"
 if ! _pip --no-deps --index-url "${PYPI_INDEX_URL}" "hpsv3"; then
   echo "[install] warning: hpsv3 install failed; continuing."
 fi
+# Optional alternative HPSv3 path via imscore.
+# Keep --no-deps to avoid unexpected resolver changes in the main env.
+if ! _pip --no-deps --index-url "${PYPI_INDEX_URL}" "imscore"; then
+  echo "[install] warning: imscore install failed; hpsv3-imscore fallback unavailable."
+fi
 # hpsv3 runtime deps (installed separately since hpsv3 uses --no-deps).
 # Declared deps missing due to --no-deps:
 #   fire (arg parser), omegaconf/hydra-core (config), peft/trl (model loading),
@@ -203,6 +208,11 @@ try:
     print("hpsv3", getattr(hpsv3, "__file__", "ok"))
 except Exception as exc:
     print("hpsv3 import warning:", exc)
+try:
+    import imscore
+    print("imscore", getattr(imscore, "__file__", "ok"))
+except Exception as exc:
+    print("imscore import warning:", exc)
 try:
     import omegaconf
     print("omegaconf", getattr(omegaconf, "__version__", "ok"))

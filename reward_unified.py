@@ -35,6 +35,7 @@ class _BackendState:
     hps_module: Optional[object] = None  # fallback for newer hpsv2 (module-level score())
     open_clip: Optional[object] = None
     hpsv3_inferencer: Optional[object] = None
+    hpsv3_impl: Optional[str] = None  # "official" | "imscore"
     pickscore_model: Optional[object] = None
     pickscore_processor: Optional[object] = None
     unifiedreward_model: Optional[object] = None
@@ -114,7 +115,10 @@ class UnifiedRewardScorer:
     )
     _hpsv3_install_hint = (
         "Install HPSv3 dependencies, e.g.:\n"
-        "  pip install -U hpsv3 open_clip_torch omegaconf hydra-core"
+        "  pip install -U hpsv3 open_clip_torch omegaconf hydra-core\n"
+        "Or try imscore fallback:\n"
+        "  pip install -U --no-deps imscore\n"
+        "  pip install -U \"transformers<5\""
     )
 
     def __init__(
@@ -737,11 +741,62 @@ class UnifiedRewardScorer:
                 raise RuntimeError(f"Unable to initialize HPSv3RewardInferencer. {msg}")
 
             self.state.hpsv3_inferencer = inferencer
+            self.state.hpsv3_impl = "official"
             self.available.append("hpsv3")
             self.hpsv3_last_error = None
         except Exception as exc:
-            self.hpsv3_last_error = str(exc)
-            print(f"[Reward] HPSv3 unavailable: {exc}")
+            primary_error = f"{type(exc).__name__}: {exc}"
+            print(f"[Reward] HPSv3 official loader unavailable: {primary_error}")
+            print("[Reward] Trying imscore fallback for HPSv3 ...")
+            try:
+                self._try_load_hpsv3_imscore()
+                return
+            except Exception as fallback_exc:
+                self.hpsv3_last_error = (
+                    f"{primary_error} | imscore fallback: {type(fallback_exc).__name__}: {fallback_exc}"
+                )
+                print(f"[Reward] HPSv3 unavailable: {self.hpsv3_last_error}")
+
+    def _try_load_hpsv3_imscore(self) -> None:
+        from imscore.hpsv3.model import HPSv3 as IMSCoreHPSv3
+
+        requested = str(os.environ.get("IMSCORE_HPSV3_MODEL_ID", "RE-N-Y/hpsv3")).strip()
+        candidates = [requested]
+        for fallback in ("RE-N-Y/hpsv3", "RE-N-Y/HPSv3"):
+            if fallback not in candidates:
+                candidates.append(fallback)
+
+        model = None
+        load_errors: List[str] = []
+        selected = None
+        for model_id in candidates:
+            try:
+                model = IMSCoreHPSv3.from_pretrained(model_id)
+                selected = model_id
+                break
+            except Exception as exc:
+                load_errors.append(f"{model_id}: {type(exc).__name__}: {str(exc)[:200]}")
+        if model is None:
+            msg = " | ".join(load_errors[:3]) if load_errors else "no model ids attempted"
+            raise RuntimeError(f"Unable to load imscore HPSv3. {msg}")
+
+        if hasattr(model, "to"):
+            try:
+                model = model.to(self.device)
+            except Exception:
+                pass
+        if hasattr(model, "eval"):
+            try:
+                model.eval()
+            except Exception:
+                pass
+
+        self.state.hpsv3_inferencer = model
+        self.state.hpsv3_impl = "imscore"
+        if "hpsv3" not in self.available:
+            self.available.append("hpsv3")
+        self.hpsv3_last_error = None
+        print(f"[Reward] HPSv3 loaded via imscore (model={selected}).")
 
     def _try_load_pickscore(self) -> None:
         try:
@@ -858,6 +913,8 @@ class UnifiedRewardScorer:
         inferencer = self.state.hpsv3_inferencer
         if inferencer is None:
             raise RuntimeError("HPSv3 inferencer is not loaded.")
+        if str(getattr(self.state, "hpsv3_impl", "")) == "imscore":
+            return self._score_hpsv3_imscore(prompt, image, inferencer)
 
         def _run_call(fn: Any, *args: Any, **kwargs: Any) -> Any:
             # Avoid inheriting outer autocast state from diffusion path.
@@ -1026,6 +1083,56 @@ class UnifiedRewardScorer:
                     os.remove(tmp_path)
                 except Exception:
                     pass
+
+    @torch.no_grad()
+    def _score_hpsv3_imscore(self, prompt: str, image: Image.Image, model: Any) -> float:
+        rgb = image.convert("RGB")
+        pixels_np = np.asarray(rgb, dtype=np.float32) / 255.0
+        pixels_t = torch.from_numpy(pixels_np).permute(2, 0, 1).unsqueeze(0).contiguous().to(self.device)
+
+        def _run_call(fn: Any, *args: Any, **kwargs: Any) -> Any:
+            if str(self.device).startswith("cuda"):
+                with torch.autocast(device_type="cuda", enabled=False):
+                    return fn(*args, **kwargs)
+            if str(self.device).startswith("cpu"):
+                try:
+                    with torch.autocast(device_type="cpu", enabled=False):
+                        return fn(*args, **kwargs)
+                except Exception:
+                    return fn(*args, **kwargs)
+            return fn(*args, **kwargs)
+
+        call_errors: List[str] = []
+        for fn_name in ("score", "reward", "__call__"):
+            fn = getattr(model, fn_name, None)
+            if fn is None:
+                continue
+            for args in (
+                (pixels_t, [prompt]),
+                (pixels_t, prompt),
+                ([prompt], pixels_t),
+                (prompt, pixels_t),
+                (rgb, [prompt]),
+                ([rgb], [prompt]),
+            ):
+                try:
+                    out = _run_call(fn, *args)
+                    return self._extract_scalar_from_hpsv3_output(out)
+                except Exception as exc:
+                    call_errors.append(f"{fn_name}(args): {type(exc).__name__}: {str(exc)[:160]}")
+            for kwargs in (
+                {"pixels": pixels_t, "prompts": [prompt]},
+                {"images": pixels_t, "prompts": [prompt]},
+                {"image": rgb, "prompt": prompt},
+            ):
+                try:
+                    out = _run_call(fn, **kwargs)
+                    return self._extract_scalar_from_hpsv3_output(out)
+                except Exception as exc:
+                    call_errors.append(f"{fn_name}(kwargs): {type(exc).__name__}: {str(exc)[:160]}")
+
+        msg = " | ".join(call_errors[:4]) if call_errors else "no callable API found"
+        raise RuntimeError(f"Unable to score with imscore HPSv3 model. {msg}")
 
     @torch.no_grad()
     def _score_pickscore(self, prompt: str, image: Image.Image) -> float:

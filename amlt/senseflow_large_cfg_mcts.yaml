@@ -69,7 +69,7 @@ search:
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
-      - /opt/conda/envs/ptca/bin/python -c "import torch, torchvision; import ImageReward as RM; print('runtime import check ok', torch.__version__, torchvision.__version__, getattr(RM, '__file__', 'ok'))"
+      - /opt/conda/envs/ptca/bin/python -c "import torch, torchvision; print('torch/torchvision import ok', torch.__version__, torchvision.__version__)"
       # ── Disable offline mode ──────────────────────────────────────────────
       - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
       # ── Cache dirs & symlinks ──────────────────────────────────────────────
@@ -210,9 +210,9 @@ search:
     - name: lookahead_cfg_width_max
       values: [ 7 ]
     - name: reward_backend
-      values: [ "imagereward" ]
+      values: [ "hpsv3" ]
     - name: eval_backends
-      values: [ "imagereward hpsv2 pickscore" ]
+      values: [ "hpsv3 imagereward hpsv2 pickscore" ]
     # CFG sweep: 0.0-2.0 (validated range for SenseFlow)
     # Non-default string → suite scripts will NOT auto-override to 0.0
     - name: cfg_scales

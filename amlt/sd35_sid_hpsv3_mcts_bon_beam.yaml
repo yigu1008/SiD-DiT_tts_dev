@@ -156,6 +156,12 @@ search:
       - export SAVE_IMAGES=0
       - export SAVE_BEST_IMAGES=1
       - export SAVE_VARIANTS=0
+      # ── Two-env reward server (hpsv3 needs transformers==4.45.2) ──
+      - export USE_REWARD_SERVER={use_reward_server}
+      - export REWARD_SERVER_PORT=5100
+      - export REWARD_SERVER_BACKENDS='{reward_server_backends}'
+      - export REWARD_ENV_CONDA_BASE=/opt/conda
+      - if [ {use_reward_server} = 1 ]; then CONDA_BASE=/opt/conda bash setup_reward_env.sh; fi
       - bash hpsv2_sd35_flux_allalgos.sh
 
     submit_args:
@@ -262,3 +268,7 @@ search:
       values: [ 1 ]
     - name: qwen_precompute_clear_cache
       values: [ 1 ]
+    - name: use_reward_server
+      values: [ 1 ]
+    - name: reward_server_backends
+      values: [ "hpsv3 imagereward hpsv2 pickscore" ]

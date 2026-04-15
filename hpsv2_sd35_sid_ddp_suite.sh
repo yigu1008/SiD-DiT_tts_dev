@@ -423,13 +423,28 @@ PY
 ensure_hpsv2_runtime
 
 ensure_hpsv3_runtime() {
-  local backend_lc _stamp
+  local backend_lc _stamp hpsv3_impl
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
   if [[ "${backend_lc}" != "hpsv3" && "${backend_lc}" != "auto" ]] && ! eval_backend_requested "hpsv3"; then
     return 0
   fi
+  hpsv3_impl="$(echo "${SID_HPSV3_IMPL:-auto}" | tr '[:upper:]' '[:lower:]')"
   _stamp="${HOME}/.cache/sid_deps/reward_deps_ok_v2"
   if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_stamp}" ]]; then return 0; fi
+  if [[ "${hpsv3_impl}" == "imscore" || "${hpsv3_impl}" == "ims" ]]; then
+    if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import imscore
+from imscore.hpsv3.model import HPSv3
+print(getattr(imscore, "__file__", "ok"), HPSv3.__name__)
+PY
+    then
+      mkdir -p "$(dirname "${_stamp}")" && touch "${_stamp}"; return 0
+    fi
+    echo "[deps] HPSv3(imscore) runtime deps missing. Installing with install_reward_deps.sh ..."
+    PYTHON_BIN="${PYTHON_BIN}" bash "${SCRIPT_DIR}/install_reward_deps.sh"
+    mkdir -p "$(dirname "${_stamp}")" && touch "${_stamp}"
+    return 0
+  fi
   if "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
 import hpsv3
 import omegaconf
@@ -896,8 +911,11 @@ start_reward_server
 # DistributedTensorGatherer, etc.).  Now that precompute is done, pin 4.45.2.
 # Skip the downgrade when using the reward server — the reward env has its own
 # transformers==4.45.2, and the main env can keep transformers>=4.51.
+HPSV3_IMPL_LC="$(echo "${SID_HPSV3_IMPL:-auto}" | tr '[:upper:]' '[:lower:]')"
 if [[ "${USE_REWARD_SERVER}" == "1" ]]; then
   echo "[deps] Skipping transformers downgrade — reward server handles reward model deps."
+elif [[ "${HPSV3_IMPL_LC}" == "imscore" || "${HPSV3_IMPL_LC}" == "ims" ]]; then
+  echo "[deps] Skipping transformers downgrade — SID_HPSV3_IMPL=${SID_HPSV3_IMPL:-auto} uses single-env imscore path."
 elif [[ "${DOWNGRADE_TRANSFORMERS:-1}" == "1" ]]; then
   echo "[deps] downgrading transformers to 4.45.2 for reward model compat ..."
   # Use --no-deps to avoid pip cascading downgrades that break torch/torchvision

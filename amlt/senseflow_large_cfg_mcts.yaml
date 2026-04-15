@@ -77,7 +77,7 @@ search:
       - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
       # ── Preload reward models ──────────────────────────────────────────────
-      - export REWARD_BACKENDS="imagereward hpsv2 pickscore"
+      - export REWARD_BACKENDS="{preload_backends}"
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
       # ── Preload models ─────────────────────────────────────────────────────
       - export HF_HUB_ENABLE_HF_TRANSFER=0
@@ -119,6 +119,9 @@ search:
       - export REWARD_BACKEND={reward_backend}
       - export REWARD_TYPE={reward_backend}
       - export REWARD_BACKENDS={reward_backend}
+      - export SID_HPSV3_IMPL={hpsv3_impl}
+      - export DOWNGRADE_TRANSFORMERS={downgrade_transformers}
+      - export USE_REWARD_SERVER=0
       - export EVAL_BEST_IMAGES=1
       - export EVAL_BACKENDS='{eval_backends}'
       - export REWARD_DEVICE=cuda
@@ -198,9 +201,15 @@ search:
     - name: lookahead_cfg_width_max
       values: [ 7 ]
     - name: reward_backend
-      values: [ "imagereward" ]
+      values: [ "hpsv3" ]
     - name: eval_backends
-      values: [ "imagereward hpsv2 pickscore" ]
+      values: [ "hpsv3 imagereward hpsv2 pickscore" ]
+    - name: preload_backends
+      values: [ "hpsv3 imagereward hpsv2 pickscore" ]
+    - name: hpsv3_impl
+      values: [ "imscore" ]
+    - name: downgrade_transformers
+      values: [ 0 ]
     # CFG sweep: 0.0-2.0 (validated range for SenseFlow)
     # Non-default string → suite scripts will NOT auto-override to 0.0
     - name: cfg_scales

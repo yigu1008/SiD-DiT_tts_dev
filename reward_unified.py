@@ -646,6 +646,15 @@ class UnifiedRewardScorer:
             print(f"[Reward] HPSv2 unavailable: {exc}")
 
     def _try_load_hpsv3(self) -> None:
+        impl_pref = str(os.environ.get("SID_HPSV3_IMPL", "auto")).strip().lower()
+        if impl_pref in {"imscore", "ims"}:
+            try:
+                self._try_load_hpsv3_imscore()
+                return
+            except Exception as exc:
+                self.hpsv3_last_error = f"imscore-only mode failed: {type(exc).__name__}: {exc}"
+                print(f"[Reward] HPSv3 unavailable: {self.hpsv3_last_error}")
+                return
         try:
             # Ensure wandb stub is active before importing hpsv3/trl.
             # trl imports wandb.proto.wandb_telemetry_pb2.Imports at module level;
@@ -745,6 +754,10 @@ class UnifiedRewardScorer:
             self.available.append("hpsv3")
             self.hpsv3_last_error = None
         except Exception as exc:
+            if impl_pref in {"official"}:
+                self.hpsv3_last_error = f"official-only mode failed: {type(exc).__name__}: {exc}"
+                print(f"[Reward] HPSv3 unavailable: {self.hpsv3_last_error}")
+                return
             primary_error = f"{type(exc).__name__}: {exc}"
             print(f"[Reward] HPSv3 official loader unavailable: {primary_error}")
             print("[Reward] Trying imscore fallback for HPSv3 ...")

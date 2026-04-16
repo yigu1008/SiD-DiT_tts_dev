@@ -158,6 +158,8 @@ search:
       - export RUN_SD35=1
       - export RUN_FLUX=0
       - export SD35_BACKEND={sd35_backend}
+      - if [ "$$AUTO_BACKEND_STEPS" != "0" ]; then if [ "$$SD35_BACKEND" = "sid" ]; then export STEPS=4; elif [ "$$SD35_BACKEND" = "sd35_base" ]; then export STEPS=28; fi; fi
+      - echo "Resolved STEPS=$$STEPS (backend=$$SD35_BACKEND auto_backend_steps=$$AUTO_BACKEND_STEPS)"
       - export FLUX_BACKEND=flux
       - export SAVE_IMAGES=0
       - export SAVE_BEST_IMAGES=1

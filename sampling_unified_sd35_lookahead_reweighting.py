@@ -19,6 +19,7 @@ import copy
 import json
 import math
 import os
+from itertools import combinations
 from typing import Any
 
 import numpy as np
@@ -48,7 +49,7 @@ class LookaheadMCTSNode:
         latents: torch.Tensor | None,
         *,
         parent: "LookaheadMCTSNode | None" = None,
-        incoming_action: tuple[int, float, float] | None = None,
+        incoming_action: tuple | None = None,
         u_t: float = 0.0,
     ) -> None:
         self.step = int(step)
@@ -57,28 +58,28 @@ class LookaheadMCTSNode:
         self.parent = parent
         self.incoming_action = incoming_action
         self.u_t = float(u_t)
-        self.children: dict[tuple[int, float, float], LookaheadMCTSNode] = {}
+        self.children: dict[tuple, LookaheadMCTSNode] = {}
         self.visits = 0
-        self.action_visits: dict[tuple[int, float, float], int] = {}
-        self.action_values: dict[tuple[int, float, float], float] = {}
+        self.action_visits: dict[tuple, int] = {}
+        self.action_values: dict[tuple, float] = {}
 
     def is_leaf(self, max_steps: int) -> bool:
         return self.step >= int(max_steps)
 
-    def untried_actions(self, actions: list[tuple[int, float, float]]) -> list[tuple[int, float, float]]:
+    def untried_actions(self, actions: list[tuple]) -> list[tuple]:
         return [a for a in actions if a not in self.action_visits]
 
-    def ucb(self, action: tuple[int, float, float], c: float) -> float:
+    def ucb(self, action: tuple, c: float) -> float:
         n = int(self.action_visits.get(action, 0))
         if n <= 0:
             return float("inf")
         mean = float(self.action_values.get(action, 0.0)) / float(n)
         return mean + float(c) * math.sqrt(math.log(max(self.visits, 1)) / float(n))
 
-    def best_ucb(self, actions: list[tuple[int, float, float]], c: float) -> tuple[int, float, float]:
+    def best_ucb(self, actions: list[tuple], c: float) -> tuple:
         return max(actions, key=lambda action: self.ucb(action, c))
 
-    def puct(self, action: tuple[int, float, float], prior: float, c_puct: float) -> float:
+    def puct(self, action: tuple, prior: float, c_puct: float) -> float:
         n = int(self.action_visits.get(action, 0))
         if n > 0:
             q = float(self.action_values.get(action, 0.0)) / float(n)
@@ -89,14 +90,14 @@ class LookaheadMCTSNode:
 
     def best_puct(
         self,
-        actions: list[tuple[int, float, float]],
-        prior_map: dict[tuple[int, float, float], float],
+        actions: list[tuple],
+        prior_map: dict[tuple, float],
         c_puct: float,
-    ) -> tuple[int, float, float]:
+    ) -> tuple:
         return max(actions, key=lambda a: self.puct(a, float(prior_map.get(a, 0.0)), c_puct))
 
-    def best_exploit(self, actions: list[tuple[int, float, float]]) -> tuple[int, float, float] | None:
-        best: tuple[int, float, float] | None = None
+    def best_exploit(self, actions: list[tuple]) -> tuple | None:
+        best: tuple | None = None
         best_v = -float("inf")
         for action in actions:
             n = int(self.action_visits.get(action, 0))
@@ -109,12 +110,16 @@ class LookaheadMCTSNode:
         return best
 
 
-def _action_to_dict(action: tuple[int, float, float]) -> dict[str, Any]:
-    return {
+def _action_to_dict(action: tuple) -> dict[str, Any]:
+    out = {
         "variant_idx": int(action[0]),
         "cfg": float(action[1]),
         "correction_strength": float(action[2]),
     }
+    if len(action) >= 5:
+        out["noise_gamma"] = float(action[3])
+        out["noise_eps_id"] = int(action[4])
+    return out
 
 
 def _dedup_float_list(values: list[float], ndigits: int = 6) -> list[float]:
@@ -343,15 +348,89 @@ def run_mcts_lookahead(
     sched = su.step_schedule(ctx.device, latents0.dtype, args.steps, getattr(args, "sigmas", None), euler=use_euler)
     _, t0_4d, _ = sched[0]
     if use_euler:
-        start_latents = latents0  # Euler: start from pure noise
+        start_latents = latents0
     else:
-        start_latents = (1.0 - t0_4d) * dx0 + t0_4d * latents0  # SiD: re-noise
-    root = LookaheadMCTSNode(step=0, dx=dx0, latents=start_latents, parent=None, incoming_action=None, u_t=0.0)
+        start_latents = (1.0 - t0_4d) * dx0 + t0_4d * latents0
 
+    total_steps = int(args.steps)
+    raw_noise_steps = str(getattr(args, "noise_inject_candidate_steps", "")).strip().lower()
+    use_integrated_noise_actions = total_steps <= 4
+    if use_integrated_noise_actions:
+        if raw_noise_steps:
+            integrated_noise_steps = su._resolve_noise_inject_steps(args, total_steps)
+        else:
+            integrated_noise_steps = [s for s in [1, 2] if 0 <= s < total_steps]
+        integrated_noise_steps = sorted(set(int(s) for s in integrated_noise_steps))
+        integrated_noise_steps_set = set(integrated_noise_steps)
+        integrated_gamma_bank = su._noise_inject_gamma_bank(args)
+        integrated_eps_samples = max(1, int(getattr(args, "noise_inject_eps_samples", 4)))
+        integrated_include_no = bool(getattr(args, "noise_inject_include_no_inject", True))
+        mcts_eps_bank = su._build_eps_bank_like(latents0, integrated_eps_samples, seed=int(seed) + 900001)
+    else:
+        integrated_noise_steps = []
+        integrated_noise_steps_set: set[int] = set()
+        integrated_gamma_bank = []
+        integrated_eps_samples = 1
+        integrated_include_no = True
+        mcts_eps_bank = None
+
+    def _strip_action(action: tuple) -> tuple[int, float, float]:
+        return (int(action[0]), float(action[1]), float(action[2]))
+
+    if use_integrated_noise_actions:
+        key_steps = list(range(int(args.steps)))
+    else:
+        key_steps = su._parse_key_steps(args)
+        if key_steps is None:
+            key_steps = list(range(int(args.steps)))
+        if 0 not in key_steps:
+            key_steps = [0] + key_steps
+    key_steps = sorted(set(key_steps))
+    n_key = len(key_steps)
+    key_segments: list[tuple[int, int]] = []
+    for i in range(n_key):
+        seg_start = key_steps[i]
+        seg_end = key_steps[i + 1] if i + 1 < n_key else int(args.steps)
+        key_segments.append((seg_start, seg_end))
+
+    def _expand_with_noise(key_idx: int, core_actions: list[tuple[int, float, float]]) -> list[tuple]:
+        if not use_integrated_noise_actions:
+            return [tuple(a) for a in core_actions]
+        if key_idx < 0 or key_idx >= len(key_segments):
+            return [tuple(a) for a in core_actions]
+        seg_start, _ = key_segments[key_idx]
+        if int(seg_start) not in integrated_noise_steps_set:
+            return [tuple(a) for a in core_actions]
+        out: list[tuple] = []
+        for vi, cfg, cs in core_actions:
+            if integrated_include_no:
+                out.append((int(vi), float(cfg), float(cs), 0.0, 0))
+            for gamma in integrated_gamma_bank:
+                g = float(gamma)
+                if integrated_include_no and abs(g) <= 1e-12:
+                    continue
+                for eps_id in range(int(integrated_eps_samples)):
+                    out.append((int(vi), float(cfg), float(cs), float(g), int(eps_id)))
+        if len(out) <= 0:
+            out = [(int(vi), float(cfg), float(cs), 0.0, 0) for vi, cfg, cs in core_actions]
+        return out
+
+    def _fallback_action_for_key(key_idx: int, fallback_cfg: float | None = None) -> tuple:
+        cfg_target = float(getattr(args, "baseline_cfg", cfg_values[0])) if fallback_cfg is None else float(fallback_cfg)
+        core = [(int(vi), float(cfg), float(cs)) for vi, cfg, cs in global_actions]
+        candidates = _expand_with_noise(int(key_idx), core)
+        for action in candidates:
+            vi, cfg, cs = int(action[0]), float(action[1]), float(action[2])
+            gamma = float(action[3]) if len(action) >= 5 else 0.0
+            if vi == 0 and abs(cfg - cfg_target) <= 1e-6 and abs(cs) <= 1e-12 and abs(gamma) <= 1e-12:
+                return action
+        return candidates[0]
+
+    root = LookaheadMCTSNode(step=0, dx=dx0, latents=start_latents, parent=None, incoming_action=None, u_t=0.0)
     u_values_seen: list[float] = []
     best_global_score = -float("inf")
     best_global_dx = None
-    best_global_path: list[tuple[int, float, float]] = []
+    best_global_path_internal: list[tuple] = []
     history: list[dict[str, Any]] = []
     node_logs: list[dict[str, Any]] = []
 
@@ -425,7 +504,7 @@ def run_mcts_lookahead(
             width -= 1
         return int(max(1, width))
 
-    def node_candidates(node: LookaheadMCTSNode) -> tuple[dict[str, Any], list[tuple[int, float, float]]]:
+    def node_candidates(node: LookaheadMCTSNode) -> tuple[dict[str, Any], list[tuple]]:
         if not adaptive_cfg_width or int(node.step) <= 0 or len(cfg_values) <= 1:
             cfg_bank = [float(x) for x in cfg_values]
             center = float(np.mean(cfg_bank))
@@ -438,7 +517,6 @@ def run_mcts_lookahead(
             if local_center is not None and local_visits >= min_visits_for_center:
                 center = float(local_center)
                 center_source = "node_visit_weighted"
-
             if center is None:
                 parent = node.parent
                 if parent is not None:
@@ -446,29 +524,26 @@ def run_mcts_lookahead(
                     if parent_center is not None and parent_visits >= min_visits_for_center:
                         center = float(parent_center)
                         center_source = "parent_visit_weighted"
-
             if center is None:
                 best_cfg = parent_best_cfg(node)
                 if best_cfg is not None:
                     center = float(best_cfg)
                     center_source = "parent_best_sparse"
-
             if center is None and node.incoming_action is not None:
                 center = float(node.incoming_action[1])
                 center_source = "incoming_cfg_fallback"
-
             if center is None:
                 center = float(getattr(args, "baseline_cfg", cfg_values[0]))
-
             width = cfg_width_from_u(node.u_t)
             nearest = sorted(cfg_values, key=lambda c: (abs(float(c) - float(center)), float(c)))
             cfg_bank = sorted(_dedup_float_list([float(x) for x in nearest[:width]] + root_cfg_anchors))
 
-        actions = [
+        core_actions = [
             (int(vi), float(cfg), float(cs))
             for vi, cs in prompt_actions
             for cfg in cfg_bank
         ]
+        actions = _expand_with_noise(int(node.step), core_actions)
         meta = {
             "step_idx": int(node.step),
             "u_t": float(node.u_t),
@@ -482,19 +557,14 @@ def run_mcts_lookahead(
         }
         return meta, actions
 
-    def compute_action_logits(
-        node: LookaheadMCTSNode,
-        candidates: list[tuple[int, float, float]],
-    ) -> np.ndarray:
+    def compute_action_logits(node: LookaheadMCTSNode, candidates: list[tuple]) -> np.ndarray:
         if len(candidates) <= 0:
             return np.zeros((0,), dtype=np.float64)
-
         w_cfg = float(getattr(args, "lookahead_w_cfg", 1.0))
         w_variant = float(getattr(args, "lookahead_w_variant", 0.25))
         w_cs = float(getattr(args, "lookahead_w_cs", 0.10))
         w_q = float(getattr(args, "lookahead_w_q", 0.20))
         w_explore = float(getattr(args, "lookahead_w_explore", 0.05))
-
         u_ratio = float(np.clip(float(node.u_t) / max(1e-6, current_u_ref()), 0.0, 2.0))
         u01 = float(np.clip(u_ratio, 0.0, 1.0))
         cfg_target = float(cfg_min + (cfg_span * u01))
@@ -510,7 +580,7 @@ def run_mcts_lookahead(
         variant_means = {k: float(np.mean(vals)) for k, vals in by_variant.items() if len(vals) > 0}
         variant_pool = [float(x) for x in variant_means.values()]
 
-        action_q_means: dict[tuple[int, float, float], float] = {}
+        action_q_means: dict[tuple, float] = {}
         for action in candidates:
             n = int(node.action_visits.get(action, 0))
             if n > 0:
@@ -537,10 +607,7 @@ def run_mcts_lookahead(
             )
         return out
 
-    def sample_with_prior(
-        candidates: list[tuple[int, float, float]],
-        prior: np.ndarray,
-    ) -> tuple[int, float, float]:
+    def sample_with_prior(candidates: list[tuple], prior: np.ndarray) -> tuple:
         if len(candidates) <= 0:
             raise RuntimeError("Cannot sample from empty candidates.")
         if prior.size != len(candidates):
@@ -550,11 +617,7 @@ def run_mcts_lookahead(
         idx = int(rng.choice(len(candidates), p=prior))
         return candidates[idx]
 
-    def select_untried_with_optional_prior(
-        node: LookaheadMCTSNode,
-        candidates: list[tuple[int, float, float]],
-        prior: np.ndarray,
-    ) -> tuple[int, float, float]:
+    def select_untried_with_optional_prior(node: LookaheadMCTSNode, candidates: list[tuple], prior: np.ndarray) -> tuple:
         untried_idx = [i for i, action in enumerate(candidates) if action not in node.action_visits]
         if len(untried_idx) <= 0:
             return candidates[int(rng.integers(0, len(candidates)))]
@@ -570,7 +633,7 @@ def run_mcts_lookahead(
 
     def log_candidates(
         node: LookaheadMCTSNode,
-        candidates: list[tuple[int, float, float]],
+        candidates: list[tuple],
         logits: np.ndarray,
         prior: np.ndarray,
     ) -> tuple[list[dict[str, Any]], list[float], list[float]]:
@@ -601,10 +664,10 @@ def run_mcts_lookahead(
         phase: str,
         node: LookaheadMCTSNode,
         candidate_meta: dict[str, Any],
-        candidates: list[tuple[int, float, float]],
+        candidates: list[tuple],
         logits: np.ndarray,
         prior: np.ndarray,
-        chosen_action: tuple[int, float, float],
+        chosen_action: tuple,
         selection_mode: str,
         preview_reward: float | None,
     ) -> None:
@@ -631,34 +694,31 @@ def run_mcts_lookahead(
             }
         )
 
-    # --- Key-step branching setup ---
-    key_steps = su._parse_key_steps(args)
-    if key_steps is None:
-        key_steps = list(range(int(args.steps)))
-    if 0 not in key_steps:
-        key_steps = [0] + key_steps
-    key_steps = sorted(set(key_steps))
-    n_key = len(key_steps)
-    key_segments: list[tuple[int, int]] = []
-    for i in range(n_key):
-        seg_start = key_steps[i]
-        seg_end = key_steps[i + 1] if i + 1 < n_key else int(args.steps)
-        key_segments.append((seg_start, seg_end))
+    n_actions_first = len(node_candidates(root)[1])
+    if use_integrated_noise_actions:
+        n_actions_noise = max(len(node_candidates(LookaheadMCTSNode(i, dx0, start_latents))[1]) for i in range(n_key))
+        print(
+            f"  mcts: sims={n_sims} base_actions={len(global_actions)} steps={int(args.steps)} "
+            f"key_steps={key_steps} ({n_key} branch points) "
+            f"lookahead_mode={args.lookahead_mode} u_t_def={args.lookahead_u_t_def} "
+            f"noise_steps={integrated_noise_steps} noise_actions(step)=[{n_actions_first},{n_actions_noise}]"
+        )
+    else:
+        print(
+            f"  mcts: sims={n_sims} actions={n_actions_first} steps={int(args.steps)} "
+            f"key_steps={key_steps} ({n_key} branch points) "
+            f"lookahead_mode={args.lookahead_mode} u_t_def={args.lookahead_u_t_def}"
+        )
 
     log_every = 10
-    print(
-        f"  mcts: sims={n_sims} actions={len(global_actions)} steps={int(args.steps)} "
-        f"key_steps={key_steps} ({n_key} branch points) "
-        f"lookahead_mode={args.lookahead_mode} u_t_def={args.lookahead_u_t_def}"
-    )
     for sim in range(n_sims):
         node = root
-        path: list[tuple[LookaheadMCTSNode, tuple[int, float, float]]] = []
+        path: list[tuple[LookaheadMCTSNode, tuple]] = []
         sim_logs: list[dict[str, Any]] = []
 
-        action: tuple[int, float, float] | None = None
+        action: tuple | None = None
         candidate_meta: dict[str, Any] | None = None
-        candidates: list[tuple[int, float, float]] = []
+        candidates: list[tuple] = []
         logits = np.zeros((0,), dtype=np.float64)
         prior = np.zeros((0,), dtype=np.float64)
 
@@ -704,8 +764,19 @@ def run_mcts_lookahead(
             if action not in node.children:
                 seg_start, seg_end = key_segments[node.step]
                 child_lat, child_dx = su._run_segment(
-                    args, ctx, emb, reward_model, prompt,
-                    node.latents, node.dx, action, sched, seg_start, seg_end)
+                    args,
+                    ctx,
+                    emb,
+                    reward_model,
+                    prompt,
+                    node.latents,
+                    node.dx,
+                    action,
+                    sched,
+                    seg_start,
+                    seg_end,
+                    eps_bank=mcts_eps_bank,
+                )
                 child_u = _compute_u_t(
                     str(getattr(args, "lookahead_u_t_def", "latent_delta_rms")),
                     parent_latents=node.latents,
@@ -746,16 +817,18 @@ def run_mcts_lookahead(
         rollout_latents = node.latents
         rollout_key_idx = node.step
         rollout_node = node
+        rollout_actions: list[tuple] = []
         while rollout_key_idx < n_key:
             r_meta, r_candidates = node_candidates(rollout_node)
             r_logits = compute_action_logits(rollout_node, r_candidates)
             r_prior = _softmax_prior(r_logits, tau=tau)
             if use_rollout_prior:
-                variant_idx, cfg, cs = sample_with_prior(r_candidates, r_prior)
+                rollout_action = sample_with_prior(r_candidates, r_prior)
                 roll_mode = "rollout_prior"
             else:
-                variant_idx, cfg, cs = r_candidates[int(rng.integers(0, len(r_candidates)))]
+                rollout_action = r_candidates[int(rng.integers(0, len(r_candidates)))]
                 roll_mode = "rollout_uniform"
+            rollout_actions.append(rollout_action)
 
             append_decision_log(
                 sim_logs,
@@ -766,16 +839,26 @@ def run_mcts_lookahead(
                 candidates=r_candidates,
                 logits=r_logits,
                 prior=r_prior,
-                chosen_action=(variant_idx, cfg, cs),
+                chosen_action=rollout_action,
                 selection_mode=roll_mode,
                 preview_reward=None,
             )
 
             seg_start, seg_end = key_segments[rollout_key_idx]
-            rollout_action = (int(variant_idx), float(cfg), float(cs))
             next_latents, rollout_dx = su._run_segment(
-                args, ctx, emb, reward_model, prompt,
-                rollout_latents, rollout_dx, rollout_action, sched, seg_start, seg_end)
+                args,
+                ctx,
+                emb,
+                reward_model,
+                prompt,
+                rollout_latents,
+                rollout_dx,
+                rollout_action,
+                sched,
+                seg_start,
+                seg_end,
+                eps_bank=mcts_eps_bank,
+            )
             child_u = _compute_u_t(
                 str(getattr(args, "lookahead_u_t_def", "latent_delta_rms")),
                 parent_latents=rollout_node.latents,
@@ -802,7 +885,7 @@ def run_mcts_lookahead(
         if rollout_score > best_global_score:
             best_global_score = float(rollout_score)
             best_global_dx = rollout_final.clone()
-            best_global_path = [a for _, a in path]
+            best_global_path_internal = [a for _, a in path] + list(rollout_actions)
 
         for pnode, paction in path:
             pnode.visits += 1
@@ -820,12 +903,12 @@ def run_mcts_lookahead(
             order = sorted(range(len(root_candidates)), key=lambda i: float(root_prior[i]), reverse=True)[:8]
             root_top = []
             for i in order:
-                action = root_candidates[i]
-                n = int(root.action_visits.get(action, 0))
-                q_mean = float(root.action_values.get(action, 0.0)) / float(n) if n > 0 else 0.0
+                top_action = root_candidates[i]
+                n = int(root.action_visits.get(top_action, 0))
+                q_mean = float(root.action_values.get(top_action, 0.0)) / float(n) if n > 0 else 0.0
                 root_top.append(
                     {
-                        **_action_to_dict(action),
+                        **_action_to_dict(top_action),
                         "prior": float(root_prior[i]),
                         "visits": int(n),
                         "q_mean": float(q_mean),
@@ -844,14 +927,14 @@ def run_mcts_lookahead(
             )
             print(f"    sim {sim + 1:3d}/{n_sims} best={best_global_score:.4f}")
 
-    exploit_path: list[tuple[int, float, float]] = []
+    exploit_path_internal: list[tuple] = []
     node = root
     for _ in range(n_key):
         _, candidates = node_candidates(node)
         action = node.best_exploit(candidates)
         if action is None:
             break
-        exploit_path.append(action)
+        exploit_path_internal.append(action)
         if action in node.children:
             node = node.children[action]
         else:
@@ -859,35 +942,218 @@ def run_mcts_lookahead(
 
     replay_lat = start_latents
     replay_dx = dx0
-    for key_idx, exploit_action in enumerate(exploit_path):
+    for key_idx, exploit_action in enumerate(exploit_path_internal):
         seg_start, seg_end = key_segments[key_idx]
         replay_lat, replay_dx = su._run_segment(
-            args, ctx, emb, reward_model, prompt,
-            replay_lat, replay_dx, exploit_action, sched, seg_start, seg_end)
-    # Fill remaining key steps with fallback
-    for key_idx in range(len(exploit_path), n_key):
-        fallback = global_actions[0]
+            args,
+            ctx,
+            emb,
+            reward_model,
+            prompt,
+            replay_lat,
+            replay_dx,
+            exploit_action,
+            sched,
+            seg_start,
+            seg_end,
+            eps_bank=mcts_eps_bank,
+        )
+    for key_idx in range(len(exploit_path_internal), n_key):
+        fallback = _fallback_action_for_key(key_idx)
         seg_start, seg_end = key_segments[key_idx]
         replay_lat, replay_dx = su._run_segment(
-            args, ctx, emb, reward_model, prompt,
-            replay_lat, replay_dx, fallback, sched, seg_start, seg_end)
+            args,
+            ctx,
+            emb,
+            reward_model,
+            prompt,
+            replay_lat,
+            replay_dx,
+            fallback,
+            sched,
+            seg_start,
+            seg_end,
+            eps_bank=mcts_eps_bank,
+        )
 
     exploit_img = su.decode_to_pil(ctx, su._final_decode_tensor(replay_lat, replay_dx, use_euler))
     exploit_score = float(su.score_image(reward_model, prompt, exploit_img))
 
-    out_img = exploit_img
-    out_score = float(exploit_score)
-    out_actions = exploit_path
+    selected_img = exploit_img
+    selected_score = float(exploit_score)
+    selected_key_path_internal = list(exploit_path_internal)
+    selected_source = "exploit"
     if exploit_score < best_global_score and best_global_dx is not None:
-        out_img = su.decode_to_pil(ctx, best_global_dx)
-        out_score = float(best_global_score)
-        out_actions = list(best_global_path)
+        selected_img = su.decode_to_pil(ctx, best_global_dx)
+        selected_score = float(best_global_score)
+        selected_key_path_internal = list(best_global_path_internal)
+        selected_source = "best_global"
+
+    sparse_refine_diag: dict[str, Any] | None = None
+    if (not use_integrated_noise_actions) and bool(getattr(args, "mcts_sparse_noise_refine", True)):
+        critical_steps = su._resolve_noise_inject_steps(args, total_steps) if raw_noise_steps else [int(total_steps // 2)]
+        critical_steps = sorted(set(int(s) for s in critical_steps if 0 <= int(s) < total_steps))
+        if len(critical_steps) > 0:
+            gamma_bank = su._noise_inject_gamma_bank(args)
+            eps_samples = max(1, int(getattr(args, "noise_inject_eps_samples", 4)))
+            include_no = bool(getattr(args, "noise_inject_include_no_inject", True))
+            max_events = max(1, min(2, int(getattr(args, "noise_inject_steps_per_rollout", 1))))
+            policies: list[tuple[tuple[int, float, int], ...]] = []
+            if include_no:
+                policies.append(tuple())
+            if max_events <= 1:
+                for step_idx in critical_steps:
+                    for gamma in gamma_bank:
+                        g = float(gamma)
+                        if include_no and abs(g) <= 1e-12:
+                            continue
+                        for eps_id in range(eps_samples):
+                            policies.append(((int(step_idx), float(g), int(eps_id)),))
+            else:
+                for s1, s2 in combinations(critical_steps, 2):
+                    for gamma in gamma_bank:
+                        g = float(gamma)
+                        if include_no and abs(g) <= 1e-12:
+                            continue
+                        for eps_id in range(eps_samples):
+                            policies.append(
+                                (
+                                    (int(s1), float(g), int(eps_id)),
+                                    (int(s2), float(g), int(eps_id)),
+                                )
+                            )
+            seen_policies: set[tuple[tuple[int, float, int], ...]] = set()
+            uniq_policies: list[tuple[tuple[int, float, int], ...]] = []
+            for policy in policies:
+                if policy in seen_policies:
+                    continue
+                seen_policies.add(policy)
+                uniq_policies.append(policy)
+            max_policies = max(0, int(getattr(args, "noise_inject_max_policies", 0)))
+            if max_policies > 0 and len(uniq_policies) > max_policies:
+                uniq_policies = uniq_policies[:max_policies]
+            if len(uniq_policies) <= 0:
+                uniq_policies = [tuple()]
+
+            def _expand_key_path_to_step_actions(key_path_internal: list[tuple]) -> list[tuple[int, float, float]]:
+                step_actions: list[tuple[int, float, float]] = []
+                for key_idx, (seg_start, seg_end) in enumerate(key_segments):
+                    if key_idx < len(key_path_internal):
+                        action = key_path_internal[key_idx]
+                    else:
+                        action = _fallback_action_for_key(key_idx)
+                    base = _strip_action(action)
+                    for _ in range(seg_start, seg_end):
+                        step_actions.append(base)
+                if len(step_actions) != total_steps:
+                    raise RuntimeError(f"Expanded schedule has {len(step_actions)} actions for steps={total_steps}.")
+                return step_actions
+
+            branch_rows: list[tuple[str, float, list[tuple]]] = [
+                ("exploit", float(exploit_score), list(exploit_path_internal)),
+                ("best_global", float(best_global_score), list(best_global_path_internal)),
+            ]
+            branch_rows.sort(key=lambda x: x[1], reverse=True)
+            branch_topk = max(1, int(getattr(args, "mcts_sparse_noise_refine_topk_branches", 2)))
+            branch_rows = branch_rows[:branch_topk]
+
+            noise_step_cache = su._build_step_noise_cache(latents0, total_steps, int(seed))
+            eps_bank = su._build_eps_bank_like(latents0, eps_samples, seed=int(seed) + 900001)
+
+            best_refine_score = float(selected_score)
+            best_refine_img = None
+            best_refine_key_path_internal = None
+            best_refine_policy: tuple[tuple[int, float, int], ...] = tuple()
+            best_refine_source = selected_source
+            rollouts_refine = 0
+
+            for source_name, _source_score, key_path_internal in branch_rows:
+                step_actions = _expand_key_path_to_step_actions(key_path_internal)
+                for policy in uniq_policies:
+                    rollouts_refine += 1
+                    inject_map = {int(s): (float(g), int(e)) for s, g, e in policy}
+                    latents = latents0.clone()
+                    dx = torch.zeros_like(latents)
+                    for step_idx, ((t_flat, t_4d, dt), (vi, cfg, cs)) in enumerate(zip(sched, step_actions)):
+                        base_noise = noise_step_cache[step_idx] if step_idx < len(noise_step_cache) else noise_step_cache[-1]
+                        latents = su._prepare_latents(latents, dx, base_noise, t_4d, step_idx, use_euler)
+                        if step_idx in inject_map:
+                            gamma, eps_id = inject_map[step_idx]
+                            eps = eps_bank[int(eps_id) % len(eps_bank)]
+                            latents = latents + float(gamma) * t_4d * eps
+                        flow = su.transformer_step(args, ctx, latents, emb, int(vi), t_flat, float(cfg))
+                        latents, dx = su._apply_step(latents, flow, dx, t_4d, dt, use_euler, args.x0_sampler)
+                        if float(cs) > 0.0:
+                            dx = su.apply_reward_correction(ctx, dx, prompt, reward_model, float(cs), cfg=float(cfg))
+                    img = su.decode_to_pil(ctx, su._final_decode_tensor(latents, dx, use_euler))
+                    score = float(su.score_image(reward_model, prompt, img))
+                    if score > best_refine_score:
+                        best_refine_score = float(score)
+                        best_refine_img = img
+                        best_refine_key_path_internal = list(key_path_internal)
+                        best_refine_policy = tuple(policy)
+                        best_refine_source = str(source_name)
+
+            sparse_refine_diag = {
+                "enabled": True,
+                "critical_steps": [int(s) for s in critical_steps],
+                "gamma_bank": [float(g) for g in gamma_bank],
+                "eps_samples": int(eps_samples),
+                "max_events": int(max_events),
+                "policies": int(len(uniq_policies)),
+                "branches_evaluated": int(len(branch_rows)),
+                "rollouts_evaluated": int(rollouts_refine),
+                "selected_source": str(best_refine_source),
+                "selected_policy": [
+                    {"step": int(s), "gamma": float(g), "eps_id": int(e)}
+                    for s, g, e in best_refine_policy
+                ],
+                "score_before_refine": float(selected_score),
+                "score_after_refine": float(best_refine_score),
+            }
+            if best_refine_img is not None and best_refine_score > float(selected_score):
+                selected_img = best_refine_img
+                selected_score = float(best_refine_score)
+                if best_refine_key_path_internal is not None:
+                    selected_key_path_internal = list(best_refine_key_path_internal)
+                    selected_source = f"sparse_refine:{best_refine_source}"
+
+    padded_key_path_internal: list[tuple] = []
+    for key_idx in range(n_key):
+        if key_idx < len(selected_key_path_internal):
+            padded_key_path_internal.append(selected_key_path_internal[key_idx])
+        else:
+            padded_key_path_internal.append(_fallback_action_for_key(key_idx))
+    selected_actions = [_strip_action(a) for a in padded_key_path_internal]
+
+    noise_events: list[dict[str, Any]] = []
+    for key_idx, action in enumerate(padded_key_path_internal):
+        if len(action) >= 5:
+            gamma = float(action[3])
+            if abs(gamma) > 1e-12:
+                eps_id = int(action[4])
+                seg_start, _ = key_segments[key_idx]
+                noise_events.append(
+                    {
+                        "key_step_idx": int(key_idx),
+                        "step_idx": int(seg_start),
+                        "gamma": float(gamma),
+                        "eps_id": int(eps_id),
+                    }
+                )
 
     u_arr = np.asarray(u_values_seen, dtype=np.float64) if len(u_values_seen) > 0 else np.asarray([], dtype=np.float64)
     diagnostics = {
         "lookahead_mode": str(getattr(args, "lookahead_mode", "rollout_prior")),
+        "selected_source": str(selected_source),
         "key_steps": [int(x) for x in key_steps],
         "n_key": int(n_key),
+        "integrated_noise_actions": bool(use_integrated_noise_actions),
+        "integrated_noise_steps": [int(s) for s in integrated_noise_steps],
+        "integrated_noise_gamma_bank": [float(g) for g in integrated_gamma_bank],
+        "integrated_noise_eps_samples": int(integrated_eps_samples),
+        "chosen_noise_events": noise_events,
+        "sparse_noise_refine": sparse_refine_diag,
         "lookahead_flags": {
             "use_rollout_prior": bool(use_rollout_prior),
             "use_tree_prior": bool(use_tree_prior),
@@ -907,14 +1173,14 @@ def run_mcts_lookahead(
         "cfg_root_anchors": [float(x) for x in root_cfg_anchors],
         "history": history,
         "lookahead_node_logs": node_logs,
-        "final_cfg_trajectory": [float(a[1]) for a in out_actions],
-        "exploit_cfg_trajectory": [float(a[1]) for a in exploit_path],
-        "best_global_cfg_trajectory": [float(a[1]) for a in best_global_path],
+        "final_cfg_trajectory": [float(a[1]) for a in padded_key_path_internal],
+        "exploit_cfg_trajectory": [float(a[1]) for a in exploit_path_internal],
+        "best_global_cfg_trajectory": [float(a[1]) for a in best_global_path_internal],
     }
     return su.SearchResult(
-        image=out_img,
-        score=float(out_score),
-        actions=[(int(v), float(c), float(cs)) for v, c, cs in out_actions],
+        image=selected_img,
+        score=float(selected_score),
+        actions=[(int(v), float(c), float(cs)) for v, c, cs in selected_actions],
         diagnostics=diagnostics,
     )
 

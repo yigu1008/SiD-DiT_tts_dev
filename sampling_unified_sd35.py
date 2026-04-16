@@ -2455,21 +2455,35 @@ def _run_segment(
     prompt: str,
     latents: torch.Tensor,
     dx: torch.Tensor,
-    action: tuple[int, float, float],
+    action: tuple,
     sched: list[tuple[torch.Tensor, torch.Tensor, float]],
     start_step: int,
     end_step: int,
     noise_explore_steps: set[int] | None = None,
+    eps_bank: list[torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run denoising steps [start_step, end_step) with a fixed action.
 
     Returns (latents, dx) after the segment.
     """
     use_euler = getattr(args, "euler_sampler", False)
-    variant_idx, cfg, cs = action
+    variant_idx = int(action[0])
+    cfg = float(action[1])
+    cs = float(action[2])
+    noise_event: tuple[float, int] | None = None
+    if len(action) >= 5:
+        gamma = float(action[3])
+        eps_id = int(action[4])
+        if abs(gamma) > 1e-12:
+            noise_event = (gamma, eps_id)
+
     for step_idx in range(start_step, end_step):
         t_flat, t_4d, dt = sched[step_idx]
         explore_n = _mcts_fresh_noise_samples_for_step(args, step_idx, noise_explore_steps)
+        if noise_event is not None and eps_bank and step_idx == int(start_step):
+            gamma, eps_id = noise_event
+            eps = eps_bank[int(eps_id) % len(eps_bank)]
+            latents = latents + float(gamma) * t_4d * eps
         if explore_n <= 1:
             flow = transformer_step(args, ctx, latents, emb, variant_idx, t_flat, cfg)
             latents, dx = _apply_step(latents, flow, dx, t_4d, dt, use_euler, args.x0_sampler)
@@ -2514,19 +2528,46 @@ def run_mcts(
     variants: list[str],
     seed: int,
 ) -> SearchResult:
+    del variants
     family = getattr(args, "mcts_interp_family", "none")
     n_interp = getattr(args, "mcts_n_interp", 1)
     if family != "none":
         emb = expand_emb_with_interp(emb, family, n_interp)
         print(f"  mcts: interp={family} n_interp={n_interp} total_variants={len(emb.cond_text)}")
+
     corr_strengths = list(getattr(args, "correction_strengths", [0.0]))
-    actions = [
+    base_actions = [
         (vi, cfg, cs)
         for vi in range(len(emb.cond_text))
         for cfg in args.cfg_scales
         for cs in corr_strengths
     ]
-    n_actions = len(actions)
+    if len(base_actions) <= 0:
+        raise RuntimeError("MCTS requires non-empty action space.")
+
+    total_steps = int(args.steps)
+    raw_noise_steps = str(getattr(args, "noise_inject_candidate_steps", "")).strip().lower()
+    use_integrated_noise_actions = total_steps <= 4
+    if use_integrated_noise_actions:
+        if raw_noise_steps:
+            integrated_noise_steps = _resolve_noise_inject_steps(args, total_steps)
+        else:
+            integrated_noise_steps = [s for s in [1, 2] if 0 <= s < total_steps]
+        integrated_noise_steps = sorted(set(int(s) for s in integrated_noise_steps))
+        integrated_noise_steps_set = set(integrated_noise_steps)
+        integrated_gamma_bank = _noise_inject_gamma_bank(args)
+        integrated_eps_samples = max(1, int(getattr(args, "noise_inject_eps_samples", 4)))
+        integrated_include_no = bool(getattr(args, "noise_inject_include_no_inject", True))
+    else:
+        integrated_noise_steps = []
+        integrated_noise_steps_set: set[int] = set()
+        integrated_gamma_bank = []
+        integrated_eps_samples = 1
+        integrated_include_no = True
+
+    def _strip_action(action: tuple) -> tuple[int, float, float]:
+        return (int(action[0]), float(action[1]), float(action[2]))
+
     latents0 = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx0 = torch.zeros_like(latents0)
     use_euler = getattr(args, "euler_sampler", False)
@@ -2536,13 +2577,15 @@ def run_mcts(
     start_latents = _prepare_latents(latents0, dx0, latents0, t0_4d, 0, use_euler)
 
     # --- Key-step branching setup ---
-    key_steps = _parse_key_steps(args)
-    if key_steps is None:
-        # Original behavior: branch at every step
+    if use_integrated_noise_actions:
+        # 4-step setting: keep per-step branching so noise_t remains a true step action.
         key_steps = list(range(int(args.steps)))
-    # Ensure step 0 is included
-    if 0 not in key_steps:
-        key_steps = [0] + key_steps
+    else:
+        key_steps = _parse_key_steps(args)
+        if key_steps is None:
+            key_steps = list(range(int(args.steps)))
+        if 0 not in key_steps:
+            key_steps = [0] + key_steps
     key_steps = sorted(set(key_steps))
     n_key = len(key_steps)
     # For each key step k, the segment runs from key_steps[k] to key_steps[k+1] (or args.steps)
@@ -2551,6 +2594,44 @@ def run_mcts(
         seg_start = key_steps[i]
         seg_end = key_steps[i + 1] if i + 1 < n_key else int(args.steps)
         key_segments.append((seg_start, seg_end))
+
+    mcts_eps_bank: list[torch.Tensor] | None = None
+    if use_integrated_noise_actions:
+        mcts_eps_bank = _build_eps_bank_like(
+            latents0,
+            integrated_eps_samples,
+            seed=int(seed) + 900001,
+        )
+
+    def _candidate_actions_for_key(key_idx: int) -> list[tuple]:
+        if not use_integrated_noise_actions:
+            return list(base_actions)
+        seg_start, _ = key_segments[int(key_idx)]
+        if int(seg_start) not in integrated_noise_steps_set:
+            return list(base_actions)
+        out: list[tuple] = []
+        for vi, cfg, cs in base_actions:
+            if integrated_include_no:
+                out.append((int(vi), float(cfg), float(cs), 0.0, 0))
+            for gamma in integrated_gamma_bank:
+                g = float(gamma)
+                if integrated_include_no and abs(g) <= 1e-12:
+                    continue
+                for eps_id in range(int(integrated_eps_samples)):
+                    out.append((int(vi), float(cfg), float(cs), float(g), int(eps_id)))
+        if len(out) <= 0:
+            out = [(int(vi), float(cfg), float(cs), 0.0, 0) for vi, cfg, cs in base_actions]
+        return out
+
+    def _fallback_action_for_key(key_idx: int) -> tuple:
+        candidates = _candidate_actions_for_key(key_idx)
+        target_cfg = float(getattr(args, "baseline_cfg", candidates[0][1]))
+        for action in candidates:
+            vi, cfg, cs = int(action[0]), float(action[1]), float(action[2])
+            gamma = float(action[3]) if len(action) >= 5 else 0.0
+            if vi == 0 and abs(cfg - target_cfg) <= 1e-6 and abs(cs) <= 1e-12 and abs(gamma) <= 1e-12:
+                return action
+        return candidates[0]
 
     fresh_noise_steps = _resolve_mcts_fresh_noise_steps(args, int(args.steps), key_steps=key_steps)
     fresh_noise_samples = max(1, int(getattr(args, "mcts_fresh_noise_samples", 1)))
@@ -2564,24 +2645,39 @@ def run_mcts(
 
     best_global_score = -float("inf")
     best_global_dx = None
-    best_global_path: list[tuple[int, float, float]] = []
+    best_global_path_internal: list[tuple] = []
 
-    print(
-        f"  mcts: sims={args.n_sims} actions={n_actions} steps={args.steps} "
-        f"key_steps={key_steps} ({n_key} branch points)"
-    )
+    n_actions_first = len(_candidate_actions_for_key(0))
+    if use_integrated_noise_actions:
+        n_actions_noise = max(len(_candidate_actions_for_key(i)) for i in range(n_key))
+        print(
+            f"  mcts: sims={args.n_sims} base_actions={len(base_actions)} steps={args.steps} "
+            f"key_steps={key_steps} ({n_key} branch points) "
+            f"noise_steps={integrated_noise_steps} noise_actions(step)=[{n_actions_first},{n_actions_noise}]"
+        )
+    else:
+        print(
+            f"  mcts: sims={args.n_sims} actions={n_actions_first} steps={args.steps} "
+            f"key_steps={key_steps} ({n_key} branch points)"
+        )
+
     for sim in range(args.n_sims):
         node = root
-        path: list[tuple[MCTSNode, tuple[int, float, float]]] = []
+        path: list[tuple[MCTSNode, tuple]] = []
+        action: tuple | None = None
 
         while not node.is_leaf(n_key):
-            untried = node.untried_actions(actions)
+            node_actions = _candidate_actions_for_key(node.step)
+            untried = node.untried_actions(node_actions)
             if untried:
                 action = untried[np.random.randint(len(untried))]
                 break
-            action = node.best_ucb(actions, args.ucb_c)
+            action = node.best_ucb(node_actions, args.ucb_c)
             path.append((node, action))
             node = node.children[action]
+
+        if action is None:
+            raise RuntimeError("MCTS failed to pick an action.")
 
         if not node.is_leaf(n_key):
             if action not in node.children:
@@ -2591,6 +2687,7 @@ def run_mcts(
                     args, ctx, emb, reward_model, prompt,
                     node.latents, node.dx, action, sched, seg_start, seg_end,
                     noise_explore_steps=fresh_noise_steps,
+                    eps_bank=mcts_eps_bank,
                 )
                 node.children[action] = MCTSNode(node.step + 1, child_dx, child_lat)
             path.append((node, action))
@@ -2600,13 +2697,17 @@ def run_mcts(
         rollout_dx = node.dx
         rollout_latents = node.latents
         rollout_key_idx = node.step
+        rollout_actions: list[tuple] = []
         while rollout_key_idx < n_key:
-            rollout_action = actions[np.random.randint(n_actions)]
+            rollout_candidates = _candidate_actions_for_key(rollout_key_idx)
+            rollout_action = rollout_candidates[np.random.randint(len(rollout_candidates))]
+            rollout_actions.append(rollout_action)
             seg_start, seg_end = key_segments[rollout_key_idx]
             rollout_latents, rollout_dx = _run_segment(
                 args, ctx, emb, reward_model, prompt,
                 rollout_latents, rollout_dx, rollout_action, sched, seg_start, seg_end,
                 noise_explore_steps=fresh_noise_steps,
+                eps_bank=mcts_eps_bank,
             )
             rollout_key_idx += 1
 
@@ -2615,7 +2716,7 @@ def run_mcts(
         if rollout_score > best_global_score:
             best_global_score = rollout_score
             best_global_dx = _final_decode_tensor(rollout_latents, rollout_dx, use_euler).clone()
-            best_global_path = [a for _, a in path]
+            best_global_path_internal = [a for _, a in path] + list(rollout_actions)
 
         for pnode, paction in path:
             pnode.visits += 1
@@ -2626,13 +2727,14 @@ def run_mcts(
             print(f"    sim {sim + 1:3d}/{args.n_sims} best={best_global_score:.4f}")
 
     # Exploit: extract best action per key step
-    exploit_path: list[tuple[int, float, float]] = []
+    exploit_path_internal: list[tuple] = []
     node = root
-    for _ in range(n_key):
-        action = node.best_exploit(actions)
+    for key_idx in range(n_key):
+        node_actions = _candidate_actions_for_key(key_idx)
+        action = node.best_exploit(node_actions)
         if action is None:
             break
-        exploit_path.append(action)
+        exploit_path_internal.append(action)
         if action in node.children:
             node = node.children[action]
         else:
@@ -2641,32 +2743,212 @@ def run_mcts(
     # Replay exploit path through all denoising steps
     replay_lat = start_latents
     replay_dx = dx0
-    for key_idx, exploit_action in enumerate(exploit_path):
+    for key_idx, exploit_action in enumerate(exploit_path_internal):
         seg_start, seg_end = key_segments[key_idx]
         replay_lat, replay_dx = _run_segment(
             args, ctx, emb, reward_model, prompt,
             replay_lat, replay_dx, exploit_action, sched, seg_start, seg_end,
             noise_explore_steps=fresh_noise_steps,
+            eps_bank=mcts_eps_bank,
         )
     # If exploit path is shorter than n_key, fill remaining with baseline
-    for key_idx in range(len(exploit_path), n_key):
-        fallback = actions[0]
+    for key_idx in range(len(exploit_path_internal), n_key):
+        fallback = _fallback_action_for_key(key_idx)
         seg_start, seg_end = key_segments[key_idx]
         replay_lat, replay_dx = _run_segment(
             args, ctx, emb, reward_model, prompt,
             replay_lat, replay_dx, fallback, sched, seg_start, seg_end,
             noise_explore_steps=fresh_noise_steps,
+            eps_bank=mcts_eps_bank,
         )
 
     exploit_img = decode_to_pil(ctx, _final_decode_tensor(replay_lat, replay_dx, use_euler))
     exploit_score = score_image(reward_model, prompt, exploit_img)
 
-    if exploit_score >= best_global_score:
-        return SearchResult(image=exploit_img, score=exploit_score, actions=exploit_path)
-    if best_global_dx is None:
-        return SearchResult(image=exploit_img, score=exploit_score, actions=exploit_path)
-    best_img = decode_to_pil(ctx, best_global_dx)
-    return SearchResult(image=best_img, score=best_global_score, actions=best_global_path)
+    selected_img: Image.Image
+    selected_score: float
+    selected_key_path_internal: list[tuple]
+    selected_source: str
+    if exploit_score >= best_global_score or best_global_dx is None:
+        selected_img = exploit_img
+        selected_score = float(exploit_score)
+        selected_key_path_internal = list(exploit_path_internal)
+        selected_source = "exploit"
+    else:
+        selected_img = decode_to_pil(ctx, best_global_dx)
+        selected_score = float(best_global_score)
+        selected_key_path_internal = list(best_global_path_internal)
+        selected_source = "best_global"
+
+    sparse_refine_diag: dict[str, Any] | None = None
+    if (not use_integrated_noise_actions) and bool(getattr(args, "mcts_sparse_noise_refine", True)):
+        critical_steps = _resolve_noise_inject_steps(args, total_steps) if raw_noise_steps else [int(total_steps // 2)]
+        critical_steps = sorted(set(int(s) for s in critical_steps if 0 <= int(s) < total_steps))
+        if len(critical_steps) > 0:
+            gamma_bank = _noise_inject_gamma_bank(args)
+            eps_samples = max(1, int(getattr(args, "noise_inject_eps_samples", 4)))
+            include_no = bool(getattr(args, "noise_inject_include_no_inject", True))
+            max_events = max(1, min(2, int(getattr(args, "noise_inject_steps_per_rollout", 1))))
+            policies: list[tuple[tuple[int, float, int], ...]] = []
+            if include_no:
+                policies.append(tuple())
+            if max_events <= 1:
+                for step_idx in critical_steps:
+                    for gamma in gamma_bank:
+                        g = float(gamma)
+                        if include_no and abs(g) <= 1e-12:
+                            continue
+                        for eps_id in range(eps_samples):
+                            policies.append(((int(step_idx), float(g), int(eps_id)),))
+            else:
+                for s1, s2 in combinations(critical_steps, 2):
+                    for gamma in gamma_bank:
+                        g = float(gamma)
+                        if include_no and abs(g) <= 1e-12:
+                            continue
+                        for eps_id in range(eps_samples):
+                            policies.append(
+                                (
+                                    (int(s1), float(g), int(eps_id)),
+                                    (int(s2), float(g), int(eps_id)),
+                                )
+                            )
+            seen_policies: set[tuple[tuple[int, float, int], ...]] = set()
+            uniq_policies: list[tuple[tuple[int, float, int], ...]] = []
+            for policy in policies:
+                if policy in seen_policies:
+                    continue
+                seen_policies.add(policy)
+                uniq_policies.append(policy)
+            max_policies = max(0, int(getattr(args, "noise_inject_max_policies", 0)))
+            if max_policies > 0 and len(uniq_policies) > max_policies:
+                uniq_policies = uniq_policies[:max_policies]
+            if len(uniq_policies) <= 0:
+                uniq_policies = [tuple()]
+
+            def _expand_key_path_to_step_actions(key_path_internal: list[tuple]) -> list[tuple[int, float, float]]:
+                step_actions: list[tuple[int, float, float]] = []
+                for key_idx, (seg_start, seg_end) in enumerate(key_segments):
+                    if key_idx < len(key_path_internal):
+                        action = key_path_internal[key_idx]
+                    else:
+                        action = _fallback_action_for_key(key_idx)
+                    base = _strip_action(action)
+                    for _ in range(seg_start, seg_end):
+                        step_actions.append(base)
+                if len(step_actions) != total_steps:
+                    raise RuntimeError(f"Expanded schedule has {len(step_actions)} actions for steps={total_steps}.")
+                return step_actions
+
+            branch_rows: list[tuple[str, float, list[tuple]]] = [
+                ("exploit", float(exploit_score), list(exploit_path_internal)),
+                ("best_global", float(best_global_score), list(best_global_path_internal)),
+            ]
+            branch_rows.sort(key=lambda x: x[1], reverse=True)
+            branch_topk = max(1, int(getattr(args, "mcts_sparse_noise_refine_topk_branches", 2)))
+            branch_rows = branch_rows[:branch_topk]
+
+            noise_step_cache = _build_step_noise_cache(latents0, total_steps, int(seed))
+            eps_bank = _build_eps_bank_like(latents0, eps_samples, seed=int(seed) + 900001)
+
+            best_refine_score = float(selected_score)
+            best_refine_img: Image.Image | None = None
+            best_refine_key_path_internal: list[tuple] | None = None
+            best_refine_policy: tuple[tuple[int, float, int], ...] = tuple()
+            best_refine_source = selected_source
+            rollouts_refine = 0
+
+            for source_name, _source_score, key_path_internal in branch_rows:
+                step_actions = _expand_key_path_to_step_actions(key_path_internal)
+                for policy in uniq_policies:
+                    rollouts_refine += 1
+                    inject_map = {int(s): (float(g), int(e)) for s, g, e in policy}
+                    latents = latents0.clone()
+                    dx = torch.zeros_like(latents)
+                    for step_idx, ((t_flat, t_4d, dt), (vi, cfg, cs)) in enumerate(zip(sched, step_actions)):
+                        base_noise = noise_step_cache[step_idx] if step_idx < len(noise_step_cache) else noise_step_cache[-1]
+                        latents = _prepare_latents(latents, dx, base_noise, t_4d, step_idx, use_euler)
+                        if step_idx in inject_map:
+                            gamma, eps_id = inject_map[step_idx]
+                            eps = eps_bank[int(eps_id) % len(eps_bank)]
+                            latents = latents + float(gamma) * t_4d * eps
+                        flow = transformer_step(args, ctx, latents, emb, int(vi), t_flat, float(cfg))
+                        latents, dx = _apply_step(latents, flow, dx, t_4d, dt, use_euler, args.x0_sampler)
+                        if float(cs) > 0.0:
+                            dx = apply_reward_correction(ctx, dx, prompt, reward_model, float(cs), cfg=float(cfg))
+                    img = decode_to_pil(ctx, _final_decode_tensor(latents, dx, use_euler))
+                    score = float(score_image(reward_model, prompt, img))
+                    if score > best_refine_score:
+                        best_refine_score = float(score)
+                        best_refine_img = img
+                        best_refine_key_path_internal = list(key_path_internal)
+                        best_refine_policy = tuple(policy)
+                        best_refine_source = str(source_name)
+
+            sparse_refine_diag = {
+                "enabled": True,
+                "critical_steps": [int(s) for s in critical_steps],
+                "gamma_bank": [float(g) for g in gamma_bank],
+                "eps_samples": int(eps_samples),
+                "max_events": int(max_events),
+                "policies": int(len(uniq_policies)),
+                "branches_evaluated": int(len(branch_rows)),
+                "rollouts_evaluated": int(rollouts_refine),
+                "selected_source": str(best_refine_source),
+                "selected_policy": [
+                    {"step": int(s), "gamma": float(g), "eps_id": int(e)}
+                    for s, g, e in best_refine_policy
+                ],
+                "score_before_refine": float(selected_score),
+                "score_after_refine": float(best_refine_score),
+            }
+            if best_refine_img is not None and best_refine_score > float(selected_score):
+                selected_img = best_refine_img
+                selected_score = float(best_refine_score)
+                if best_refine_key_path_internal is not None:
+                    selected_key_path_internal = list(best_refine_key_path_internal)
+                    selected_source = f"sparse_refine:{best_refine_source}"
+
+    padded_key_path_internal: list[tuple] = []
+    for key_idx in range(n_key):
+        if key_idx < len(selected_key_path_internal):
+            padded_key_path_internal.append(selected_key_path_internal[key_idx])
+        else:
+            padded_key_path_internal.append(_fallback_action_for_key(key_idx))
+    selected_actions = [_strip_action(a) for a in padded_key_path_internal]
+
+    noise_events: list[dict[str, Any]] = []
+    for key_idx, action in enumerate(padded_key_path_internal):
+        if len(action) >= 5:
+            gamma = float(action[3])
+            if abs(gamma) > 1e-12:
+                eps_id = int(action[4])
+                seg_start, _ = key_segments[key_idx]
+                noise_events.append(
+                    {
+                        "key_step_idx": int(key_idx),
+                        "step_idx": int(seg_start),
+                        "gamma": float(gamma),
+                        "eps_id": int(eps_id),
+                    }
+                )
+
+    diagnostics = {
+        "selected_source": str(selected_source),
+        "key_steps": [int(k) for k in key_steps],
+        "integrated_noise_actions": bool(use_integrated_noise_actions),
+        "integrated_noise_steps": [int(s) for s in integrated_noise_steps],
+        "integrated_noise_gamma_bank": [float(g) for g in integrated_gamma_bank],
+        "integrated_noise_eps_samples": int(integrated_eps_samples),
+        "chosen_noise_events": noise_events,
+        "sparse_noise_refine": sparse_refine_diag,
+    }
+    return SearchResult(
+        image=selected_img,
+        score=float(selected_score),
+        actions=[(int(v), float(c), float(r)) for v, c, r in selected_actions],
+        diagnostics=diagnostics,
+    )
 
 
 @torch.no_grad()

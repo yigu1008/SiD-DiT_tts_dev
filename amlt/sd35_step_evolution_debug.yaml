@@ -64,12 +64,17 @@ search:
       # ── Disable offline mode ──────────────────────────────────────────────
       - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
       # ── Cache dirs & symlinks ──────────────────────────────────────────────
-      - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
-      - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
-      - export CLIP_CACHE_DIR=/mnt/data/v-yigu/model_cache/clip
-      - mkdir -p /home/aiscuser/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
-      - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
-      - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
+      - export CACHE_REMOTE=/mnt/data/v-yigu/model_cache
+      - export CACHE_LOCAL=/tmp/sid_reward_cache
+      - mkdir -p /home/aiscuser/hf_cache "$$CACHE_REMOTE/ImageReward" "$$CACHE_REMOTE/hpsv2" "$$CACHE_REMOTE/clip" "$$CACHE_LOCAL/ImageReward" "$$CACHE_LOCAL/hpsv2" "$$CACHE_LOCAL/clip"
+      - if command -v rsync >/dev/null 2>&1; then rsync -a "$$CACHE_REMOTE/ImageReward/" "$$CACHE_LOCAL/ImageReward/" || true; else cp -a "$$CACHE_REMOTE/ImageReward/." "$$CACHE_LOCAL/ImageReward/" 2>/dev/null || true; fi
+      - if command -v rsync >/dev/null 2>&1; then rsync -a "$$CACHE_REMOTE/hpsv2/" "$$CACHE_LOCAL/hpsv2/" || true; else cp -a "$$CACHE_REMOTE/hpsv2/." "$$CACHE_LOCAL/hpsv2/" 2>/dev/null || true; fi
+      - if command -v rsync >/dev/null 2>&1; then rsync -a "$$CACHE_REMOTE/clip/" "$$CACHE_LOCAL/clip/" || true; else cp -a "$$CACHE_REMOTE/clip/." "$$CACHE_LOCAL/clip/" 2>/dev/null || true; fi
+      - export IMAGEREWARD_CACHE="$$CACHE_LOCAL/ImageReward"
+      - export HPS_ROOT="$$CACHE_LOCAL/hpsv2"
+      - export CLIP_CACHE_DIR="$$CACHE_LOCAL/clip"
+      - ln -sfn "$$CLIP_CACHE_DIR" /home/aiscuser/.cache/clip || true
+      - ln -sfn "$$IMAGEREWARD_CACHE" /home/aiscuser/.cache/ImageReward || true
       # ── Preload reward models ──────────────────────────────────────────────
       - export REWARD_BACKENDS="{eval_backends}"
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py

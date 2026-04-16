@@ -70,6 +70,10 @@ MCTS_KEY_STEPS="${MCTS_KEY_STEPS:-}"
 MCTS_KEY_STEP_COUNT="${MCTS_KEY_STEP_COUNT:-2}"
 MCTS_KEY_STEP_STRIDE="${MCTS_KEY_STEP_STRIDE:-0}"
 MCTS_KEY_DEFAULT_COUNT="${MCTS_KEY_DEFAULT_COUNT:-2}"
+MCTS_FRESH_NOISE_STEPS="${MCTS_FRESH_NOISE_STEPS:-}"
+MCTS_FRESH_NOISE_SAMPLES="${MCTS_FRESH_NOISE_SAMPLES:-1}"
+MCTS_FRESH_NOISE_SCALE="${MCTS_FRESH_NOISE_SCALE:-1.0}"
+MCTS_FRESH_NOISE_KEY_STEPS="${MCTS_FRESH_NOISE_KEY_STEPS:-0}"
 
 SAVE_BEST_IMAGES="${SAVE_BEST_IMAGES:-1}"
 
@@ -175,6 +179,7 @@ echo "[dynamic-cfg] prompt_file=${PROMPT_FILE} range=[${START_INDEX},${END_INDEX
 echo "[dynamic-cfg] backend=${SD35_BACKEND} reward_backend=${REWARD_BACKEND} num_gpus=${NUM_GPUS}"
 echo "[dynamic-cfg] cfg_scales=[${CFG_SCALES}] modes=[${MCTS_CFG_MODES}] cfg_only=${CFG_ONLY}"
 echo "[dynamic-cfg] key_mode=${MCTS_KEY_MODE} key_steps='${MCTS_KEY_STEPS}' key_step_count=${MCTS_KEY_STEP_COUNT} key_step_stride=${MCTS_KEY_STEP_STRIDE}"
+echo "[dynamic-cfg] fresh_noise_steps='${MCTS_FRESH_NOISE_STEPS}' samples=${MCTS_FRESH_NOISE_SAMPLES} scale=${MCTS_FRESH_NOISE_SCALE} key_steps=${MCTS_FRESH_NOISE_KEY_STEPS}"
 
 echo "[preload] caching model: ${PRELOAD_MODEL_ID}"
 env -u RANK -u LOCAL_RANK -u WORLD_SIZE -u LOCAL_WORLD_SIZE -u NODE_RANK \
@@ -224,9 +229,15 @@ run_cfg_mode() {
     --mcts_key_step_count "${MCTS_KEY_STEP_COUNT}"
     --mcts_key_step_stride "${MCTS_KEY_STEP_STRIDE}"
     --mcts_key_default_count "${MCTS_KEY_DEFAULT_COUNT}"
+    --mcts_fresh_noise_steps "${MCTS_FRESH_NOISE_STEPS}"
+    --mcts_fresh_noise_samples "${MCTS_FRESH_NOISE_SAMPLES}"
+    --mcts_fresh_noise_scale "${MCTS_FRESH_NOISE_SCALE}"
   )
   if [[ -n "${MCTS_KEY_STEPS}" ]]; then
     extra_args+=(--mcts_key_steps "${MCTS_KEY_STEPS}")
+  fi
+  if [[ "${MCTS_FRESH_NOISE_KEY_STEPS}" == "1" ]]; then
+    extra_args+=(--mcts_fresh_noise_key_steps)
   fi
 
   IMAGEREWARD_CACHE="${IMAGEREWARD_CACHE}" \

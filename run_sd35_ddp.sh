@@ -22,6 +22,22 @@ REWARD_API_KEY="${REWARD_API_KEY:-unifiedreward}"
 REWARD_API_MODEL="${REWARD_API_MODEL:-UnifiedReward-7b-v1.5}"
 REWARD_MAX_NEW_TOKENS="${REWARD_MAX_NEW_TOKENS:-512}"
 REWARD_PROMPT_MODE="${REWARD_PROMPT_MODE:-standard}"
+MCTS_KEY_STEPS="${MCTS_KEY_STEPS:-}"
+MCTS_KEY_STEP_COUNT="${MCTS_KEY_STEP_COUNT:-0}"
+MCTS_FRESH_NOISE_STEPS="${MCTS_FRESH_NOISE_STEPS:-}"
+MCTS_FRESH_NOISE_SAMPLES="${MCTS_FRESH_NOISE_SAMPLES:-1}"
+MCTS_FRESH_NOISE_SCALE="${MCTS_FRESH_NOISE_SCALE:-1.0}"
+MCTS_FRESH_NOISE_KEY_STEPS="${MCTS_FRESH_NOISE_KEY_STEPS:-0}"
+NOISE_INJECT_MODE="${NOISE_INJECT_MODE:-combined}"
+NOISE_INJECT_SEED_BUDGET="${NOISE_INJECT_SEED_BUDGET:-8}"
+NOISE_INJECT_CANDIDATE_STEPS="${NOISE_INJECT_CANDIDATE_STEPS:-}"
+NOISE_INJECT_GAMMA_BANK="${NOISE_INJECT_GAMMA_BANK:-0.0 0.25 0.5}"
+NOISE_INJECT_EPS_SAMPLES="${NOISE_INJECT_EPS_SAMPLES:-4}"
+NOISE_INJECT_STEPS_PER_ROLLOUT="${NOISE_INJECT_STEPS_PER_ROLLOUT:-1}"
+NOISE_INJECT_INCLUDE_NO_INJECT="${NOISE_INJECT_INCLUDE_NO_INJECT:-1}"
+NOISE_INJECT_MAX_POLICIES="${NOISE_INJECT_MAX_POLICIES:-0}"
+NOISE_INJECT_VARIANT_IDX="${NOISE_INJECT_VARIANT_IDX:-0}"
+NOISE_INJECT_CFG="${NOISE_INJECT_CFG:-}"
 
 # Keep ImageReward inference independent from cluster wandb/protobuf drift.
 SID_FORCE_WANDB_STUB="${SID_FORCE_WANDB_STUB:-1}"
@@ -125,6 +141,20 @@ fi
 if [[ -n "${REWARD_API_BASE}" ]]; then
   EXTRA_ARGS+=(--reward_api_base "${REWARD_API_BASE}")
 fi
+if [[ "${MCTS_FRESH_NOISE_KEY_STEPS}" == "1" ]]; then
+  EXTRA_ARGS+=(--mcts_fresh_noise_key_steps)
+fi
+if [[ "${NOISE_INJECT_INCLUDE_NO_INJECT}" == "1" ]]; then
+  EXTRA_ARGS+=(--noise_inject_include_no_inject)
+else
+  EXTRA_ARGS+=(--no-noise_inject_include_no_inject)
+fi
+if [[ -n "${NOISE_INJECT_CANDIDATE_STEPS}" ]]; then
+  EXTRA_ARGS+=(--noise_inject_candidate_steps "${NOISE_INJECT_CANDIDATE_STEPS}")
+fi
+if [[ -n "${NOISE_INJECT_CFG}" ]]; then
+  EXTRA_ARGS+=(--noise_inject_cfg "${NOISE_INJECT_CFG}")
+fi
 
 torchrun --standalone --nproc_per_node "${NUM_GPUS}" "${SCRIPT_DIR}/sd35_ddp_experiment.py" \
   --backend sid \
@@ -138,6 +168,18 @@ torchrun --standalone --nproc_per_node "${NUM_GPUS}" "${SCRIPT_DIR}/sd35_ddp_exp
   --n_variants "${N_VARIANTS:-3}" \
   --n_sims "${N_SIMS:-50}" \
   --ucb_c "${UCB_C:-1.41}" \
+  --mcts_key_steps "${MCTS_KEY_STEPS}" \
+  --mcts_key_step_count "${MCTS_KEY_STEP_COUNT}" \
+  --mcts_fresh_noise_steps "${MCTS_FRESH_NOISE_STEPS}" \
+  --mcts_fresh_noise_samples "${MCTS_FRESH_NOISE_SAMPLES}" \
+  --mcts_fresh_noise_scale "${MCTS_FRESH_NOISE_SCALE}" \
+  --noise_inject_mode "${NOISE_INJECT_MODE}" \
+  --noise_inject_seed_budget "${NOISE_INJECT_SEED_BUDGET}" \
+  --noise_inject_gamma_bank ${NOISE_INJECT_GAMMA_BANK} \
+  --noise_inject_eps_samples "${NOISE_INJECT_EPS_SAMPLES}" \
+  --noise_inject_steps_per_rollout "${NOISE_INJECT_STEPS_PER_ROLLOUT}" \
+  --noise_inject_max_policies "${NOISE_INJECT_MAX_POLICIES}" \
+  --noise_inject_variant_idx "${NOISE_INJECT_VARIANT_IDX}" \
   --smc_k "${SMC_K:-8}" \
   --smc_gamma "${SMC_GAMMA:-0.10}" \
   --ess_threshold "${ESS_THRESHOLD:-0.5}" \

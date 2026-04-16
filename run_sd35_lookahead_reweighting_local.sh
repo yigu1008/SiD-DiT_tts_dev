@@ -120,6 +120,12 @@ LOOKAHEAD_ABLATION_SET="${LOOKAHEAD_ABLATION_SET:-A B C D E F}"
 LOOKAHEAD_INCLUDE_STANDARD="${LOOKAHEAD_INCLUDE_STANDARD:-1}"
 LOOKAHEAD_U_T_DEF="${LOOKAHEAD_U_T_DEF:-latent_delta_rms}"
 LOOKAHEAD_U_T_DEFS_FOR_F="${LOOKAHEAD_U_T_DEFS_FOR_F:-latent_delta_rms latent_rms dx_rms}"
+MCTS_KEY_STEPS="${MCTS_KEY_STEPS:-}"
+MCTS_KEY_STEP_COUNT="${MCTS_KEY_STEP_COUNT:-0}"
+MCTS_FRESH_NOISE_STEPS="${MCTS_FRESH_NOISE_STEPS:-}"
+MCTS_FRESH_NOISE_SAMPLES="${MCTS_FRESH_NOISE_SAMPLES:-1}"
+MCTS_FRESH_NOISE_SCALE="${MCTS_FRESH_NOISE_SCALE:-1.0}"
+MCTS_FRESH_NOISE_KEY_STEPS="${MCTS_FRESH_NOISE_KEY_STEPS:-0}"
 
 lookahead_args=(
   --lookahead_mode "${LOOKAHEAD_MODE}"
@@ -159,11 +165,26 @@ if [[ "${LOOKAHEAD_RUN_ABLATIONS}" == "1" ]]; then
   fi
 fi
 
+mcts_extra_args=(
+  --mcts_key_step_count "${MCTS_KEY_STEP_COUNT}"
+  --mcts_fresh_noise_steps "${MCTS_FRESH_NOISE_STEPS}"
+  --mcts_fresh_noise_samples "${MCTS_FRESH_NOISE_SAMPLES}"
+  --mcts_fresh_noise_scale "${MCTS_FRESH_NOISE_SCALE}"
+)
+if [[ -n "${MCTS_KEY_STEPS}" ]]; then
+  mcts_extra_args+=(--mcts_key_steps "${MCTS_KEY_STEPS}")
+fi
+if [[ "${MCTS_FRESH_NOISE_KEY_STEPS}" == "1" ]]; then
+  mcts_extra_args+=(--mcts_fresh_noise_key_steps)
+fi
+
 echo "[sd35-lookahead] prompt_file=${PROMPT_FILE_RUN}"
 echo "[sd35-lookahead] out_dir=${OUT_DIR}"
 echo "[sd35-lookahead] cfg_only=${CFG_ONLY} n_variants=${N_VARIANTS} use_qwen=${USE_QWEN}"
 echo "[sd35-lookahead] cfg_scales=[${CFG_SCALES_ARR[*]}] baseline_cfg=${BASELINE_CFG:-1.0}"
 echo "[sd35-lookahead] mode=${LOOKAHEAD_MODE} run_ablations=${LOOKAHEAD_RUN_ABLATIONS} ablations=[${LOOKAHEAD_ABLATION_SET}]"
+echo "[sd35-lookahead] key_steps='${MCTS_KEY_STEPS}' key_step_count=${MCTS_KEY_STEP_COUNT}"
+echo "[sd35-lookahead] fresh_noise_steps='${MCTS_FRESH_NOISE_STEPS}' samples=${MCTS_FRESH_NOISE_SAMPLES} scale=${MCTS_FRESH_NOISE_SCALE} key_steps=${MCTS_FRESH_NOISE_KEY_STEPS}"
 
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified_sd35_lookahead_reweighting.py" \
   --search_method mcts \
@@ -192,6 +213,7 @@ echo "[sd35-lookahead] mode=${LOOKAHEAD_MODE} run_ablations=${LOOKAHEAD_RUN_ABLA
   "${extra_reward_args[@]}" \
   "${qwen_args[@]}" \
   "${lookahead_args[@]}" \
+  "${mcts_extra_args[@]}" \
   "${extra_args[@]}" \
   --out_dir "${OUT_DIR}" \
   "$@"

@@ -377,13 +377,40 @@ def _expand_child(
     node: MCTSNode,
     action: tuple[int, float],
     sched: list[tuple[torch.Tensor, torch.Tensor, float]],
+    reward_model: su.UnifiedRewardScorer,
+    prompt: str,
+    fresh_noise_steps: set[int] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """Expand child using Euler ODE step (SD3.5 base)."""
     variant_idx, cfg = action
     t_flat, t_4d, dt = sched[node.step]
-    flow = su.transformer_step(args, ctx, node.latents, emb, variant_idx, t_flat, cfg)
-    new_latents = node.latents + dt * flow  # Euler step
-    new_dx = node.latents - t_4d * flow     # x0 estimate for scoring
+    explore_n = su._mcts_fresh_noise_samples_for_step(args, int(node.step), fresh_noise_steps)
+    if explore_n <= 1:
+        flow = su.transformer_step(args, ctx, node.latents, emb, variant_idx, t_flat, cfg)
+        new_latents = node.latents + dt * flow  # Euler step
+        new_dx = node.latents - t_4d * flow     # x0 estimate for scoring
+    else:
+        noise_scale = float(getattr(args, "mcts_fresh_noise_scale", 1.0))
+        best_score = -float("inf")
+        best_latents = node.latents
+        best_dx = node.dx
+        for k in range(explore_n):
+            if k == 0:
+                lat_in = node.latents
+            else:
+                amp = float(noise_scale) * float(max(0.0, float(t_flat[0].item())))
+                lat_in = node.latents + (amp * torch.randn_like(node.latents))
+            flow = su.transformer_step(args, ctx, lat_in, emb, variant_idx, t_flat, cfg)
+            cand_latents = lat_in + dt * flow
+            cand_dx = lat_in - t_4d * flow
+            cand_img = su.decode_to_pil(ctx, cand_latents)
+            cand_score = float(su.score_image(reward_model, prompt, cand_img))
+            if cand_score > best_score:
+                best_score = float(cand_score)
+                best_latents = cand_latents
+                best_dx = cand_dx
+        new_latents = best_latents
+        new_dx = best_dx
     next_step = node.step + 1
     if next_step >= len(sched):
         new_latents = None
@@ -745,6 +772,16 @@ def run_mcts_sd35base(
     start_latents = latents0
     root = MCTSNode(step=0, dx=dx0, latents=start_latents)
 
+    # Fresh-noise exploration (optional): can target explicit steps or key-step set.
+    key_steps_for_noise = su._parse_key_steps(args)
+    fresh_noise_steps = su._resolve_mcts_fresh_noise_steps(args, int(args.steps), key_steps=key_steps_for_noise)
+    fresh_noise_samples = max(1, int(getattr(args, "mcts_fresh_noise_samples", 1)))
+    if len(fresh_noise_steps) > 0 and fresh_noise_samples > 1:
+        print(
+            f"  mcts(sd35base) fresh-noise: steps={sorted(int(x) for x in fresh_noise_steps)} "
+            f"samples={fresh_noise_samples} scale={float(getattr(args, 'mcts_fresh_noise_scale', 1.0)):.3f}"
+        )
+
     best_global_score = -float("inf")
     best_global_dx = None
     best_global_path: list[tuple[int, float]] = []
@@ -797,7 +834,12 @@ def run_mcts_sd35base(
         # EXPAND
         if not node.is_leaf(args.steps):
             if action not in node.children:
-                child_dx, child_lat = _expand_child(args, ctx, emb, node, action, sched)
+                child_dx, child_lat = _expand_child(
+                    args, ctx, emb, node, action, sched,
+                    reward_model=reward_model,
+                    prompt=prompt,
+                    fresh_noise_steps=fresh_noise_steps,
+                )
                 child_u = _compute_u_t(
                     str(getattr(args, "lookahead_u_t_def", "latent_delta_rms")),
                     parent_latents=node.latents,
@@ -832,9 +874,33 @@ def run_mcts_sd35base(
                 variant_idx, cfg = r_candidates[int(rng.integers(0, len(r_candidates)))]
 
             t_flat, t_4d, dt = sched[rollout_step]
-            flow = su.transformer_step(args, ctx, rollout_latents, emb, variant_idx, t_flat, cfg)
-            rollout_dx = rollout_latents - t_4d * flow  # x0 estimate (for u_t only)
-            next_latents = rollout_latents + dt * flow   # Euler step
+            explore_n = su._mcts_fresh_noise_samples_for_step(args, int(rollout_step), fresh_noise_steps)
+            if explore_n <= 1:
+                flow = su.transformer_step(args, ctx, rollout_latents, emb, variant_idx, t_flat, cfg)
+                rollout_dx = rollout_latents - t_4d * flow  # x0 estimate (for u_t only)
+                next_latents = rollout_latents + dt * flow   # Euler step
+            else:
+                noise_scale = float(getattr(args, "mcts_fresh_noise_scale", 1.0))
+                best_score = -float("inf")
+                best_dx = rollout_dx
+                best_next_lat = rollout_latents
+                for k in range(explore_n):
+                    if k == 0:
+                        lat_in = rollout_latents
+                    else:
+                        amp = float(noise_scale) * float(max(0.0, float(t_flat[0].item())))
+                        lat_in = rollout_latents + (amp * torch.randn_like(rollout_latents))
+                    flow = su.transformer_step(args, ctx, lat_in, emb, variant_idx, t_flat, cfg)
+                    cand_dx = lat_in - t_4d * flow
+                    cand_next_lat = lat_in + dt * flow
+                    cand_img = su.decode_to_pil(ctx, cand_next_lat)
+                    cand_score = float(su.score_image(reward_model, prompt, cand_img))
+                    if cand_score > best_score:
+                        best_score = float(cand_score)
+                        best_dx = cand_dx
+                        best_next_lat = cand_next_lat
+                rollout_dx = best_dx
+                next_latents = best_next_lat
             rollout_latents = next_latents
             rollout_step += 1
             if rollout_step < int(args.steps):
@@ -897,8 +963,28 @@ def run_mcts_sd35base(
     replay_lat = start_latents
     for step_idx, (variant_idx, cfg) in enumerate(exploit_path):
         t_flat, t_4d, dt = sched[step_idx]
-        flow = su.transformer_step(args, ctx, replay_lat, emb, variant_idx, t_flat, cfg)
-        replay_lat = replay_lat + dt * flow  # Euler step
+        explore_n = su._mcts_fresh_noise_samples_for_step(args, int(step_idx), fresh_noise_steps)
+        if explore_n <= 1:
+            flow = su.transformer_step(args, ctx, replay_lat, emb, variant_idx, t_flat, cfg)
+            replay_lat = replay_lat + dt * flow  # Euler step
+        else:
+            noise_scale = float(getattr(args, "mcts_fresh_noise_scale", 1.0))
+            best_score = -float("inf")
+            best_lat = replay_lat
+            for k in range(explore_n):
+                if k == 0:
+                    lat_in = replay_lat
+                else:
+                    amp = float(noise_scale) * float(max(0.0, float(t_flat[0].item())))
+                    lat_in = replay_lat + (amp * torch.randn_like(replay_lat))
+                flow = su.transformer_step(args, ctx, lat_in, emb, variant_idx, t_flat, cfg)
+                cand_lat = lat_in + dt * flow
+                cand_img = su.decode_to_pil(ctx, cand_lat)
+                cand_score = float(su.score_image(reward_model, prompt, cand_img))
+                if cand_score > best_score:
+                    best_score = float(cand_score)
+                    best_lat = cand_lat
+            replay_lat = best_lat
 
     exploit_img = su.decode_to_pil(ctx, replay_lat)
     exploit_score = float(su.score_image(reward_model, prompt, exploit_img))

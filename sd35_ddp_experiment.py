@@ -26,6 +26,7 @@ from sampling_unified_sd35 import (
     run_greedy,
     run_greedy_batch,
     run_mcts,
+    run_noise_inject,
     run_smc,
     save_comparison,
 )
@@ -50,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end_index", type=int, default=-1, help="Exclusive end index; -1 means all.")
     parser.add_argument("--out_dir", default="./sd35_ddp_out")
 
-    parser.add_argument("--modes", nargs="+", choices=["base", "greedy", "mcts", "ga", "smc", "bon", "beam"], default=["base", "greedy", "mcts", "ga"])
+    parser.add_argument("--modes", nargs="+", choices=["base", "greedy", "mcts", "ga", "smc", "bon", "beam", "noise"], default=["base", "greedy", "mcts", "ga"])
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--seed_per_prompt", action="store_true", help="Use seed + prompt_index for each prompt.")
 
@@ -79,6 +80,40 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--n_sims", type=int, default=50)
     parser.add_argument("--ucb_c", type=float, default=1.41)
+    parser.add_argument(
+        "--mcts_key_steps",
+        default="",
+        help="Comma-separated MCTS key step indices (e.g. '0,7,14,21'). Empty = branch every step.",
+    )
+    parser.add_argument(
+        "--mcts_key_step_count",
+        type=int,
+        default=0,
+        help="Auto-compute N evenly-spaced key steps. 0 disables auto key-step selection.",
+    )
+    parser.add_argument(
+        "--mcts_fresh_noise_steps",
+        default="",
+        help="Comma-separated step indices for fresh-noise exploration (e.g. '0,7,14'); 'all' enables every step.",
+    )
+    parser.add_argument(
+        "--mcts_fresh_noise_samples",
+        type=int,
+        default=1,
+        help="Fresh-noise candidate count at selected MCTS steps. 1 disables extra exploration.",
+    )
+    parser.add_argument(
+        "--mcts_fresh_noise_scale",
+        type=float,
+        default=1.0,
+        help="Additive latent perturbation scale for fresh-noise exploration.",
+    )
+    parser.add_argument(
+        "--mcts_fresh_noise_key_steps",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also enable fresh-noise exploration at resolved key steps.",
+    )
     parser.add_argument("--mcts_interp_family", choices=["none", "slerp", "nlerp"], default="none",
                         help="Embedding interpolation family for MCTS action space expansion.")
     parser.add_argument("--mcts_n_interp", type=int, default=1,
@@ -91,6 +126,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--smc_variant_idx", type=int, default=0)
     parser.add_argument("--bon_n", type=int, default=16, help="Number of candidates for Best-of-N search.")
     parser.add_argument("--beam_width", type=int, default=4, help="Number of beams to keep per step in beam search.")
+    parser.add_argument(
+        "--noise_inject_mode",
+        choices=["seeds_only", "reinject_only", "combined"],
+        default="combined",
+    )
+    parser.add_argument("--noise_inject_seed_budget", type=int, default=8)
+    parser.add_argument("--noise_inject_candidate_steps", default="")
+    parser.add_argument(
+        "--noise_inject_gamma_bank",
+        nargs="+",
+        type=float,
+        default=[0.0, 0.25, 0.50],
+    )
+    parser.add_argument("--noise_inject_eps_samples", type=int, default=4)
+    parser.add_argument("--noise_inject_steps_per_rollout", type=int, default=1)
+    parser.add_argument(
+        "--noise_inject_include_no_inject",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--noise_inject_max_policies", type=int, default=0)
+    parser.add_argument("--noise_inject_variant_idx", type=int, default=0)
+    parser.add_argument("--noise_inject_cfg", type=float, default=None)
     parser.add_argument(
         "--correction_strengths",
         nargs="+",
@@ -678,6 +736,28 @@ def main() -> None:
                         "nfe": int(ctx.nfe),
                         "actions": [[int(v), float(c), float(r)] for v, c, r in beam.actions],
                         "search_diagnostics": beam.diagnostics,
+                    })
+                    total_rows_written += 1
+
+                if "noise" in args.modes:
+                    ctx.nfe = 0
+                    ctx.correction_nfe = 0
+                    noise = run_noise_inject(args, ctx, emb, reward_model, prompt, seed)
+                    if args.save_images or args.save_best_images:
+                        noise.image.save(os.path.join(img_dir, f"{slug}_noise.png"))
+                    if args.save_images:
+                        save_comparison(
+                            os.path.join(img_dir, f"{slug}_noise_comp.png"),
+                            base_img, noise.image, base_score, noise.score, noise.actions,
+                        )
+                    _write_row(rank_log_f, {
+                        "prompt_index": prompt_index, "prompt": prompt, "seed": seed,
+                        "mode": "noise", "score": float(noise.score),
+                        "delta_vs_base": float(noise.score - base_score),
+                        "baseline_score": float(base_score),
+                        "nfe": int(ctx.nfe + ctx.correction_nfe),
+                        "actions": [[int(v), float(c), float(r)] for v, c, r in noise.actions],
+                        "search_diagnostics": noise.diagnostics,
                     })
                     total_rows_written += 1
 

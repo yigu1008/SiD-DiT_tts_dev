@@ -73,6 +73,8 @@ EVAL_BEST_IMAGES="${EVAL_BEST_IMAGES:-1}"
 EVAL_BACKENDS="${EVAL_BACKENDS:-imagereward hpsv2 pickscore}"
 EVAL_REWARD_DEVICE="${EVAL_REWARD_DEVICE:-cuda}"
 EVAL_ALLOW_MISSING_BACKENDS="${EVAL_ALLOW_MISSING_BACKENDS:-1}"
+LOCAL_REWARD_CACHE_ENABLE="${LOCAL_REWARD_CACHE_ENABLE:-1}"
+LOCAL_REWARD_CACHE_ROOT="${LOCAL_REWARD_CACHE_ROOT:-/tmp/sid_reward_cache}"
 
 # Keep ImageReward inference independent from cluster wandb/protobuf drift.
 SID_FORCE_WANDB_STUB="${SID_FORCE_WANDB_STUB:-1}"
@@ -212,6 +214,16 @@ GA_EVAL_BATCH="${GA_EVAL_BATCH:-2}"
 GA_PHASE_CONSTRAINTS="${GA_PHASE_CONSTRAINTS:-1}"
 BON_N="${BON_N:-16}"
 BEAM_WIDTH="${BEAM_WIDTH:-4}"
+NOISE_INJECT_MODE="${NOISE_INJECT_MODE:-combined}"
+NOISE_INJECT_SEED_BUDGET="${NOISE_INJECT_SEED_BUDGET:-8}"
+NOISE_INJECT_CANDIDATE_STEPS="${NOISE_INJECT_CANDIDATE_STEPS:-}"
+NOISE_INJECT_GAMMA_BANK="${NOISE_INJECT_GAMMA_BANK:-0.0 0.25 0.5}"
+NOISE_INJECT_EPS_SAMPLES="${NOISE_INJECT_EPS_SAMPLES:-4}"
+NOISE_INJECT_STEPS_PER_ROLLOUT="${NOISE_INJECT_STEPS_PER_ROLLOUT:-1}"
+NOISE_INJECT_INCLUDE_NO_INJECT="${NOISE_INJECT_INCLUDE_NO_INJECT:-1}"
+NOISE_INJECT_MAX_POLICIES="${NOISE_INJECT_MAX_POLICIES:-0}"
+NOISE_INJECT_VARIANT_IDX="${NOISE_INJECT_VARIANT_IDX:-0}"
+NOISE_INJECT_CFG="${NOISE_INJECT_CFG:-}"
 
 # Lookahead U-based MCTS + adaptive per-step CFG (new SD3.5 option)
 LOOKAHEAD_METHOD_MODE="${LOOKAHEAD_METHOD_MODE:-rollout_tree_prior_adaptive_cfg}"
@@ -243,6 +255,10 @@ MCTS_KEY_STEPS="${MCTS_KEY_STEPS:-}"
 MCTS_KEY_STEP_COUNT="${MCTS_KEY_STEP_COUNT:-2}"
 MCTS_KEY_STEP_STRIDE="${MCTS_KEY_STEP_STRIDE:-0}"
 MCTS_KEY_DEFAULT_COUNT="${MCTS_KEY_DEFAULT_COUNT:-2}"
+MCTS_FRESH_NOISE_STEPS="${MCTS_FRESH_NOISE_STEPS:-}"
+MCTS_FRESH_NOISE_SAMPLES="${MCTS_FRESH_NOISE_SAMPLES:-1}"
+MCTS_FRESH_NOISE_SCALE="${MCTS_FRESH_NOISE_SCALE:-1.0}"
+MCTS_FRESH_NOISE_KEY_STEPS="${MCTS_FRESH_NOISE_KEY_STEPS:-0}"
 
 _DEFAULT_CFG_SCALES_STR="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
 if [[ "${SD35_BACKEND}" == "senseflow_large" || "${SD35_BACKEND}" == "senseflow_medium" ]]; then
@@ -288,6 +304,52 @@ if [[ -z "${REWRITES_FILE}" ]]; then
   REWRITES_FILE="${RUN_DIR}/rewrites_cache.json"
 fi
 
+stage_local_reward_cache() {
+  if [[ "${LOCAL_REWARD_CACHE_ENABLE}" != "1" ]]; then
+    return 0
+  fi
+  local local_root="${LOCAL_REWARD_CACHE_ROOT%/}"
+  local local_ir="${local_root}/ImageReward"
+  local local_clip="${local_root}/clip"
+  local local_hps="${local_root}/hpsv2"
+  local src_ir="${IMAGEREWARD_CACHE:-}"
+  local src_clip="${CLIP_CACHE_DIR:-}"
+  local src_hps="${HPS_ROOT:-}"
+
+  mkdir -p "${local_ir}" "${local_clip}" "${local_hps}"
+
+  _copy_cache_dir() {
+    local src="$1"
+    local dst="$2"
+    if [[ -z "${src}" || "${src}" == "${dst}" || ! -d "${src}" ]]; then
+      return 0
+    fi
+    if command -v rsync >/dev/null 2>&1; then
+      rsync -a "${src}/" "${dst}/" >/dev/null 2>&1 || true
+    else
+      cp -a "${src}/." "${dst}/" 2>/dev/null || true
+    fi
+  }
+
+  _copy_cache_dir "${src_ir}" "${local_ir}"
+  _copy_cache_dir "${src_clip}" "${local_clip}"
+  _copy_cache_dir "${src_hps}" "${local_hps}"
+
+  export IMAGEREWARD_CACHE="${local_ir}"
+  export CLIP_CACHE_DIR="${local_clip}"
+  export HPS_ROOT="${local_hps}"
+
+  mkdir -p "${HOME}/.cache"
+  ln -sfn "${CLIP_CACHE_DIR}" "${HOME}/.cache/clip" || true
+  ln -sfn "${IMAGEREWARD_CACHE}" "${HOME}/.cache/ImageReward" || true
+  echo "[cache] local reward cache enabled:"
+  echo "  IMAGEREWARD_CACHE=${IMAGEREWARD_CACHE}"
+  echo "  CLIP_CACHE_DIR=${CLIP_CACHE_DIR}"
+  echo "  HPS_ROOT=${HPS_ROOT}"
+}
+
+stage_local_reward_cache
+
 echo "SD3.5L SiD DDP suite"
 echo "  prompt_file: ${PROMPT_FILE}"
 echo "  modes: ${METHODS}"
@@ -297,6 +359,13 @@ fi
 if [[ "${METHODS}" == *"mcts_dynamiccfg_only"* ]]; then
   echo "  dynamic_cfg_mode: ${MCTS_CFG_MODE} root_bank=[${MCTS_CFG_ROOT_BANK}] anchors=[${MCTS_CFG_ANCHORS}]"
   echo "  dynamic_cfg_key_steps: mode=${MCTS_KEY_MODE} steps='${MCTS_KEY_STEPS}' count=${MCTS_KEY_STEP_COUNT} stride=${MCTS_KEY_STEP_STRIDE}"
+fi
+if [[ "${METHODS}" == *"noise"* || "${METHODS}" == *"noiseinj"* || "${METHODS}" == *"noise_inject"* ]]; then
+  echo "  noise_inject: mode=${NOISE_INJECT_MODE} seed_budget=${NOISE_INJECT_SEED_BUDGET} steps='${NOISE_INJECT_CANDIDATE_STEPS}'"
+  echo "               gammas=[${NOISE_INJECT_GAMMA_BANK}] eps_samples=${NOISE_INJECT_EPS_SAMPLES} steps_per_rollout=${NOISE_INJECT_STEPS_PER_ROLLOUT}"
+fi
+if [[ "${MCTS_FRESH_NOISE_SAMPLES}" != "1" || -n "${MCTS_FRESH_NOISE_STEPS}" || "${MCTS_FRESH_NOISE_KEY_STEPS}" == "1" ]]; then
+  echo "  fresh_noise: steps='${MCTS_FRESH_NOISE_STEPS}' samples=${MCTS_FRESH_NOISE_SAMPLES} scale=${MCTS_FRESH_NOISE_SCALE} key_steps=${MCTS_FRESH_NOISE_KEY_STEPS}"
 fi
 echo "  sd35_backend: ${SD35_BACKEND} sd35_sigmas: ${SD35_SIGMAS:-<none>}"
 echo "  nproc_per_node: ${NUM_GPUS}"
@@ -716,6 +785,7 @@ run_method() {
     baseline) mode_arg="base" ;;
     greedy) mode_arg="greedy" ;;
     mcts) mode_arg="mcts" ;;
+    noise|noiseinj|noise_inject) mode_arg="noise" ;;
     mcts_dynamiccfg_only)
       mode_arg="mcts"
       runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_dynamic_cfg.py"
@@ -751,6 +821,14 @@ run_method() {
   local -a extra=()
   if [[ -f "${REWRITES_FILE}" ]]; then
     extra+=(--rewrites_file "${REWRITES_FILE}")
+  fi
+  if [[ "${MCTS_FRESH_NOISE_KEY_STEPS}" == "1" ]]; then
+    extra+=(--mcts_fresh_noise_key_steps)
+  fi
+  if [[ "${NOISE_INJECT_INCLUDE_NO_INJECT}" == "1" ]]; then
+    extra+=(--noise_inject_include_no_inject)
+  else
+    extra+=(--no-noise_inject_include_no_inject)
   fi
   if [[ "${USE_QWEN}" == "1" ]]; then
     if [[ "${PRECOMPUTE_REWRITES}" == "1" && -f "${REWRITES_FILE}" ]]; then
@@ -791,21 +869,11 @@ run_method() {
       --mcts_cfg_round_ndigits "${MCTS_CFG_ROUND_NDIGITS}"
       --mcts_cfg_log_action_topk "${MCTS_CFG_LOG_ACTION_TOPK}"
       --mcts_key_mode "${MCTS_KEY_MODE}"
-      --mcts_key_step_count "${MCTS_KEY_STEP_COUNT}"
       --mcts_key_step_stride "${MCTS_KEY_STEP_STRIDE}"
       --mcts_key_default_count "${MCTS_KEY_DEFAULT_COUNT}"
     )
-    if [[ -n "${MCTS_KEY_STEPS}" ]]; then
-      extra+=(--mcts_key_steps "${MCTS_KEY_STEPS}")
-    fi
   fi
   if [[ "${runner_script}" == "${SCRIPT_DIR}/sd35_ddp_experiment_lookahead_reweighting.py" ]]; then
-    extra+=(
-      --mcts_key_step_count "${MCTS_KEY_STEP_COUNT}"
-    )
-    if [[ -n "${MCTS_KEY_STEPS}" ]]; then
-      extra+=(--mcts_key_steps "${MCTS_KEY_STEPS}")
-    fi
     extra+=(
       --lookahead_mode "${lookahead_mode_for_method}"
       --lookahead_u_t_def "${LOOKAHEAD_U_T_DEF}"
@@ -823,6 +891,12 @@ run_method() {
       --lookahead_min_visits_for_center "${LOOKAHEAD_MIN_VISITS_FOR_CENTER}"
       --lookahead_log_action_topk "${LOOKAHEAD_LOG_ACTION_TOPK}"
     )
+  fi
+  if [[ -n "${NOISE_INJECT_CANDIDATE_STEPS}" ]]; then
+    extra+=(--noise_inject_candidate_steps "${NOISE_INJECT_CANDIDATE_STEPS}")
+  fi
+  if [[ -n "${NOISE_INJECT_CFG}" ]]; then
+    extra+=(--noise_inject_cfg "${NOISE_INJECT_CFG}")
   fi
   # If snapshot paths were captured during preload, pass them directly so from_pretrained
   # reads from the exact local path instead of doing a cache lookup in offline mode.
@@ -866,6 +940,18 @@ PY
     --qwen_timeout_sec "${QWEN_TIMEOUT_SEC}" \
     --n_sims "${N_SIMS}" \
     --ucb_c "${UCB_C}" \
+    --mcts_key_steps "${MCTS_KEY_STEPS}" \
+    --mcts_key_step_count "${MCTS_KEY_STEP_COUNT}" \
+    --mcts_fresh_noise_steps "${MCTS_FRESH_NOISE_STEPS}" \
+    --mcts_fresh_noise_samples "${MCTS_FRESH_NOISE_SAMPLES}" \
+    --mcts_fresh_noise_scale "${MCTS_FRESH_NOISE_SCALE}" \
+    --noise_inject_mode "${NOISE_INJECT_MODE}" \
+    --noise_inject_seed_budget "${NOISE_INJECT_SEED_BUDGET}" \
+    --noise_inject_gamma_bank ${NOISE_INJECT_GAMMA_BANK} \
+    --noise_inject_eps_samples "${NOISE_INJECT_EPS_SAMPLES}" \
+    --noise_inject_steps_per_rollout "${NOISE_INJECT_STEPS_PER_ROLLOUT}" \
+    --noise_inject_max_policies "${NOISE_INJECT_MAX_POLICIES}" \
+    --noise_inject_variant_idx "${NOISE_INJECT_VARIANT_IDX}" \
     --smc_k "${SMC_K}" \
     --smc_gamma "${SMC_GAMMA}" \
     --ess_threshold "${ESS_THRESHOLD}" \

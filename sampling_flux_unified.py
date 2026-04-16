@@ -23,7 +23,9 @@ import json
 import math
 import os
 import random
+import time
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 
@@ -105,7 +107,7 @@ class SearchResult:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Unified FLUX search runner (greedy/mcts/ga/smc).")
-    p.add_argument("--search_method", choices=["greedy", "mcts", "ga", "smc", "bon", "beam"], default="ga")
+    p.add_argument("--search_method", choices=["greedy", "mcts", "ga", "smc", "bon", "beam", "noise_inject"], default="ga")
     p.add_argument(
         "--backend",
         choices=["flux", "senseflow_flux"],
@@ -305,8 +307,65 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--n_sims", type=int, default=50, help="MCTS simulation budget per prompt/seed.")
     p.add_argument("--ucb_c", type=float, default=1.41, help="MCTS UCB exploration constant.")
+    p.add_argument(
+        "--mcts_fresh_noise_steps",
+        default="",
+        help="Comma-separated step indices for extra fresh-noise exploration in MCTS (e.g. '0,2'). "
+             "'all' enables every step.",
+    )
+    p.add_argument(
+        "--mcts_fresh_noise_samples",
+        type=int,
+        default=1,
+        help="Number of fresh-noise candidates to try at selected MCTS steps. 1 disables extra exploration.",
+    )
+    p.add_argument(
+        "--mcts_fresh_noise_scale",
+        type=float,
+        default=1.0,
+        help="Scale for additive latent perturbation used by fresh-noise exploration.",
+    )
     p.add_argument("--bon_n", type=int, default=16,
                    help="Number of independent samples for best-of-N search.")
+    p.add_argument(
+        "--noise_inject_mode",
+        choices=["seeds_only", "reinject_only", "combined"],
+        default="combined",
+        help="Sparse noise-injection search mode: seeds-only | reinjection-only | combined.",
+    )
+    p.add_argument(
+        "--noise_inject_seed_budget",
+        type=int,
+        default=8,
+        help="Number of root seeds to evaluate for seeds-only or combined mode.",
+    )
+    p.add_argument(
+        "--noise_inject_candidate_steps",
+        default="",
+        help="Comma-separated candidate reinjection steps (e.g. '1,2'); 'all' uses all steps; empty uses middle step.",
+    )
+    p.add_argument(
+        "--noise_inject_gamma_bank",
+        nargs="+",
+        type=float,
+        default=[0.0, 0.25, 0.50],
+        help="Latent reinjection magnitude bank gamma for x_t <- x_t + gamma*sigma_t*eps.",
+    )
+    p.add_argument("--noise_inject_eps_samples", type=int, default=4)
+    p.add_argument("--noise_inject_steps_per_rollout", type=int, default=1)
+    p.add_argument(
+        "--noise_inject_include_no_inject",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    p.add_argument("--noise_inject_max_policies", type=int, default=0)
+    p.add_argument("--noise_inject_variant_idx", type=int, default=0)
+    p.add_argument(
+        "--noise_inject_guidance",
+        type=float,
+        default=None,
+        help="Optional fixed guidance scale for sparse noise-injection search. If unset, search over cfg_scales.",
+    )
     p.add_argument("--beam_width", type=int, default=4,
                    help="Number of beams to keep per step in beam search.")
 
@@ -641,6 +700,173 @@ def build_t_schedule(steps: int, sigmas: list[float] | None = None) -> list[floa
         return [1.0]
     denom = float(steps - 1)
     return [1.0 - float(i) / denom for i in range(steps)]
+
+
+def _resolve_mcts_fresh_noise_steps(args: argparse.Namespace, total_steps: int) -> set[int]:
+    out: set[int] = set()
+    raw = str(getattr(args, "mcts_fresh_noise_steps", "")).strip().lower()
+    if not raw:
+        return out
+    if raw == "all":
+        return set(range(max(0, int(total_steps))))
+    for tok in raw.split(","):
+        t = tok.strip()
+        if t.isdigit():
+            idx = int(t)
+            if 0 <= idx < int(total_steps):
+                out.add(int(idx))
+    return out
+
+
+def _mcts_fresh_noise_samples_for_step(args: argparse.Namespace, step_idx: int, enabled_steps: set[int]) -> int:
+    if int(step_idx) not in enabled_steps:
+        return 1
+    return max(1, int(getattr(args, "mcts_fresh_noise_samples", 1)))
+
+
+def _resolve_noise_inject_steps(args: argparse.Namespace, total_steps: int) -> list[int]:
+    raw = str(getattr(args, "noise_inject_candidate_steps", "")).strip().lower()
+    if total_steps <= 0:
+        return [0]
+    if not raw:
+        return [int(total_steps // 2)]
+    if raw == "all":
+        return list(range(int(total_steps)))
+    vals: list[int] = []
+    for tok in raw.split(","):
+        t = tok.strip()
+        if not t:
+            continue
+        if t.isdigit():
+            idx = int(t)
+            if 0 <= idx < int(total_steps):
+                vals.append(int(idx))
+    vals = sorted(set(vals))
+    if not vals:
+        return [int(total_steps // 2)]
+    return vals
+
+
+def _noise_inject_gamma_bank(args: argparse.Namespace) -> list[float]:
+    out: list[float] = []
+    for v in getattr(args, "noise_inject_gamma_bank", [0.0, 0.25, 0.5]):
+        vv = float(v)
+        if vv in out:
+            continue
+        out.append(vv)
+    return out if out else [0.0]
+
+
+def _noise_inject_guidance_bank(args: argparse.Namespace) -> tuple[list[float], bool]:
+    override = getattr(args, "noise_inject_guidance", None)
+    if override is not None:
+        return [float(override)], True
+
+    baseline = float(getattr(args, "baseline_guidance_scale", 1.0))
+    out: list[float] = []
+    for v in getattr(args, "cfg_scales", []):
+        vv = float(v)
+        if vv in out:
+            continue
+        out.append(vv)
+    if not out:
+        out = [baseline]
+    elif baseline not in out:
+        out = [baseline] + out
+    return out, False
+
+
+def _build_noise_inject_policies(
+    args: argparse.Namespace,
+    total_steps: int,
+) -> list[tuple[tuple[int, float, int], ...]]:
+    mode = str(getattr(args, "noise_inject_mode", "combined")).strip().lower()
+    if mode == "seeds_only":
+        return [tuple()]
+
+    steps = _resolve_noise_inject_steps(args, int(total_steps))
+    gammas = _noise_inject_gamma_bank(args)
+    eps_n = max(1, int(getattr(args, "noise_inject_eps_samples", 4)))
+    steps_per_rollout = max(1, min(2, int(getattr(args, "noise_inject_steps_per_rollout", 1))))
+    include_no = bool(getattr(args, "noise_inject_include_no_inject", True))
+
+    policies: list[tuple[tuple[int, float, int], ...]] = []
+    if include_no:
+        policies.append(tuple())
+
+    if steps_per_rollout <= 1:
+        for step_idx in steps:
+            for gamma in gammas:
+                if include_no and abs(float(gamma)) <= 1e-12:
+                    continue
+                for eps_id in range(eps_n):
+                    policies.append(((int(step_idx), float(gamma), int(eps_id)),))
+    else:
+        for s1, s2 in combinations(steps, 2):
+            for gamma in gammas:
+                if include_no and abs(float(gamma)) <= 1e-12:
+                    continue
+                for eps_id in range(eps_n):
+                    policies.append(
+                        (
+                            (int(s1), float(gamma), int(eps_id)),
+                            (int(s2), float(gamma), int(eps_id)),
+                        )
+                    )
+
+    seen: set[tuple[tuple[int, float, int], ...]] = set()
+    uniq: list[tuple[tuple[int, float, int], ...]] = []
+    for policy in policies:
+        key = tuple((int(s), float(g), int(e)) for s, g, e in policy)
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(key)
+
+    max_policies = max(0, int(getattr(args, "noise_inject_max_policies", 0)))
+    if max_policies > 0 and len(uniq) > max_policies:
+        uniq = uniq[:max_policies]
+    return uniq if uniq else [tuple()]
+
+
+def _build_flux_step_noise_cache(
+    init_latents: torch.Tensor,
+    steps: int,
+    seed: int,
+) -> list[torch.Tensor]:
+    out: list[torch.Tensor] = [init_latents.clone()]
+    if steps <= 1:
+        return out
+    gen = torch.Generator(device=init_latents.device).manual_seed(int(seed) + 2048)
+    for _ in range(1, int(steps)):
+        out.append(
+            torch.randn(
+                init_latents.shape,
+                device=init_latents.device,
+                dtype=init_latents.dtype,
+                generator=gen,
+            )
+        )
+    return out
+
+
+def _build_eps_bank_like(
+    like: torch.Tensor,
+    n_eps: int,
+    seed: int,
+) -> list[torch.Tensor]:
+    gen = torch.Generator(device=like.device).manual_seed(int(seed))
+    out: list[torch.Tensor] = []
+    for _ in range(max(1, int(n_eps))):
+        out.append(
+            torch.randn(
+                like.shape,
+                device=like.device,
+                dtype=like.dtype,
+                generator=gen,
+            )
+        )
+    return out
 
 
 @torch.no_grad()
@@ -1066,6 +1292,174 @@ def run_bon(
 
 
 @torch.no_grad()
+def _run_sparse_noise_rollout(
+    args: argparse.Namespace,
+    ctx: FluxContext,
+    reward_model: Any,
+    prompt: str,
+    embeds: list[PromptEmbed],
+    init_latents: torch.Tensor,
+    step_noise_cache: list[torch.Tensor],
+    eps_bank: list[torch.Tensor],
+    fixed_variant_idx: int,
+    fixed_guidance: float,
+    t_values: list[float],
+    policy: tuple[tuple[int, float, int], ...],
+) -> tuple[Image.Image, float]:
+    use_euler = bool(getattr(args, "euler_sampler", False))
+    latents = init_latents.clone()
+    dx = torch.zeros_like(init_latents)
+
+    inject_map: dict[int, tuple[float, int]] = {}
+    for step_idx, gamma, eps_id in policy:
+        inject_map[int(step_idx)] = (float(gamma), int(eps_id))
+
+    for step_idx, t_val in enumerate(t_values):
+        t_4d = torch.tensor(float(t_val), device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
+        if not use_euler:
+            base_noise = step_noise_cache[step_idx] if step_idx < len(step_noise_cache) else step_noise_cache[-1]
+            latents = (1.0 - t_4d) * dx + t_4d * base_noise
+
+        if step_idx in inject_map:
+            gamma, eps_id = inject_map[step_idx]
+            eps = eps_bank[int(eps_id) % len(eps_bank)]
+            latents = latents + float(gamma) * t_4d * eps
+
+        flow = flux_transformer_step(
+            ctx=ctx,
+            latents=latents,
+            embed=embeds[int(fixed_variant_idx)],
+            t_val=float(t_val),
+            guidance_scale=float(fixed_guidance),
+        )
+        dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
+        if use_euler:
+            dt = _compute_dt(t_values, step_idx)
+            latents = latents + dt * flow
+
+    final_img = decode_to_pil(ctx, _final_decode_tensor(latents, dx, use_euler))
+    final_score = score_image(reward_model, prompt, final_img)
+    return final_img, float(final_score)
+
+
+@torch.no_grad()
+def run_noise_inject(
+    args: argparse.Namespace,
+    ctx: FluxContext,
+    reward_model: Any,
+    prompt: str,
+    embeds: list[PromptEmbed],
+    seed: int,
+) -> SearchResult:
+    mode = str(getattr(args, "noise_inject_mode", "combined")).strip().lower()
+    seed_budget = max(1, int(getattr(args, "noise_inject_seed_budget", 8)))
+    if mode == "reinject_only":
+        seed_candidates = [int(seed)]
+    else:
+        seed_candidates = [int(seed) + i for i in range(seed_budget)]
+
+    t_values = build_t_schedule(int(args.steps), getattr(args, "sigmas", None))
+    n_steps = len(t_values)
+    policies = _build_noise_inject_policies(args, n_steps)
+    candidate_steps = _resolve_noise_inject_steps(args, n_steps)
+    gamma_bank = _noise_inject_gamma_bank(args)
+    eps_samples = max(1, int(getattr(args, "noise_inject_eps_samples", 4)))
+    steps_per_rollout = max(1, min(2, int(getattr(args, "noise_inject_steps_per_rollout", 1))))
+
+    fixed_variant_idx = int(getattr(args, "noise_inject_variant_idx", 0))
+    fixed_variant_idx = max(0, min(len(embeds) - 1, fixed_variant_idx))
+    guidance_bank, guidance_is_override = _noise_inject_guidance_bank(args)
+
+    print(
+        "  noise_inject: "
+        f"mode={mode} seeds={len(seed_candidates)} policies_per_seed={len(policies)} "
+        f"guidance_candidates={len(guidance_bank)} steps_per_rollout={steps_per_rollout}"
+    )
+    print(
+        "    "
+        f"candidate_steps={candidate_steps} gamma_bank={[float(g) for g in gamma_bank]} "
+        f"eps_samples={eps_samples} guidance_bank={[float(g) for g in guidance_bank]} variant={fixed_variant_idx}"
+    )
+
+    t_start = time.perf_counter()
+    best_score = -float("inf")
+    best_img: Image.Image | None = None
+    best_seed = int(seed_candidates[0])
+    best_policy: tuple[tuple[int, float, int], ...] = tuple()
+    best_guidance = float(guidance_bank[0])
+    total_rollouts = len(seed_candidates) * len(guidance_bank) * len(policies)
+    rollout_idx = 0
+
+    for seed_val in seed_candidates:
+        init_latents = make_initial_latents(ctx, int(seed_val), args.height, args.width, batch_size=1)
+        step_noise_cache = _build_flux_step_noise_cache(init_latents, n_steps, int(seed_val))
+        eps_bank = _build_eps_bank_like(init_latents, eps_samples, seed=int(seed_val) + 900001)
+
+        for guidance_val in guidance_bank:
+            for policy in policies:
+                rollout_idx += 1
+                img, score = _run_sparse_noise_rollout(
+                    args=args,
+                    ctx=ctx,
+                    reward_model=reward_model,
+                    prompt=prompt,
+                    embeds=embeds,
+                    init_latents=init_latents,
+                    step_noise_cache=step_noise_cache,
+                    eps_bank=eps_bank,
+                    fixed_variant_idx=fixed_variant_idx,
+                    fixed_guidance=float(guidance_val),
+                    t_values=t_values,
+                    policy=policy,
+                )
+                if score > best_score:
+                    best_score = float(score)
+                    best_img = img
+                    best_seed = int(seed_val)
+                    best_policy = tuple(policy)
+                    best_guidance = float(guidance_val)
+                if rollout_idx == 1 or rollout_idx % 10 == 0 or rollout_idx == total_rollouts:
+                    print(f"    rollout {rollout_idx:4d}/{total_rollouts} best={best_score:.4f}")
+
+    assert best_img is not None
+    fixed_actions: list[tuple[int, float]] = [(fixed_variant_idx, best_guidance)] * int(n_steps)
+    nfe_total = int(total_rollouts) * int(n_steps)
+    elapsed = float(time.perf_counter() - t_start)
+    diagnostics = {
+        "mode": mode,
+        "seed_candidates": [int(s) for s in seed_candidates],
+        "candidate_steps": [int(s) for s in candidate_steps],
+        "gamma_bank": [float(g) for g in gamma_bank],
+        "guidance_bank": [float(g) for g in guidance_bank],
+        "guidance_source": "override" if guidance_is_override else "cfg_scales",
+        "eps_samples": int(eps_samples),
+        "steps_per_rollout": int(steps_per_rollout),
+        "policies_per_seed": int(len(policies)),
+        "guidance_candidates": int(len(guidance_bank)),
+        "rollouts_evaluated": int(total_rollouts),
+        "equivalent_seed_budget": int(total_rollouts),
+        "nfe_total": int(nfe_total),
+        "wall_time_sec": float(elapsed),
+        "fixed_variant_idx": int(fixed_variant_idx),
+        "fixed_guidance": float(best_guidance),
+        "chosen_guidance": float(best_guidance),
+        "chosen_seed": int(best_seed),
+        "chosen_policy": [
+            {"step": int(step), "gamma": float(gamma), "eps_id": int(eps_id)}
+            for step, gamma, eps_id in best_policy
+        ],
+        "no_injection_selected": bool(len(best_policy) == 0),
+        "reward_per_rollout": float(best_score) / float(max(1, total_rollouts)),
+    }
+    return SearchResult(
+        image=best_img,
+        score=float(best_score),
+        actions=[(int(v), float(g)) for v, g in fixed_actions],
+        diagnostics=diagnostics,
+    )
+
+
+@torch.no_grad()
 def run_beam(
     args: argparse.Namespace,
     ctx: FluxContext,
@@ -1168,6 +1562,13 @@ def run_mcts(
     use_euler = getattr(args, "euler_sampler", False)
     n_actions = len(actions)
     t_values = build_t_schedule(int(args.steps), getattr(args, "sigmas", None))
+    fresh_noise_steps = _resolve_mcts_fresh_noise_steps(args, int(args.steps))
+    fresh_noise_samples = max(1, int(getattr(args, "mcts_fresh_noise_samples", 1)))
+    if len(fresh_noise_steps) > 0 and fresh_noise_samples > 1:
+        print(
+            f"  mcts fresh-noise: steps={sorted(int(x) for x in fresh_noise_steps)} "
+            f"samples={fresh_noise_samples} scale={float(getattr(args, 'mcts_fresh_noise_scale', 1.0)):.3f}"
+        )
     init_latents = make_initial_latents(ctx, seed, args.height, args.width, batch_size=1)
     dx0 = torch.zeros_like(init_latents)
     if use_euler:
@@ -1193,28 +1594,78 @@ def run_mcts(
         variant_idx, guidance = action
         t_val = float(t_values[step_idx])
         t_4d = torch.tensor(t_val, device=ctx.device, dtype=current_latents.dtype).view(1, 1, 1, 1)
-        flow = flux_transformer_step(ctx, current_latents, embeds[int(variant_idx)], t_val, float(guidance))
-        nfe_total += 1
-        new_dx = _pred_x0(current_latents, t_4d, flow, args.x0_sampler)
-        next_step = int(step_idx) + 1
-        if use_euler:
-            dt = _compute_dt(t_values, step_idx)
-            new_latents = current_latents + dt * flow
+        explore_n = _mcts_fresh_noise_samples_for_step(args, step_idx, fresh_noise_steps)
+        if explore_n <= 1:
+            flow = flux_transformer_step(ctx, current_latents, embeds[int(variant_idx)], t_val, float(guidance))
+            nfe_total += 1
+            new_dx = _pred_x0(current_latents, t_4d, flow, args.x0_sampler)
+            next_step = int(step_idx) + 1
+            if use_euler:
+                dt = _compute_dt(t_values, step_idx)
+                new_latents = current_latents + dt * flow
+                if next_step >= int(args.steps):
+                    return new_dx, new_latents  # keep latents for final decode
+                return new_dx, new_latents
             if next_step >= int(args.steps):
-                return new_dx, new_latents  # keep latents for final decode
+                return new_dx, None
+            next_t = float(t_values[next_step])
+            next_t_4d = torch.tensor(next_t, device=ctx.device, dtype=new_dx.dtype).view(1, 1, 1, 1)
+            noise = torch.randn(
+                new_dx.shape,
+                device=ctx.device,
+                dtype=new_dx.dtype,
+                generator=noise_gen,
+            )
+            new_latents = (1.0 - next_t_4d) * new_dx + next_t_4d * noise
             return new_dx, new_latents
-        if next_step >= int(args.steps):
-            return new_dx, None
-        next_t = float(t_values[next_step])
-        next_t_4d = torch.tensor(next_t, device=ctx.device, dtype=new_dx.dtype).view(1, 1, 1, 1)
-        noise = torch.randn(
-            new_dx.shape,
-            device=ctx.device,
-            dtype=new_dx.dtype,
-            generator=noise_gen,
-        )
-        new_latents = (1.0 - next_t_4d) * new_dx + next_t_4d * noise
-        return new_dx, new_latents
+
+        noise_scale = float(getattr(args, "mcts_fresh_noise_scale", 1.0))
+        best_score = -float("inf")
+        best_dx = None
+        best_latents = None
+        next_step = int(step_idx) + 1
+        for k in range(explore_n):
+            if k == 0:
+                latents_in = current_latents
+            else:
+                amp = float(noise_scale) * float(max(0.0, t_val))
+                latents_in = current_latents + (
+                    amp
+                    * torch.randn(
+                        current_latents.shape,
+                        device=current_latents.device,
+                        dtype=current_latents.dtype,
+                        generator=noise_gen,
+                    )
+                )
+            flow = flux_transformer_step(ctx, latents_in, embeds[int(variant_idx)], t_val, float(guidance))
+            nfe_total += 1
+            cand_dx = _pred_x0(latents_in, t_4d, flow, args.x0_sampler)
+            if use_euler:
+                dt = _compute_dt(t_values, step_idx)
+                cand_latents = latents_in + dt * flow
+            else:
+                if next_step >= int(args.steps):
+                    cand_latents = None
+                else:
+                    next_t = float(t_values[next_step])
+                    next_t_4d = torch.tensor(next_t, device=ctx.device, dtype=cand_dx.dtype).view(1, 1, 1, 1)
+                    noise = torch.randn(
+                        cand_dx.shape,
+                        device=ctx.device,
+                        dtype=cand_dx.dtype,
+                        generator=noise_gen,
+                    )
+                    cand_latents = (1.0 - next_t_4d) * cand_dx + next_t_4d * noise
+            decode_tensor = _final_decode_tensor(cand_latents if cand_latents is not None else latents_in, cand_dx, use_euler)
+            cand_img = decode_to_pil(ctx, decode_tensor)
+            cand_score = score_image(reward_model, prompt, cand_img)
+            if cand_score > best_score:
+                best_score = float(cand_score)
+                best_dx = cand_dx
+                best_latents = cand_latents
+        assert best_dx is not None
+        return best_dx, best_latents
 
     print(f"  mcts: sims={args.n_sims} actions={n_actions} steps={args.steps} c={args.ucb_c}")
     for sim in range(int(args.n_sims)):
@@ -2067,6 +2518,15 @@ def run(args: argparse.Namespace) -> None:
                     prompt=prompt,
                     embeds=embeds,
                     guidance_bank=guidance_bank_for_search(args),
+                    seed=seed,
+                )
+            elif args.search_method == "noise_inject":
+                search = run_noise_inject(
+                    args=args,
+                    ctx=ctx,
+                    reward_model=reward_model,
+                    prompt=prompt,
+                    embeds=embeds,
                     seed=seed,
                 )
             else:

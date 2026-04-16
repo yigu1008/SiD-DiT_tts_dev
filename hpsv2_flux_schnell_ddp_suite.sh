@@ -144,6 +144,19 @@ N_VARIANTS="${N_VARIANTS:-5}"
 CFG_SCALES="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5}"
 N_SIMS="${N_SIMS:-50}"
 UCB_C="${UCB_C:-1.41}"
+MCTS_FRESH_NOISE_STEPS="${MCTS_FRESH_NOISE_STEPS:-}"
+MCTS_FRESH_NOISE_SAMPLES="${MCTS_FRESH_NOISE_SAMPLES:-1}"
+MCTS_FRESH_NOISE_SCALE="${MCTS_FRESH_NOISE_SCALE:-1.0}"
+NOISE_INJECT_MODE="${NOISE_INJECT_MODE:-combined}"
+NOISE_INJECT_SEED_BUDGET="${NOISE_INJECT_SEED_BUDGET:-8}"
+NOISE_INJECT_CANDIDATE_STEPS="${NOISE_INJECT_CANDIDATE_STEPS:-}"
+NOISE_INJECT_GAMMA_BANK="${NOISE_INJECT_GAMMA_BANK:-0.0 0.25 0.5}"
+NOISE_INJECT_EPS_SAMPLES="${NOISE_INJECT_EPS_SAMPLES:-4}"
+NOISE_INJECT_STEPS_PER_ROLLOUT="${NOISE_INJECT_STEPS_PER_ROLLOUT:-1}"
+NOISE_INJECT_INCLUDE_NO_INJECT="${NOISE_INJECT_INCLUDE_NO_INJECT:-1}"
+NOISE_INJECT_MAX_POLICIES="${NOISE_INJECT_MAX_POLICIES:-0}"
+NOISE_INJECT_VARIANT_IDX="${NOISE_INJECT_VARIANT_IDX:-0}"
+NOISE_INJECT_GUIDANCE="${NOISE_INJECT_GUIDANCE:-}"
 
 SMC_K="${SMC_K:-12}"
 SMC_GAMMA="${SMC_GAMMA:-0.10}"
@@ -249,6 +262,13 @@ echo "  prompt_file: ${PROMPT_FILE}"
 echo "  prompts_total: ${TOTAL_PROMPTS} selected: ${RANGE_TOTAL} range=[${START_INDEX},${EFFECTIVE_END})"
 echo "  gpus(${NUM_GPUS}): ${GPU_IDS[*]}"
 echo "  flux_backend: ${FLUX_BACKEND} flux_sigmas: ${FLUX_SIGMAS:-<none>}"
+if [[ "${MCTS_FRESH_NOISE_SAMPLES}" != "1" || -n "${MCTS_FRESH_NOISE_STEPS}" ]]; then
+  echo "  fresh_noise: steps='${MCTS_FRESH_NOISE_STEPS}' samples=${MCTS_FRESH_NOISE_SAMPLES} scale=${MCTS_FRESH_NOISE_SCALE}"
+fi
+if [[ "${METHODS}" == *"noise"* || "${METHODS}" == *"noiseinj"* || "${METHODS}" == *"noise_inject"* ]]; then
+  echo "  noise_inject: mode=${NOISE_INJECT_MODE} seed_budget=${NOISE_INJECT_SEED_BUDGET} steps='${NOISE_INJECT_CANDIDATE_STEPS}'"
+  echo "               gammas=[${NOISE_INJECT_GAMMA_BANK}] eps_samples=${NOISE_INJECT_EPS_SAMPLES} steps_per_rollout=${NOISE_INJECT_STEPS_PER_ROLLOUT} cfg_scales='${CFG_SCALES}'"
+fi
 echo "  reward_backend: ${REWARD_BACKEND} reward_device: ${REWARD_DEVICE}"
 echo "  eval_best_images: ${EVAL_BEST_IMAGES} eval_backends: ${EVAL_BACKENDS} eval_device: ${EVAL_REWARD_DEVICE}"
 echo "  out: ${RUN_DIR}"
@@ -726,7 +746,34 @@ for method in ${METHODS}; do
         --n_variants "${N_VARIANTS}" \
         --cfg_scales ${CFG_SCALES} \
         --n_sims "${N_SIMS}" \
-        --ucb_c "${UCB_C}"
+        --ucb_c "${UCB_C}" \
+        --mcts_fresh_noise_steps "${MCTS_FRESH_NOISE_STEPS}" \
+        --mcts_fresh_noise_samples "${MCTS_FRESH_NOISE_SAMPLES}" \
+        --mcts_fresh_noise_scale "${MCTS_FRESH_NOISE_SCALE}"
+      ;;
+    noise|noiseinj|noise_inject)
+      noise_args=(
+        --cfg_scales ${CFG_SCALES}
+        --noise_inject_mode "${NOISE_INJECT_MODE}"
+        --noise_inject_seed_budget "${NOISE_INJECT_SEED_BUDGET}"
+        --noise_inject_gamma_bank ${NOISE_INJECT_GAMMA_BANK}
+        --noise_inject_eps_samples "${NOISE_INJECT_EPS_SAMPLES}"
+        --noise_inject_steps_per_rollout "${NOISE_INJECT_STEPS_PER_ROLLOUT}"
+        --noise_inject_max_policies "${NOISE_INJECT_MAX_POLICIES}"
+        --noise_inject_variant_idx "${NOISE_INJECT_VARIANT_IDX}"
+      )
+      if [[ "${NOISE_INJECT_INCLUDE_NO_INJECT}" != "1" ]]; then
+        noise_args+=(--no-noise_inject_include_no_inject)
+      else
+        noise_args+=(--noise_inject_include_no_inject)
+      fi
+      if [[ -n "${NOISE_INJECT_CANDIDATE_STEPS}" ]]; then
+        noise_args+=(--noise_inject_candidate_steps "${NOISE_INJECT_CANDIDATE_STEPS}")
+      fi
+      if [[ -n "${NOISE_INJECT_GUIDANCE}" ]]; then
+        noise_args+=(--noise_inject_guidance "${NOISE_INJECT_GUIDANCE}")
+      fi
+      run_flux_sharded "noise" "noise_inject" "${noise_args[@]}"
       ;;
     smc)
       run_flux_sharded "smc" "smc" \

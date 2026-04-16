@@ -151,6 +151,17 @@ search:
       - export GA_EVAL_BATCH={ga_eval_batch}
       - export BON_N={bon_n}
       - export BEAM_WIDTH={beam_width}
+      - export NOISE_INJECT_MODE={noise_inject_mode}
+      - export NOISE_INJECT_SEED_BUDGET={noise_inject_seed_budget}
+      - export NOISE_INJECT_CANDIDATE_STEPS='{noise_inject_candidate_steps}'
+      - export NOISE_INJECT_GAMMA_BANK='{noise_inject_gamma_bank}'
+      - export NOISE_INJECT_EPS_SAMPLES={noise_inject_eps_samples}
+      - export NOISE_INJECT_STEPS_PER_ROLLOUT={noise_inject_steps_per_rollout}
+      - export NOISE_INJECT_INCLUDE_NO_INJECT={noise_inject_include_no_inject}
+      - export NOISE_INJECT_MAX_POLICIES={noise_inject_max_policies}
+      - export NOISE_INJECT_VARIANT_IDX={noise_inject_variant_idx}
+      - export NOISE_INJECT_CFG='{noise_inject_cfg}'
+      - export NOISE_INJECT_GUIDANCE='{noise_inject_guidance}'
       - export SEED={seed}
       - export RUN_SANA=0
       - export RUN_SD35=1
@@ -183,7 +194,7 @@ search:
     - name: use_subset
       values: [ 1 ]
     - name: methods
-      values: [ "baseline mcts_dynamiccfg_u_lookahead bon beam" ]
+      values: [ "baseline mcts_dynamiccfg_u_lookahead noise_inject bon beam" ]
     - name: sd35_mcts_option
       values: [ "standard" ]
     - name: lookahead_method_mode
@@ -258,6 +269,28 @@ search:
       values: [ 16 ]
     - name: beam_width
       values: [ 4 ]
+    - name: noise_inject_mode
+      values: [ "combined" ]
+    - name: noise_inject_seed_budget
+      values: [ 8 ]
+    - name: noise_inject_candidate_steps
+      values: [ "" ]
+    - name: noise_inject_gamma_bank
+      values: [ "0.0 0.25 0.5" ]
+    - name: noise_inject_eps_samples
+      values: [ 4 ]
+    - name: noise_inject_steps_per_rollout
+      values: [ 1 ]
+    - name: noise_inject_include_no_inject
+      values: [ 1 ]
+    - name: noise_inject_max_policies
+      values: [ 0 ]
+    - name: noise_inject_variant_idx
+      values: [ 0 ]
+    - name: noise_inject_cfg
+      values: [ "" ]
+    - name: noise_inject_guidance
+      values: [ "" ]
     - name: seed
       values: [ 42 ]
     - name: save_images

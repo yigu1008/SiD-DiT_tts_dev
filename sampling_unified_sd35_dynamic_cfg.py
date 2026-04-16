@@ -499,6 +499,8 @@ def run_mcts_dynamic_cfg(
         seg_start = key_steps[i]
         seg_end = key_steps[i + 1] if i + 1 < n_key else int(total_steps)
         key_segments.append((seg_start, seg_end))
+    fresh_noise_steps = su._resolve_mcts_fresh_noise_steps(args, int(total_steps), key_steps=key_steps)
+    fresh_noise_samples = max(1, int(getattr(args, "mcts_fresh_noise_samples", 1)))
 
     log_every = 10
     print(
@@ -506,6 +508,11 @@ def run_mcts_dynamic_cfg(
         f"key_mode={key_step_meta.get('mode', 'count')} "
         f"cfg_mode={cfg_mode} cfg_range=[{cfg_min:.3f},{cfg_max:.3f}]"
     )
+    if len(fresh_noise_steps) > 0 and fresh_noise_samples > 1:
+        print(
+            f"  mcts fresh-noise: steps={sorted(int(x) for x in fresh_noise_steps)} "
+            f"samples={fresh_noise_samples} scale={float(getattr(args, 'mcts_fresh_noise_scale', 1.0)):.3f}"
+        )
 
     for sim in range(n_sims):
         node = root
@@ -560,7 +567,9 @@ def run_mcts_dynamic_cfg(
                 seg_start, seg_end = key_segments[node.step]
                 child_lat, child_dx = su._run_segment(
                     args, ctx, emb, reward_model, prompt,
-                    node.latents, node.dx, action, sched, seg_start, seg_end)
+                    node.latents, node.dx, action, sched, seg_start, seg_end,
+                    noise_explore_steps=fresh_noise_steps,
+                )
                 node.children[action] = DynamicMCTSNode(
                     step=node.step + 1,
                     dx=child_dx,
@@ -607,7 +616,9 @@ def run_mcts_dynamic_cfg(
             rollout_action = (int(variant_idx), float(cfg), float(cs))
             rollout_latents, rollout_dx = su._run_segment(
                 args, ctx, emb, reward_model, prompt,
-                rollout_latents, rollout_dx, rollout_action, sched, seg_start, seg_end)
+                rollout_latents, rollout_dx, rollout_action, sched, seg_start, seg_end,
+                noise_explore_steps=fresh_noise_steps,
+            )
             rollout_key_idx += 1
             if rollout_key_idx < n_key:
                 rollout_node = DynamicMCTSNode(
@@ -676,6 +687,7 @@ def run_mcts_dynamic_cfg(
         replay_lat, replay_dx = su._run_segment(
             args, ctx, emb, reward_model, prompt,
             replay_lat, replay_dx, action, sched, seg_start, seg_end,
+            noise_explore_steps=fresh_noise_steps,
         )
     # Fill missing tail with baseline action if exploit path is short.
     fallback_action = make_action(prompt_actions[0][0], default_cfg, prompt_actions[0][1])
@@ -684,6 +696,7 @@ def run_mcts_dynamic_cfg(
         replay_lat, replay_dx = su._run_segment(
             args, ctx, emb, reward_model, prompt,
             replay_lat, replay_dx, fallback_action, sched, seg_start, seg_end,
+            noise_explore_steps=fresh_noise_steps,
         )
 
     exploit_img = su.decode_to_pil(ctx, su._final_decode_tensor(replay_lat, replay_dx, use_euler))

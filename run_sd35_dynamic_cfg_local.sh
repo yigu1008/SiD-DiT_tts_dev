@@ -94,6 +94,10 @@ MCTS_KEY_STEPS="${MCTS_KEY_STEPS:-}"
 MCTS_KEY_STEP_COUNT="${MCTS_KEY_STEP_COUNT:-2}"
 MCTS_KEY_STEP_STRIDE="${MCTS_KEY_STEP_STRIDE:-0}"
 MCTS_KEY_DEFAULT_COUNT="${MCTS_KEY_DEFAULT_COUNT:-2}"
+MCTS_FRESH_NOISE_STEPS="${MCTS_FRESH_NOISE_STEPS:-}"
+MCTS_FRESH_NOISE_SAMPLES="${MCTS_FRESH_NOISE_SAMPLES:-1}"
+MCTS_FRESH_NOISE_SCALE="${MCTS_FRESH_NOISE_SCALE:-1.0}"
+MCTS_FRESH_NOISE_KEY_STEPS="${MCTS_FRESH_NOISE_KEY_STEPS:-0}"
 
 CFG_ONLY="${CFG_ONLY:-1}"
 N_VARIANTS="${N_VARIANTS:-0}"
@@ -137,6 +141,15 @@ if [[ -n "${MCTS_KEY_STEPS}" ]]; then
   key_args+=(--mcts_key_steps "${MCTS_KEY_STEPS}")
 fi
 
+fresh_noise_args=(
+  --mcts_fresh_noise_steps "${MCTS_FRESH_NOISE_STEPS}"
+  --mcts_fresh_noise_samples "${MCTS_FRESH_NOISE_SAMPLES}"
+  --mcts_fresh_noise_scale "${MCTS_FRESH_NOISE_SCALE}"
+)
+if [[ "${MCTS_FRESH_NOISE_KEY_STEPS}" == "1" ]]; then
+  fresh_noise_args+=(--mcts_fresh_noise_key_steps)
+fi
+
 reward_weights_str="${REWARD_WEIGHTS:-1.0 1.0}"
 # shellcheck disable=SC2206
 reward_weights_arr=(${reward_weights_str})
@@ -152,6 +165,7 @@ echo "[sd35-dynamic-cfg] backend=${SD35_BACKEND_VAL}"
 echo "[sd35-dynamic-cfg] cfg_scales=[${CFG_SCALES_ARR[*]}] baseline_cfg=${BASELINE_CFG_VAL}"
 echo "[sd35-dynamic-cfg] root_bank=[${MCTS_CFG_ROOT_BANK_ARR[*]}] anchors=[${MCTS_CFG_ANCHORS_ARR[*]}] step_anchor_count=${MCTS_CFG_STEP_ANCHOR_COUNT:-2}"
 echo "[sd35-dynamic-cfg] key_mode=${MCTS_KEY_MODE} key_steps='${MCTS_KEY_STEPS}' key_step_count=${MCTS_KEY_STEP_COUNT} key_step_stride=${MCTS_KEY_STEP_STRIDE}"
+echo "[sd35-dynamic-cfg] fresh_noise_steps='${MCTS_FRESH_NOISE_STEPS}' samples=${MCTS_FRESH_NOISE_SAMPLES} scale=${MCTS_FRESH_NOISE_SCALE} key_steps=${MCTS_FRESH_NOISE_KEY_STEPS}"
 echo "[sd35-dynamic-cfg] cfg_only=${CFG_ONLY} n_variants=${N_VARIANTS} use_qwen=${USE_QWEN}"
 
 "${PYTHON_BIN}" "${SCRIPT_DIR}/sampling_unified_sd35_dynamic_cfg.py" \
@@ -188,6 +202,7 @@ echo "[sd35-dynamic-cfg] cfg_only=${CFG_ONLY} n_variants=${N_VARIANTS} use_qwen=
   --mcts_cfg_round_ndigits "${MCTS_CFG_ROUND_NDIGITS:-6}" \
   --mcts_cfg_log_action_topk "${MCTS_CFG_LOG_ACTION_TOPK:-12}" \
   "${key_args[@]}" \
+  "${fresh_noise_args[@]}" \
   "${extra_args[@]}" \
   --out_dir "${OUT_DIR}" \
   "$@"

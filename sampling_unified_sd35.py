@@ -21,7 +21,9 @@ import os
 import re
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 
@@ -64,7 +66,7 @@ _REWRITE_BAD_TOKENS = {
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified SD3.5 sampling/search with unified reward.")
-    parser.add_argument("--search_method", choices=["greedy", "mcts", "ga", "smc", "bon", "beam"], default="greedy")
+    parser.add_argument("--search_method", choices=["greedy", "mcts", "ga", "smc", "bon", "beam", "noise_inject"], default="greedy")
 
     parser.add_argument(
         "--backend",
@@ -125,8 +127,92 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0,
         help="Auto-compute N evenly-spaced key steps. 0 = disabled (use --mcts_key_steps or branch at every step).",
     )
+    parser.add_argument(
+        "--mcts_fresh_noise_steps",
+        default="",
+        help="Comma-separated step indices for extra fresh-noise exploration in MCTS (e.g. '0,7,14'). "
+             "'all' enables every step.",
+    )
+    parser.add_argument(
+        "--mcts_fresh_noise_samples",
+        type=int,
+        default=1,
+        help="Number of fresh-noise candidates to try at selected MCTS steps. 1 disables extra exploration.",
+    )
+    parser.add_argument(
+        "--mcts_fresh_noise_scale",
+        type=float,
+        default=1.0,
+        help="Scale for additive latent perturbation used by fresh-noise exploration.",
+    )
+    parser.add_argument(
+        "--mcts_fresh_noise_key_steps",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also apply fresh-noise exploration at resolved MCTS key steps.",
+    )
     parser.add_argument("--bon_n", type=int, default=16,
                         help="Number of independent samples for best-of-N search.")
+    parser.add_argument(
+        "--noise_inject_mode",
+        choices=["seeds_only", "reinject_only", "combined"],
+        default="combined",
+        help="Sparse noise-injection search mode: seeds-only | reinjection-only | combined.",
+    )
+    parser.add_argument(
+        "--noise_inject_seed_budget",
+        type=int,
+        default=8,
+        help="Number of root seeds to evaluate for seeds-only or combined mode.",
+    )
+    parser.add_argument(
+        "--noise_inject_candidate_steps",
+        default="",
+        help="Comma-separated candidate reinjection steps (e.g. '1,2'); 'all' uses all steps; empty uses middle step.",
+    )
+    parser.add_argument(
+        "--noise_inject_gamma_bank",
+        nargs="+",
+        type=float,
+        default=[0.0, 0.25, 0.50],
+        help="Latent reinjection magnitude bank gamma for x_t <- x_t + gamma*sigma_t*eps.",
+    )
+    parser.add_argument(
+        "--noise_inject_eps_samples",
+        type=int,
+        default=4,
+        help="Number of eps samples in the reinjection bank per seed.",
+    )
+    parser.add_argument(
+        "--noise_inject_steps_per_rollout",
+        type=int,
+        default=1,
+        help="Reinjection count per rollout (1 or 2) for ablation.",
+    )
+    parser.add_argument(
+        "--noise_inject_include_no_inject",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include a no-injection candidate policy in reinjection search.",
+    )
+    parser.add_argument(
+        "--noise_inject_max_policies",
+        type=int,
+        default=0,
+        help="Cap reinjection policy count per seed (0 = no cap).",
+    )
+    parser.add_argument(
+        "--noise_inject_variant_idx",
+        type=int,
+        default=0,
+        help="Prompt-variant index used by sparse noise-injection search.",
+    )
+    parser.add_argument(
+        "--noise_inject_cfg",
+        type=float,
+        default=None,
+        help="Optional fixed CFG for sparse noise-injection search. If unset, search over cfg_scales.",
+    )
     parser.add_argument("--beam_width", type=int, default=4,
                         help="Number of beams to keep per step in beam search.")
     parser.add_argument("--smc_k", type=int, default=8)
@@ -1222,6 +1308,328 @@ def run_bon(
     )
 
 
+def _resolve_noise_inject_steps(args: argparse.Namespace, total_steps: int) -> list[int]:
+    raw = str(getattr(args, "noise_inject_candidate_steps", "")).strip().lower()
+    if total_steps <= 0:
+        return [0]
+    if not raw:
+        return [int(total_steps // 2)]
+    if raw == "all":
+        return list(range(int(total_steps)))
+    vals: list[int] = []
+    for tok in raw.split(","):
+        t = tok.strip()
+        if not t:
+            continue
+        if t.isdigit():
+            idx = int(t)
+            if 0 <= idx < int(total_steps):
+                vals.append(int(idx))
+    vals = sorted(set(vals))
+    if not vals:
+        return [int(total_steps // 2)]
+    return vals
+
+
+def _noise_inject_gamma_bank(args: argparse.Namespace) -> list[float]:
+    out: list[float] = []
+    for v in getattr(args, "noise_inject_gamma_bank", [0.0, 0.25, 0.5]):
+        vv = float(v)
+        if vv in out:
+            continue
+        out.append(vv)
+    return out if out else [0.0]
+
+
+def _noise_inject_cfg_bank(args: argparse.Namespace) -> tuple[list[float], bool]:
+    override = getattr(args, "noise_inject_cfg", None)
+    if override is not None:
+        return [float(override)], True
+
+    baseline = float(getattr(args, "baseline_cfg", 1.0))
+    out: list[float] = []
+    for v in getattr(args, "cfg_scales", []):
+        vv = float(v)
+        if vv in out:
+            continue
+        out.append(vv)
+    if not out:
+        out = [baseline]
+    elif baseline not in out:
+        out = [baseline] + out
+    return out, False
+
+
+def _build_noise_inject_policies(
+    args: argparse.Namespace,
+    total_steps: int,
+) -> list[tuple[tuple[int, float, int], ...]]:
+    mode = str(getattr(args, "noise_inject_mode", "combined")).strip().lower()
+    if mode == "seeds_only":
+        return [tuple()]
+
+    steps = _resolve_noise_inject_steps(args, int(total_steps))
+    gammas = _noise_inject_gamma_bank(args)
+    eps_n = max(1, int(getattr(args, "noise_inject_eps_samples", 4)))
+    steps_per_rollout = max(1, min(2, int(getattr(args, "noise_inject_steps_per_rollout", 1))))
+    include_no = bool(getattr(args, "noise_inject_include_no_inject", True))
+
+    policies: list[tuple[tuple[int, float, int], ...]] = []
+    if include_no:
+        policies.append(tuple())
+
+    if steps_per_rollout <= 1:
+        for step_idx in steps:
+            for gamma in gammas:
+                if include_no and abs(float(gamma)) <= 1e-12:
+                    continue
+                for eps_id in range(eps_n):
+                    policies.append(((int(step_idx), float(gamma), int(eps_id)),))
+    else:
+        for s1, s2 in combinations(steps, 2):
+            for gamma in gammas:
+                if include_no and abs(float(gamma)) <= 1e-12:
+                    continue
+                for eps_id in range(eps_n):
+                    policies.append(
+                        (
+                            (int(s1), float(gamma), int(eps_id)),
+                            (int(s2), float(gamma), int(eps_id)),
+                        )
+                    )
+
+    # Stable dedup to avoid duplicates when candidate banks overlap.
+    seen: set[tuple[tuple[int, float, int], ...]] = set()
+    uniq: list[tuple[tuple[int, float, int], ...]] = []
+    for policy in policies:
+        key = tuple((int(s), float(g), int(e)) for s, g, e in policy)
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(key)
+
+    max_policies = max(0, int(getattr(args, "noise_inject_max_policies", 0)))
+    if max_policies > 0 and len(uniq) > max_policies:
+        uniq = uniq[:max_policies]
+    return uniq if uniq else [tuple()]
+
+
+def _build_step_noise_cache(
+    init_latents: torch.Tensor,
+    steps: int,
+    seed: int,
+) -> list[torch.Tensor]:
+    out: list[torch.Tensor] = [init_latents.clone()]
+    if steps <= 1:
+        return out
+    gen = torch.Generator(device=init_latents.device).manual_seed(int(seed) + 2048)
+    for _ in range(1, int(steps)):
+        out.append(
+            torch.randn(
+                init_latents.shape,
+                device=init_latents.device,
+                dtype=init_latents.dtype,
+                generator=gen,
+            )
+        )
+    return out
+
+
+def _build_eps_bank_like(
+    like: torch.Tensor,
+    n_eps: int,
+    seed: int,
+) -> list[torch.Tensor]:
+    gen = torch.Generator(device=like.device).manual_seed(int(seed))
+    out: list[torch.Tensor] = []
+    for _ in range(max(1, int(n_eps))):
+        out.append(
+            torch.randn(
+                like.shape,
+                device=like.device,
+                dtype=like.dtype,
+                generator=gen,
+            )
+        )
+    return out
+
+
+@torch.no_grad()
+def _run_sparse_noise_rollout(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    emb: EmbeddingContext,
+    reward_model: UnifiedRewardScorer,
+    prompt: str,
+    init_latents: torch.Tensor,
+    step_noise_cache: list[torch.Tensor],
+    eps_bank: list[torch.Tensor],
+    fixed_variant_idx: int,
+    fixed_cfg: float,
+    sched: list[tuple[torch.Tensor, torch.Tensor, float]],
+    policy: tuple[tuple[int, float, int], ...],
+) -> tuple[Image.Image, float]:
+    use_euler = bool(getattr(args, "euler_sampler", False))
+    latents = init_latents.clone()
+    dx = torch.zeros_like(init_latents)
+
+    inject_map: dict[int, tuple[float, int]] = {}
+    for step_idx, gamma, eps_id in policy:
+        inject_map[int(step_idx)] = (float(gamma), int(eps_id))
+
+    for step_idx, (t_flat, t_4d, dt) in enumerate(sched):
+        if not use_euler:
+            base_noise = step_noise_cache[step_idx] if step_idx < len(step_noise_cache) else step_noise_cache[-1]
+            latents = (1.0 - t_4d) * dx + t_4d * base_noise
+
+        if step_idx in inject_map:
+            gamma, eps_id = inject_map[step_idx]
+            eps = eps_bank[int(eps_id) % len(eps_bank)]
+            latents = latents + float(gamma) * t_4d * eps
+
+        flow = transformer_step(args, ctx, latents, emb, int(fixed_variant_idx), t_flat, float(fixed_cfg))
+        latents, dx = _apply_step(latents, flow, dx, t_4d, dt, use_euler, args.x0_sampler)
+
+    final_img = decode_to_pil(ctx, _final_decode_tensor(latents, dx, use_euler))
+    final_score = score_image(reward_model, prompt, final_img)
+    return final_img, float(final_score)
+
+
+def run_noise_inject(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    emb: EmbeddingContext,
+    reward_model: UnifiedRewardScorer,
+    prompt: str,
+    seed: int,
+) -> SearchResult:
+    mode = str(getattr(args, "noise_inject_mode", "combined")).strip().lower()
+    use_euler = bool(getattr(args, "euler_sampler", False))
+    seed_budget = max(1, int(getattr(args, "noise_inject_seed_budget", 8)))
+
+    if mode == "reinject_only":
+        seed_candidates = [int(seed)]
+    else:
+        seed_candidates = [int(seed) + i for i in range(seed_budget)]
+
+    # Resolve schedule once using the base seed; dtype/schedule are seed-independent.
+    base_latents = make_latents(ctx, int(seed_candidates[0]), args.height, args.width, emb.cond_text[0].dtype)
+    sched = step_schedule(
+        ctx.device,
+        base_latents.dtype,
+        int(args.steps),
+        getattr(args, "sigmas", None),
+        euler=use_euler,
+    )
+    n_steps = len(sched)
+
+    policies = _build_noise_inject_policies(args, n_steps)
+    candidate_steps = _resolve_noise_inject_steps(args, n_steps)
+    gamma_bank = _noise_inject_gamma_bank(args)
+    eps_samples = max(1, int(getattr(args, "noise_inject_eps_samples", 4)))
+    steps_per_rollout = max(1, min(2, int(getattr(args, "noise_inject_steps_per_rollout", 1))))
+
+    fixed_variant_idx = int(getattr(args, "noise_inject_variant_idx", 0))
+    fixed_variant_idx = max(0, min(len(emb.cond_text) - 1, fixed_variant_idx))
+    cfg_bank, cfg_is_override = _noise_inject_cfg_bank(args)
+
+    print(
+        "  noise_inject: "
+        f"mode={mode} seeds={len(seed_candidates)} policies_per_seed={len(policies)} "
+        f"cfg_candidates={len(cfg_bank)} steps_per_rollout={steps_per_rollout} euler={use_euler}"
+    )
+    print(
+        "    "
+        f"candidate_steps={candidate_steps} gamma_bank={[float(g) for g in gamma_bank]} "
+        f"eps_samples={eps_samples} cfg_bank={[float(c) for c in cfg_bank]} variant={fixed_variant_idx}"
+    )
+
+    nfe_start = int(ctx.nfe)
+    corr_start = int(ctx.correction_nfe)
+    t_start = time.perf_counter()
+
+    best_score = -float("inf")
+    best_img: Image.Image | None = None
+    best_seed = int(seed_candidates[0])
+    best_policy: tuple[tuple[int, float, int], ...] = tuple()
+    best_cfg = float(cfg_bank[0])
+
+    total_rollouts = len(seed_candidates) * len(cfg_bank) * len(policies)
+    rollout_idx = 0
+    for seed_i, seed_val in enumerate(seed_candidates):
+        init_latents = make_latents(ctx, int(seed_val), args.height, args.width, emb.cond_text[0].dtype)
+        step_noise_cache = _build_step_noise_cache(init_latents, n_steps, int(seed_val))
+        eps_bank = _build_eps_bank_like(init_latents, eps_samples, seed=int(seed_val) + 900001)
+
+        for cfg_val in cfg_bank:
+            for policy in policies:
+                rollout_idx += 1
+                img, score = _run_sparse_noise_rollout(
+                    args=args,
+                    ctx=ctx,
+                    emb=emb,
+                    reward_model=reward_model,
+                    prompt=prompt,
+                    init_latents=init_latents,
+                    step_noise_cache=step_noise_cache,
+                    eps_bank=eps_bank,
+                    fixed_variant_idx=fixed_variant_idx,
+                    fixed_cfg=float(cfg_val),
+                    sched=sched,
+                    policy=policy,
+                )
+                if score > best_score:
+                    best_score = float(score)
+                    best_img = img
+                    best_seed = int(seed_val)
+                    best_policy = tuple(policy)
+                    best_cfg = float(cfg_val)
+                if rollout_idx == 1 or rollout_idx % 10 == 0 or rollout_idx == total_rollouts:
+                    print(f"    rollout {rollout_idx:4d}/{total_rollouts} best={best_score:.4f}")
+        if seed_i + 1 < len(seed_candidates):
+            del init_latents
+
+    assert best_img is not None
+    fixed_actions: list[tuple[int, float, float]] = [(fixed_variant_idx, best_cfg, 0.0)] * int(n_steps)
+
+    search_nfe = int(ctx.nfe) - nfe_start
+    search_corr_nfe = int(ctx.correction_nfe) - corr_start
+    elapsed = float(time.perf_counter() - t_start)
+    diagnostics = {
+        "mode": mode,
+        "seed_candidates": [int(s) for s in seed_candidates],
+        "candidate_steps": [int(s) for s in candidate_steps],
+        "gamma_bank": [float(g) for g in gamma_bank],
+        "cfg_bank": [float(c) for c in cfg_bank],
+        "cfg_source": "override" if cfg_is_override else "cfg_scales",
+        "eps_samples": int(eps_samples),
+        "steps_per_rollout": int(steps_per_rollout),
+        "policies_per_seed": int(len(policies)),
+        "cfg_candidates": int(len(cfg_bank)),
+        "rollouts_evaluated": int(total_rollouts),
+        "equivalent_seed_budget": int(total_rollouts),
+        "search_nfe_transformer": int(search_nfe),
+        "search_nfe_correction": int(search_corr_nfe),
+        "wall_time_sec": float(elapsed),
+        "fixed_variant_idx": int(fixed_variant_idx),
+        "fixed_cfg": float(best_cfg),
+        "chosen_cfg": float(best_cfg),
+        "chosen_seed": int(best_seed),
+        "chosen_policy": [
+            {"step": int(step), "gamma": float(gamma), "eps_id": int(eps_id)}
+            for step, gamma, eps_id in best_policy
+        ],
+        "no_injection_selected": bool(len(best_policy) == 0),
+        "reward_per_rollout": float(best_score) / float(max(1, total_rollouts)),
+    }
+    return SearchResult(
+        image=best_img,
+        score=float(best_score),
+        actions=fixed_actions,
+        diagnostics=diagnostics,
+    )
+
+
 @torch.no_grad()
 def run_beam(
     args: argparse.Namespace,
@@ -1931,6 +2339,47 @@ def _parse_key_steps(args: argparse.Namespace) -> list[int] | None:
     return None  # default: branch at every step
 
 
+def _resolve_mcts_fresh_noise_steps(
+    args: argparse.Namespace,
+    total_steps: int,
+    key_steps: list[int] | None = None,
+) -> set[int]:
+    out: set[int] = set()
+    raw = str(getattr(args, "mcts_fresh_noise_steps", "")).strip().lower()
+    if raw:
+        if raw == "all":
+            out.update(range(max(0, int(total_steps))))
+        else:
+            for tok in raw.split(","):
+                t = tok.strip()
+                if not t:
+                    continue
+                if t.isdigit():
+                    idx = int(t)
+                    if 0 <= idx < int(total_steps):
+                        out.add(int(idx))
+    if bool(getattr(args, "mcts_fresh_noise_key_steps", False)):
+        ks = key_steps if key_steps is not None else _parse_key_steps(args)
+        if ks is None:
+            ks = list(range(max(0, int(total_steps))))
+        for k in ks:
+            if 0 <= int(k) < int(total_steps):
+                out.add(int(k))
+    return out
+
+
+def _mcts_fresh_noise_samples_for_step(
+    args: argparse.Namespace,
+    step_idx: int,
+    enabled_steps: set[int] | None,
+) -> int:
+    if not enabled_steps:
+        return 1
+    if int(step_idx) not in enabled_steps:
+        return 1
+    return max(1, int(getattr(args, "mcts_fresh_noise_samples", 1)))
+
+
 def _expand_child(
     args: argparse.Namespace,
     ctx: PipelineContext,
@@ -2010,6 +2459,7 @@ def _run_segment(
     sched: list[tuple[torch.Tensor, torch.Tensor, float]],
     start_step: int,
     end_step: int,
+    noise_explore_steps: set[int] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run denoising steps [start_step, end_step) with a fixed action.
 
@@ -2019,10 +2469,35 @@ def _run_segment(
     variant_idx, cfg, cs = action
     for step_idx in range(start_step, end_step):
         t_flat, t_4d, dt = sched[step_idx]
-        flow = transformer_step(args, ctx, latents, emb, variant_idx, t_flat, cfg)
-        latents, dx = _apply_step(latents, flow, dx, t_4d, dt, use_euler, args.x0_sampler)
-        if float(cs) > 0.0:
-            dx = apply_reward_correction(ctx, dx, prompt, reward_model, float(cs), cfg=float(cfg))
+        explore_n = _mcts_fresh_noise_samples_for_step(args, step_idx, noise_explore_steps)
+        if explore_n <= 1:
+            flow = transformer_step(args, ctx, latents, emb, variant_idx, t_flat, cfg)
+            latents, dx = _apply_step(latents, flow, dx, t_4d, dt, use_euler, args.x0_sampler)
+            if float(cs) > 0.0:
+                dx = apply_reward_correction(ctx, dx, prompt, reward_model, float(cs), cfg=float(cfg))
+        else:
+            noise_scale = float(getattr(args, "mcts_fresh_noise_scale", 1.0))
+            best_score = -float("inf")
+            best_latents = latents
+            best_dx = dx
+            # Candidate 0 is the unperturbed latent; the remaining are fresh-noise perturbations.
+            for k in range(explore_n):
+                if k == 0:
+                    latents_in = latents
+                else:
+                    amp = float(noise_scale) * float(max(0.0, float(t_flat[0].item())))
+                    latents_in = latents + (amp * torch.randn_like(latents))
+                flow = transformer_step(args, ctx, latents_in, emb, variant_idx, t_flat, cfg)
+                cand_lat, cand_dx = _apply_step(latents_in, flow, dx, t_4d, dt, use_euler, args.x0_sampler)
+                if float(cs) > 0.0:
+                    cand_dx = apply_reward_correction(ctx, cand_dx, prompt, reward_model, float(cs), cfg=float(cfg))
+                cand_img = decode_to_pil(ctx, _final_decode_tensor(cand_lat, cand_dx, use_euler))
+                cand_score = score_image(reward_model, prompt, cand_img)
+                if cand_score > best_score:
+                    best_score = float(cand_score)
+                    best_latents = cand_lat
+                    best_dx = cand_dx
+            latents, dx = best_latents, best_dx
         if step_idx + 1 < int(args.steps) and not use_euler:
             _, next_t_4d, _ = sched[step_idx + 1]
             noise = torch.randn_like(dx)
@@ -2077,6 +2552,14 @@ def run_mcts(
         seg_end = key_steps[i + 1] if i + 1 < n_key else int(args.steps)
         key_segments.append((seg_start, seg_end))
 
+    fresh_noise_steps = _resolve_mcts_fresh_noise_steps(args, int(args.steps), key_steps=key_steps)
+    fresh_noise_samples = max(1, int(getattr(args, "mcts_fresh_noise_samples", 1)))
+    if len(fresh_noise_steps) > 0 and fresh_noise_samples > 1:
+        print(
+            f"  mcts fresh-noise: steps={sorted(int(x) for x in fresh_noise_steps)} "
+            f"samples={fresh_noise_samples} scale={float(getattr(args, 'mcts_fresh_noise_scale', 1.0)):.3f}"
+        )
+
     root = MCTSNode(0, dx0, start_latents)
 
     best_global_score = -float("inf")
@@ -2106,7 +2589,9 @@ def run_mcts(
                 seg_start, seg_end = key_segments[node.step]
                 child_lat, child_dx = _run_segment(
                     args, ctx, emb, reward_model, prompt,
-                    node.latents, node.dx, action, sched, seg_start, seg_end)
+                    node.latents, node.dx, action, sched, seg_start, seg_end,
+                    noise_explore_steps=fresh_noise_steps,
+                )
                 node.children[action] = MCTSNode(node.step + 1, child_dx, child_lat)
             path.append((node, action))
             node = node.children[action]
@@ -2120,7 +2605,9 @@ def run_mcts(
             seg_start, seg_end = key_segments[rollout_key_idx]
             rollout_latents, rollout_dx = _run_segment(
                 args, ctx, emb, reward_model, prompt,
-                rollout_latents, rollout_dx, rollout_action, sched, seg_start, seg_end)
+                rollout_latents, rollout_dx, rollout_action, sched, seg_start, seg_end,
+                noise_explore_steps=fresh_noise_steps,
+            )
             rollout_key_idx += 1
 
         rollout_img = decode_to_pil(ctx, _final_decode_tensor(rollout_latents, rollout_dx, use_euler))
@@ -2158,14 +2645,18 @@ def run_mcts(
         seg_start, seg_end = key_segments[key_idx]
         replay_lat, replay_dx = _run_segment(
             args, ctx, emb, reward_model, prompt,
-            replay_lat, replay_dx, exploit_action, sched, seg_start, seg_end)
+            replay_lat, replay_dx, exploit_action, sched, seg_start, seg_end,
+            noise_explore_steps=fresh_noise_steps,
+        )
     # If exploit path is shorter than n_key, fill remaining with baseline
     for key_idx in range(len(exploit_path), n_key):
         fallback = actions[0]
         seg_start, seg_end = key_segments[key_idx]
         replay_lat, replay_dx = _run_segment(
             args, ctx, emb, reward_model, prompt,
-            replay_lat, replay_dx, fallback, sched, seg_start, seg_end)
+            replay_lat, replay_dx, fallback, sched, seg_start, seg_end,
+            noise_explore_steps=fresh_noise_steps,
+        )
 
     exploit_img = decode_to_pil(ctx, _final_decode_tensor(replay_lat, replay_dx, use_euler))
     exploit_score = score_image(reward_model, prompt, exploit_img)
@@ -2384,6 +2875,8 @@ def run(args: argparse.Namespace) -> None:
             search = run_bon(args, ctx, emb, reward_model, prompt, args.seed)
         elif args.search_method == "beam":
             search = run_beam(args, ctx, emb, reward_model, prompt, variants, args.seed)
+        elif args.search_method == "noise_inject":
+            search = run_noise_inject(args, ctx, emb, reward_model, prompt, args.seed)
         else:
             raise RuntimeError(f"Unsupported search_method: {args.search_method}")
 

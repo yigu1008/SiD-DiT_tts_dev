@@ -71,6 +71,12 @@ LOOKAHEAD_CFG_WIDTH_MAX="${LOOKAHEAD_CFG_WIDTH_MAX:-7}"
 LOOKAHEAD_CFG_ANCHOR_COUNT="${LOOKAHEAD_CFG_ANCHOR_COUNT:-2}"
 LOOKAHEAD_MIN_VISITS_FOR_CENTER="${LOOKAHEAD_MIN_VISITS_FOR_CENTER:-3}"
 LOOKAHEAD_LOG_ACTION_TOPK="${LOOKAHEAD_LOG_ACTION_TOPK:-12}"
+MCTS_KEY_STEPS="${MCTS_KEY_STEPS:-}"
+MCTS_KEY_STEP_COUNT="${MCTS_KEY_STEP_COUNT:-2}"
+MCTS_FRESH_NOISE_STEPS="${MCTS_FRESH_NOISE_STEPS:-}"
+MCTS_FRESH_NOISE_SAMPLES="${MCTS_FRESH_NOISE_SAMPLES:-1}"
+MCTS_FRESH_NOISE_SCALE="${MCTS_FRESH_NOISE_SCALE:-1.0}"
+MCTS_FRESH_NOISE_KEY_STEPS="${MCTS_FRESH_NOISE_KEY_STEPS:-0}"
 
 # Prefer NUM_PROMPTS over END_INDEX so short test runs are predictable even if
 # END_INDEX is already exported in the shell.
@@ -132,6 +138,8 @@ echo "[lookahead] run_dir=${RUN_DIR}"
 echo "[lookahead] prompt_file=${PROMPT_FILE} range=[${START_INDEX},${END_INDEX})"
 echo "[lookahead] backend=${SD35_BACKEND} reward_backend=${REWARD_BACKEND} num_gpus=${NUM_GPUS}"
 echo "[lookahead] modes=[${LOOKAHEAD_MODES}] cfg_scales=[${CFG_SCALES}] n_variants=${N_VARIANTS}"
+echo "[lookahead] key_steps='${MCTS_KEY_STEPS}' key_step_count=${MCTS_KEY_STEP_COUNT}"
+echo "[lookahead] fresh_noise_steps='${MCTS_FRESH_NOISE_STEPS}' samples=${MCTS_FRESH_NOISE_SAMPLES} scale=${MCTS_FRESH_NOISE_SCALE} key_steps=${MCTS_FRESH_NOISE_KEY_STEPS}"
 
 echo "[preload] caching model: ${PRELOAD_MODEL_ID}"
 env -u RANK -u LOCAL_RANK -u WORLD_SIZE -u LOCAL_WORLD_SIZE -u NODE_RANK \
@@ -175,6 +183,18 @@ run_mode() {
   fi
   if [[ -n "${SD35_SIGMAS}" ]]; then
     extra_args+=(--sigmas ${SD35_SIGMAS})
+  fi
+  extra_args+=(
+    --mcts_key_step_count "${MCTS_KEY_STEP_COUNT}"
+    --mcts_fresh_noise_steps "${MCTS_FRESH_NOISE_STEPS}"
+    --mcts_fresh_noise_samples "${MCTS_FRESH_NOISE_SAMPLES}"
+    --mcts_fresh_noise_scale "${MCTS_FRESH_NOISE_SCALE}"
+  )
+  if [[ -n "${MCTS_KEY_STEPS}" ]]; then
+    extra_args+=(--mcts_key_steps "${MCTS_KEY_STEPS}")
+  fi
+  if [[ "${MCTS_FRESH_NOISE_KEY_STEPS}" == "1" ]]; then
+    extra_args+=(--mcts_fresh_noise_key_steps)
   fi
 
   IMAGEREWARD_CACHE="${IMAGEREWARD_CACHE}" \

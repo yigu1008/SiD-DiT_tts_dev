@@ -71,7 +71,7 @@ REWARD_MAX_NEW_TOKENS="${REWARD_MAX_NEW_TOKENS:-512}"
 REWARD_PROMPT_MODE="${REWARD_PROMPT_MODE:-standard}"
 EVAL_BEST_IMAGES="${EVAL_BEST_IMAGES:-1}"
 EVAL_BACKENDS="${EVAL_BACKENDS:-imagereward hpsv2 pickscore}"
-EVAL_REWARD_DEVICE="${EVAL_REWARD_DEVICE:-cpu}"
+EVAL_REWARD_DEVICE="${EVAL_REWARD_DEVICE:-cuda}"
 EVAL_ALLOW_MISSING_BACKENDS="${EVAL_ALLOW_MISSING_BACKENDS:-1}"
 
 # Keep ImageReward inference independent from cluster wandb/protobuf drift.
@@ -593,7 +593,15 @@ post_eval_best_images() {
   if [[ "${EVAL_ALLOW_MISSING_BACKENDS}" == "1" ]]; then
     cmd+=(--allow_missing_backends)
   fi
-  "${cmd[@]}"
+  local eval_dev_lc
+  eval_dev_lc="$(echo "${EVAL_REWARD_DEVICE}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${eval_dev_lc}" == cpu* ]]; then
+    # Hard-disable CUDA visibility for eval when device=cpu.
+    # This prevents heavyweight reward backends from grabbing GPU memory.
+    CUDA_VISIBLE_DEVICES="" "${cmd[@]}"
+  else
+    "${cmd[@]}"
+  fi
 }
 
 append_method_summary() {

@@ -108,7 +108,7 @@ search:
       - export EVAL_BEST_IMAGES=1
       - export EVAL_BACKENDS='{eval_backends}'
       - export REWARD_DEVICE=cuda
-      - export EVAL_REWARD_DEVICE=cpu
+      - export EVAL_REWARD_DEVICE=cuda
       - export EVAL_ALLOW_MISSING_BACKENDS=0
       # SenseFlow uses no CFG; suite scripts auto-override these to 0.0 for senseflow backends
       - export CFG_SCALES='{cfg_scales}'

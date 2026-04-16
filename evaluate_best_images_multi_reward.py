@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import glob
 import json
 import os
@@ -182,38 +183,43 @@ def score_records(
     args: argparse.Namespace,
     records: list[ImageRecord],
 ) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, dict[str, Any]]]:
-    scorers: dict[str, UnifiedRewardScorer] = {}
+    out_rows: list[dict[str, Any]] = []
+    for rec in records:
+        out_rows.append(
+            {
+                "prompt_index": int(rec.prompt_index),
+                "slug": rec.slug,
+                "sample_index": int(rec.sample_index),
+                "prompt": rec.prompt,
+                "image_path": rec.image_path,
+                "method": args.method,
+                "objective_score": rec.objective_score,
+                "scores": {},
+            }
+        )
+
     init_errors: dict[str, str] = {}
+    eval_errors: dict[str, dict[str, Any]] = {}
+
     for backend in args.backends:
+        scorer: UnifiedRewardScorer | None = None
         try:
-            scorers[backend] = _build_scorer(args, backend)
+            scorer = _build_scorer(args, backend)
         except Exception as exc:  # pragma: no cover
             init_errors[backend] = f"{type(exc).__name__}: {exc}"
+            if not args.allow_missing_backends:
+                bad = "; ".join(f"{k}: {v}" for k, v in init_errors.items())
+                raise RuntimeError(f"Failed to initialize requested backends: {bad}")
+            continue
 
-    if init_errors and not args.allow_missing_backends:
-        bad = "; ".join(f"{k}: {v}" for k, v in init_errors.items())
-        raise RuntimeError(f"Failed to initialize requested backends: {bad}")
-
-    out_rows: list[dict[str, Any]] = []
-    eval_errors: dict[str, dict[str, Any]] = {}
-    for rec in records:
-        row = {
-            "prompt_index": int(rec.prompt_index),
-            "slug": rec.slug,
-            "sample_index": int(rec.sample_index),
-            "prompt": rec.prompt,
-            "image_path": rec.image_path,
-            "method": args.method,
-            "objective_score": rec.objective_score,
-            "scores": {},
-        }
-        with Image.open(rec.image_path) as img:
-            img = img.convert("RGB")
-            for backend, scorer in scorers.items():
+        try:
+            for idx, rec in enumerate(records):
+                with Image.open(rec.image_path) as img:
+                    img = img.convert("RGB")
                 try:
-                    row["scores"][backend] = float(scorer.score(rec.prompt, img))
+                    out_rows[idx]["scores"][backend] = float(scorer.score(rec.prompt, img))
                 except Exception as exc:  # pragma: no cover
-                    row["scores"][backend] = None
+                    out_rows[idx]["scores"][backend] = None
                     eval_errors.setdefault(backend, {"count": 0, "examples": []})
                     eval_errors[backend]["count"] += 1
                     if len(eval_errors[backend]["examples"]) < 3:
@@ -226,7 +232,17 @@ def score_records(
                         )
                     if not args.allow_missing_backends:
                         raise
-        out_rows.append(row)
+        finally:
+            # Keep evaluation memory-bounded: unload backend before loading next.
+            scorer = None
+            gc.collect()
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
 
     return out_rows, init_errors, eval_errors
 

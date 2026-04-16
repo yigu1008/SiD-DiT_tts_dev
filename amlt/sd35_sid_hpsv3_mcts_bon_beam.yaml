@@ -122,7 +122,7 @@ search:
       - export EVAL_BEST_IMAGES=1
       - export EVAL_BACKENDS='{eval_backends}'
       - export REWARD_DEVICE=cuda
-      - export EVAL_REWARD_DEVICE=cpu
+      - export EVAL_REWARD_DEVICE={eval_reward_device}
       - export EVAL_ALLOW_MISSING_BACKENDS=1
       - export CFG_SCALES='{cfg_scales}'
       - export BASELINE_CFG={baseline_cfg}
@@ -203,6 +203,8 @@ search:
       values: [ 7 ]
     - name: eval_backends
       values: [ "hpsv3 imagereward hpsv2 pickscore" ]
+    - name: eval_reward_device
+      values: [ "cuda" ]
     - name: preload_backends
       values: [ "hpsv3 imagereward hpsv2 pickscore" ]
     - name: hpsv3_impl

@@ -113,7 +113,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--time_scale", type=float, default=1000.0)
     parser.add_argument("--out_dir", default="./imagereward_sd35_out")
 
-    parser.add_argument("--n_sims", type=int, default=50)
+    parser.add_argument("--n_sims", type=int, default=60)
     parser.add_argument("--ucb_c", type=float, default=1.41)
     parser.add_argument(
         "--mcts_key_steps",
@@ -2568,6 +2568,23 @@ def run_mcts(
     def _strip_action(action: tuple) -> tuple[int, float, float]:
         return (int(action[0]), float(action[1]), float(action[2]))
 
+    # 4-step integrated noise fix:
+    # At noise steps, use a disjoint union (normal prompt/CFG actions) U (noise-only anchor actions),
+    # instead of the full Cartesian product with every (variant, cfg, correction).
+    anchor_variant_idx = 0
+    anchor_cfg = float(getattr(args, "baseline_cfg", args.cfg_scales[0] if len(args.cfg_scales) > 0 else 1.0))
+    anchor_cs = 0.0
+    integrated_noise_only_actions: list[tuple[int, float, float, float, int]] = []
+    if use_integrated_noise_actions:
+        for gamma in integrated_gamma_bank:
+            g = float(gamma)
+            if abs(g) <= 1e-12:
+                continue
+            for eps_id in range(int(integrated_eps_samples)):
+                integrated_noise_only_actions.append(
+                    (int(anchor_variant_idx), float(anchor_cfg), float(anchor_cs), float(g), int(eps_id))
+                )
+
     latents0 = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
     dx0 = torch.zeros_like(latents0)
     use_euler = getattr(args, "euler_sampler", False)
@@ -2609,18 +2626,10 @@ def run_mcts(
         seg_start, _ = key_segments[int(key_idx)]
         if int(seg_start) not in integrated_noise_steps_set:
             return list(base_actions)
-        out: list[tuple] = []
-        for vi, cfg, cs in base_actions:
-            if integrated_include_no:
-                out.append((int(vi), float(cfg), float(cs), 0.0, 0))
-            for gamma in integrated_gamma_bank:
-                g = float(gamma)
-                if integrated_include_no and abs(g) <= 1e-12:
-                    continue
-                for eps_id in range(int(integrated_eps_samples)):
-                    out.append((int(vi), float(cfg), float(cs), float(g), int(eps_id)))
+        out: list[tuple] = list(base_actions)
+        out.extend(integrated_noise_only_actions)
         if len(out) <= 0:
-            out = [(int(vi), float(cfg), float(cs), 0.0, 0) for vi, cfg, cs in base_actions]
+            out = list(base_actions)
         return out
 
     def _fallback_action_for_key(key_idx: int) -> tuple:
@@ -2937,9 +2946,17 @@ def run_mcts(
         "selected_source": str(selected_source),
         "key_steps": [int(k) for k in key_steps],
         "integrated_noise_actions": bool(use_integrated_noise_actions),
+        "integrated_noise_action_space": "disjoint_union_anchor" if use_integrated_noise_actions else "none",
         "integrated_noise_steps": [int(s) for s in integrated_noise_steps],
         "integrated_noise_gamma_bank": [float(g) for g in integrated_gamma_bank],
         "integrated_noise_eps_samples": int(integrated_eps_samples),
+        "integrated_noise_include_no_inject_flag": bool(integrated_include_no),
+        "integrated_noise_anchor": {
+            "variant_idx": int(anchor_variant_idx),
+            "cfg": float(anchor_cfg),
+            "correction_strength": float(anchor_cs),
+        },
+        "integrated_noise_only_actions_per_step": int(len(integrated_noise_only_actions)),
         "chosen_noise_events": noise_events,
         "sparse_noise_refine": sparse_refine_diag,
     }

@@ -377,6 +377,23 @@ def run_mcts_lookahead(
     def _strip_action(action: tuple) -> tuple[int, float, float]:
         return (int(action[0]), float(action[1]), float(action[2]))
 
+    # 4-step integrated noise fix:
+    # At noise steps, use (normal prompt/CFG actions) U (noise-only anchor actions)
+    # rather than a full Cartesian product with all prompt/CFG actions.
+    anchor_variant_idx = 0
+    anchor_cfg = float(getattr(args, "baseline_cfg", cfg_values[0]))
+    anchor_cs = 0.0
+    integrated_noise_only_actions: list[tuple[int, float, float, float, int]] = []
+    if use_integrated_noise_actions:
+        for gamma in integrated_gamma_bank:
+            g = float(gamma)
+            if abs(g) <= 1e-12:
+                continue
+            for eps_id in range(int(integrated_eps_samples)):
+                integrated_noise_only_actions.append(
+                    (int(anchor_variant_idx), float(anchor_cfg), float(anchor_cs), float(g), int(eps_id))
+                )
+
     if use_integrated_noise_actions:
         key_steps = list(range(int(args.steps)))
     else:
@@ -401,18 +418,10 @@ def run_mcts_lookahead(
         seg_start, _ = key_segments[key_idx]
         if int(seg_start) not in integrated_noise_steps_set:
             return [tuple(a) for a in core_actions]
-        out: list[tuple] = []
-        for vi, cfg, cs in core_actions:
-            if integrated_include_no:
-                out.append((int(vi), float(cfg), float(cs), 0.0, 0))
-            for gamma in integrated_gamma_bank:
-                g = float(gamma)
-                if integrated_include_no and abs(g) <= 1e-12:
-                    continue
-                for eps_id in range(int(integrated_eps_samples)):
-                    out.append((int(vi), float(cfg), float(cs), float(g), int(eps_id)))
+        out: list[tuple] = [tuple(a) for a in core_actions]
+        out.extend(integrated_noise_only_actions)
         if len(out) <= 0:
-            out = [(int(vi), float(cfg), float(cs), 0.0, 0) for vi, cfg, cs in core_actions]
+            out = [tuple(a) for a in core_actions]
         return out
 
     def _fallback_action_for_key(key_idx: int, fallback_cfg: float | None = None) -> tuple:
@@ -1149,9 +1158,17 @@ def run_mcts_lookahead(
         "key_steps": [int(x) for x in key_steps],
         "n_key": int(n_key),
         "integrated_noise_actions": bool(use_integrated_noise_actions),
+        "integrated_noise_action_space": "disjoint_union_anchor" if use_integrated_noise_actions else "none",
         "integrated_noise_steps": [int(s) for s in integrated_noise_steps],
         "integrated_noise_gamma_bank": [float(g) for g in integrated_gamma_bank],
         "integrated_noise_eps_samples": int(integrated_eps_samples),
+        "integrated_noise_include_no_inject_flag": bool(integrated_include_no),
+        "integrated_noise_anchor": {
+            "variant_idx": int(anchor_variant_idx),
+            "cfg": float(anchor_cfg),
+            "correction_strength": float(anchor_cs),
+        },
+        "integrated_noise_only_actions_per_step": int(len(integrated_noise_only_actions)),
         "chosen_noise_events": noise_events,
         "sparse_noise_refine": sparse_refine_diag,
         "lookahead_flags": {

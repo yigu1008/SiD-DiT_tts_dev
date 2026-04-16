@@ -241,7 +241,7 @@ search:
     - name: n_variants
       values: [ 3 ]
     - name: n_sims
-      values: [ 30 ]
+      values: [ 60 ]
     - name: ucb_c
       values: [ 1.41 ]
     - name: smc_k

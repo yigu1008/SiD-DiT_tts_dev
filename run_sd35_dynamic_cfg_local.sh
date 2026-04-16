@@ -177,7 +177,7 @@ echo "[sd35-dynamic-cfg] cfg_only=${CFG_ONLY} n_variants=${N_VARIANTS} use_qwen=
   --cfg_scales "${CFG_SCALES_ARR[@]}" \
   --baseline_cfg "${BASELINE_CFG_VAL}" \
   --correction_strengths "${CORRECTION_STRENGTHS_ARR[@]}" \
-  --n_sims "${N_SIMS:-50}" \
+  --n_sims "${N_SIMS:-60}" \
   --ucb_c "${UCB_C:-1.41}" \
   --seed "${SEED:-42}" \
   --width "${WIDTH:-1024}" \

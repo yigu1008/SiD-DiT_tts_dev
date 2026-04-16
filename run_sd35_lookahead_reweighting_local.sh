@@ -195,7 +195,7 @@ echo "[sd35-lookahead] fresh_noise_steps='${MCTS_FRESH_NOISE_STEPS}' samples=${M
   --cfg_scales "${CFG_SCALES_ARR[@]}" \
   --baseline_cfg "${BASELINE_CFG:-1.0}" \
   --correction_strengths "${CORRECTION_STRENGTHS_ARR[@]}" \
-  --n_sims "${N_SIMS:-50}" \
+  --n_sims "${N_SIMS:-60}" \
   --ucb_c "${UCB_C:-1.41}" \
   --seed "${SEED:-42}" \
   --width "${WIDTH:-1024}" \

@@ -838,7 +838,11 @@ run_method() {
     bon) mode_arg="bon" ;;
     bon_mcts)
       mode_arg="mcts"
-      runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_bon_mcts.py"
+      if [[ "${SD35_BACKEND}" == "sd35_base" ]]; then
+        runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_bon_mcts_sd35base.py"
+      else
+        runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_bon_mcts.py"
+      fi
       ;;
     beam) mode_arg="beam" ;;
     *)
@@ -921,7 +925,7 @@ run_method() {
       --lookahead_log_action_topk "${LOOKAHEAD_LOG_ACTION_TOPK}"
     )
   fi
-  if [[ "${runner_script}" == "${SCRIPT_DIR}/sd35_ddp_experiment_bon_mcts.py" ]]; then
+  if [[ "${runner_script}" == "${SCRIPT_DIR}/sd35_ddp_experiment_bon_mcts.py" || "${runner_script}" == "${SCRIPT_DIR}/sd35_ddp_experiment_bon_mcts_sd35base.py" ]]; then
     extra+=(
       --bon_mcts_n_seeds "${BON_MCTS_N_SEEDS}"
       --bon_mcts_topk "${BON_MCTS_TOPK}"

@@ -509,17 +509,32 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
         # diffusers skips loading the base model's transformer from cache.  This lets
         # senseflow backends work even when the original SD3.5 transformer weights are
         # not present in HF_HOME (we only need VAE + text encoders from the base model).
-        #
-        # Use the HF repo ID (e.g. "domiso/SenseFlow") with subfolder — NOT a local
-        # snapshot path.  from_pretrained resolves from HF cache in offline mode as long
-        # as snapshot_download was called before HF_HUB_OFFLINE=1.
         from diffusers.models.transformers import SD3Transformer2DModel
         tf_kwargs: dict = {"torch_dtype": dtype}
+        transformer_load_id = transformer_id
+        offline = str(os.environ.get("HF_HUB_OFFLINE", "")).strip().lower() in {"1", "true", "yes", "on"}
+        if offline:
+            # Avoid hub metadata requests in offline mode by resolving a local snapshot path.
+            from huggingface_hub import snapshot_download
+
+            try:
+                transformer_load_id = snapshot_download(
+                    transformer_id,
+                    cache_dir=os.environ.get("HF_HOME"),
+                    local_files_only=True,
+                )
+                tf_kwargs["local_files_only"] = True
+                print(f"Resolved offline transformer snapshot: {transformer_load_id}")
+            except Exception as exc:
+                raise RuntimeError(
+                    "Offline mode is enabled, but transformer weights are not cached for "
+                    f"{transformer_id}. Pre-download it before setting HF_HUB_OFFLINE=1."
+                ) from exc
         if transformer_subfolder:
             tf_kwargs["subfolder"] = transformer_subfolder
-        print(f"Loading transformer from {transformer_id} subfolder={transformer_subfolder}")
+        print(f"Loading transformer from {transformer_load_id} subfolder={transformer_subfolder}")
         pretrained_kwargs["transformer"] = SD3Transformer2DModel.from_pretrained(
-            transformer_id, **tf_kwargs
+            transformer_load_id, **tf_kwargs
         ).to(device)
 
     if (args.backend or "sid") == "sid":

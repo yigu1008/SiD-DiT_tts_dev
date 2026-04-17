@@ -1,4 +1,4 @@
-description: senseflow35-bon-filtering-imagereward
+description: sd35-base-bon-filtering-imagereward
 
 target:
   service: sing
@@ -31,7 +31,7 @@ storage:
 
 search:
   job_template:
-    name: senseflow35-allalgos-{run_tag}
+    name: sd35-base-allalgos-{run_tag}
     sku: ${NODES}x${MEM}G${GPUS}-IB
     sla_tier: Standard
     process_count_per_node: 1
@@ -84,7 +84,6 @@ search:
       - if [ "$$SD35_BACKEND" = "sd35_base" ] || [ "$$SD35_BACKEND" = "senseflow_large" ]; then export SD35_MODEL_ID=stabilityai/stable-diffusion-3.5-large; fi
       - if [ "$$SD35_BACKEND" = "senseflow_medium" ]; then export SD35_MODEL_ID=stabilityai/stable-diffusion-3.5-medium; fi
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; b=os.environ.get('SD35_BACKEND','sid'); m=os.environ.get('SD35_MODEL_ID','YGu1998/SiD-DiT-SD3.5-large'); snapshot_download(m, cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('SD3.5 cache OK', b, m)"
-      - if [ "$$SD35_BACKEND" = "senseflow_large" ] || [ "$$SD35_BACKEND" = "senseflow_medium" ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('domiso/SenseFlow', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('SenseFlow cache OK')"; fi
       # ── Preload Qwen for prompt rewrites (must happen before offline mode) ──
       - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', token=os.environ.get('HF_TOKEN')); print('Qwen cache OK')"; fi
       - export HF_HUB_OFFLINE=1
@@ -197,11 +196,11 @@ search:
   type: grid
   params:
     - name: run_tag
-      values: [ "senseflow35_bon_filtering_imagereward" ]
+      values: [ "sd35_base_bon_filtering_imagereward" ]
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: sd35_backend
-      values: [ "senseflow_large" ]
+      values: [ "sd35_base" ]
     - name: prompt_style
       values: [ "all" ]
     - name: start_index
@@ -227,9 +226,9 @@ search:
     - name: mcts_cfg_mode
       values: [ "adaptive" ]
     - name: mcts_cfg_root_bank
-      values: [ "0.0" ]
+      values: [ "4.0 4.5 5.0 5.5" ]
     - name: mcts_cfg_anchors
-      values: [ "0.0" ]
+      values: [ "3.5 7.0" ]
     - name: mcts_cfg_step_anchor_count
       values: [ 2 ]
     - name: mcts_cfg_min_parent_visits
@@ -241,15 +240,15 @@ search:
     - name: eval_backends
       values: [ "imagereward" ]
     - name: cfg_scales
-      values: [ "0.0" ]
+      values: [ "3.5 4.0 4.5 5.0 5.5 6.0 7.0" ]
     - name: baseline_cfg
-      values: [ 0.0 ]
+      values: [ 4.5 ]
     - name: steps
-      values: [ 4 ]
+      values: [ 28 ]
     - name: n_variants
-      values: [ 3 ]
+      values: [ 4 ]
     - name: n_sims
-      values: [ 60 ]
+      values: [ 120 ]
     - name: ucb_c
       values: [ 1.41 ]
     - name: smc_k
@@ -261,7 +260,7 @@ search:
     - name: resample_start_frac
       values: [ 0.3 ]
     - name: smc_cfg_scale
-      values: [ 0.0 ]
+      values: [ 4.5 ]
     - name: smc_variant_idx
       values: [ 0 ]
     - name: ga_population
@@ -287,9 +286,9 @@ search:
     - name: bon_n
       values: [ 16 ]
     - name: bon_mcts_n_seeds
-      values: [ 12 ]
+      values: [ 16 ]
     - name: bon_mcts_topk
-      values: [ 3 ]
+      values: [ 4 ]
     - name: bon_mcts_seed_stride
       values: [ 1 ]
     - name: bon_mcts_seed_offset
@@ -297,9 +296,9 @@ search:
     - name: bon_mcts_sim_alloc
       values: [ "split" ]
     - name: bon_mcts_min_sims
-      values: [ 12 ]
+      values: [ 16 ]
     - name: bon_mcts_prescreen_cfg
-      values: [ "0.0" ]
+      values: [ "4.5" ]
     - name: beam_width
       values: [ 4 ]
     - name: noise_inject_mode
@@ -307,7 +306,7 @@ search:
     - name: noise_inject_seed_budget
       values: [ 4 ]
     - name: noise_inject_candidate_steps
-      values: [ "1" ]
+      values: [ "7,14,21" ]
     - name: noise_inject_gamma_bank
       values: [ "0.0 0.15 0.30" ]
     - name: noise_inject_eps_samples

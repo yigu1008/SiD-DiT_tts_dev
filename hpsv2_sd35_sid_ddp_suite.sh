@@ -69,6 +69,21 @@ REWARD_API_KEY="${REWARD_API_KEY:-unifiedreward}"
 REWARD_API_MODEL="${REWARD_API_MODEL:-UnifiedReward-7b-v1.5}"
 REWARD_MAX_NEW_TOKENS="${REWARD_MAX_NEW_TOKENS:-512}"
 REWARD_PROMPT_MODE="${REWARD_PROMPT_MODE:-standard}"
+# HPSv3 score shaping:
+# - raw: use native HPSv3 outputs
+# - 13ish: affine transform with default offset +13.0 for easier comparison to 13.x conventions
+export HPSV3_SCORE_STYLE="${HPSV3_SCORE_STYLE:-raw}"
+export HPSV3_SCORE_SCALE="${HPSV3_SCORE_SCALE:-1.0}"
+if [[ -z "${HPSV3_SCORE_OFFSET:-}" ]]; then
+  _hpsv3_style_lc="$(echo "${HPSV3_SCORE_STYLE}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${_hpsv3_style_lc}" == "13ish" || "${_hpsv3_style_lc}" == "offset13" || "${_hpsv3_style_lc}" == "plus13" ]]; then
+    export HPSV3_SCORE_OFFSET="13.0"
+  else
+    export HPSV3_SCORE_OFFSET="0.0"
+  fi
+else
+  export HPSV3_SCORE_OFFSET
+fi
 EVAL_BEST_IMAGES="${EVAL_BEST_IMAGES:-1}"
 EVAL_BACKENDS="${EVAL_BACKENDS:-imagereward hpsv2 pickscore}"
 EVAL_REWARD_DEVICE="${EVAL_REWARD_DEVICE:-cuda}"

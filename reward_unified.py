@@ -161,7 +161,12 @@ class UnifiedRewardScorer:
         self.hpsv3_last_error: Optional[str] = None
         self._hpsv3_fp32_forced = False
         self._hpsv3_bf16_forced = False
+        self._hpsv3_score_style_warned = False
         self.debug = str(os.environ.get("UNIFIEDREWARD_DEBUG", "")).strip().lower() in {"1", "true", "yes", "on"}
+        self.hpsv3_score_style = str(os.environ.get("HPSV3_SCORE_STYLE", "raw")).strip().lower()
+        default_hpsv3_offset = 13.0 if self.hpsv3_score_style in {"13ish", "offset13", "plus13"} else 0.0
+        self.hpsv3_score_scale = self._parse_env_float("HPSV3_SCORE_SCALE", 1.0)
+        self.hpsv3_score_offset = self._parse_env_float("HPSV3_SCORE_OFFSET", default_hpsv3_offset)
         self._load_backends()
 
     @staticmethod
@@ -169,6 +174,17 @@ class UnifiedRewardScorer:
         if device.startswith("cuda") and ":" not in device:
             return "cuda:0"
         return device
+
+    @staticmethod
+    def _parse_env_float(name: str, default: float) -> float:
+        raw = os.environ.get(name)
+        if raw is None or str(raw).strip() == "":
+            return float(default)
+        try:
+            return float(raw)
+        except Exception:
+            print(f"[Reward] Invalid {name}={raw!r}; using default {default}.")
+            return float(default)
 
     # ── Reward server (remote scoring via HTTP) ─────────────────────────
 
@@ -904,6 +920,11 @@ class UnifiedRewardScorer:
             mode = "api" if self.state.unifiedreward_api_base else "local"
             detail = self.state.unifiedreward_api_model if mode == "api" else self.unifiedreward_model
             return f"backend=unifiedreward({mode}) model={detail} available={self.available}"
+        if target == "hpsv3":
+            return (
+                f"backend=hpsv3 available={self.available} "
+                f"style={self.hpsv3_score_style} scale={self.hpsv3_score_scale} offset={self.hpsv3_score_offset}"
+            )
         return f"backend={target} available={self.available}"
 
     def _auto_backend(self) -> str:
@@ -980,15 +1001,33 @@ class UnifiedRewardScorer:
             return float(obj)
         raise RuntimeError(f"Unsupported HPSv3 output type: {type(obj).__name__}")
 
+    def _apply_hpsv3_score_style(self, score: float) -> float:
+        style = str(self.hpsv3_score_style).strip().lower()
+        raw = float(score)
+        if style in {"", "raw", "identity", "none"}:
+            return raw
+        if style in {"13ish", "offset13", "plus13", "affine", "linear"}:
+            return float(self.hpsv3_score_scale * raw + self.hpsv3_score_offset)
+        if not self._hpsv3_score_style_warned:
+            print(f"[Reward] Unknown HPSv3 score style={self.hpsv3_score_style!r}; falling back to raw.")
+            self._hpsv3_score_style_warned = True
+        return raw
+
     @torch.no_grad()
     def _score_hpsv3(self, prompt: str, image: Image.Image) -> float:
         if self._is_server_backend("hpsv3"):
-            return self._score_via_server(prompt, image, "hpsv3")
+            raw = self._score_via_server(prompt, image, "hpsv3")
+            return self._apply_hpsv3_score_style(raw)
         inferencer = self.state.hpsv3_inferencer
         if inferencer is None:
             raise RuntimeError("HPSv3 inferencer is not loaded.")
         if str(getattr(self.state, "hpsv3_impl", "")) == "imscore":
-            return self._score_hpsv3_imscore(prompt, image, inferencer)
+            raw = self._score_hpsv3_imscore(prompt, image, inferencer)
+            return self._apply_hpsv3_score_style(raw)
+
+        def _finalize_hpsv3_score(obj: Any) -> float:
+            raw = self._extract_scalar_from_hpsv3_output(obj)
+            return self._apply_hpsv3_score_style(raw)
 
         def _run_call(fn: Any, *args: Any, **kwargs: Any) -> Any:
             # Avoid inheriting outer autocast state from diffusion path.
@@ -1087,7 +1126,7 @@ class UnifiedRewardScorer:
                 ):
                     try:
                         out = _run_call(fn, **kwargs)
-                        return self._extract_scalar_from_hpsv3_output(out)
+                        return _finalize_hpsv3_score(out)
                     except Exception as exc:
                         msg = str(exc)
                         if _is_dtype_mismatch(msg):
@@ -1097,7 +1136,7 @@ class UnifiedRewardScorer:
                                     self._hpsv3_fp32_forced = True
                                     try:
                                         out = _run_call(fn, **kwargs)
-                                        return self._extract_scalar_from_hpsv3_output(out)
+                                        return _finalize_hpsv3_score(out)
                                     except Exception as retry_exc:
                                         call_errors.append(
                                             f"{fn_name}({list(kwargs.keys())})[fp32-retry]: {type(retry_exc).__name__}: {str(retry_exc)[:160]}"
@@ -1108,7 +1147,7 @@ class UnifiedRewardScorer:
                                     self._hpsv3_bf16_forced = True
                                     try:
                                         out = _run_call(fn, **kwargs)
-                                        return self._extract_scalar_from_hpsv3_output(out)
+                                        return _finalize_hpsv3_score(out)
                                     except Exception as retry_exc:
                                         call_errors.append(
                                             f"{fn_name}({list(kwargs.keys())})[bf16-retry]: {type(retry_exc).__name__}: {str(retry_exc)[:160]}"
@@ -1120,7 +1159,7 @@ class UnifiedRewardScorer:
                 ):
                     try:
                         out = _run_call(fn, *args)
-                        return self._extract_scalar_from_hpsv3_output(out)
+                        return _finalize_hpsv3_score(out)
                     except Exception as exc:
                         msg = str(exc)
                         if _is_dtype_mismatch(msg):
@@ -1132,7 +1171,7 @@ class UnifiedRewardScorer:
                                 self._hpsv3_fp32_forced = True
                                 try:
                                     out = _run_call(fn, *args)
-                                    return self._extract_scalar_from_hpsv3_output(out)
+                                    return _finalize_hpsv3_score(out)
                                 except Exception as retry_exc:
                                     call_errors.append(
                                         f"{fn_name}(positional)[fp32-retry]: {type(retry_exc).__name__}: {str(retry_exc)[:160]}"
@@ -1143,7 +1182,7 @@ class UnifiedRewardScorer:
                                     self._hpsv3_bf16_forced = True
                                     try:
                                         out = _run_call(fn, *args)
-                                        return self._extract_scalar_from_hpsv3_output(out)
+                                        return _finalize_hpsv3_score(out)
                                     except Exception as retry_exc:
                                         call_errors.append(
                                             f"{fn_name}(positional)[bf16-retry]: {type(retry_exc).__name__}: {str(retry_exc)[:160]}"

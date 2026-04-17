@@ -1,4 +1,4 @@
-description: sd35-sid-hpsv3-mcts-smc-bon
+description: sd35-sid-hpsv3-mcts-smc-13ish
 
 target:
   service: sing
@@ -118,6 +118,9 @@ search:
       - export REWARD_TYPE=hpsv3
       - export REWARD_BACKENDS=hpsv3
       - export SID_HPSV3_IMPL={hpsv3_impl}
+      - export HPSV3_SCORE_STYLE={hpsv3_score_style}
+      - export HPSV3_SCORE_SCALE={hpsv3_score_scale}
+      - export HPSV3_SCORE_OFFSET={hpsv3_score_offset}
       - export DOWNGRADE_TRANSFORMERS={downgrade_transformers}
       - export EVAL_BEST_IMAGES=1
       - export EVAL_BACKENDS='{eval_backends}'
@@ -187,7 +190,7 @@ search:
   type: grid
   params:
     - name: run_tag
-      values: [ "sd35_sid_hpsv3_mcts_smc_bon" ]
+      values: [ "sd35_sid_hpsv3_mcts_smc_13ish" ]
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: prompt_style
@@ -199,7 +202,7 @@ search:
     - name: use_subset
       values: [ 1 ]
     - name: methods
-      values: [ "mcts smc bon" ]
+      values: [ "mcts smc" ]
     - name: sd35_mcts_option
       values: [ "standard" ]
     - name: lookahead_method_mode
@@ -222,6 +225,12 @@ search:
       values: [ "hpsv3" ]
     - name: hpsv3_impl
       values: [ "imscore" ]
+    - name: hpsv3_score_style
+      values: [ "13ish" ]
+    - name: hpsv3_score_scale
+      values: [ 1.0 ]
+    - name: hpsv3_score_offset
+      values: [ 13.0 ]
     - name: downgrade_transformers
       values: [ 0 ]
     - name: cfg_scales

@@ -229,6 +229,13 @@ GA_EVAL_BATCH="${GA_EVAL_BATCH:-2}"
 GA_PHASE_CONSTRAINTS="${GA_PHASE_CONSTRAINTS:-1}"
 BON_N="${BON_N:-16}"
 BEAM_WIDTH="${BEAM_WIDTH:-4}"
+BON_MCTS_N_SEEDS="${BON_MCTS_N_SEEDS:-8}"
+BON_MCTS_TOPK="${BON_MCTS_TOPK:-2}"
+BON_MCTS_SEED_STRIDE="${BON_MCTS_SEED_STRIDE:-1}"
+BON_MCTS_SEED_OFFSET="${BON_MCTS_SEED_OFFSET:-0}"
+BON_MCTS_SIM_ALLOC="${BON_MCTS_SIM_ALLOC:-split}"
+BON_MCTS_MIN_SIMS="${BON_MCTS_MIN_SIMS:-8}"
+BON_MCTS_PRESCREEN_CFG="${BON_MCTS_PRESCREEN_CFG:-}"
 NOISE_INJECT_MODE="${NOISE_INJECT_MODE:-combined}"
 NOISE_INJECT_SEED_BUDGET="${NOISE_INJECT_SEED_BUDGET:-8}"
 NOISE_INJECT_CANDIDATE_STEPS="${NOISE_INJECT_CANDIDATE_STEPS:-}"
@@ -387,6 +394,9 @@ echo "  nproc_per_node: ${NUM_GPUS}"
 echo "  reward_backend: ${REWARD_BACKEND}"
 echo "  eval_best_images: ${EVAL_BEST_IMAGES} eval_backends: ${EVAL_BACKENDS} eval_device: ${EVAL_REWARD_DEVICE}"
 echo "  ga: pop=${GA_POPULATION} gens=${GA_GENERATIONS} eval_batch=${GA_EVAL_BATCH}"
+if [[ "${METHODS}" == *"bon_mcts"* ]]; then
+  echo "  bon_mcts: prescreen_n=${BON_MCTS_N_SEEDS} topk=${BON_MCTS_TOPK} sim_alloc=${BON_MCTS_SIM_ALLOC} min_sims=${BON_MCTS_MIN_SIMS}"
+fi
 echo "  use_qwen: ${USE_QWEN} (precompute=${PRECOMPUTE_REWRITES})"
 echo "  rewrites_file: ${REWRITES_FILE}"
 echo "  out: ${RUN_DIR}"
@@ -826,6 +836,10 @@ run_method() {
     ga) mode_arg="ga" ;;
     smc|smc_das) mode_arg="smc" ;;
     bon) mode_arg="bon" ;;
+    bon_mcts)
+      mode_arg="mcts"
+      runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_bon_mcts.py"
+      ;;
     beam) mode_arg="beam" ;;
     *)
       echo "Error: unsupported method '${method}' for SD3.5 suite." >&2
@@ -906,6 +920,19 @@ run_method() {
       --lookahead_min_visits_for_center "${LOOKAHEAD_MIN_VISITS_FOR_CENTER}"
       --lookahead_log_action_topk "${LOOKAHEAD_LOG_ACTION_TOPK}"
     )
+  fi
+  if [[ "${runner_script}" == "${SCRIPT_DIR}/sd35_ddp_experiment_bon_mcts.py" ]]; then
+    extra+=(
+      --bon_mcts_n_seeds "${BON_MCTS_N_SEEDS}"
+      --bon_mcts_topk "${BON_MCTS_TOPK}"
+      --bon_mcts_seed_stride "${BON_MCTS_SEED_STRIDE}"
+      --bon_mcts_seed_offset "${BON_MCTS_SEED_OFFSET}"
+      --bon_mcts_sim_alloc "${BON_MCTS_SIM_ALLOC}"
+      --bon_mcts_min_sims "${BON_MCTS_MIN_SIMS}"
+    )
+    if [[ -n "${BON_MCTS_PRESCREEN_CFG}" ]]; then
+      extra+=(--bon_mcts_prescreen_cfg "${BON_MCTS_PRESCREEN_CFG}")
+    fi
   fi
   if [[ -n "${NOISE_INJECT_CANDIDATE_STEPS}" ]]; then
     extra+=(--noise_inject_candidate_steps "${NOISE_INJECT_CANDIDATE_STEPS}")

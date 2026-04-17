@@ -186,12 +186,10 @@ def _run_bon_mcts(
         "prescreen_ranked": prescreen_rows,
         "mcts_refine": mcts_rows,
     }
-    return base.SearchResult(
-        image=best_result.image,
-        score=float(best_result.score),
-        actions=[(int(v), float(c), float(r)) for v, c, r in best_result.actions],
-        diagnostics=diagnostics,
-    )
+    # Keep the concrete result object produced by the active backend's MCTS
+    # implementation; just attach merged diagnostics.
+    best_result.diagnostics = diagnostics
+    return best_result
 
 
 def main() -> None:

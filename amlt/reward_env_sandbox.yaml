@@ -1,0 +1,90 @@
+description: reward-env-sandbox
+
+target:
+  service: sing
+  name: GenAI-Shared-UKSouth2
+  workspace_name: Singularity-GenAI-WS-UKSouth2
+  resource_group: singularity-genai-gpu-uksouth2
+
+env_defaults:
+  service: sing
+  PRIORITY: high
+  NODES: 1
+  GPUS: 1
+  MEM: 80
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - export PATH=/home/aiscuser/.local/bin:$$PATH
+    - pip install --user datasets huggingface_hub hpsv2
+
+code:
+  local_dir: ./
+
+storage:
+  output:
+    storage_account_name: vigstandard
+    container_name: data
+    mount_dir: /mnt/data
+
+search:
+  job_template:
+    name: reward-env-sandbox-{run_tag}
+    sku: ${NODES}x${MEM}G${GPUS}
+    sla_tier: Standard
+    process_count_per_node: 1
+    priority: high
+    mpi: False
+    command:
+      - set -x
+      - export PATH=/home/aiscuser/.local/bin:$$PATH
+      - export PATH="$$PATH:/root/.local/bin:/opt/conda/envs/ptca/bin"
+      - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
+      - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
+      - export HF_TOKEN={hf_token}
+      - export HUGGING_FACE_HUB_TOKEN={hf_token}
+      - unset REWARD_SERVER_URL || true
+      - export SID_FORCE_WANDB_STUB=1
+      - export WANDB_DISABLED=true
+      - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
+      - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
+      - if [ {install_deps} = 1 ]; then PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh; fi
+      - if [ {force_offline} = 1 ]; then export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1; else unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true; fi
+      - export OUT_DIR=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}/sandbox
+      - mkdir -p "$$OUT_DIR"
+      - export CASES='{cases}'
+      - export ALLOW_FAIL_CASES='{allow_fail_cases}'
+      - export DEVICE='{device}'
+      - export TIMEOUT_SEC={timeout_sec}
+      - export IMAGE_SIZE={image_size}
+      - export FORCE_OFFLINE={force_offline}
+      - export INSTALL_DEPS=0
+      - PYTHON_BIN=/opt/conda/envs/ptca/bin/python OUT_DIR="$$OUT_DIR" CASES="$$CASES" ALLOW_FAIL_CASES="$$ALLOW_FAIL_CASES" DEVICE="$$DEVICE" TIMEOUT_SEC="$$TIMEOUT_SEC" IMAGE_SIZE="$$IMAGE_SIZE" FORCE_OFFLINE="$$FORCE_OFFLINE" bash run_reward_env_sandbox_local.sh
+
+    submit_args:
+      env:
+        DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: True
+        SHARED_MEMORY_PERCENT: 0.5
+
+  max_trials: 1
+  type: grid
+  params:
+    - name: run_tag
+      values: [ "reward_env_sandbox" ]
+    - name: hf_token
+      values: [ "YOUR_HF_TOKEN_HERE" ]
+    - name: cases
+      values: [ "imagereward,hpsv3_imscore,hpsv3_official" ]
+    - name: allow_fail_cases
+      values: [ "hpsv3_official" ]
+    - name: device
+      values: [ "cuda" ]
+    - name: timeout_sec
+      values: [ 1800 ]
+    - name: image_size
+      values: [ 384 ]
+    - name: install_deps
+      values: [ 1 ]
+    - name: force_offline
+      values: [ 0 ]

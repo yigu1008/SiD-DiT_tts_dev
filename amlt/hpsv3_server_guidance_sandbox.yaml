@@ -54,8 +54,8 @@ search:
       - export REWARD_ENV_NAME=reward_hpsv3_sandbox
       - CONDA_BASE=/opt/conda REWARD_ENV_NAME="$$REWARD_ENV_NAME" bash setup_reward_env.sh
       - export REWARD_PY=/opt/conda/envs/$$REWARD_ENV_NAME/bin/python
-      - if [ ! -x "$$REWARD_PY" ]; then echo "Reward env python not found: $$REWARD_PY"; ls -la /opt/conda/envs || true; exit 1; fi
-      - echo "Using reward python: $$REWARD_PY"
+      - 'if [ ! -x "$$REWARD_PY" ]; then echo "Reward env python not found: $$REWARD_PY"; ls -la /opt/conda/envs || true; exit 1; fi'
+      - 'echo "Using reward python: $$REWARD_PY"'
       - export OUT_DIR=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}/hpsv3_server_sandbox
       - mkdir -p "$$OUT_DIR"
       - export REWARD_SERVER_PORT={reward_server_port}

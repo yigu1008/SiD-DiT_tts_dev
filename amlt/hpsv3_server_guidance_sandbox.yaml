@@ -71,7 +71,7 @@ search:
       - export OUT_JSON=$$OUT_DIR/hpsv3_server_guidance_sandbox_report.json
       - CUDA_VISIBLE_DEVICES=$$SANDBOX_CVD REWARD_SERVER_URL="$$REWARD_SERVER_URL" /opt/conda/envs/ptca/bin/python sandbox_hpsv3_server_guidance.py --reward_server_url "$$REWARD_SERVER_URL" --out_json "$$OUT_JSON" $$SANDBOX_SAMPLING_FLAG --sampling_script ./sampling_flux_unified.py --sampling_backend {sampling_backend} --model_id {sampling_model_id} --steps {sampling_steps} --width {sampling_width} --height {sampling_height} --seed {sampling_seed} --n_variants {sampling_n_variants} --cfg_scales {sampling_cfg_scales} --n_sims {sampling_n_sims} --ucb_c {sampling_ucb_c} --dtype {sampling_dtype} --device cuda --auto_select_gpu --sampling_out_dir "$$OUT_DIR/sampling_probe" --prompt '{prompt}'
       - cp "$$OUT_JSON" "$$OUT_DIR/final_report.json"
-      - echo "sandbox report: $$OUT_JSON"
+      - 'echo "sandbox report: $$OUT_JSON"'
 
     submit_args:
       env:

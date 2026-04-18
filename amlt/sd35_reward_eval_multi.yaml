@@ -76,27 +76,23 @@ search:
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets, transformers; print('final pin ok', 'transformers='+md.version('transformers')); assert hasattr(transformers, 'Qwen2_5_VLForConditionalGeneration'), 'Qwen2_5_VL missing'"
       # ── Run eval for each method ──────────────────────────────────────────
-      - export RUN_ROOT=/mnt/data/v-yigu/hpsv2_all_models_runs/{source_run_tag}
+      # method_parent: full path to the directory containing method subdirs.
+      #   sd35:  /mnt/data/v-yigu/hpsv2_all_models_runs/<source_run_tag>/sd35
+      #   flux:  /mnt/data/v-yigu/hpsv2_all_models_runs/<source_run_tag>/<run_subdir>
+      #          e.g. run_subdir = "run_20260418_182000"
+      - export METHOD_PARENT={method_parent}
       - export EVAL_DEVICE={eval_device}
       - export EVAL_BACKENDS='{eval_backends}'
       - export METHODS='{methods}'
       - export LAYOUT={layout}
       - |
-        # Resolve the method parent directory based on layout:
-        #   sd35  -> $RUN_ROOT/sd35/<method>           (logs/ + images/ inside)
-        #   flux  -> $RUN_ROOT/run_*/<method>           (rank_*/summary.json inside)
-        #   sana  -> $RUN_ROOT/run_*/<method>           (same as flux)
-        if [ "$$LAYOUT" = "sd35" ]; then
-          METHOD_PARENT="$$RUN_ROOT/sd35"
-        else
-          # Flux/Sana: find the most recent run_* directory
-          METHOD_PARENT=$$(ls -dt "$$RUN_ROOT"/run_* 2>/dev/null | head -1)
-          if [ -z "$$METHOD_PARENT" ]; then
-            echo "ERROR: no run_* directory found under $$RUN_ROOT"
-            exit 1
-          fi
-          echo "Discovered flux/sana run dir: $$METHOD_PARENT"
+        if [ ! -d "$$METHOD_PARENT" ]; then
+          echo "ERROR: method_parent does not exist: $$METHOD_PARENT"
+          echo "List available dirs:"
+          ls -d /mnt/data/v-yigu/hpsv2_all_models_runs/{source_run_tag}/*/ 2>/dev/null || echo "(none)"
+          exit 1
         fi
+        echo "method_parent=$$METHOD_PARENT layout=$$LAYOUT methods=$$METHODS"
         for method in $$METHODS; do
           METHOD_DIR="$$METHOD_PARENT/$$method"
           if [ ! -d "$$METHOD_DIR" ]; then
@@ -132,14 +128,16 @@ search:
       values: [ "reward_eval_multi" ]
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
-    # Add finished run tags here — each gets its own eval job
     - name: source_run_tag
-      values:
-        - "sd35_base_bon_filtering_imagereward"
-        # - "sd35_base_bon_mcts_reduced"
-        # - "flux_schnell_bon_filtering_rewards_nohpsv3"
+      values: [ "sd35_base_bon_filtering_imagereward" ]
+    # method_parent: full path to the dir containing method subdirs
+    #   SD35 example:  /mnt/data/v-yigu/hpsv2_all_models_runs/<source_run_tag>/sd35
+    #   Flux example:  /mnt/data/v-yigu/hpsv2_all_models_runs/<source_run_tag>/run_20260418_182000
+    - name: method_parent
+      values: [ "/mnt/data/v-yigu/hpsv2_all_models_runs/sd35_base_bon_filtering_imagereward/sd35" ]
     - name: layout
       values: [ "sd35" ]
+    # Space-separated method names matching subdirs under method_parent
     - name: methods
       values: [ "baseline bon_mcts" ]
     - name: eval_backends

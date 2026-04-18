@@ -122,9 +122,22 @@ def _collect_sd35_records(method_out: str, method: str) -> tuple[list[ImageRecor
     return records, missing
 
 
+_SANA_FLUX_METHOD_ALIASES: dict[str, list[str]] = {
+    "bon_mcts": ["mcts", "bon_mcts"],
+}
+
+
+def _sana_flux_image_suffixes(method: str) -> list[str]:
+    m = str(method).strip().lower()
+    if m == "baseline":
+        return ["baseline"]
+    return _SANA_FLUX_METHOD_ALIASES.get(m, [m])
+
+
 def _collect_sana_flux_records(method_out: str, method: str) -> tuple[list[ImageRecord], list[str]]:
     records: list[ImageRecord] = []
     missing: list[str] = []
+    suffixes = _sana_flux_image_suffixes(method)
     for summary_path in sorted(glob.glob(os.path.join(method_out, "rank_*", "summary.json"))):
         rank_dir = os.path.dirname(summary_path)
         with open(summary_path, encoding="utf-8") as f:
@@ -136,12 +149,17 @@ def _collect_sana_flux_records(method_out: str, method: str) -> tuple[list[Image
             samples = row.get("samples", [])
             for sample_idx, sample in enumerate(samples):
                 if method == "baseline":
-                    img_name = f"{slug}_s{sample_idx}_baseline.png"
                     objective_score = sample.get("baseline_score")
                 else:
-                    img_name = f"{slug}_s{sample_idx}_{method}.png"
                     objective_score = sample.get("search_score")
-                image_path = os.path.join(rank_dir, img_name)
+                image_path = ""
+                for suffix in suffixes:
+                    candidate = os.path.join(rank_dir, f"{slug}_s{sample_idx}_{suffix}.png")
+                    if os.path.exists(candidate):
+                        image_path = candidate
+                        break
+                if not image_path:
+                    image_path = os.path.join(rank_dir, f"{slug}_s{sample_idx}_{suffixes[0]}.png")
                 rec = ImageRecord(
                     prompt_index=prompt_index,
                     slug=slug,

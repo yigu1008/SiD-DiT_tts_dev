@@ -249,7 +249,7 @@ search:
     - name: n_variants
       values: [ 4 ]
     - name: n_sims
-      values: [ 120 ]
+      values: [ 24 ]
     - name: ucb_c
       values: [ 1.41 ]
     - name: smc_k
@@ -287,9 +287,9 @@ search:
     - name: bon_n
       values: [ 16 ]
     - name: bon_mcts_n_seeds
-      values: [ 16 ]
+      values: [ 5 ]
     - name: bon_mcts_topk
-      values: [ 4 ]
+      values: [ 1 ]
     - name: bon_mcts_seed_stride
       values: [ 1 ]
     - name: bon_mcts_seed_offset
@@ -297,7 +297,7 @@ search:
     - name: bon_mcts_sim_alloc
       values: [ "split" ]
     - name: bon_mcts_min_sims
-      values: [ 16 ]
+      values: [ 4 ]
     - name: bon_mcts_prescreen_cfg
       values: [ "4.5" ]
     - name: beam_width

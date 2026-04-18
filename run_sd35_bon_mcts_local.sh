@@ -118,7 +118,7 @@ echo "[sd35-bon-mcts] prompt_file=${PROMPT_FILE_RUN}"
 echo "[sd35-bon-mcts] out_dir=${OUT_DIR}"
 echo "[sd35-bon-mcts] backend=${SD35_BACKEND_VAL} steps=${STEPS:-${DEFAULT_STEPS}} num_gpus=${NUM_GPUS}"
 echo "[sd35-bon-mcts] cfg_scales=[${CFG_SCALES_ARR[*]}] baseline_cfg=${BASELINE_CFG_VAL}"
-echo "[sd35-bon-mcts] bon_mcts: n_seeds=${BON_MCTS_N_SEEDS:-8} topk=${BON_MCTS_TOPK:-2} sim_alloc=${BON_MCTS_SIM_ALLOC:-split}"
+echo "[sd35-bon-mcts] bon_mcts: n_seeds=${BON_MCTS_N_SEEDS:-5} topk=${BON_MCTS_TOPK:-1} sim_alloc=${BON_MCTS_SIM_ALLOC:-split}"
 
 "${launch_cmd[@]}" \
   --backend "${SD35_BACKEND_VAL}" \

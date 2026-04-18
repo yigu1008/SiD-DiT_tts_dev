@@ -42,6 +42,11 @@ _CASES: dict[str, CaseSpec] = {
         env={"SID_FORCE_WANDB_STUB": "1", "WANDB_DISABLED": "true"},
         note="ImageReward only (local load path).",
     ),
+    "imagereward_realwandb": CaseSpec(
+        backend="imagereward",
+        env={"SID_FORCE_WANDB_STUB": "0", "WANDB_DISABLED": "true"},
+        note="ImageReward only with real wandb import path.",
+    ),
     "hpsv3_imscore": CaseSpec(
         backend="hpsv3",
         env={"SID_HPSV3_IMPL": "imscore", "SID_FORCE_WANDB_STUB": "1", "WANDB_DISABLED": "true"},
@@ -51,6 +56,11 @@ _CASES: dict[str, CaseSpec] = {
         backend="hpsv3",
         env={"SID_HPSV3_IMPL": "official", "SID_FORCE_WANDB_STUB": "1", "WANDB_DISABLED": "true"},
         note="HPSv3 forced to official implementation.",
+    ),
+    "hpsv3_official_realwandb": CaseSpec(
+        backend="hpsv3",
+        env={"SID_HPSV3_IMPL": "official", "SID_FORCE_WANDB_STUB": "0", "WANDB_DISABLED": "true"},
+        note="HPSv3 official implementation with real wandb import path.",
     ),
     "hpsv3_auto": CaseSpec(
         backend="hpsv3",

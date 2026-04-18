@@ -506,6 +506,7 @@ class UnifiedRewardScorer:
         def _inject_wandb_stub(reason: str) -> None:
             import importlib.machinery
             import types
+            stub_file = "sid_wandb_stub.py"
 
             existing = sys.modules.get("wandb")
             if existing is not None and bool(getattr(existing, "__codex_stub__", False)):
@@ -519,8 +520,8 @@ class UnifiedRewardScorer:
                     existing.__package__ = "wandb"
                 if not hasattr(existing, "__path__"):
                     existing.__path__ = []  # type: ignore[attr-defined]
-                if not hasattr(existing, "__file__"):
-                    existing.__file__ = ""
+                if not getattr(existing, "__file__", None):
+                    existing.__file__ = stub_file
                 return
 
             def _noop(*args, **kwargs):
@@ -548,7 +549,7 @@ class UnifiedRewardScorer:
             stub.run = None
             stub.__package__ = "wandb"
             stub.__path__ = []  # type: ignore[attr-defined]
-            stub.__file__ = ""
+            stub.__file__ = stub_file
             stub.__spec__ = importlib.machinery.ModuleSpec("wandb", loader=None, is_package=True)
             stub.__spec__.origin = "sid_wandb_stub"
             # Catch-all: any attribute access on the stub returns _noop
@@ -563,7 +564,7 @@ class UnifiedRewardScorer:
                 sub.__codex_stub__ = True
                 sub.__package__ = parent_pkg
                 sub.__path__ = []
-                sub.__file__ = ""
+                sub.__file__ = stub_file
                 sub.__spec__ = importlib.machinery.ModuleSpec(name, loader=None, is_package=True)
                 sub.__spec__.origin = "sid_wandb_stub"
                 # Return noop for any attribute access so deep imports don't fail
@@ -728,6 +729,7 @@ class UnifiedRewardScorer:
                     # Direct stub injection for wandb
                     import importlib.machinery
                     import types
+                    stub_file = "sid_wandb_stub.py"
                     def _noop(*args, **kwargs):
                         return None
                     class _DummyRun:
@@ -742,7 +744,7 @@ class UnifiedRewardScorer:
                     stub.config = {}; stub.run = None
                     stub.__package__ = "wandb"
                     stub.__path__ = []
-                    stub.__file__ = ""
+                    stub.__file__ = stub_file
                     stub.__spec__ = importlib.machinery.ModuleSpec("wandb", loader=None, is_package=True)
                     stub.__spec__.origin = "sid_wandb_stub"
                     stub.__getattr__ = lambda name: _noop
@@ -751,7 +753,7 @@ class UnifiedRewardScorer:
                         sub.__codex_stub__ = True
                         sub.__package__ = parent_pkg
                         sub.__path__ = []
-                        sub.__file__ = ""
+                        sub.__file__ = stub_file
                         sub.__spec__ = importlib.machinery.ModuleSpec(name, loader=None, is_package=True)
                         sub.__spec__.origin = "sid_wandb_stub"
                         sub.__getattr__ = lambda self_or_name: _noop
@@ -848,6 +850,18 @@ class UnifiedRewardScorer:
                 print(f"[Reward] HPSv3 unavailable: {self.hpsv3_last_error}")
 
     def _try_load_hpsv3_imscore(self) -> None:
+        # Compatibility shim for older deps in imscore/hpsv3 stacks that do
+        # `from numpy import Inf` (removed in NumPy 2.x).
+        import numpy as _np
+        for _alias, _value in {
+            "Inf": _np.inf,
+            "NaN": _np.nan,
+            "NINF": -_np.inf,
+            "PINF": _np.inf,
+        }.items():
+            if not hasattr(_np, _alias):
+                setattr(_np, _alias, _value)
+
         from imscore.hpsv3.model import HPSv3 as IMSCoreHPSv3
 
         requested = str(os.environ.get("IMSCORE_HPSV3_MODEL_ID", "RE-N-Y/hpsv3")).strip()

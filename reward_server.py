@@ -142,6 +142,7 @@ def _inject_wandb_stub():
     """Inject a minimal wandb stub to prevent import errors."""
     import importlib.machinery
     import types
+    stub_file = "sid_wandb_stub.py"
 
     if sys.modules.get("wandb") is not None:
         return
@@ -162,14 +163,14 @@ def _inject_wandb_stub():
     stub.config = {}; stub.run = None
     stub.__package__ = "wandb"
     stub.__path__ = []
-    stub.__file__ = ""
+    stub.__file__ = stub_file
     stub.__spec__ = importlib.machinery.ModuleSpec("wandb", loader=None, is_package=True)
 
     def _make_sub(name, parent_pkg="wandb"):
         sub = types.ModuleType(name)
         sub.__package__ = parent_pkg
         sub.__path__ = []
-        sub.__file__ = ""
+        sub.__file__ = stub_file
         sub.__spec__ = importlib.machinery.ModuleSpec(name, loader=None, is_package=True)
         return sub
 

@@ -82,8 +82,23 @@ search:
       - export METHODS='{methods}'
       - export LAYOUT={layout}
       - |
+        # Resolve the method parent directory based on layout:
+        #   sd35  -> $RUN_ROOT/sd35/<method>           (logs/ + images/ inside)
+        #   flux  -> $RUN_ROOT/run_*/<method>           (rank_*/summary.json inside)
+        #   sana  -> $RUN_ROOT/run_*/<method>           (same as flux)
+        if [ "$$LAYOUT" = "sd35" ]; then
+          METHOD_PARENT="$$RUN_ROOT/sd35"
+        else
+          # Flux/Sana: find the most recent run_* directory
+          METHOD_PARENT=$$(ls -dt "$$RUN_ROOT"/run_* 2>/dev/null | head -1)
+          if [ -z "$$METHOD_PARENT" ]; then
+            echo "ERROR: no run_* directory found under $$RUN_ROOT"
+            exit 1
+          fi
+          echo "Discovered flux/sana run dir: $$METHOD_PARENT"
+        fi
         for method in $$METHODS; do
-          METHOD_DIR="$$RUN_ROOT/sd35/$$method"
+          METHOD_DIR="$$METHOD_PARENT/$$method"
           if [ ! -d "$$METHOD_DIR" ]; then
             echo "SKIP: $$METHOD_DIR does not exist"
             continue
@@ -110,15 +125,19 @@ search:
         DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: True
         SHARED_MEMORY_PERCENT: 0.5
 
-  max_trials: 1
+  max_trials: 10
   type: grid
   params:
     - name: run_tag
       values: [ "reward_eval_multi" ]
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
+    # Add finished run tags here — each gets its own eval job
     - name: source_run_tag
-      values: [ "sd35_base_bon_filtering_imagereward" ]
+      values:
+        - "sd35_base_bon_filtering_imagereward"
+        # - "sd35_base_bon_mcts_reduced"
+        # - "flux_schnell_bon_filtering_rewards_nohpsv3"
     - name: layout
       values: [ "sd35" ]
     - name: methods

@@ -188,7 +188,7 @@ search:
     - name: methods
       values: [ "baseline bon_mcts" ]
     - name: eval_backends
-      values: [ "imagereward hpsv2 pickscore unifiedreward" ]
+      values: [ "imagereward hpsv2 pickscore" ]
     - name: cfg_scales
       values: [ "1.0 1.25 1.5 1.75 2.0 2.25 2.5" ]
     - name: baseline_cfg

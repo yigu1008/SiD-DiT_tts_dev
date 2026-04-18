@@ -175,7 +175,7 @@ search:
       - export REWARD_SERVER_PORT=5100
       - export REWARD_SERVER_BACKENDS='{reward_server_backends}'
       - export REWARD_ENV_CONDA_BASE=/opt/conda
-      - if [ {use_reward_server} = 1 ]; then CONDA_BASE=/opt/conda bash setup_reward_env.sh; fi
+      - if [ {use_reward_server} = 1 ]; then CONDA_BASE=/opt/conda bash setup_reward_env.sh || true; fi
       - bash hpsv2_sd35_flux_allalgos.sh
 
     submit_args:

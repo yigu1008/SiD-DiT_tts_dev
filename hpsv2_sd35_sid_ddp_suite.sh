@@ -150,13 +150,23 @@ start_reward_server() {
   _resolve_reward_server_gpu
 
   local reward_py="${REWARD_ENV_CONDA_BASE}/envs/${REWARD_ENV_NAME}/bin/python"
+  local fallback_py="${REWARD_ENV_CONDA_BASE}/envs/ptca/bin/python"
   if [[ ! -x "${reward_py}" ]]; then
     echo "[reward-server] Reward env not found at ${reward_py}. Setting up ..."
-    CONDA_BASE="${REWARD_ENV_CONDA_BASE}" REWARD_ENV_NAME="${REWARD_ENV_NAME}" \
-      bash "${SCRIPT_DIR}/setup_reward_env.sh"
+    if ! CONDA_BASE="${REWARD_ENV_CONDA_BASE}" REWARD_ENV_NAME="${REWARD_ENV_NAME}" \
+      bash "${SCRIPT_DIR}/setup_reward_env.sh"; then
+      echo "[reward-server] WARNING: setup_reward_env.sh failed; trying fallback python." >&2
+    fi
     if [[ ! -x "${reward_py}" ]]; then
-      echo "[reward-server] ERROR: setup_reward_env.sh finished but ${reward_py} not found." >&2
-      exit 1
+      if [[ -x "${fallback_py}" ]]; then
+        reward_py="${fallback_py}"
+        echo "[reward-server] Fallback to main env python: ${reward_py}"
+      else
+        echo "[reward-server] ERROR: no usable reward python found." >&2
+        echo "[reward-server] Checked: ${REWARD_ENV_CONDA_BASE}/envs/${REWARD_ENV_NAME}/bin/python and ${fallback_py}" >&2
+        ls -la "${REWARD_ENV_CONDA_BASE}/envs" >&2 || true
+        exit 1
+      fi
     fi
   fi
 

@@ -51,14 +51,18 @@ search:
       - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
       - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
       - if [ {install_deps} = 1 ]; then PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh; fi
-      - CONDA_BASE=/opt/conda REWARD_ENV_NAME=reward bash setup_reward_env.sh
+      - export REWARD_ENV_NAME=reward_hpsv3_sandbox
+      - CONDA_BASE=/opt/conda REWARD_ENV_NAME="$$REWARD_ENV_NAME" bash setup_reward_env.sh
+      - export REWARD_PY=/opt/conda/envs/$$REWARD_ENV_NAME/bin/python
+      - if [ ! -x "$$REWARD_PY" ]; then echo "Reward env python not found: $$REWARD_PY"; ls -la /opt/conda/envs || true; exit 1; fi
+      - echo "Using reward python: $$REWARD_PY"
       - export OUT_DIR=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}/hpsv3_server_sandbox
       - mkdir -p "$$OUT_DIR"
       - export REWARD_SERVER_PORT={reward_server_port}
       - export REWARD_SERVER_URL=http://localhost:$$REWARD_SERVER_PORT
       - export REWARD_SERVER_BACKENDS='{reward_server_backends}'
       - export REWARD_SERVER_LOG=$$OUT_DIR/reward_server.log
-      - CUDA_VISIBLE_DEVICES=0 /opt/conda/envs/reward/bin/python -u reward_server.py --port "$$REWARD_SERVER_PORT" --device cuda:0 --backends $$REWARD_SERVER_BACKENDS --image_reward_model ImageReward-v1.0 --pickscore_model yuvalkirstain/PickScore_v1 > "$$REWARD_SERVER_LOG" 2>&1 &
+      - CUDA_VISIBLE_DEVICES=0 "$$REWARD_PY" -u reward_server.py --port "$$REWARD_SERVER_PORT" --device cuda:0 --backends $$REWARD_SERVER_BACKENDS --image_reward_model ImageReward-v1.0 --pickscore_model yuvalkirstain/PickScore_v1 > "$$REWARD_SERVER_LOG" 2>&1 &
       - export REWARD_SERVER_PID=$$!
       - trap 'kill $$REWARD_SERVER_PID >/dev/null 2>&1 || true' EXIT
       - export HEALTH_OK=0

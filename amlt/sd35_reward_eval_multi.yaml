@@ -1,0 +1,129 @@
+description: sd35-reward-eval-multi
+
+target:
+  service: sing
+  name: GenAI-Shared-UKSouth2
+  workspace_name: Singularity-GenAI-WS-UKSouth2
+  resource_group: singularity-genai-gpu-uksouth2
+
+env_defaults:
+  service: sing
+  PRIORITY: high
+  NODES: 1
+  GPUS: 1
+  MEM: 80
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - export PATH=/home/aiscuser/.local/bin:$$PATH
+    - pip install --user datasets huggingface_hub hpsv2
+
+code:
+  local_dir: ./
+
+storage:
+  output:
+    storage_account_name: vigstandard
+    container_name: data
+    mount_dir: /mnt/data
+
+search:
+  job_template:
+    name: sd35-reward-eval-{run_tag}
+    sku: ${NODES}x${MEM}G${GPUS}-IB
+    sla_tier: Standard
+    process_count_per_node: 1
+    priority: high
+    mpi: False
+    command:
+      - set -x
+      - export PYTHONNOUSERSITE=1
+      - unset PYTHONPATH || true
+      - export SID_FORCE_WANDB_STUB=1
+      - export WANDB_DISABLED=true
+      # ── Paths & HF auth ────────────────────────────────────────────────────
+      - export PATH=/home/aiscuser/.local/bin:$$PATH
+      - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
+      - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
+      - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
+      - export HF_TOKEN={hf_token}
+      - export HUGGING_FACE_HUB_TOKEN={hf_token}
+      - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
+      # ── Install deps ───────────────────────────────────────────────────────
+      - source /opt/conda/etc/profile.d/conda.sh
+      - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
+      - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
+      - /opt/conda/envs/ptca/bin/python -c "import os, torch; print('[torch-check]', torch.__version__, 'cuda=', torch.version.cuda, 'is_available=', torch.cuda.is_available(), 'count=', torch.cuda.device_count()); assert torch.cuda.is_available()"
+      - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps ok')"
+      # ── Cache dirs & symlinks ──────────────────────────────────────────────
+      - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
+      - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
+      - export CLIP_CACHE_DIR=/mnt/data/v-yigu/model_cache/clip
+      - mkdir -p /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
+      - mkdir -p /home/aiscuser/.cache
+      - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
+      - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
+      # ── Preload reward models ─────────────────────────────────────────────
+      - export REWARD_BACKENDS='{eval_backends}'
+      - /opt/conda/envs/ptca/bin/python preload_reward_models.py
+      # ── Final pin ─────────────────────────────────────────────────────────
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets, transformers; print('final pin ok', 'transformers='+md.version('transformers')); assert hasattr(transformers, 'Qwen2_5_VLForConditionalGeneration'), 'Qwen2_5_VL missing'"
+      # ── Run eval for each method ──────────────────────────────────────────
+      - export RUN_ROOT=/mnt/data/v-yigu/hpsv2_all_models_runs/{source_run_tag}
+      - export EVAL_DEVICE={eval_device}
+      - export EVAL_BACKENDS='{eval_backends}'
+      - export METHODS='{methods}'
+      - export LAYOUT={layout}
+      - |
+        for method in $$METHODS; do
+          METHOD_DIR="$$RUN_ROOT/sd35/$$method"
+          if [ ! -d "$$METHOD_DIR" ]; then
+            echo "SKIP: $$METHOD_DIR does not exist"
+            continue
+          fi
+          OUT_JSON="$$METHOD_DIR/reward_eval_$$(echo $$EVAL_BACKENDS | tr ' ' '_').json"
+          echo "EVAL: method=$$method dir=$$METHOD_DIR backends=$$EVAL_BACKENDS"
+          /opt/conda/envs/ptca/bin/python evaluate_best_images_multi_reward.py \
+            --layout "$$LAYOUT" \
+            --method_out "$$METHOD_DIR" \
+            --method "$$method" \
+            --backends $$EVAL_BACKENDS \
+            --reward_device "$$EVAL_DEVICE" \
+            --image_reward_model ImageReward-v1.0 \
+            --pickscore_model yuvalkirstain/PickScore_v1 \
+            --allow_missing_backends \
+            --out_json "$$OUT_JSON" \
+            || echo "WARN: eval failed for method=$$method"
+          echo "DONE: $$OUT_JSON"
+        done
+      - echo "All evaluations complete."
+
+    submit_args:
+      env:
+        DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: True
+        SHARED_MEMORY_PERCENT: 0.5
+
+  max_trials: 1
+  type: grid
+  params:
+    - name: run_tag
+      values: [ "reward_eval_multi" ]
+    - name: hf_token
+      values: [ "YOUR_HF_TOKEN_HERE" ]
+    - name: source_run_tag
+      values: [ "sd35_base_bon_filtering_imagereward" ]
+    - name: layout
+      values: [ "sd35" ]
+    - name: methods
+      values: [ "baseline bon_mcts" ]
+    - name: eval_backends
+      values: [ "imagereward hpsv2 pickscore" ]
+    - name: eval_device
+      values: [ "cuda" ]

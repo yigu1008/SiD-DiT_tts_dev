@@ -165,6 +165,13 @@ SMC_CHUNK="${SMC_CHUNK:-4}"
 
 BON_N="${BON_N:-16}"
 BEAM_WIDTH="${BEAM_WIDTH:-4}"
+BON_MCTS_N_SEEDS="${BON_MCTS_N_SEEDS:-8}"
+BON_MCTS_TOPK="${BON_MCTS_TOPK:-2}"
+BON_MCTS_SEED_STRIDE="${BON_MCTS_SEED_STRIDE:-1}"
+BON_MCTS_SEED_OFFSET="${BON_MCTS_SEED_OFFSET:-0}"
+BON_MCTS_SIM_ALLOC="${BON_MCTS_SIM_ALLOC:-split}"
+BON_MCTS_MIN_SIMS="${BON_MCTS_MIN_SIMS:-8}"
+BON_MCTS_PRESCREEN_GUIDANCE="${BON_MCTS_PRESCREEN_GUIDANCE:-${BON_MCTS_PRESCREEN_CFG:-}}"
 
 _DEFAULT_GUIDANCE_SCALES_STR="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
 if [[ "${FLUX_BACKEND}" == "senseflow_flux" ]]; then
@@ -268,6 +275,9 @@ fi
 if [[ "${METHODS}" == *"noise"* || "${METHODS}" == *"noiseinj"* || "${METHODS}" == *"noise_inject"* ]]; then
   echo "  noise_inject: mode=${NOISE_INJECT_MODE} seed_budget=${NOISE_INJECT_SEED_BUDGET} steps='${NOISE_INJECT_CANDIDATE_STEPS}'"
   echo "               gammas=[${NOISE_INJECT_GAMMA_BANK}] eps_samples=${NOISE_INJECT_EPS_SAMPLES} steps_per_rollout=${NOISE_INJECT_STEPS_PER_ROLLOUT} cfg_scales='${CFG_SCALES}'"
+fi
+if [[ "${METHODS}" == *"bon_mcts"* ]]; then
+  echo "  bon_mcts: prescreen_n=${BON_MCTS_N_SEEDS} topk=${BON_MCTS_TOPK} sim_alloc=${BON_MCTS_SIM_ALLOC} min_sims=${BON_MCTS_MIN_SIMS}"
 fi
 echo "  reward_backend: ${REWARD_BACKEND} reward_device: ${REWARD_DEVICE}"
 echo "  eval_best_images: ${EVAL_BEST_IMAGES} eval_backends: ${EVAL_BACKENDS} eval_device: ${EVAL_REWARD_DEVICE}"
@@ -569,8 +579,27 @@ PY
 run_flux_sharded() {
   local method_name="$1"
   local flux_search_method="$2"
+  local runner_script="${SCRIPT_DIR}/sampling_flux_unified.py"
   shift 2
+  if (( $# >= 2 )) && [[ "$1" == "--runner_script" ]]; then
+    runner_script="$2"
+    shift 2
+  fi
   local -a method_args=("$@")
+  local -a runner_extra=()
+  if [[ "${runner_script}" == "${SCRIPT_DIR}/sampling_flux_bon_mcts.py" ]]; then
+    runner_extra+=(
+      --bon_mcts_n_seeds "${BON_MCTS_N_SEEDS}"
+      --bon_mcts_topk "${BON_MCTS_TOPK}"
+      --bon_mcts_seed_stride "${BON_MCTS_SEED_STRIDE}"
+      --bon_mcts_seed_offset "${BON_MCTS_SEED_OFFSET}"
+      --bon_mcts_sim_alloc "${BON_MCTS_SIM_ALLOC}"
+      --bon_mcts_min_sims "${BON_MCTS_MIN_SIMS}"
+    )
+    if [[ -n "${BON_MCTS_PRESCREEN_GUIDANCE}" ]]; then
+      runner_extra+=(--bon_mcts_prescreen_guidance "${BON_MCTS_PRESCREEN_GUIDANCE}")
+    fi
+  fi
   local method_out="${RUN_DIR}/${method_name}"
   local method_logs="${method_out}/logs"
   mkdir -p "${method_out}" "${method_logs}"
@@ -622,7 +651,7 @@ with open(dst, "w", encoding="utf-8") as f:
 PY
 
     launched=$((launched + 1))
-    CUDA_VISIBLE_DEVICES="${gpu}" PYTHONUNBUFFERED=1 "${PYTHON_BIN}" -u "${SCRIPT_DIR}/sampling_flux_unified.py" \
+    CUDA_VISIBLE_DEVICES="${gpu}" PYTHONUNBUFFERED=1 "${PYTHON_BIN}" -u "${runner_script}" \
       --search_method "${flux_search_method}" \
       "${backend_extra[@]}" \
       --model_id "${MODEL_ID}" \
@@ -655,6 +684,7 @@ PY
       --baseline_guidance_scale "${BASELINE_GUIDANCE_SCALE}" \
       --save_first_k "${SAVE_FIRST_K}" \
       --out_dir "${rank_out}" \
+      "${runner_extra[@]}" \
       "${method_args[@]}" \
       >"${log_file}" 2>&1 &
     pids+=("$!")
@@ -785,6 +815,17 @@ for method in ${METHODS}; do
     bon)
       run_flux_sharded "bon" "bon" \
         --bon_n "${BON_N}"
+      ;;
+    bon_mcts)
+      run_flux_sharded "bon_mcts" "mcts" \
+        --runner_script "${SCRIPT_DIR}/sampling_flux_bon_mcts.py" \
+        --n_variants "${N_VARIANTS}" \
+        --cfg_scales ${CFG_SCALES} \
+        --n_sims "${N_SIMS}" \
+        --ucb_c "${UCB_C}" \
+        --mcts_fresh_noise_steps "${MCTS_FRESH_NOISE_STEPS}" \
+        --mcts_fresh_noise_samples "${MCTS_FRESH_NOISE_SAMPLES}" \
+        --mcts_fresh_noise_scale "${MCTS_FRESH_NOISE_SCALE}"
       ;;
     beam)
       run_flux_sharded "beam" "beam" \

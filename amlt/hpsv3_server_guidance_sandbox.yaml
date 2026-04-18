@@ -1,0 +1,119 @@
+description: hpsv3-server-guidance-sandbox
+
+target:
+  service: sing
+  name: GenAI-Shared-UKSouth2
+  workspace_name: Singularity-GenAI-WS-UKSouth2
+  resource_group: singularity-genai-gpu-uksouth2
+
+env_defaults:
+  service: sing
+  PRIORITY: high
+  NODES: 1
+  GPUS: 2
+  MEM: 80
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - export PATH=/home/aiscuser/.local/bin:$$PATH
+    - pip install --user datasets huggingface_hub hpsv2
+
+code:
+  local_dir: ./
+
+storage:
+  output:
+    storage_account_name: vigstandard
+    container_name: data
+    mount_dir: /mnt/data
+
+search:
+  job_template:
+    name: hpsv3-server-sandbox-{run_tag}
+    sku: ${NODES}x${MEM}G${GPUS}-IB
+    sla_tier: Standard
+    process_count_per_node: 1
+    priority: high
+    mpi: False
+    command:
+      - set -x
+      - export PATH=/home/aiscuser/.local/bin:$$PATH
+      - export PATH="$$PATH:/root/.local/bin:/opt/conda/envs/ptca/bin"
+      - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
+      - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
+      - export HF_TOKEN={hf_token}
+      - export HUGGING_FACE_HUB_TOKEN={hf_token}
+      - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
+      - export SID_FORCE_WANDB_STUB=1
+      - export WANDB_DISABLED=true
+      - export TOKENIZERS_PARALLELISM=false
+      - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
+      - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
+      - if [ {install_deps} = 1 ]; then PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh; fi
+      - CONDA_BASE=/opt/conda REWARD_ENV_NAME=reward bash setup_reward_env.sh
+      - export OUT_DIR=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}/hpsv3_server_sandbox
+      - mkdir -p "$$OUT_DIR"
+      - export REWARD_SERVER_PORT={reward_server_port}
+      - export REWARD_SERVER_URL=http://localhost:$$REWARD_SERVER_PORT
+      - export REWARD_SERVER_BACKENDS='{reward_server_backends}'
+      - export REWARD_SERVER_LOG=$$OUT_DIR/reward_server.log
+      - CUDA_VISIBLE_DEVICES=0 /opt/conda/envs/reward/bin/python -u reward_server.py --port "$$REWARD_SERVER_PORT" --device cuda:0 --backends $$REWARD_SERVER_BACKENDS --image_reward_model ImageReward-v1.0 --pickscore_model yuvalkirstain/PickScore_v1 > "$$REWARD_SERVER_LOG" 2>&1 &
+      - export REWARD_SERVER_PID=$$!
+      - trap 'kill $$REWARD_SERVER_PID >/dev/null 2>&1 || true' EXIT
+      - export HEALTH_OK=0
+      - for i in $$(seq 1 120); do if curl -s "$$REWARD_SERVER_URL/health" >/dev/null 2>&1; then export HEALTH_OK=1; break; fi; sleep 3; done
+      - if [ "$$HEALTH_OK" != "1" ]; then echo "Reward server failed to become healthy"; tail -n 200 "$$REWARD_SERVER_LOG"; exit 1; fi
+      - curl -s "$$REWARD_SERVER_URL/health" > "$$OUT_DIR/reward_server_health.json"
+      - export RUN_SAMPLING={run_sampling}
+      - if [ "$$RUN_SAMPLING" = "1" ]; then export SANDBOX_SAMPLING_FLAG=--run_sampling; else export SANDBOX_SAMPLING_FLAG=--no-run_sampling; fi
+      - if [ "$$RUN_SAMPLING" = "1" ]; then export SANDBOX_CVD=1; else export SANDBOX_CVD=0; fi
+      - export OUT_JSON=$$OUT_DIR/hpsv3_server_guidance_sandbox_report.json
+      - CUDA_VISIBLE_DEVICES=$$SANDBOX_CVD REWARD_SERVER_URL="$$REWARD_SERVER_URL" /opt/conda/envs/ptca/bin/python sandbox_hpsv3_server_guidance.py --reward_server_url "$$REWARD_SERVER_URL" --out_json "$$OUT_JSON" $$SANDBOX_SAMPLING_FLAG --sampling_script ./sampling_flux_unified.py --sampling_backend {sampling_backend} --model_id {sampling_model_id} --steps {sampling_steps} --width {sampling_width} --height {sampling_height} --seed {sampling_seed} --n_variants {sampling_n_variants} --cfg_scales {sampling_cfg_scales} --n_sims {sampling_n_sims} --ucb_c {sampling_ucb_c} --dtype {sampling_dtype} --device cuda --auto_select_gpu --sampling_out_dir "$$OUT_DIR/sampling_probe" --prompt '{prompt}'
+      - cp "$$OUT_JSON" "$$OUT_DIR/final_report.json"
+      - echo "sandbox report: $$OUT_JSON"
+
+    submit_args:
+      env:
+        DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: True
+        SHARED_MEMORY_PERCENT: 0.5
+
+  max_trials: 1
+  type: grid
+  params:
+    - name: run_tag
+      values: [ "hpsv3_server_guidance_sandbox" ]
+    - name: hf_token
+      values: [ "YOUR_HF_TOKEN_HERE" ]
+    - name: install_deps
+      values: [ 1 ]
+    - name: reward_server_port
+      values: [ 5100 ]
+    - name: reward_server_backends
+      values: [ "hpsv3 imagereward" ]
+    - name: run_sampling
+      values: [ 1 ]
+    - name: prompt
+      values: [ "a cinematic portrait of a woman in soft rim light, 85mm, ultra detailed" ]
+    - name: sampling_backend
+      values: [ "flux" ]
+    - name: sampling_model_id
+      values: [ "black-forest-labs/FLUX.1-schnell" ]
+    - name: sampling_steps
+      values: [ 2 ]
+    - name: sampling_width
+      values: [ 512 ]
+    - name: sampling_height
+      values: [ 512 ]
+    - name: sampling_seed
+      values: [ 42 ]
+    - name: sampling_n_variants
+      values: [ 2 ]
+    - name: sampling_cfg_scales
+      values: [ "1.0 1.5" ]
+    - name: sampling_n_sims
+      values: [ 6 ]
+    - name: sampling_ucb_c
+      values: [ 1.41 ]
+    - name: sampling_dtype
+      values: [ "bf16" ]

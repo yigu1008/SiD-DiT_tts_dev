@@ -44,10 +44,58 @@ def parse_args() -> argparse.Namespace:
 # scorer_callable(prompt: str, image: PIL.Image) -> float
 # ---------------------------------------------------------------------------
 
+def _patch_transformers_generic_layers_for_trl() -> None:
+    """Patch missing transformers.modeling_layers GenericFor* symbols."""
+    try:
+        import transformers.modeling_layers as _ml
+    except Exception:
+        return
+
+    if bool(getattr(_ml, "__sid_genericfor_patch__", False)):
+        return
+
+    patched: list[str] = []
+
+    def _ensure_symbol(name: str) -> type:
+        existing = getattr(_ml, name, None)
+        if existing is not None:
+            return existing
+        cls = type(name, (), {})
+        setattr(_ml, name, cls)
+        patched.append(name)
+        return cls
+
+    for symbol in (
+        "GenericForSequenceClassification",
+        "GenericForTokenClassification",
+        "GenericForQuestionAnswering",
+        "GenericForImageClassification",
+        "GenericForAudioClassification",
+        "GenericForVideoClassification",
+        "GenericForSemanticSegmentation",
+    ):
+        _ensure_symbol(symbol)
+
+    prev_getattr = getattr(_ml, "__getattr__", None)
+
+    def _compat_getattr(name: str):
+        if str(name).startswith("GenericFor"):
+            return _ensure_symbol(str(name))
+        if callable(prev_getattr):
+            return prev_getattr(name)
+        raise AttributeError(f"module '{_ml.__name__}' has no attribute '{name}'")
+
+    _ml.__getattr__ = _compat_getattr
+    _ml.__sid_genericfor_patch__ = True
+    if patched:
+        print(f"[reward_server] Patched transformers.modeling_layers symbols for TRL: {patched}")
+
+
 def _load_hpsv3(device: str):
     """Load HPSv3 in this process."""
     # Wandb stub — trl imports wandb at module level
     _inject_wandb_stub()
+    _patch_transformers_generic_layers_for_trl()
 
     import huggingface_hub as _hfhub
     _hpsv3_ckpt = _hfhub.hf_hub_download(

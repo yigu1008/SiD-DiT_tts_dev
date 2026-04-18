@@ -28,6 +28,58 @@ UNIFIEDREWARD_MODEL_FALLBACKS = (
 )
 
 
+def _patch_transformers_generic_layers_for_trl() -> None:
+    """Patch missing transformers.modeling_layers GenericFor* symbols.
+
+    Some trl/hpsv3 combinations import GenericForSequenceClassification (and
+    related symbols) from transformers.modeling_layers. In mixed envs these
+    may be absent, causing HPSv3 official import to fail.
+    """
+    try:
+        import transformers.modeling_layers as _ml
+    except Exception:
+        return
+
+    if bool(getattr(_ml, "__sid_genericfor_patch__", False)):
+        return
+
+    patched: list[str] = []
+
+    def _ensure_symbol(name: str) -> type:
+        existing = getattr(_ml, name, None)
+        if existing is not None:
+            return existing
+        cls = type(name, (), {})
+        setattr(_ml, name, cls)
+        patched.append(name)
+        return cls
+
+    for symbol in (
+        "GenericForSequenceClassification",
+        "GenericForTokenClassification",
+        "GenericForQuestionAnswering",
+        "GenericForImageClassification",
+        "GenericForAudioClassification",
+        "GenericForVideoClassification",
+        "GenericForSemanticSegmentation",
+    ):
+        _ensure_symbol(symbol)
+
+    prev_getattr = getattr(_ml, "__getattr__", None)
+
+    def _compat_getattr(name: str):
+        if str(name).startswith("GenericFor"):
+            return _ensure_symbol(str(name))
+        if callable(prev_getattr):
+            return prev_getattr(name)
+        raise AttributeError(f"module '{_ml.__name__}' has no attribute '{name}'")
+
+    _ml.__getattr__ = _compat_getattr
+    _ml.__sid_genericfor_patch__ = True
+    if patched:
+        print(f"[Reward] Patched transformers.modeling_layers symbols for TRL: {patched}")
+
+
 @dataclass
 class _BackendState:
     imagereward: Optional[object] = None
@@ -116,6 +168,7 @@ class UnifiedRewardScorer:
     _hpsv3_install_hint = (
         "Install HPSv3 dependencies, e.g.:\n"
         "  pip install -U hpsv3 open_clip_torch omegaconf hydra-core\n"
+        "  pip install -U \"trl==0.12.2\" \"transformers==4.52.4\"\n"
         "Or try imscore fallback:\n"
         "  pip install -U --no-deps imscore\n"
         "  pip install -U \"transformers<5\""
@@ -778,6 +831,9 @@ class UnifiedRewardScorer:
                     sys.modules["wandb.env"] = env_stub
                     sys.modules["wandb.errors"] = errors_stub
                     print("[Reward] Using wandb stub for HPSv3/trl (SID_FORCE_WANDB_STUB=1).")
+
+            # Compatibility shim for trl<->transformers symbol drift.
+            _patch_transformers_generic_layers_for_trl()
 
             # Pre-resolve HPSv3 checkpoint path BEFORE importing hpsv3.
             # hpsv3's import chain (trl → wandb) can corrupt module state,

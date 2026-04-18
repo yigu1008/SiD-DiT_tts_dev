@@ -130,7 +130,7 @@ echo "[sd35-bon-mcts] bon_mcts: n_seeds=${BON_MCTS_N_SEEDS:-8} topk=${BON_MCTS_T
   --baseline_cfg "${BASELINE_CFG_VAL}" \
   --n_variants "${N_VARIANTS}" \
   --correction_strengths "${CORRECTION_STRENGTHS_ARR[@]}" \
-  --n_sims "${N_SIMS:-60}" \
+  --n_sims "${N_SIMS:-24}" \
   --ucb_c "${UCB_C:-1.41}" \
   --seed "${SEED:-42}" \
   --width "${WIDTH:-1024}" \
@@ -144,12 +144,12 @@ echo "[sd35-bon-mcts] bon_mcts: n_seeds=${BON_MCTS_N_SEEDS:-8} topk=${BON_MCTS_T
   --reward_api_model "${REWARD_API_MODEL:-UnifiedReward-7b-v1.5}" \
   --reward_max_new_tokens "${REWARD_MAX_NEW_TOKENS:-512}" \
   --reward_prompt_mode "${REWARD_PROMPT_MODE:-standard}" \
-  --bon_mcts_n_seeds "${BON_MCTS_N_SEEDS:-8}" \
-  --bon_mcts_topk "${BON_MCTS_TOPK:-2}" \
+  --bon_mcts_n_seeds "${BON_MCTS_N_SEEDS:-5}" \
+  --bon_mcts_topk "${BON_MCTS_TOPK:-1}" \
   --bon_mcts_seed_stride "${BON_MCTS_SEED_STRIDE:-1}" \
   --bon_mcts_seed_offset "${BON_MCTS_SEED_OFFSET:-0}" \
   --bon_mcts_sim_alloc "${BON_MCTS_SIM_ALLOC:-split}" \
-  --bon_mcts_min_sims "${BON_MCTS_MIN_SIMS:-8}" \
+  --bon_mcts_min_sims "${BON_MCTS_MIN_SIMS:-4}" \
   "${extra_reward_args[@]}" \
   "${qwen_args[@]}" \
   "${extra_args[@]}" \

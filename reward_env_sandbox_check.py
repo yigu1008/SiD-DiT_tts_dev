@@ -155,6 +155,7 @@ def _worker(args: argparse.Namespace) -> int:
             "python": platform.python_version(),
             "torch": _safe_version("torch"),
             "transformers": _safe_version("transformers"),
+            "trl": _safe_version("trl"),
             "huggingface_hub": _safe_version("huggingface-hub"),
             "hpsv3": _safe_version("hpsv3"),
             "imscore": _safe_version("imscore"),

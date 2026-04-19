@@ -53,7 +53,7 @@ search:
       - CONDA_BASE=/opt/conda REWARD_ENV_NAME="$$REWARD_ENV_NAME" bash setup_reward_env.sh
       - export REWARD_PY=/opt/conda/envs/$$REWARD_ENV_NAME/bin/python
       - 'if [ ! -x "$$REWARD_PY" ]; then echo "Reward env python not found: $$REWARD_PY"; ls -la /opt/conda/envs || true; exit 1; fi'
-      - "$$REWARD_PY" -c "import torch, transformers; print('reward env torch='+torch.__version__, 'transformers='+transformers.__version__); import hpsv3; print('hpsv3 import OK')"
+      - $$REWARD_PY -c "import torch, transformers; print('reward env torch='+torch.__version__, 'transformers='+transformers.__version__); import hpsv3; print('hpsv3 import OK')"
       # ── Output dirs ───────────────────────────────────────────────────────
       - export OUT_DIR=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}/hpsv3_server_smoke
       - mkdir -p "$$OUT_DIR"

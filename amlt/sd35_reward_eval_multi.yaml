@@ -17,7 +17,6 @@ environment:
   image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
   setup:
     - export PATH=/home/aiscuser/.local/bin:$$PATH
-    - pip install --user datasets huggingface_hub hpsv2
 
 code:
   local_dir: ./
@@ -42,23 +41,20 @@ search:
       - unset PYTHONPATH || true
       - export SID_FORCE_WANDB_STUB=1
       - export WANDB_DISABLED=true
+      - export TOKENIZERS_PARALLELISM=false
       # ── Paths & HF auth ────────────────────────────────────────────────────
       - export PATH=/home/aiscuser/.local/bin:$$PATH
-      - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
-      - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
       - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
       - export HF_TOKEN={hf_token}
       - export HUGGING_FACE_HUB_TOKEN={hf_token}
       - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
-      # ── Install deps ───────────────────────────────────────────────────────
+      # ── Build the isolated `reward` conda env (transformers==4.45.2) ───────
+      # This env is independent from ptca's conda env. Avoids torchvision /
+      # wandb / qwen version conflicts seen when running eval in ptca.
       - source /opt/conda/etc/profile.d/conda.sh
-      - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
-      - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
-      - /opt/conda/envs/ptca/bin/python -c "import os, torch; print('[torch-check]', torch.__version__, 'cuda=', torch.version.cuda, 'is_available=', torch.cuda.is_available(), 'count=', torch.cuda.device_count()); assert torch.cuda.is_available()"
-      - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
-      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps ok')"
+      - CONDA_BASE=/opt/conda REWARD_ENV_NAME=reward bash setup_reward_env.sh
+      - export REWARD_PY=/opt/conda/envs/reward/bin/python
+      - "$$REWARD_PY" -c "import torch, transformers; print('reward env torch='+torch.__version__, 'transformers='+transformers.__version__); import hpsv3, hpsv2, ImageReward; print('reward env backends import OK')"
       # ── Cache dirs & symlinks ──────────────────────────────────────────────
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
@@ -67,19 +63,13 @@ search:
       - mkdir -p /home/aiscuser/.cache
       - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
-      # ── Preload reward models ─────────────────────────────────────────────
+      # ── Preload reward model weights (use reward env's python) ────────────
       - export REWARD_BACKENDS='{eval_backends}'
-      - /opt/conda/envs/ptca/bin/python preload_reward_models.py
-      # ── Final pin ─────────────────────────────────────────────────────────
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
-      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets, transformers; print('final pin ok', 'transformers='+md.version('transformers')); assert hasattr(transformers, 'Qwen2_5_VLForConditionalGeneration'), 'Qwen2_5_VL missing'"
-      # ── Run eval for each method ──────────────────────────────────────────
-      # method_parent: full path to the directory containing method subdirs.
-      #   sd35:  /mnt/data/v-yigu/hpsv2_all_models_runs/<source_run_tag>/sd35
-      #   flux:  /mnt/data/v-yigu/hpsv2_all_models_runs/<source_run_tag>/<run_subdir>
-      #          e.g. run_subdir = "run_20260418_182000"
+      - "$$REWARD_PY" preload_reward_models.py
+      # ── Run eval for each method (uses reward env python) ─────────────────
+      # method_parent: full path to directory containing method subdirs.
+      #   sd35:  <run_root>/sd35
+      #   flux:  <run_root>/<run_subdir>   e.g. run_20260418_182000
       - export METHOD_PARENT={method_parent}
       - export EVAL_DEVICE={eval_device}
       - export EVAL_BACKENDS='{eval_backends}'
@@ -101,7 +91,7 @@ search:
           fi
           OUT_JSON="$$METHOD_DIR/reward_eval_$$(echo $$EVAL_BACKENDS | tr ' ' '_').json"
           echo "EVAL: method=$$method dir=$$METHOD_DIR backends=$$EVAL_BACKENDS"
-          /opt/conda/envs/ptca/bin/python evaluate_best_images_multi_reward.py \
+          "$$REWARD_PY" evaluate_best_images_multi_reward.py \
             --layout "$$LAYOUT" \
             --method_out "$$METHOD_DIR" \
             --method "$$method" \
@@ -130,7 +120,7 @@ search:
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: source_run_tag
       values: [ "sd35_base_bon_filtering_imagereward" ]
-    # method_parent: full path to the dir containing method subdirs
+    # method_parent: full path to dir containing method subdirs
     #   SD35 example:  /mnt/data/v-yigu/hpsv2_all_models_runs/<source_run_tag>/sd35
     #   Flux example:  /mnt/data/v-yigu/hpsv2_all_models_runs/<source_run_tag>/run_20260418_182000
     - name: method_parent
@@ -140,7 +130,8 @@ search:
     # Space-separated method names matching subdirs under method_parent
     - name: methods
       values: [ "baseline bon_mcts" ]
+    # Backends supported in reward env: imagereward hpsv2 pickscore hpsv3
     - name: eval_backends
-      values: [ "imagereward hpsv2 pickscore" ]
+      values: [ "imagereward hpsv2 pickscore hpsv3" ]
     - name: eval_device
       values: [ "cuda" ]

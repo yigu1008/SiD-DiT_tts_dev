@@ -1,0 +1,147 @@
+description: hpsv3-reward-server-smoke
+
+target:
+  service: sing
+  name: GenAI-Shared-UKSouth2
+  workspace_name: Singularity-GenAI-WS-UKSouth2
+  resource_group: singularity-genai-gpu-uksouth2
+
+env_defaults:
+  service: sing
+  PRIORITY: high
+  NODES: 1
+  GPUS: 1
+  MEM: 80
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - export PATH=/home/aiscuser/.local/bin:$$PATH
+
+code:
+  local_dir: ./
+
+storage:
+  output:
+    storage_account_name: vigstandard
+    container_name: data
+    mount_dir: /mnt/data
+
+search:
+  job_template:
+    name: hpsv3-server-smoke-{run_tag}
+    sku: ${NODES}x${MEM}G${GPUS}-IB
+    sla_tier: Standard
+    process_count_per_node: 1
+    priority: high
+    mpi: False
+    command:
+      - set -x
+      - export PATH=/home/aiscuser/.local/bin:$$PATH
+      - export PYTHONNOUSERSITE=1
+      - unset PYTHONPATH || true
+      - export SID_FORCE_WANDB_STUB=1
+      - export WANDB_DISABLED=true
+      - export TOKENIZERS_PARALLELISM=false
+      - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
+      - export HF_TOKEN={hf_token}
+      - export HUGGING_FACE_HUB_TOKEN={hf_token}
+      - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
+      # ── Build isolated reward env (transformers==4.45.2) ──────────────────
+      - source /opt/conda/etc/profile.d/conda.sh
+      - export REWARD_ENV_NAME={reward_env_name}
+      - CONDA_BASE=/opt/conda REWARD_ENV_NAME="$$REWARD_ENV_NAME" bash setup_reward_env.sh
+      - export REWARD_PY=/opt/conda/envs/$$REWARD_ENV_NAME/bin/python
+      - 'if [ ! -x "$$REWARD_PY" ]; then echo "Reward env python not found: $$REWARD_PY"; ls -la /opt/conda/envs || true; exit 1; fi'
+      - "$$REWARD_PY" -c "import torch, transformers; print('reward env torch='+torch.__version__, 'transformers='+transformers.__version__); import hpsv3; print('hpsv3 import OK')"
+      # ── Output dirs ───────────────────────────────────────────────────────
+      - export OUT_DIR=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}/hpsv3_server_smoke
+      - mkdir -p "$$OUT_DIR"
+      # ── Launch reward server on cuda:0 ────────────────────────────────────
+      - export REWARD_SERVER_PORT={reward_server_port}
+      - export REWARD_SERVER_URL=http://localhost:$$REWARD_SERVER_PORT
+      - export REWARD_SERVER_BACKENDS='{reward_server_backends}'
+      - export REWARD_SERVER_LOG=$$OUT_DIR/reward_server.log
+      - CUDA_VISIBLE_DEVICES=0 "$$REWARD_PY" -u reward_server.py --port "$$REWARD_SERVER_PORT" --device cuda:0 --backends $$REWARD_SERVER_BACKENDS --image_reward_model ImageReward-v1.0 --pickscore_model yuvalkirstain/PickScore_v1 > "$$REWARD_SERVER_LOG" 2>&1 &
+      - export REWARD_SERVER_PID=$$!
+      - trap 'kill $$REWARD_SERVER_PID >/dev/null 2>&1 || true' EXIT
+      # ── Health check (wait up to ~6min for model download + load) ─────────
+      - export HEALTH_OK=0
+      - for i in $$(seq 1 120); do if curl -s "$$REWARD_SERVER_URL/health" >/dev/null 2>&1; then export HEALTH_OK=1; break; fi; sleep 3; done
+      - if [ "$$HEALTH_OK" != "1" ]; then echo "Reward server failed to become healthy"; tail -n 400 "$$REWARD_SERVER_LOG"; exit 1; fi
+      - curl -s "$$REWARD_SERVER_URL/health" | tee "$$OUT_DIR/health.json"
+      # ── Smoke-test: POST /score with a dummy PIL image for each backend ───
+      - export SMOKE_JSON=$$OUT_DIR/smoke_score.json
+      - |
+        /opt/conda/envs/ptca/bin/python - <<'PYEOF' "$$REWARD_SERVER_URL" "$$SMOKE_JSON"
+        import sys, json, base64, io, urllib.request
+        from PIL import Image
+        url = sys.argv[1]
+        out_path = sys.argv[2]
+
+        # health
+        with urllib.request.urlopen(url + "/health", timeout=30) as r:
+            health = json.loads(r.read().decode())
+        print("health:", health)
+        backends = health.get("backends", [])
+
+        # synthesize a simple RGB image
+        img = Image.new("RGB", (512, 512), color=(120, 160, 200))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        img_b64 = base64.b64encode(buf.getvalue()).decode()
+
+        results = {"health": health, "scores": {}}
+        for backend in backends:
+            payload = json.dumps({
+                "prompt": "a photo of a blue sky",
+                "image_b64": img_b64,
+                "backend": backend,
+            }).encode()
+            req = urllib.request.Request(
+                url + "/score",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    resp = json.loads(r.read().decode())
+                print(f"  {backend}: {resp}")
+                results["scores"][backend] = resp
+            except Exception as e:
+                print(f"  {backend}: ERROR {e}")
+                results["scores"][backend] = {"error": str(e)}
+
+        with open(out_path, "w") as f:
+            json.dump(results, f, indent=2)
+        print("wrote", out_path)
+
+        # Fail the job if hpsv3 didn't return a numeric score
+        s = results["scores"].get("hpsv3", {})
+        if not isinstance(s.get("score"), (int, float)):
+            print("SMOKE FAIL: hpsv3 did not return a numeric score")
+            sys.exit(2)
+        print("SMOKE OK")
+        PYEOF
+      - echo "Smoke test done. Report: $$OUT_DIR/smoke_score.json"
+      - echo "Server log tail:"; tail -n 80 "$$REWARD_SERVER_LOG" || true
+
+    submit_args:
+      env:
+        DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: True
+        SHARED_MEMORY_PERCENT: 0.5
+
+  max_trials: 1
+  type: grid
+  params:
+    - name: run_tag
+      values: [ "hpsv3_server_smoke" ]
+    - name: hf_token
+      values: [ "YOUR_HF_TOKEN_HERE" ]
+    - name: reward_env_name
+      values: [ "reward" ]
+    - name: reward_server_port
+      values: [ 5100 ]
+    # Start with hpsv3 only to isolate the failure mode you hit; add more later.
+    - name: reward_server_backends
+      values: [ "hpsv3" ]

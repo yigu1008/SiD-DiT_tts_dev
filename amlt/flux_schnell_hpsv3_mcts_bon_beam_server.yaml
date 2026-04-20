@@ -213,9 +213,9 @@ search:
     - name: methods
       values: [ "baseline bon_mcts noise_inject bon beam" ]
     - name: eval_backends
-      values: [ "hpsv3 imagereward hpsv2 pickscore" ]
+      values: [ "hpsv3" ]
     - name: reward_server_backends
-      values: [ "hpsv3 imagereward hpsv2 pickscore" ]
+      values: [ "hpsv3" ]
     - name: reward_server_port
       values: [ 5100 ]
     - name: cfg_scales

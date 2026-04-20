@@ -240,9 +240,9 @@ search:
     - name: lookahead_cfg_width_max
       values: [ 7 ]
     - name: eval_backends
-      values: [ "hpsv3 imagereward hpsv2 pickscore" ]
+      values: [ "hpsv3" ]
     - name: reward_server_backends
-      values: [ "hpsv3 imagereward hpsv2 pickscore" ]
+      values: [ "hpsv3" ]
     - name: reward_server_port
       values: [ 5100 ]
     - name: cfg_scales

@@ -128,7 +128,11 @@ search:
       - export BON_MCTS_SIM_ALLOC={bon_mcts_sim_alloc}
       - export BON_MCTS_MIN_SIMS={bon_mcts_min_sims}
       - export BON_MCTS_PRESCREEN_CFG='{bon_mcts_prescreen_cfg}'
+      - export MCTS_KEY_STEP_COUNT={mcts_key_step_count}
       - export BEAM_WIDTH={beam_width}
+      - export NOISE_INJECT_GAMMA_BANK='{noise_inject_gamma_bank}'
+      - export NOISE_INJECT_EPS_SAMPLES={noise_inject_eps_samples}
+      - export NOISE_INJECT_MAX_POLICIES={noise_inject_max_policies}
       - export CORRECTION_STRENGTHS='{correction_strengths}'
       - export SEED={seed}
       - export RUN_SANA=0
@@ -189,9 +193,9 @@ search:
     - name: lookahead_c_puct
       values: [ 1.20 ]
     - name: lookahead_cfg_width_min
-      values: [ 3 ]
+      values: [ 2 ]
     - name: lookahead_cfg_width_max
-      values: [ 7 ]
+      values: [ 4 ]
     - name: mcts_cfg_mode
       values: [ "adaptive" ]
     - name: mcts_cfg_root_bank
@@ -209,21 +213,21 @@ search:
     - name: eval_backends
       values: [ "imagereward" ]
     - name: cfg_scales
-      values: [ "3.5 4.0 4.5 5.0 5.5 6.0 7.0" ]
+      values: [ "4.0 4.5 5.0 5.5" ]
     - name: baseline_cfg
       values: [ 4.5 ]
     - name: steps
       values: [ 28 ]
     - name: n_variants
-      values: [ 3 ]
+      values: [ 2 ]
     - name: n_sims
-      values: [ 24 ]
+      values: [ 16 ]
     - name: ucb_c
       values: [ 1.41 ]
     - name: bon_n
       values: [ 16 ]
     - name: bon_mcts_n_seeds
-      values: [ 5 ]
+      values: [ 3 ]
     - name: bon_mcts_topk
       values: [ 1 ]
     - name: bon_mcts_seed_stride
@@ -236,6 +240,14 @@ search:
       values: [ 4 ]
     - name: bon_mcts_prescreen_cfg
       values: [ "4.5" ]
+    - name: mcts_key_step_count
+      values: [ 1 ]
+    - name: noise_inject_gamma_bank
+      values: [ "0.0" ]
+    - name: noise_inject_eps_samples
+      values: [ 1 ]
+    - name: noise_inject_max_policies
+      values: [ 1 ]
     - name: beam_width
       values: [ 4 ]
     - name: correction_strengths

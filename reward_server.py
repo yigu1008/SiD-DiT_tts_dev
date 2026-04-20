@@ -94,24 +94,31 @@ def _patch_transformers_generic_layers_for_trl() -> None:
 def _load_hpsv3(device: str):
     """Load HPSv3 in this process."""
     # Wandb stub — trl imports wandb at module level
+    print("[reward_server][hpsv3] injecting wandb stub ...", flush=True)
     _inject_wandb_stub()
+    print("[reward_server][hpsv3] patching transformers layers ...", flush=True)
     _patch_transformers_generic_layers_for_trl()
 
     import huggingface_hub as _hfhub
+    print("[reward_server][hpsv3] resolving HPSv3.safetensors via hf_hub_download ...", flush=True)
     _hpsv3_ckpt = _hfhub.hf_hub_download(
         "MizzenAI/HPSv3", "HPSv3.safetensors", repo_type="model"
     )
     assert isinstance(_hpsv3_ckpt, str), f"Bad checkpoint path: {type(_hpsv3_ckpt)}"
-    print(f"[reward_server] HPSv3 checkpoint: {_hpsv3_ckpt}")
+    print(f"[reward_server][hpsv3] HPSv3 checkpoint: {_hpsv3_ckpt}", flush=True)
 
     # Save and restore huggingface_hub after hpsv3 import
     saved_fns = {k: getattr(_hfhub, k) for k in ("hf_hub_download", "snapshot_download") if hasattr(_hfhub, k)}
+    print("[reward_server][hpsv3] import hpsv3 ...", flush=True)
     import hpsv3
+    print("[reward_server][hpsv3] hpsv3 imported OK; restoring hf_hub fns", flush=True)
     for k, v in saved_fns.items():
         if getattr(_hfhub, k, None) is not v:
             setattr(_hfhub, k, v)
 
+    print(f"[reward_server][hpsv3] instantiating HPSv3RewardInferencer(device={device}, ckpt=...) ...", flush=True)
     inferencer = hpsv3.HPSv3RewardInferencer(device=device, checkpoint_path=_hpsv3_ckpt)
+    print("[reward_server][hpsv3] HPSv3RewardInferencer instantiated OK", flush=True)
 
     import torch
 

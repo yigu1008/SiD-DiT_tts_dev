@@ -106,7 +106,7 @@ search:
       - export REWARD_SERVER_PORT={reward_server_port}
       - export REWARD_SERVER_URL=http://localhost:$$REWARD_SERVER_PORT
       - export REWARD_SERVER_LOG=$$OUT_ROOT/reward_server.log
-      - CUDA_VISIBLE_DEVICES=0 "$$REWARD_PY" -u reward_server.py --port "$$REWARD_SERVER_PORT" --device cuda:0 --backends $$REWARD_BACKENDS --image_reward_model ImageReward-v1.0 --pickscore_model yuvalkirstain/PickScore_v1 > "$$REWARD_SERVER_LOG" 2>&1 &
+      - env -u NCCL_P2P_LEVEL -u NCCL_ASYNC_ERROR_HANDLING -u TORCH_NCCL_ASYNC_ERROR_HANDLING CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false "$$REWARD_PY" -u reward_server.py --port "$$REWARD_SERVER_PORT" --device cuda:0 --backends $$REWARD_BACKENDS --image_reward_model ImageReward-v1.0 --pickscore_model yuvalkirstain/PickScore_v1 > "$$REWARD_SERVER_LOG" 2>&1 &
       - export REWARD_SERVER_PID=$$!
       - trap 'kill $$REWARD_SERVER_PID >/dev/null 2>&1 || true' EXIT
       # ── Wait for /health (up to 30 min; weights should be cached) ────────

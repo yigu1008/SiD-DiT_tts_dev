@@ -423,6 +423,10 @@ eval_backend_requested() {
 }
 
 ensure_imagereward_runtime() {
+  # External reward-server mode: reward backends run in a separate process/env.
+  if [[ "${USE_REWARD_SERVER}" != "1" ]] && [[ -n "${REWARD_SERVER_URL:-}" ]]; then
+    return 0
+  fi
   local backend_lc
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
   if [[ "${backend_lc}" != "imagereward" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]] && ! eval_backend_requested "imagereward"; then
@@ -483,6 +487,10 @@ PY
 ensure_imagereward_runtime
 
 ensure_pickscore_runtime() {
+  # External reward-server mode: reward backends run in a separate process/env.
+  if [[ "${USE_REWARD_SERVER}" != "1" ]] && [[ -n "${REWARD_SERVER_URL:-}" ]]; then
+    return 0
+  fi
   local backend_lc _stamp
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
   if [[ "${backend_lc}" != "pickscore" && "${backend_lc}" != "auto" ]] && ! eval_backend_requested "pickscore"; then
@@ -506,6 +514,10 @@ PY
 ensure_pickscore_runtime
 
 ensure_hpsv2_runtime() {
+  # External reward-server mode: reward backends run in a separate process/env.
+  if [[ "${USE_REWARD_SERVER}" != "1" ]] && [[ -n "${REWARD_SERVER_URL:-}" ]]; then
+    return 0
+  fi
   local backend_lc _stamp
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
   if [[ "${backend_lc}" != "hpsv2" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]] && ! eval_backend_requested "hpsv2"; then
@@ -527,6 +539,10 @@ PY
 ensure_hpsv2_runtime
 
 ensure_hpsv3_runtime() {
+  # External reward-server mode: reward backends run in a separate process/env.
+  if [[ "${USE_REWARD_SERVER}" != "1" ]] && [[ -n "${REWARD_SERVER_URL:-}" ]]; then
+    return 0
+  fi
   local backend_lc _stamp hpsv3_impl
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
   if [[ "${backend_lc}" != "hpsv3" && "${backend_lc}" != "auto" ]] && ! eval_backend_requested "hpsv3"; then
@@ -1064,6 +1080,8 @@ start_reward_server
 HPSV3_IMPL_LC="$(echo "${SID_HPSV3_IMPL:-auto}" | tr '[:upper:]' '[:lower:]')"
 if [[ "${USE_REWARD_SERVER}" == "1" ]]; then
   echo "[deps] Skipping transformers downgrade — reward server handles reward model deps."
+elif [[ -n "${REWARD_SERVER_URL:-}" ]]; then
+  echo "[deps] Skipping transformers downgrade — external REWARD_SERVER_URL is set."
 elif [[ "${HPSV3_IMPL_LC}" == "imscore" || "${HPSV3_IMPL_LC}" == "ims" ]]; then
   echo "[deps] Skipping transformers downgrade — SID_HPSV3_IMPL=${SID_HPSV3_IMPL:-auto} uses single-env imscore path."
 elif [[ "${DOWNGRADE_TRANSFORMERS:-1}" == "1" ]]; then

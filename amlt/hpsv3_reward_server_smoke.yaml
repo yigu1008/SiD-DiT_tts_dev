@@ -60,6 +60,15 @@ search:
       # ── Output dirs ───────────────────────────────────────────────────────
       - export OUT_DIR=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}/hpsv3_server_smoke
       - mkdir -p "$$OUT_DIR"
+      # ── Preload weights (HPSv3 fine-tune + Qwen2-VL-7B-Instruct base) ────
+      # This runs in the reward env and caches to $$HF_HOME. Without it, the
+      # server has to download ~15GB on first start, which easily blows past
+      # the health-check timeout.
+      - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
+      - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
+      - mkdir -p "$$IMAGEREWARD_CACHE" "$$HPS_ROOT"
+      - export REWARD_BACKENDS='{reward_server_backends}'
+      - $$REWARD_PY preload_reward_models.py
       # ── Launch reward server on cuda:0 ────────────────────────────────────
       - export REWARD_SERVER_PORT={reward_server_port}
       - export REWARD_SERVER_URL=http://localhost:$$REWARD_SERVER_PORT
@@ -68,9 +77,10 @@ search:
       - CUDA_VISIBLE_DEVICES=0 "$$REWARD_PY" -u reward_server.py --port "$$REWARD_SERVER_PORT" --device cuda:0 --backends $$REWARD_SERVER_BACKENDS --image_reward_model ImageReward-v1.0 --pickscore_model yuvalkirstain/PickScore_v1 > "$$REWARD_SERVER_LOG" 2>&1 &
       - export REWARD_SERVER_PID=$$!
       - trap 'kill $$REWARD_SERVER_PID >/dev/null 2>&1 || true' EXIT
-      # ── Health check (wait up to ~6min for model download + load) ─────────
+      # ── Health check (wait up to ~30min; weights should be cached already) ─
+      # Every 10 polls (≈30s) print last lines of the server log so hangs are visible.
       - export HEALTH_OK=0
-      - for i in $$(seq 1 120); do if curl -s "$$REWARD_SERVER_URL/health" >/dev/null 2>&1; then export HEALTH_OK=1; break; fi; sleep 3; done
+      - for i in $$(seq 1 600); do if curl -s "$$REWARD_SERVER_URL/health" >/dev/null 2>&1; then export HEALTH_OK=1; break; fi; if [ $$((i % 10)) -eq 0 ]; then echo "[health-wait] i=$$i server log tail:"; tail -n 5 "$$REWARD_SERVER_LOG" || true; fi; sleep 3; done
       - if [ "$$HEALTH_OK" != "1" ]; then echo "Reward server failed to become healthy"; tail -n 400 "$$REWARD_SERVER_LOG"; exit 1; fi
       - curl -s "$$REWARD_SERVER_URL/health" | tee "$$OUT_DIR/health.json"
       # ── Smoke-test: POST /score with a dummy PIL image for each backend ───

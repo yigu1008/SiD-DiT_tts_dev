@@ -30,7 +30,7 @@ storage:
 search:
   job_template:
     name: hpsv3-server-smoke-{run_tag}
-    sku: ${NODES}x${MEM}G${GPUS}-IB
+    sku: ${NODES}x${MEM}G${GPUS}
     sla_tier: Standard
     process_count_per_node: 1
     priority: high

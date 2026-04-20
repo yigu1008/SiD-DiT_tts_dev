@@ -112,12 +112,12 @@ search:
       - export REWARD_SERVER_PORT={reward_server_port}
       - export REWARD_SERVER_URL=http://localhost:$$REWARD_SERVER_PORT
       - export REWARD_SERVER_LOG=$$OUT_ROOT/reward_server.log
-      - CUDA_VISIBLE_DEVICES=0 "$$REWARD_PY" -u reward_server.py --port "$$REWARD_SERVER_PORT" --device cuda:0 --backends $$REWARD_BACKENDS --image_reward_model ImageReward-v1.0 --pickscore_model yuvalkirstain/PickScore_v1 > "$$REWARD_SERVER_LOG" 2>&1 &
+      - env -u NCCL_P2P_LEVEL -u NCCL_ASYNC_ERROR_HANDLING -u TORCH_NCCL_ASYNC_ERROR_HANDLING CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false "$$REWARD_PY" -u reward_server.py --port "$$REWARD_SERVER_PORT" --device cuda:0 --backends $$REWARD_BACKENDS --image_reward_model ImageReward-v1.0 --pickscore_model yuvalkirstain/PickScore_v1 > "$$REWARD_SERVER_LOG" 2>&1 &
       - export REWARD_SERVER_PID=$$!
       - trap 'kill $$REWARD_SERVER_PID >/dev/null 2>&1 || true' EXIT
-      # ── Wait for /health ─────────────────────────────────────────────────
+      # ── Wait for /health (up to 30 min; weights should be cached) ────────
       - export HEALTH_OK=0
-      - for i in $$(seq 1 600); do if curl -s "$$REWARD_SERVER_URL/health" >/dev/null 2>&1; then export HEALTH_OK=1; break; fi; if [ $$((i % 10)) -eq 0 ]; then echo "[health-wait] i=$$i server log tail:"; tail -n 5 "$$REWARD_SERVER_LOG" || true; fi; sleep 3; done
+      - for i in $$(seq 1 600); do if curl -s "$$REWARD_SERVER_URL/health" >/dev/null 2>&1; then export HEALTH_OK=1; break; fi; if ! kill -0 "$$REWARD_SERVER_PID" >/dev/null 2>&1; then echo "Reward server process exited before health check passed"; tail -n 200 "$$REWARD_SERVER_LOG" || true; exit 1; fi; if [ $$((i % 10)) -eq 0 ]; then echo "[health-wait] i=$$i server log tail:"; tail -n 20 "$$REWARD_SERVER_LOG" || true; fi; sleep 3; done
       - if [ "$$HEALTH_OK" != "1" ]; then echo "Reward server failed to become healthy"; tail -n 400 "$$REWARD_SERVER_LOG"; exit 1; fi
       - curl -s "$$REWARD_SERVER_URL/health" | tee "$$OUT_ROOT/reward_server_health.json"
       # ── Qwen rewrite cache ───────────────────────────────────────────────
@@ -175,6 +175,14 @@ search:
       - export GA_EVAL_BATCH={ga_eval_batch}
       - export BON_N={bon_n}
       - export BEAM_WIDTH={beam_width}
+      - export BON_MCTS_N_SEEDS={bon_mcts_n_seeds}
+      - export BON_MCTS_TOPK={bon_mcts_topk}
+      - export BON_MCTS_SEED_STRIDE={bon_mcts_seed_stride}
+      - export BON_MCTS_SEED_OFFSET={bon_mcts_seed_offset}
+      - export BON_MCTS_SIM_ALLOC={bon_mcts_sim_alloc}
+      - export BON_MCTS_MIN_SIMS={bon_mcts_min_sims}
+      - export BON_MCTS_PRESCREEN_CFG='{bon_mcts_prescreen_cfg}'
+      - export BON_MCTS_PRESCREEN_GUIDANCE='{bon_mcts_prescreen_guidance}'
       - export NOISE_INJECT_MODE={noise_inject_mode}
       - export NOISE_INJECT_SEED_BUDGET={noise_inject_seed_budget}
       - export NOISE_INJECT_CANDIDATE_STEPS='{noise_inject_candidate_steps}'
@@ -223,7 +231,7 @@ search:
     - name: use_subset
       values: [ 1 ]
     - name: methods
-      values: [ "baseline greedy mcts ga smc noise_inject bon beam" ]
+      values: [ "baseline greedy bon_mcts ga smc noise_inject bon beam" ]
     - name: sd35_mcts_option
       values: [ "standard" ]
     - name: lookahead_method_mode
@@ -292,6 +300,22 @@ search:
       values: [ 2 ]
     - name: bon_n
       values: [ 16 ]
+    - name: bon_mcts_n_seeds
+      values: [ 12 ]
+    - name: bon_mcts_topk
+      values: [ 3 ]
+    - name: bon_mcts_seed_stride
+      values: [ 1 ]
+    - name: bon_mcts_seed_offset
+      values: [ 0 ]
+    - name: bon_mcts_sim_alloc
+      values: [ "split" ]
+    - name: bon_mcts_min_sims
+      values: [ 12 ]
+    - name: bon_mcts_prescreen_cfg
+      values: [ "" ]
+    - name: bon_mcts_prescreen_guidance
+      values: [ "" ]
     - name: beam_width
       values: [ 4 ]
     - name: noise_inject_mode

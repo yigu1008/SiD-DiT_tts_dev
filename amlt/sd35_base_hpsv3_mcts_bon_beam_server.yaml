@@ -166,6 +166,13 @@ search:
       - export GA_EVAL_BATCH={ga_eval_batch}
       - export BON_N={bon_n}
       - export BEAM_WIDTH={beam_width}
+      - export BON_MCTS_N_SEEDS={bon_mcts_n_seeds}
+      - export BON_MCTS_TOPK={bon_mcts_topk}
+      - export BON_MCTS_SEED_STRIDE={bon_mcts_seed_stride}
+      - export BON_MCTS_SEED_OFFSET={bon_mcts_seed_offset}
+      - export BON_MCTS_SIM_ALLOC={bon_mcts_sim_alloc}
+      - export BON_MCTS_MIN_SIMS={bon_mcts_min_sims}
+      - export BON_MCTS_PRESCREEN_CFG='{bon_mcts_prescreen_cfg}'
       - export NOISE_INJECT_MODE={noise_inject_mode}
       - export NOISE_INJECT_SEED_BUDGET={noise_inject_seed_budget}
       - export NOISE_INJECT_CANDIDATE_STEPS='{noise_inject_candidate_steps}'
@@ -217,7 +224,7 @@ search:
     - name: use_subset
       values: [ 1 ]
     - name: methods
-      values: [ "baseline mcts_dynamiccfg_u_lookahead noise_inject bon beam" ]
+      values: [ "baseline bon_mcts noise_inject bon beam" ]
     - name: sd35_mcts_option
       values: [ "standard" ]
     - name: lookahead_method_mode
@@ -284,6 +291,20 @@ search:
       values: [ 2 ]
     - name: bon_n
       values: [ 16 ]
+    - name: bon_mcts_n_seeds
+      values: [ 5 ]
+    - name: bon_mcts_topk
+      values: [ 1 ]
+    - name: bon_mcts_seed_stride
+      values: [ 1 ]
+    - name: bon_mcts_seed_offset
+      values: [ 0 ]
+    - name: bon_mcts_sim_alloc
+      values: [ "split" ]
+    - name: bon_mcts_min_sims
+      values: [ 4 ]
+    - name: bon_mcts_prescreen_cfg
+      values: [ "4.5" ]
     - name: beam_width
       values: [ 4 ]
     - name: noise_inject_mode

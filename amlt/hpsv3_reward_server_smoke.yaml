@@ -50,9 +50,12 @@ search:
       # ── Build isolated reward env (transformers==4.45.2) ──────────────────
       - source /opt/conda/etc/profile.d/conda.sh
       - export REWARD_ENV_NAME={reward_env_name}
-      - CONDA_BASE=/opt/conda REWARD_ENV_NAME="$$REWARD_ENV_NAME" bash setup_reward_env.sh
-      - export REWARD_PY=/opt/conda/envs/$$REWARD_ENV_NAME/bin/python
-      - 'if [ ! -x "$$REWARD_PY" ]; then echo "Reward env python not found: $$REWARD_PY"; ls -la /opt/conda/envs || true; exit 1; fi'
+      - export REWARD_ENV_SENTINEL_DIR=/tmp
+      - CONDA_BASE=/opt/conda REWARD_ENV_NAME="$$REWARD_ENV_NAME" REWARD_ENV_SENTINEL_DIR="$$REWARD_ENV_SENTINEL_DIR" bash setup_reward_env.sh
+      - export REWARD_ENV_PREFIX=$$(cat "$$REWARD_ENV_SENTINEL_DIR/reward_env_prefix_$$REWARD_ENV_NAME")
+      - export REWARD_PY=$$REWARD_ENV_PREFIX/bin/python
+      - 'echo "Resolved reward env prefix: $$REWARD_ENV_PREFIX"'
+      - 'if [ ! -x "$$REWARD_PY" ]; then echo "Reward env python not found: $$REWARD_PY"; ls -la "$$REWARD_ENV_PREFIX" 2>&1 || true; ls -la /opt/conda/envs || true; exit 1; fi'
       - $$REWARD_PY -c "import torch, transformers; print('reward env torch='+torch.__version__, 'transformers='+transformers.__version__); import hpsv3; print('hpsv3 import OK')"
       # ── Output dirs ───────────────────────────────────────────────────────
       - export OUT_DIR=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}/hpsv3_server_smoke

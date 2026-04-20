@@ -16,16 +16,38 @@ PYTHON_VERSION="${REWARD_PYTHON_VERSION:-3.10}"
 CUDA_VERSION="${REWARD_CUDA_VERSION:-cu126}"
 
 CONDA="${CONDA_BASE}/bin/conda"
-PY="${CONDA_BASE}/envs/${ENV_NAME}/bin/python"
-PIP="${CONDA_BASE}/envs/${ENV_NAME}/bin/pip"
+
+# Resolve env prefix. Prefer ${CONDA_BASE}/envs/${ENV_NAME} when writable,
+# otherwise fall back to a writable location under $HOME. This lets the
+# script run as a non-root user on shared images where /opt/conda/envs is
+# owned by root (conda would otherwise silently drop the env into
+# $HOME/.conda/envs, leaving the hardcoded paths below broken).
+if [ -n "${REWARD_ENV_PREFIX:-}" ]; then
+    PREFIX="${REWARD_ENV_PREFIX}"
+elif [ -w "${CONDA_BASE}/envs" ]; then
+    PREFIX="${CONDA_BASE}/envs/${ENV_NAME}"
+else
+    PREFIX="${HOME}/.conda/envs/${ENV_NAME}"
+fi
+
+PY="${PREFIX}/bin/python"
+PIP="${PREFIX}/bin/pip"
+
+echo "[setup_reward_env] env prefix: ${PREFIX}"
+
+# Export for downstream steps: the caller can `source` a sentinel file
+# to pick up the resolved prefix without hardcoding the path.
+SENTINEL_DIR="${REWARD_ENV_SENTINEL_DIR:-/tmp}"
+mkdir -p "${SENTINEL_DIR}" || true
+echo "${PREFIX}" > "${SENTINEL_DIR}/reward_env_prefix_${ENV_NAME}"
 
 echo "[setup_reward_env] Creating conda env '${ENV_NAME}' (python=${PYTHON_VERSION}) ..."
 
-# Create env if it doesn't exist
-if [ ! -d "${CONDA_BASE}/envs/${ENV_NAME}" ]; then
-    "${CONDA}" create -y -n "${ENV_NAME}" python="${PYTHON_VERSION}" pip
+# Create env at explicit prefix if missing
+if [ ! -x "${PY}" ]; then
+    "${CONDA}" create -y -p "${PREFIX}" python="${PYTHON_VERSION}" pip
 else
-    echo "[setup_reward_env] Env '${ENV_NAME}' already exists, updating ..."
+    echo "[setup_reward_env] Env already exists at ${PREFIX}, updating ..."
 fi
 
 echo "[setup_reward_env] Installing PyTorch ..."

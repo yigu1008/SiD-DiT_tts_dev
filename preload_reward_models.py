@@ -254,26 +254,33 @@ def preload_hpsv3() -> None:
         except Exception as exc:
             _log(f"WARNING: HPSv3 weight download error (non-fatal): {exc}")
 
-        # Step 2: try full init to validate all deps work
-        try:
-            import hpsv3  # noqa: F811
+        # Step 2 (optional): CPU init sanity check. Loads the full ~7B
+        # Qwen2-VL-7B-Instruct into CPU RAM purely to validate imports —
+        # easily adds 3–5 min and ~28 GB RAM. The reward server instantiates
+        # the same model on cuda:0 anyway, so for server-mode preload we
+        # skip this by default. Set PRELOAD_HPSV3_INIT_CHECK=1 to re-enable.
+        if os.environ.get("PRELOAD_HPSV3_INIT_CHECK", "0") == "1":
+            try:
+                import hpsv3  # noqa: F811
 
-            inferencer_cls = getattr(hpsv3, "HPSv3RewardInferencer", None)
-            if inferencer_cls is not None:
-                inferencer = None
-                for kwargs in ({"device": "cpu"}, {}):
-                    try:
-                        inferencer = inferencer_cls(**kwargs)
-                        break
-                    except Exception:
-                        pass
-                if inferencer is not None:
-                    _log("HPSv3 full init OK on CPU")
-                    del inferencer
-                else:
-                    _log("WARNING: HPSv3RewardInferencer init failed on CPU; will retry on GPU at runtime")
-        except Exception as exc:
-            _log(f"WARNING: HPSv3 import/init check failed (non-fatal): {exc}")
+                inferencer_cls = getattr(hpsv3, "HPSv3RewardInferencer", None)
+                if inferencer_cls is not None:
+                    inferencer = None
+                    for kwargs in ({"device": "cpu"}, {}):
+                        try:
+                            inferencer = inferencer_cls(**kwargs)
+                            break
+                        except Exception:
+                            pass
+                    if inferencer is not None:
+                        _log("HPSv3 full init OK on CPU")
+                        del inferencer
+                    else:
+                        _log("WARNING: HPSv3RewardInferencer init failed on CPU; will retry on GPU at runtime")
+            except Exception as exc:
+                _log(f"WARNING: HPSv3 import/init check failed (non-fatal): {exc}")
+        else:
+            _log("HPSv3 weights cached; skipping CPU init check (set PRELOAD_HPSV3_INIT_CHECK=1 to enable)")
 
         _mark_done("hpsv3")
     else:

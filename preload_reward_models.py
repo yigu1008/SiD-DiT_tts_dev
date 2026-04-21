@@ -233,6 +233,59 @@ def preload_hpsv2() -> None:
 # HPSv3
 # ---------------------------------------------------------------------------
 
+def _stage_hf_to_local_disk() -> None:
+    """Copy HPSv3 + Qwen2-VL-7B-Instruct from HF_HOME (often blob FUSE) to
+    a fast local disk (default /tmp/hf_cache_local).  Writes a sentinel file
+    so the launching shell can redirect HF_HOME for the reward server
+    subprocess.  Controlled by STAGE_REWARD_WEIGHTS_LOCAL=1.
+    """
+    if os.environ.get("STAGE_REWARD_WEIGHTS_LOCAL", "0") != "1":
+        return
+    import subprocess
+
+    src_root = Path(
+        os.environ.get("HF_HOME", str(Path.home() / ".cache" / "huggingface"))
+    ) / "hub"
+    dst_base = Path(os.environ.get("REWARD_LOCAL_HF_CACHE", "/tmp/hf_cache_local"))
+    dst_root = dst_base / "hub"
+    dst_root.mkdir(parents=True, exist_ok=True)
+
+    ok = True
+    for repo in ("models--Qwen--Qwen2-VL-7B-Instruct", "models--MizzenAI--HPSv3"):
+        src = src_root / repo
+        dst = dst_root / repo
+        if not src.exists():
+            _log(f"stage: source missing, skipping: {src}")
+            ok = False
+            continue
+        if dst.exists() and any(dst.iterdir()):
+            _log(f"stage: already present locally: {dst}")
+            continue
+        _log(f"stage: copying {src} -> {dst} ...")
+        t0 = time.time()
+        try:
+            subprocess.run(
+                ["rsync", "-a", "--copy-links", f"{src}/", f"{dst}/"], check=True
+            )
+        except Exception as exc:
+            _log(f"stage: rsync failed ({exc}); falling back to shutil.copytree")
+            try:
+                if dst.exists():
+                    shutil.rmtree(dst)
+                shutil.copytree(src, dst, symlinks=False)
+            except Exception as exc2:
+                _log(f"stage: copy failed for {repo}: {exc2}")
+                ok = False
+                continue
+        _log(f"stage: done {dst} in {time.time() - t0:.1f}s")
+
+    if ok:
+        (dst_base / ".stage_done").touch()
+        _log(f"stage: sentinel written at {dst_base / '.stage_done'}")
+    else:
+        _log("stage: incomplete; NOT writing sentinel (server will use HF_HOME)")
+
+
 def preload_hpsv3() -> None:
     """Pre-download HPSv3 checkpoint and base model weights."""
     sentinel = _sentinel_path("hpsv3")
@@ -281,6 +334,12 @@ def preload_hpsv3() -> None:
                 _log(f"WARNING: HPSv3 import/init check failed (non-fatal): {exc}")
         else:
             _log("HPSv3 weights cached; skipping CPU init check (set PRELOAD_HPSV3_INIT_CHECK=1 to enable)")
+
+        # Optionally stage weights to local disk for faster server startup.
+        try:
+            _stage_hf_to_local_disk()
+        except Exception as exc:
+            _log(f"stage: unexpected error (non-fatal): {exc}")
 
         _mark_done("hpsv3")
     else:

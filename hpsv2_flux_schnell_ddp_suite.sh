@@ -308,6 +308,10 @@ _DEPS_STAMP="${HOME}/.cache/sid_deps/reward_deps_ok_v2"
 _stamp_deps() { mkdir -p "$(dirname "${_DEPS_STAMP}")" && touch "${_DEPS_STAMP}"; }
 
 ensure_imagereward_runtime() {
+  # External reward-server mode: reward backends run in a separate process/env.
+  if [[ "${USE_REWARD_SERVER}" != "1" ]] && [[ -n "${REWARD_SERVER_URL:-}" ]]; then
+    return 0
+  fi
   local backend_lc
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
   if [[ "${backend_lc}" != "imagereward" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]] && ! eval_backend_requested "imagereward"; then
@@ -364,6 +368,10 @@ PY
 ensure_imagereward_runtime
 
 ensure_pickscore_runtime() {
+  # External reward-server mode: reward backends run in a separate process/env.
+  if [[ "${USE_REWARD_SERVER}" != "1" ]] && [[ -n "${REWARD_SERVER_URL:-}" ]]; then
+    return 0
+  fi
   local backend_lc
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
   if [[ "${backend_lc}" != "pickscore" && "${backend_lc}" != "auto" ]] && ! eval_backend_requested "pickscore"; then
@@ -386,6 +394,10 @@ PY
 ensure_pickscore_runtime
 
 ensure_hpsv2_runtime() {
+  # External reward-server mode: reward backends run in a separate process/env.
+  if [[ "${USE_REWARD_SERVER}" != "1" ]] && [[ -n "${REWARD_SERVER_URL:-}" ]]; then
+    return 0
+  fi
   local backend_lc
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
   if [[ "${backend_lc}" != "hpsv2" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]] && ! eval_backend_requested "hpsv2"; then
@@ -406,6 +418,10 @@ PY
 ensure_hpsv2_runtime
 
 ensure_hpsv3_runtime() {
+  # External reward-server mode: reward backends run in a separate process/env.
+  if [[ "${USE_REWARD_SERVER}" != "1" ]] && [[ -n "${REWARD_SERVER_URL:-}" ]]; then
+    return 0
+  fi
   local backend_lc
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
   if [[ "${backend_lc}" != "hpsv3" && "${backend_lc}" != "auto" ]] && ! eval_backend_requested "hpsv3"; then
@@ -733,7 +749,7 @@ start_reward_server
 # ImageReward and hpsv3 need transformers<=4.46 (removed APIs in newer versions).
 # Skip the downgrade when using the reward server — the reward env has its own
 # transformers==4.45.2, and the main env can keep transformers>=4.51.
-if [[ "${USE_REWARD_SERVER}" == "1" ]]; then
+if [[ "${USE_REWARD_SERVER}" == "1" ]] || [[ -n "${REWARD_SERVER_URL:-}" ]]; then
   echo "[deps] Skipping transformers downgrade — reward server handles reward model deps."
 elif [[ "${DOWNGRADE_TRANSFORMERS:-1}" == "1" ]]; then
   echo "[deps] downgrading transformers to 4.45.2 for reward model compat ..."

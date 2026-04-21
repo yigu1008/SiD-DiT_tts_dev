@@ -103,7 +103,7 @@ search:
       - export STAGE_REWARD_WEIGHTS_LOCAL=1
       - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
       - $$REWARD_PY preload_reward_models.py
-      - if [ -f "$$REWARD_LOCAL_HF_CACHE/.stage_done" ]; then export REWARD_HF_HOME="$$REWARD_LOCAL_HF_CACHE"; echo "Reward server will use local HF cache: $$REWARD_HF_HOME"; else export REWARD_HF_HOME="$$HF_HOME"; echo "Local staging unavailable; reward server using HF_HOME=$$HF_HOME"; fi
+      - 'if [ -f "$$REWARD_LOCAL_HF_CACHE/.stage_done" ]; then export REWARD_HF_HOME="$$REWARD_LOCAL_HF_CACHE"; echo "Reward server will use local HF cache: $$REWARD_HF_HOME"; else export REWARD_HF_HOME="$$HF_HOME"; echo "Local staging unavailable; reward server using HF_HOME=$$HF_HOME"; fi'
       # ── Launch reward server on GPU 0 ────────────────────────────────────
       - export OUT_ROOT=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}
       - mkdir -p "$$OUT_ROOT"

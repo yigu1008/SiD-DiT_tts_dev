@@ -190,9 +190,9 @@ search:
     - name: smc_gamma
       values: [ 0.10 ]
     - name: ess_threshold
-      values: [ 0.5 ]
+      values: [ 0.8 ]
     - name: resample_start_frac
-      values: [ 0.3 ]
+      values: [ 1.0 ]
     - name: smc_cfg_scale
       values: [ 1.25 ]
     - name: smc_variant_idx
@@ -201,19 +201,19 @@ search:
     - name: smc_variant_expansion
       values: [ 1 ]
     - name: smc_expansion_variants
-      values: [ "0 1 2" ]
+      values: [ "0 1" ]
     - name: smc_expansion_cfgs
-      values: [ "1.0 1.5 2.0 2.5" ]
+      values: [ "1.0 1.25 1.5" ]
     - name: smc_expansion_cs
       values: [ "0.0" ]
     - name: smc_expansion_factor
-      values: [ -1 ]
+      values: [ 2 ]
     - name: smc_expansion_proposal
       values: [ "uniform" ]
     - name: smc_expansion_tau
       values: [ 1.0 ]
     - name: smc_expansion_lookahead
-      values: [ 0 ]
+      values: [ 1 ]
     - name: correction_strengths
       values: [ "0.0" ]
     - name: seed

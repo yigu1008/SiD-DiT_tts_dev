@@ -832,11 +832,34 @@ for method in ${METHODS}; do
       run_flux_sharded "noise" "noise_inject" "${noise_args[@]}"
       ;;
     smc)
-      run_flux_sharded "smc" "smc" \
-        --smc_k "${SMC_K}" \
-        --smc_gamma "${SMC_GAMMA}" \
-        --smc_guidance_scale "${SMC_GUIDANCE_SCALE}" \
+      smc_args=(
+        --smc_k "${SMC_K}"
+        --smc_gamma "${SMC_GAMMA}"
+        --smc_guidance_scale "${SMC_GUIDANCE_SCALE}"
         --smc_chunk "${SMC_CHUNK}"
+      )
+      if [[ "${SMC_VARIANT_EXPANSION:-0}" == "1" ]]; then
+        smc_args+=(--smc_variant_expansion)
+        if [[ -n "${SMC_EXPANSION_VARIANTS:-}" ]]; then
+          smc_args+=(--smc_expansion_variants ${SMC_EXPANSION_VARIANTS})
+        fi
+        if [[ -n "${SMC_EXPANSION_GUIDANCES:-}" ]]; then
+          smc_args+=(--smc_expansion_guidances ${SMC_EXPANSION_GUIDANCES})
+        fi
+        if [[ -n "${SMC_EXPANSION_FACTOR:-}" ]]; then
+          smc_args+=(--smc_expansion_factor "${SMC_EXPANSION_FACTOR}")
+        fi
+        if [[ -n "${SMC_EXPANSION_PROPOSAL:-}" ]]; then
+          smc_args+=(--smc_expansion_proposal "${SMC_EXPANSION_PROPOSAL}")
+        fi
+        if [[ -n "${SMC_EXPANSION_TAU:-}" ]]; then
+          smc_args+=(--smc_expansion_tau "${SMC_EXPANSION_TAU}")
+        fi
+        if [[ "${SMC_EXPANSION_LOOKAHEAD:-0}" == "1" ]]; then
+          smc_args+=(--smc_expansion_lookahead)
+        fi
+      fi
+      run_flux_sharded "smc" "smc" "${smc_args[@]}"
       ;;
     bon)
       run_flux_sharded "bon" "bon" \

@@ -964,6 +964,30 @@ run_method() {
       extra+=(--bon_mcts_prescreen_cfg "${BON_MCTS_PRESCREEN_CFG}")
     fi
   fi
+  if [[ "${SMC_VARIANT_EXPANSION:-0}" == "1" ]]; then
+    extra+=(--smc_variant_expansion)
+    if [[ -n "${SMC_EXPANSION_VARIANTS:-}" ]]; then
+      extra+=(--smc_expansion_variants ${SMC_EXPANSION_VARIANTS})
+    fi
+    if [[ -n "${SMC_EXPANSION_CFGS:-}" ]]; then
+      extra+=(--smc_expansion_cfgs ${SMC_EXPANSION_CFGS})
+    fi
+    if [[ -n "${SMC_EXPANSION_CS:-}" ]]; then
+      extra+=(--smc_expansion_cs ${SMC_EXPANSION_CS})
+    fi
+    if [[ -n "${SMC_EXPANSION_FACTOR:-}" ]]; then
+      extra+=(--smc_expansion_factor "${SMC_EXPANSION_FACTOR}")
+    fi
+    if [[ -n "${SMC_EXPANSION_PROPOSAL:-}" ]]; then
+      extra+=(--smc_expansion_proposal "${SMC_EXPANSION_PROPOSAL}")
+    fi
+    if [[ -n "${SMC_EXPANSION_TAU:-}" ]]; then
+      extra+=(--smc_expansion_tau "${SMC_EXPANSION_TAU}")
+    fi
+    if [[ "${SMC_EXPANSION_LOOKAHEAD:-0}" == "1" ]]; then
+      extra+=(--smc_expansion_lookahead)
+    fi
+  fi
   if [[ -n "${NOISE_INJECT_CANDIDATE_STEPS}" ]]; then
     extra+=(--noise_inject_candidate_steps "${NOISE_INJECT_CANDIDATE_STEPS}")
   fi

@@ -124,6 +124,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resample_start_frac", type=float, default=0.3)
     parser.add_argument("--smc_cfg_scale", type=float, default=1.25)
     parser.add_argument("--smc_variant_idx", type=int, default=0)
+    # ── SMC variant-expansion (K → K·M fan-out at resample) ────────────────
+    parser.add_argument(
+        "--smc_variant_expansion",
+        action="store_true",
+        default=False,
+        help="Enable fan-out expansion in SMC resample step over variant/cfg/cs bank.",
+    )
+    parser.add_argument("--smc_expansion_variants", nargs="+", type=int, default=[])
+    parser.add_argument("--smc_expansion_cfgs", nargs="+", type=float, default=[])
+    parser.add_argument("--smc_expansion_cs", nargs="+", type=float, default=[])
+    parser.add_argument("--smc_expansion_factor", type=int, default=-1)
+    parser.add_argument(
+        "--smc_expansion_proposal", choices=["uniform", "score_softmax"], default="uniform"
+    )
+    parser.add_argument("--smc_expansion_tau", type=float, default=1.0)
+    parser.add_argument("--smc_expansion_lookahead", action="store_true", default=False)
     parser.add_argument("--bon_n", type=int, default=16, help="Number of candidates for Best-of-N search.")
     parser.add_argument("--beam_width", type=int, default=4, help="Number of beams to keep per step in beam search.")
     parser.add_argument(

@@ -258,6 +258,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--resample_start_frac", type=float, default=0.3)
     parser.add_argument("--smc_cfg_scale", type=float, default=1.25)
     parser.add_argument("--smc_variant_idx", type=int, default=0)
+    parser.add_argument(
+        "--smc_variant_expansion",
+        action="store_true",
+        default=False,
+        help="Enable CFG/prompt-variant expansion at SMC resample points.",
+    )
+    parser.add_argument("--smc_expansion_variants", nargs="+", type=int, default=[])
+    parser.add_argument("--smc_expansion_cfgs", nargs="+", type=float, default=[])
+    parser.add_argument("--smc_expansion_factor", type=int, default=-1)
+    parser.add_argument(
+        "--smc_expansion_proposal", choices=["uniform", "score_softmax"], default="uniform"
+    )
+    parser.add_argument("--smc_expansion_tau", type=float, default=1.0)
+    parser.add_argument("--smc_expansion_lookahead", action="store_true", default=False)
 
     # GA
     parser.add_argument("--ga_population", type=int, default=24)
@@ -2813,6 +2827,44 @@ def run_mcts(
 
 
 @torch.no_grad()
+def _build_smc_expansion_bank_sf(
+    args: argparse.Namespace,
+    emb: EmbeddingContext,
+) -> list[tuple[int, float]]:
+    variants_arg = list(getattr(args, "smc_expansion_variants", []) or [])
+    cfgs_arg = list(getattr(args, "smc_expansion_cfgs", []) or [])
+    if len(variants_arg) == 0:
+        variants_arg = list(range(len(emb.pe_list)))
+    if len(cfgs_arg) == 0:
+        cfgs_arg = list(getattr(args, "cfg_scales", [float(getattr(args, "smc_cfg_scale", 1.0))]))
+    bank: list[tuple[int, float]] = []
+    seen: set[tuple[int, float]] = set()
+    for vi in variants_arg:
+        for c in cfgs_arg:
+            key = (int(vi), float(round(float(c), 6)))
+            if key in seen:
+                continue
+            seen.add(key)
+            bank.append(key)
+    if len(bank) <= 0:
+        bank = [(int(max(0, min(len(emb.pe_list) - 1, int(getattr(args, "smc_variant_idx", 0))))),
+                 float(getattr(args, "smc_cfg_scale", 1.0)))]
+    return bank
+
+
+def _stratified_assign_actions_sf(
+    bank: list[tuple[int, float]],
+    k: int,
+    rng: np.random.Generator,
+) -> list[tuple[int, float]]:
+    if k <= 0 or len(bank) <= 0:
+        return []
+    reps = (k + len(bank) - 1) // len(bank)
+    pool = [bank[i % len(bank)] for i in range(reps * len(bank))]
+    order = rng.permutation(len(pool))[:k]
+    return [pool[int(i)] for i in order]
+
+
 def run_smc(
     args: argparse.Namespace,
     ctx: PipelineContext,
@@ -2827,13 +2879,21 @@ def run_smc(
     emb: EmbeddingContext,
 ) -> SearchResult:
     k = max(2, int(args.smc_k))
-    cfg = float(args.smc_cfg_scale)
-    variant_idx = int(max(0, min(len(emb.pe_list) - 1, int(args.smc_variant_idx))))
-    pe, pm = emb.pe_list[variant_idx]
+    use_expansion = bool(getattr(args, "smc_variant_expansion", False))
+    default_cfg = float(args.smc_cfg_scale)
+    default_variant = int(max(0, min(len(emb.pe_list) - 1, int(args.smc_variant_idx))))
+    bank = _build_smc_expansion_bank_sf(args, emb)
+    np_rng = np.random.default_rng(int(seed) + 7007)
 
+    if use_expansion:
+        particle_actions = _stratified_assign_actions_sf(bank, k, np_rng)
+    else:
+        particle_actions = [(default_variant, default_cfg) for _ in range(k)]
+
+    pe0, _ = emb.pe_list[default_variant]
     particle_latents = []
     for pi in range(k):
-        particle_latents.append(make_latents(ctx, seed + pi, h, w, pe.dtype))
+        particle_latents.append(make_latents(ctx, seed + pi, h, w, pe0.dtype))
     latents = torch.cat(particle_latents, dim=0)
     dx = torch.zeros_like(latents)
     schedule = _step_tensors(ctx, args.steps, latents.dtype)
@@ -2845,11 +2905,33 @@ def run_smc(
     ess_hist: list[float] = []
     score_hist: list[float] = []
     resample_count = 0
+    expansion_events = 0
+
+    expansion_factor_arg = int(getattr(args, "smc_expansion_factor", -1))
+    expansion_factor = len(bank) if expansion_factor_arg <= 0 else min(len(bank), int(expansion_factor_arg))
+    proposal_mode = str(getattr(args, "smc_expansion_proposal", "uniform"))
+    proposal_tau = max(1e-6, float(getattr(args, "smc_expansion_tau", 1.0)))
+    use_lookahead = bool(getattr(args, "smc_expansion_lookahead", False))
 
     print(
-        f"  smc: K={k} cfg={cfg:.2f} variant={variant_idx} "
+        f"  smc: K={k} expansion={use_expansion} bank_size={len(bank)} M={expansion_factor} "
+        f"prop={proposal_mode} lookahead={use_lookahead} "
         f"gamma={float(args.smc_gamma):.3f} ess_thr={float(args.ess_threshold):.2f}"
     )
+
+    def _forward_particle_sf(
+        cur_latents: torch.Tensor,
+        action: tuple[int, float],
+        t_flat: torch.Tensor,
+        t_4d: torch.Tensor,
+    ) -> torch.Tensor:
+        vi, c = int(action[0]), float(action[1])
+        pe_a, pm_a = emb.pe_list[vi]
+        velocity = transformer_step(
+            args, ctx, cur_latents, pe_a, pm_a, emb.ue, emb.um, t_flat, c,
+        )
+        return cur_latents - t_4d * velocity
+
     for step_idx, (t_flat, t_4d) in enumerate(schedule):
         if step_idx == 0:
             noise = latents
@@ -2864,18 +2946,9 @@ def run_smc(
 
         next_dx_parts = []
         for pi in range(k):
-            velocity = transformer_step(
-                args,
-                ctx,
-                latents[pi : pi + 1],
-                pe,
-                pm,
-                emb.ue,
-                emb.um,
-                t_flat,
-                cfg,
+            next_dx_parts.append(
+                _forward_particle_sf(latents[pi : pi + 1], particle_actions[pi], t_flat, t_4d)
             )
-            next_dx_parts.append(latents[pi : pi + 1] - t_4d * velocity)
         dx = torch.cat(next_dx_parts, dim=0)
 
         if step_idx < start_idx:
@@ -2895,11 +2968,57 @@ def run_smc(
         ess_hist.append(ess)
 
         if ess < float(args.ess_threshold) * float(k):
-            idx = _systematic_resample(weights)
-            dx = dx[idx].clone()
-            latents = latents[idx].clone()
+            if not use_expansion or len(bank) <= 1:
+                idx = _systematic_resample(weights)
+                dx = dx[idx].clone()
+                latents = latents[idx].clone()
+                particle_actions = [particle_actions[int(i)] for i in idx.tolist()]
+                log_w = torch.zeros_like(log_w)
+                resample_count += 1
+                continue
+
+            children_lat: list[torch.Tensor] = []
+            children_dx: list[torch.Tensor] = []
+            children_actions: list[tuple[int, float]] = []
+            children_logw: list[float] = []
+            for pi in range(k):
+                if proposal_mode == "score_softmax" and len(bank) > 1:
+                    base = float(step_scores_list[pi])
+                    logits = np.full((len(bank),), base, dtype=np.float64)
+                    probs = np.exp((logits - float(np.max(logits))) / proposal_tau)
+                    probs = probs / max(1e-12, float(np.sum(probs)))
+                    idxs = np_rng.choice(len(bank), size=expansion_factor, replace=expansion_factor > len(bank), p=probs)
+                else:
+                    idxs = np_rng.choice(len(bank), size=expansion_factor, replace=expansion_factor > len(bank))
+                for bi in idxs.tolist():
+                    children_actions.append(bank[int(bi)])
+                    children_lat.append(latents[pi : pi + 1])
+                    children_dx.append(dx[pi : pi + 1])
+                    children_logw.append(float(log_w[pi].item()))
+
+            child_logw = torch.tensor(children_logw, device=dx.device, dtype=torch.float32)
+            if use_lookahead and step_idx + 1 < int(args.steps):
+                next_t_flat, next_t_4d = schedule[step_idx + 1]
+                la_scores: list[float] = []
+                for ci, action in enumerate(children_actions):
+                    parent_dx = children_dx[ci]
+                    noise_la = torch.randn(parent_dx.shape, device=parent_dx.device, dtype=parent_dx.dtype, generator=rng)
+                    la_lat_in = (1.0 - next_t_4d) * parent_dx + next_t_4d * noise_la
+                    la_dx = _forward_particle_sf(la_lat_in, action, next_t_flat, next_t_4d)
+                    la_img = decode_to_pil(ctx, la_dx, orig_h, orig_w, tag="smc_lookahead")
+                    la_scores.append(float(reward_ctx.score_images(prompt, [la_img], metadata)[0]))
+                la_tensor = torch.tensor(la_scores, device=dx.device, dtype=torch.float32)
+                child_logw = child_logw + float(lam) * la_tensor
+
+            child_weights = torch.softmax(child_logw, dim=0)
+            idx = _systematic_resample(child_weights)
+            chosen = idx.tolist()
+            latents = torch.cat([children_lat[int(i)] for i in chosen], dim=0)
+            dx = torch.cat([children_dx[int(i)] for i in chosen], dim=0)
+            particle_actions = [children_actions[int(i)] for i in chosen]
             log_w = torch.zeros_like(log_w)
             resample_count += 1
+            expansion_events += 1
 
     final_images: list[Image.Image] = []
     for pi in range(k):
@@ -2908,11 +3027,20 @@ def run_smc(
     best_idx = int(np.argmax(final_scores))
     best_image = final_images[best_idx]
     best_score = float(final_scores[best_idx])
+    best_action = particle_actions[best_idx]
 
     diagnostics = {
+        "smc_style": "das_tempered_resampling_variant_expansion" if use_expansion else "das_tempered_resampling",
         "smc_k": int(k),
-        "smc_cfg_scale": float(cfg),
-        "smc_variant_idx": int(variant_idx),
+        "smc_variant_expansion": bool(use_expansion),
+        "smc_expansion_bank": [list(a) for a in bank],
+        "smc_expansion_bank_size": int(len(bank)),
+        "smc_expansion_factor": int(expansion_factor),
+        "smc_expansion_proposal": str(proposal_mode),
+        "smc_expansion_lookahead": bool(use_lookahead),
+        "smc_expansion_events": int(expansion_events),
+        "smc_cfg_scale": float(default_cfg),
+        "smc_variant_idx": int(default_variant),
         "smc_gamma": float(args.smc_gamma),
         "resample_start_step": int(start_idx),
         "resample_count": int(resample_count),
@@ -2920,12 +3048,14 @@ def run_smc(
         "ess_mean": float(sum(ess_hist) / len(ess_hist)) if ess_hist else 0.0,
         "reward_traj_mean": [float(v) for v in score_hist],
         "final_particle_scores": [float(v) for v in final_scores],
+        "final_particle_actions": [list(a) for a in particle_actions],
+        "best_action": list(best_action),
     }
 
     return SearchResult(
         image=best_image,
         score=best_score,
-        actions=[(variant_idx, cfg, 0.0) for _ in range(int(args.steps))],
+        actions=[(int(best_action[0]), float(best_action[1]), 0.0) for _ in range(int(args.steps))],
         diagnostics=diagnostics,
     )
 

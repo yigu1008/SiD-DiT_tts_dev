@@ -376,6 +376,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--resample_start_frac", type=float, default=0.3)
     p.add_argument("--smc_guidance_scale", type=float, default=1.25)
     p.add_argument("--smc_chunk", type=int, default=4, help="Transformer batch chunk for particles.")
+    p.add_argument(
+        "--smc_variant_expansion",
+        action="store_true",
+        default=False,
+        help="Enable (variant, guidance_scale) expansion at SMC resample points.",
+    )
+    p.add_argument("--smc_expansion_variants", nargs="+", type=int, default=[])
+    p.add_argument("--smc_expansion_guidances", nargs="+", type=float, default=[])
+    p.add_argument("--smc_expansion_factor", type=int, default=-1)
+    p.add_argument(
+        "--smc_expansion_proposal", choices=["uniform", "score_softmax"], default="uniform"
+    )
+    p.add_argument("--smc_expansion_tau", type=float, default=1.0)
+    p.add_argument("--smc_expansion_lookahead", action="store_true", default=False)
 
     p.add_argument(
         "--x0_sampler",
@@ -2278,6 +2292,43 @@ def score_dx_batch(
 
 
 @torch.no_grad()
+def _build_smc_expansion_bank_flux(
+    args: argparse.Namespace,
+    n_variants: int,
+) -> list[tuple[int, float]]:
+    variants_arg = list(getattr(args, "smc_expansion_variants", []) or [])
+    guidances_arg = list(getattr(args, "smc_expansion_guidances", []) or [])
+    if len(variants_arg) == 0:
+        variants_arg = list(range(max(1, int(n_variants))))
+    if len(guidances_arg) == 0:
+        guidances_arg = [float(getattr(args, "smc_guidance_scale", 1.25))]
+    bank: list[tuple[int, float]] = []
+    seen: set[tuple[int, float]] = set()
+    for vi in variants_arg:
+        for g in guidances_arg:
+            key = (int(vi), float(round(float(g), 6)))
+            if key in seen:
+                continue
+            seen.add(key)
+            bank.append(key)
+    if len(bank) <= 0:
+        bank = [(0, float(getattr(args, "smc_guidance_scale", 1.25)))]
+    return bank
+
+
+def _stratified_assign_actions_flux(
+    bank: list[tuple[int, float]],
+    k: int,
+    rng: np.random.Generator,
+) -> list[tuple[int, float]]:
+    if k <= 0 or len(bank) <= 0:
+        return []
+    reps = (k + len(bank) - 1) // len(bank)
+    pool = [bank[i % len(bank)] for i in range(reps * len(bank))]
+    order = rng.permutation(len(pool))[:k]
+    return [pool[int(i)] for i in order]
+
+
 def run_smc(
     args: argparse.Namespace,
     ctx: FluxContext,
@@ -2285,9 +2336,23 @@ def run_smc(
     prompt: str,
     balanced_embed: PromptEmbed,
     seed: int,
+    embeds: list[PromptEmbed] | None = None,
 ) -> SearchResult:
     k = max(2, int(args.smc_k))
     use_euler = getattr(args, "euler_sampler", False)
+    use_expansion = bool(getattr(args, "smc_variant_expansion", False))
+    embeds_list: list[PromptEmbed] = list(embeds) if embeds else [balanced_embed]
+    if len(embeds_list) == 0:
+        embeds_list = [balanced_embed]
+    bank = _build_smc_expansion_bank_flux(args, n_variants=len(embeds_list))
+    np_rng = np.random.default_rng(int(seed) + 7007)
+
+    default_guidance = float(args.smc_guidance_scale)
+    if use_expansion:
+        particle_actions = _stratified_assign_actions_flux(bank, k, np_rng)
+    else:
+        particle_actions = [(0, default_guidance) for _ in range(k)]
+
     init_latents = make_initial_latents(ctx, seed, args.height, args.width, batch_size=k)
     dx = torch.zeros_like(init_latents)
     latents = init_latents.clone()
@@ -2298,6 +2363,19 @@ def run_smc(
     ess_hist: list[float] = []
     reward_hist: list[float] = []
     resample_count = 0
+    expansion_events = 0
+
+    expansion_factor_arg = int(getattr(args, "smc_expansion_factor", -1))
+    expansion_factor = len(bank) if expansion_factor_arg <= 0 else min(len(bank), int(expansion_factor_arg))
+    proposal_mode = str(getattr(args, "smc_expansion_proposal", "uniform"))
+    proposal_tau = max(1e-6, float(getattr(args, "smc_expansion_tau", 1.0)))
+    use_lookahead = bool(getattr(args, "smc_expansion_lookahead", False))
+
+    print(
+        f"  smc: K={k} expansion={use_expansion} bank_size={len(bank)} M={expansion_factor} "
+        f"prop={proposal_mode} lookahead={use_lookahead} "
+        f"gamma={float(args.smc_gamma):.3f} ess_thr={float(args.ess_threshold):.2f} euler={use_euler}"
+    )
 
     for step_idx, t_val in enumerate(t_values):
         t_4d = torch.tensor(float(t_val), device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
@@ -2312,55 +2390,146 @@ def run_smc(
                     generator=rng,
                 )
             latents = (1.0 - t_4d) * dx + t_4d * noise
-        flow_pred = flux_transformer_step_chunked(
-            ctx=ctx,
-            latents=latents,
-            embed=balanced_embed,
-            t_val=float(t_val),
-            guidance_scale=float(args.smc_guidance_scale),
-            chunk=int(args.smc_chunk),
-        )
-        dx = _pred_x0(latents, t_4d, flow_pred, args.x0_sampler)
-        if use_euler:
-            dt = _compute_dt(t_values, step_idx)
-            latents = latents + dt * flow_pred
+
+        # Per-particle forward; group by identical action to batch where possible.
+        action_groups: dict[tuple[int, float], list[int]] = {}
+        for pi, a in enumerate(particle_actions):
+            action_groups.setdefault(a, []).append(int(pi))
+        new_dx = torch.zeros_like(dx)
+        new_latents = latents.clone() if use_euler else latents
+        for action, idx_list in action_groups.items():
+            sub_latents = latents[idx_list]
+            vi, g = int(action[0]), float(action[1])
+            emb = embeds_list[int(vi) % len(embeds_list)]
+            flow = flux_transformer_step_chunked(
+                ctx=ctx,
+                latents=sub_latents,
+                embed=emb,
+                t_val=float(t_val),
+                guidance_scale=float(g),
+                chunk=int(args.smc_chunk),
+            )
+            sub_dx = _pred_x0(sub_latents, t_4d, flow, args.x0_sampler)
+            for slot, pi in enumerate(idx_list):
+                new_dx[pi : pi + 1] = sub_dx[slot : slot + 1]
+                if use_euler:
+                    dt = _compute_dt(t_values, step_idx)
+                    new_latents[pi : pi + 1] = sub_latents[slot : slot + 1] + dt * flow[slot : slot + 1]
+        dx = new_dx
+        latents = new_latents
 
         if step_idx < start_idx:
             continue
 
         step_scores = score_dx_batch(ctx, reward_model, prompt, _final_decode_tensor(latents, dx, use_euler))
+        step_scores_list = [float(v) for v in step_scores.detach().cpu().tolist()]
         reward_hist.append(float(step_scores.mean().item()))
         lam = (1.0 + float(args.smc_gamma)) ** (int(args.steps) - 1 - step_idx) - 1.0
         log_w = log_w + float(lam) * step_scores
         w = torch.softmax(log_w, dim=0)
         ess = float(1.0 / torch.sum(w * w).item())
         ess_hist.append(ess)
+
         if ess < float(args.ess_threshold) * float(k):
-            idx = systematic_resample(w)
-            dx = dx[idx].clone()
-            if use_euler:
-                latents = latents[idx].clone()
+            if not use_expansion or len(bank) <= 1:
+                idx = systematic_resample(w)
+                dx = dx[idx].clone()
+                if use_euler:
+                    latents = latents[idx].clone()
+                particle_actions = [particle_actions[int(i)] for i in idx.tolist()]
+                log_w = torch.zeros_like(log_w)
+                resample_count += 1
+                continue
+
+            children_lat: list[torch.Tensor] = []
+            children_dx: list[torch.Tensor] = []
+            children_actions: list[tuple[int, float]] = []
+            children_logw: list[float] = []
+            for pi in range(k):
+                if proposal_mode == "score_softmax" and len(bank) > 1:
+                    base = float(step_scores_list[pi])
+                    logits = np.full((len(bank),), base, dtype=np.float64)
+                    probs = np.exp((logits - float(np.max(logits))) / proposal_tau)
+                    probs = probs / max(1e-12, float(np.sum(probs)))
+                    idxs = np_rng.choice(len(bank), size=expansion_factor, replace=expansion_factor > len(bank), p=probs)
+                else:
+                    idxs = np_rng.choice(len(bank), size=expansion_factor, replace=expansion_factor > len(bank))
+                for bi in idxs.tolist():
+                    children_actions.append(bank[int(bi)])
+                    children_lat.append(latents[pi : pi + 1])
+                    children_dx.append(dx[pi : pi + 1])
+                    children_logw.append(float(log_w[pi].item()))
+
+            child_logw = torch.tensor(children_logw, device=dx.device, dtype=torch.float32)
+            if use_lookahead and step_idx + 1 < len(t_values):
+                next_t_val = float(t_values[step_idx + 1])
+                next_t_4d = torch.tensor(next_t_val, device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
+                la_scores: list[float] = []
+                for ci, action in enumerate(children_actions):
+                    parent_dx = children_dx[ci]
+                    parent_lat = children_lat[ci]
+                    if use_euler:
+                        la_in = parent_lat
+                    else:
+                        noise_la = torch.randn(parent_dx.shape, device=parent_dx.device, dtype=parent_dx.dtype, generator=rng)
+                        la_in = (1.0 - next_t_4d) * parent_dx + next_t_4d * noise_la
+                    vi, g = int(action[0]), float(action[1])
+                    emb = embeds_list[int(vi) % len(embeds_list)]
+                    la_flow = flux_transformer_step_chunked(
+                        ctx=ctx, latents=la_in, embed=emb,
+                        t_val=next_t_val, guidance_scale=float(g), chunk=int(args.smc_chunk),
+                    )
+                    la_dx = _pred_x0(la_in, next_t_4d, la_flow, args.x0_sampler)
+                    if use_euler:
+                        dt_la = _compute_dt(t_values, step_idx + 1)
+                        la_out = la_in + dt_la * la_flow
+                    else:
+                        la_out = la_in
+                    la_tensor = _final_decode_tensor(la_out, la_dx, use_euler)
+                    la_score = score_dx_batch(ctx, reward_model, prompt, la_tensor)
+                    la_scores.append(float(la_score[0].item()))
+                la_t = torch.tensor(la_scores, device=dx.device, dtype=torch.float32)
+                child_logw = child_logw + float(lam) * la_t
+
+            child_weights = torch.softmax(child_logw, dim=0)
+            idx = systematic_resample(child_weights)
+            chosen = idx.tolist()
+            latents = torch.cat([children_lat[int(i)] for i in chosen], dim=0)
+            dx = torch.cat([children_dx[int(i)] for i in chosen], dim=0)
+            particle_actions = [children_actions[int(i)] for i in chosen]
             log_w = torch.zeros_like(log_w)
             resample_count += 1
+            expansion_events += 1
 
     final_decode = _final_decode_tensor(latents, dx, use_euler)
     final_scores = score_dx_batch(ctx, reward_model, prompt, final_decode)
     best_idx = int(torch.argmax(final_scores).item())
     best_img = decode_to_pil(ctx, final_decode[best_idx : best_idx + 1])
+    best_action = particle_actions[best_idx]
     diagnostics = {
+        "smc_style": "das_tempered_resampling_variant_expansion" if use_expansion else "das_tempered_resampling",
         "smc_k": int(k),
         "gamma": float(args.smc_gamma),
-        "guidance_scale": float(args.smc_guidance_scale),
+        "guidance_scale": float(default_guidance),
+        "smc_variant_expansion": bool(use_expansion),
+        "smc_expansion_bank": [list(a) for a in bank],
+        "smc_expansion_bank_size": int(len(bank)),
+        "smc_expansion_factor": int(expansion_factor),
+        "smc_expansion_proposal": str(proposal_mode),
+        "smc_expansion_lookahead": bool(use_lookahead),
+        "smc_expansion_events": int(expansion_events),
         "resample_count": int(resample_count),
         "ess_min": float(min(ess_hist)) if ess_hist else 0.0,
         "ess_mean": float(sum(ess_hist) / len(ess_hist)) if ess_hist else 0.0,
         "reward_traj_mean": reward_hist,
         "reward_all": [float(v) for v in final_scores.detach().cpu().tolist()],
+        "final_particle_actions": [list(a) for a in particle_actions],
+        "best_action": list(best_action),
     }
     return SearchResult(
         image=best_img,
         score=float(final_scores[best_idx].item()),
-        actions=[(0, float(args.smc_guidance_scale)) for _ in range(int(args.steps))],
+        actions=[(int(best_action[0]), float(best_action[1])) for _ in range(int(args.steps))],
         diagnostics=diagnostics,
     )
 
@@ -2537,6 +2706,7 @@ def run(args: argparse.Namespace) -> None:
                     prompt=prompt,
                     balanced_embed=embeds[0],
                     seed=seed,
+                    embeds=embeds,
                 )
 
             print(

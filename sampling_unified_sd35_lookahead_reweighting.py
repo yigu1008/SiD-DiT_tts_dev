@@ -36,6 +36,7 @@ class LookaheadMCTSNode:
         "parent",
         "incoming_action",
         "u_t",
+        "d_t",
         "children",
         "visits",
         "action_visits",
@@ -51,6 +52,7 @@ class LookaheadMCTSNode:
         parent: "LookaheadMCTSNode | None" = None,
         incoming_action: tuple | None = None,
         u_t: float = 0.0,
+        d_t: float = 0.0,
     ) -> None:
         self.step = int(step)
         self.dx = dx
@@ -58,6 +60,7 @@ class LookaheadMCTSNode:
         self.parent = parent
         self.incoming_action = incoming_action
         self.u_t = float(u_t)
+        self.d_t = float(d_t)
         self.children: dict[tuple, LookaheadMCTSNode] = {}
         self.visits = 0
         self.action_visits: dict[tuple, int] = {}
@@ -231,6 +234,19 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     extra.add_argument("--lookahead_w_cs", type=float, default=0.10)
     extra.add_argument("--lookahead_w_q", type=float, default=0.20)
     extra.add_argument("--lookahead_w_explore", type=float, default=0.05)
+
+    extra.add_argument(
+        "--lookahead_prior_mode",
+        choices=["heuristic", "progress_prompt"],
+        default="heuristic",
+        help=(
+            "Action-logit builder. 'heuristic' (default) uses cfg/variant/cs/q/explore terms. "
+            "'progress_prompt' builds ℓ(a) = -w_progress·u_t(a) + w_prompt·d_t(a) from per-action "
+            "||x0_child − x0_parent|| and ||ε_cond − ε_uncond||."
+        ),
+    )
+    extra.add_argument("--lookahead_w_progress", type=float, default=1.0)
+    extra.add_argument("--lookahead_w_prompt", type=float, default=1.0)
 
     extra.add_argument("--lookahead_cfg_width_min", type=int, default=3)
     extra.add_argument("--lookahead_cfg_width_max", type=int, default=7)
@@ -435,8 +451,9 @@ def run_mcts_lookahead(
                 return action
         return candidates[0]
 
-    root = LookaheadMCTSNode(step=0, dx=dx0, latents=start_latents, parent=None, incoming_action=None, u_t=0.0)
+    root = LookaheadMCTSNode(step=0, dx=dx0, latents=start_latents, parent=None, incoming_action=None, u_t=0.0, d_t=0.0)
     u_values_seen: list[float] = []
+    d_values_seen: list[float] = []
     best_global_score = -float("inf")
     best_global_dx = None
     best_global_path_internal: list[tuple] = []
@@ -463,6 +480,16 @@ def run_mcts_lookahead(
         if len(u_values_seen) <= 0:
             return 1.0
         arr = np.asarray(u_values_seen, dtype=np.float64)
+        q = float(np.percentile(arr, 75))
+        if np.isfinite(q) and q > 1e-8:
+            return q
+        m = float(np.mean(np.abs(arr)))
+        return max(1e-6, m if m > 1e-8 else 1.0)
+
+    def current_d_ref() -> float:
+        if len(d_values_seen) <= 0:
+            return 1.0
+        arr = np.asarray(d_values_seen, dtype=np.float64)
         q = float(np.percentile(arr, 75))
         if np.isfinite(q) and q > 1e-8:
             return q
@@ -569,6 +596,39 @@ def run_mcts_lookahead(
     def compute_action_logits(node: LookaheadMCTSNode, candidates: list[tuple]) -> np.ndarray:
         if len(candidates) <= 0:
             return np.zeros((0,), dtype=np.float64)
+        prior_mode = str(getattr(args, "lookahead_prior_mode", "heuristic")).strip().lower()
+        if prior_mode == "progress_prompt":
+            w_progress = float(getattr(args, "lookahead_w_progress", 1.0))
+            w_prompt = float(getattr(args, "lookahead_w_prompt", 1.0))
+            u_ref = max(1e-6, current_u_ref())
+            d_ref = max(1e-6, current_d_ref())
+            # For tried actions, look up child's measured u_t/d_t. For untried
+            # actions, use the mean of tried children under this node (so they
+            # sit at a neutral, average-influence baseline).
+            tried_u: list[float] = []
+            tried_d: list[float] = []
+            for action in candidates:
+                child = node.children.get(action)
+                if child is None:
+                    continue
+                tried_u.append(float(child.u_t))
+                tried_d.append(float(child.d_t))
+            fallback_u = float(np.mean(tried_u)) if len(tried_u) > 0 else float(u_ref)
+            fallback_d = float(np.mean(tried_d)) if len(tried_d) > 0 else float(d_ref)
+            out = np.zeros((len(candidates),), dtype=np.float64)
+            for i, action in enumerate(candidates):
+                child = node.children.get(action)
+                if child is not None:
+                    u_val = float(child.u_t)
+                    d_val = float(child.d_t)
+                else:
+                    u_val = float(fallback_u)
+                    d_val = float(fallback_d)
+                u_norm = float(u_val) / u_ref
+                d_norm = float(d_val) / d_ref
+                out[i] = (-w_progress * u_norm) + (w_prompt * d_norm)
+            return out
+
         w_cfg = float(getattr(args, "lookahead_w_cfg", 1.0))
         w_variant = float(getattr(args, "lookahead_w_variant", 0.25))
         w_cs = float(getattr(args, "lookahead_w_cs", 0.10))
@@ -772,6 +832,7 @@ def run_mcts_lookahead(
         if not node.is_leaf(n_key):
             if action not in node.children:
                 seg_start, seg_end = key_segments[node.step]
+                seg_stats: dict[str, Any] = {}
                 child_lat, child_dx = su._run_segment(
                     args,
                     ctx,
@@ -785,6 +846,7 @@ def run_mcts_lookahead(
                     seg_start,
                     seg_end,
                     eps_bank=mcts_eps_bank,
+                    stats_out=seg_stats,
                 )
                 child_u = _compute_u_t(
                     str(getattr(args, "lookahead_u_t_def", "latent_delta_rms")),
@@ -792,8 +854,11 @@ def run_mcts_lookahead(
                     child_latents=child_lat,
                     child_dx=child_dx,
                 )
+                child_d = float(seg_stats.get("cfg_delta_rms", 0.0))
                 if np.isfinite(child_u) and child_u > 0.0:
                     u_values_seen.append(float(child_u))
+                if np.isfinite(child_d) and child_d > 0.0:
+                    d_values_seen.append(float(child_d))
                 node.children[action] = LookaheadMCTSNode(
                     step=node.step + 1,
                     dx=child_dx,
@@ -801,6 +866,7 @@ def run_mcts_lookahead(
                     parent=node,
                     incoming_action=action,
                     u_t=float(child_u),
+                    d_t=float(child_d),
                 )
             path.append((node, action))
             if candidate_meta is None:
@@ -854,6 +920,7 @@ def run_mcts_lookahead(
             )
 
             seg_start, seg_end = key_segments[rollout_key_idx]
+            seg_stats_r: dict[str, Any] = {}
             next_latents, rollout_dx = su._run_segment(
                 args,
                 ctx,
@@ -867,6 +934,7 @@ def run_mcts_lookahead(
                 seg_start,
                 seg_end,
                 eps_bank=mcts_eps_bank,
+                stats_out=seg_stats_r,
             )
             child_u = _compute_u_t(
                 str(getattr(args, "lookahead_u_t_def", "latent_delta_rms")),
@@ -874,8 +942,11 @@ def run_mcts_lookahead(
                 child_latents=next_latents,
                 child_dx=rollout_dx,
             )
+            child_d = float(seg_stats_r.get("cfg_delta_rms", 0.0))
             if np.isfinite(child_u) and child_u > 0.0:
                 u_values_seen.append(float(child_u))
+            if np.isfinite(child_d) and child_d > 0.0:
+                d_values_seen.append(float(child_d))
             rollout_key_idx += 1
             if rollout_key_idx < n_key:
                 rollout_node = LookaheadMCTSNode(
@@ -885,6 +956,7 @@ def run_mcts_lookahead(
                     parent=rollout_node,
                     incoming_action=rollout_action,
                     u_t=float(child_u),
+                    d_t=float(child_d),
                 )
             rollout_latents = next_latents
 
@@ -1152,8 +1224,12 @@ def run_mcts_lookahead(
                 )
 
     u_arr = np.asarray(u_values_seen, dtype=np.float64) if len(u_values_seen) > 0 else np.asarray([], dtype=np.float64)
+    d_arr = np.asarray(d_values_seen, dtype=np.float64) if len(d_values_seen) > 0 else np.asarray([], dtype=np.float64)
     diagnostics = {
         "lookahead_mode": str(getattr(args, "lookahead_mode", "rollout_prior")),
+        "lookahead_prior_mode": str(getattr(args, "lookahead_prior_mode", "heuristic")),
+        "lookahead_w_progress": float(getattr(args, "lookahead_w_progress", 1.0)),
+        "lookahead_w_prompt": float(getattr(args, "lookahead_w_prompt", 1.0)),
         "selected_source": str(selected_source),
         "key_steps": [int(x) for x in key_steps],
         "n_key": int(n_key),
@@ -1184,6 +1260,14 @@ def run_mcts_lookahead(
             "min": float(u_arr.min()) if u_arr.size > 0 else 0.0,
             "max": float(u_arr.max()) if u_arr.size > 0 else 0.0,
             "u_ref_final": float(current_u_ref()),
+        },
+        "d_t_stats": {
+            "count": int(d_arr.size),
+            "mean": float(d_arr.mean()) if d_arr.size > 0 else 0.0,
+            "std": float(d_arr.std()) if d_arr.size > 0 else 0.0,
+            "min": float(d_arr.min()) if d_arr.size > 0 else 0.0,
+            "max": float(d_arr.max()) if d_arr.size > 0 else 0.0,
+            "d_ref_final": float(current_d_ref()),
         },
         "cfg_range": [float(cfg_min), float(cfg_max)],
         "cfg_values": [float(x) for x in cfg_values],

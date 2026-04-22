@@ -2296,15 +2296,40 @@ def _build_smc_expansion_bank_flux(
     args: argparse.Namespace,
     n_variants: int,
 ) -> list[tuple[int, float]]:
+    n_variants = max(1, int(n_variants))
     variants_arg = list(getattr(args, "smc_expansion_variants", []) or [])
     guidances_arg = list(getattr(args, "smc_expansion_guidances", []) or [])
     if len(variants_arg) == 0:
-        variants_arg = list(range(max(1, int(n_variants))))
+        variants_arg = list(range(n_variants))
+
+    valid_variants: list[int] = []
+    dropped_variants: list[int] = []
+    seen_variants: set[int] = set()
+    for vi_raw in variants_arg:
+        vi = int(vi_raw)
+        if 0 <= vi < n_variants:
+            if vi not in seen_variants:
+                seen_variants.add(vi)
+                valid_variants.append(vi)
+        else:
+            dropped_variants.append(vi)
+    if len(valid_variants) == 0:
+        valid_variants = list(range(n_variants))
+    if len(dropped_variants) > 0:
+        kept_str = ",".join(str(v) for v in valid_variants)
+        dropped_unique = sorted(set(int(v) for v in dropped_variants))
+        dropped_str = ",".join(str(v) for v in dropped_unique[:8])
+        more = "..." if len(dropped_unique) > 8 else ""
+        print(
+            "[warn] smc_expansion_variants contains out-of-range indices "
+            f"for prompt variants (n={n_variants}); dropped=[{dropped_str}{more}] kept=[{kept_str}]"
+        )
+
     if len(guidances_arg) == 0:
         guidances_arg = [float(getattr(args, "smc_guidance_scale", 1.25))]
     bank: list[tuple[int, float]] = []
     seen: set[tuple[int, float]] = set()
-    for vi in variants_arg:
+    for vi in valid_variants:
         for g in guidances_arg:
             key = (int(vi), float(round(float(g), 6)))
             if key in seen:

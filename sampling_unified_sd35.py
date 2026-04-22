@@ -3062,18 +3062,48 @@ def _build_smc_expansion_bank(
     args: argparse.Namespace,
     emb: EmbeddingContext,
 ) -> list[tuple[int, float, float]]:
+    n_variants = int(len(emb.cond_text))
+    if n_variants <= 0:
+        raise RuntimeError("SMC expansion requires at least one prompt variant embedding.")
+
     variants_arg = list(getattr(args, "smc_expansion_variants", []) or [])
     cfgs_arg = list(getattr(args, "smc_expansion_cfgs", []) or [])
     cs_arg = list(getattr(args, "smc_expansion_cs", []) or [])
     if len(variants_arg) == 0:
-        variants_arg = list(range(len(emb.cond_text)))
+        variants_arg = list(range(n_variants))
+
+    # Rewrites are deduped per prompt, so runtime variant count can be smaller
+    # than the configured expansion list. Drop invalid indices to avoid OOB.
+    valid_variants: list[int] = []
+    dropped_variants: list[int] = []
+    seen_variants: set[int] = set()
+    for vi_raw in variants_arg:
+        vi = int(vi_raw)
+        if 0 <= vi < n_variants:
+            if vi not in seen_variants:
+                seen_variants.add(vi)
+                valid_variants.append(vi)
+        else:
+            dropped_variants.append(vi)
+    if len(valid_variants) == 0:
+        valid_variants = list(range(n_variants))
+    if len(dropped_variants) > 0:
+        kept_str = ",".join(str(v) for v in valid_variants)
+        dropped_unique = sorted(set(int(v) for v in dropped_variants))
+        dropped_str = ",".join(str(v) for v in dropped_unique[:8])
+        more = "..." if len(dropped_unique) > 8 else ""
+        print(
+            "[warn] smc_expansion_variants contains out-of-range indices "
+            f"for prompt variants (n={n_variants}); dropped=[{dropped_str}{more}] kept=[{kept_str}]"
+        )
+
     if len(cfgs_arg) == 0:
         cfgs_arg = list(getattr(args, "cfg_scales", [float(getattr(args, "smc_cfg_scale", 1.0))]))
     if len(cs_arg) == 0:
         cs_arg = list(getattr(args, "correction_strengths", [0.0]))
     bank: list[tuple[int, float, float]] = []
     seen: set[tuple[int, float, float]] = set()
-    for vi in variants_arg:
+    for vi in valid_variants:
         for c in cfgs_arg:
             for s in cs_arg:
                 key = (int(vi), float(round(float(c), 6)), float(round(float(s), 6)))

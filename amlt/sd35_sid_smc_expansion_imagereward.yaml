@@ -100,7 +100,7 @@ search:
       - export METHODS='{methods}'
       - export REWARD_BACKEND=imagereward
       - export REWARD_TYPE=imagereward
-      - export REWARD_BACKENDS=imagereward
+      - export REWARD_BACKENDS='{reward_backends}'
       - export EVAL_BEST_IMAGES=1
       - export EVAL_BACKENDS='{eval_backends}'
       - export EVAL_REWARD_DEVICE=cuda
@@ -175,8 +175,10 @@ search:
       values: [ 1 ]
     - name: methods
       values: [ "baseline smc" ]
+    - name: reward_backends
+      values: [ "imagereward hpsv2 pickscore" ]
     - name: eval_backends
-      values: [ "imagereward" ]
+      values: [ "imagereward hpsv2 pickscore" ]
     - name: cfg_scales
       values: [ "1.0 1.25 1.5 1.75 2.0 2.25 2.5" ]
     - name: baseline_cfg

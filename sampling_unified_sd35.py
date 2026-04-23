@@ -1973,13 +1973,14 @@ def _actions_brief(actions: list[tuple[int, float, float]]) -> str:
     return " ".join(f"s{i+1}:v{vi}/cfg{cfg:.2f}/c{cs:.2f}" for i, (vi, cfg, cs) in enumerate(actions))
 
 
-def _systematic_resample(weights: torch.Tensor) -> torch.Tensor:
+def _systematic_resample(weights: torch.Tensor, n_samples: int | None = None) -> torch.Tensor:
     k = int(weights.shape[0])
+    n = int(k if n_samples is None else max(1, int(n_samples)))
     cdf = torch.cumsum(weights, dim=0)
     u = (
         torch.rand(1, device=weights.device, dtype=weights.dtype)
-        + torch.arange(k, device=weights.device, dtype=weights.dtype)
-    ) / float(k)
+        + torch.arange(n, device=weights.device, dtype=weights.dtype)
+    ) / float(n)
     return torch.searchsorted(cdf, u).clamp(0, k - 1)
 
 
@@ -3317,7 +3318,7 @@ def run_smc(
                 child_logw_tensor = child_logw_tensor + float(lam) * la_scores_tensor
 
             child_weights = torch.softmax(child_logw_tensor, dim=0)
-            idx = _systematic_resample(child_weights)
+            idx = _systematic_resample(child_weights, n_samples=k)
             chosen = idx.tolist()
             if use_lookahead and step_idx + 1 < int(args.steps):
                 # Advance step index logically so we don't re-run the same step

@@ -1,0 +1,156 @@
+description: sd35-reward-eval-multi-flux
+
+target:
+  service: sing
+  name: GenAI-Shared-UKSouth2
+  workspace_name: Singularity-GenAI-WS-UKSouth2
+  resource_group: singularity-genai-gpu-uksouth2
+
+env_defaults:
+  service: sing
+  PRIORITY: high
+  NODES: 1
+  GPUS: 1
+  MEM: 80
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - export PATH=/home/aiscuser/.local/bin:$$PATH
+
+code:
+  local_dir: ./
+
+storage:
+  output:
+    storage_account_name: vigstandard
+    container_name: data
+    mount_dir: /mnt/data
+
+search:
+  job_template:
+    name: sd35-reward-eval-flux-{run_tag}
+    sku: ${NODES}x${MEM}G${GPUS}-IB
+    sla_tier: Standard
+    process_count_per_node: 1
+    priority: high
+    mpi: False
+    command:
+      - set -x
+      - export PYTHONNOUSERSITE=1
+      - unset PYTHONPATH || true
+      - export SID_FORCE_WANDB_STUB=1
+      - export WANDB_DISABLED=true
+      - export TOKENIZERS_PARALLELISM=false
+      # ── Paths & HF auth ────────────────────────────────────────────────────
+      - export PATH=/home/aiscuser/.local/bin:$$PATH
+      - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
+      - export HF_TOKEN={hf_token}
+      - export HUGGING_FACE_HUB_TOKEN={hf_token}
+      - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
+      # ── Build the isolated `reward` conda env (transformers==4.45.2) ───────
+      # This env is independent from ptca's conda env. Avoids torchvision /
+      # wandb / qwen version conflicts seen when running eval in ptca.
+      - source /opt/conda/etc/profile.d/conda.sh
+      - CONDA_BASE=/opt/conda REWARD_ENV_NAME=reward bash setup_reward_env.sh
+      - export REWARD_PY=/opt/conda/envs/reward/bin/python
+      - "$$REWARD_PY" -c "import torch, transformers; print('reward env torch='+torch.__version__, 'transformers='+transformers.__version__); import hpsv3, hpsv2, ImageReward; print('reward env backends import OK')"
+      # ── Cache dirs & symlinks ──────────────────────────────────────────────
+      - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
+      - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
+      - export CLIP_CACHE_DIR=/mnt/data/v-yigu/model_cache/clip
+      - mkdir -p /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
+      - mkdir -p /home/aiscuser/.cache
+      - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
+      - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
+      # ── Preload reward model weights (use reward env's python) ────────────
+      - export REWARD_BACKENDS='{eval_backends}'
+      - "$$REWARD_PY" preload_reward_models.py
+      # ── Run eval for each method (uses reward env python) ─────────────────
+      - export SOURCE_RUN_TAG={source_run_tag}
+      - export SOURCE_MODEL={source_model}
+      - export SOURCE_REWARD_BACKEND={source_reward_backend}
+      - export METHOD_PARENT={method_parent}
+      - export EVAL_DEVICE={eval_device}
+      - export EVAL_BACKENDS='{eval_backends}'
+      - export METHODS='{methods}'
+      - export LAYOUT={layout}
+      - |
+        if [ "$$METHOD_PARENT" = "auto" ] || [ "$$METHOD_PARENT" = "AUTO" ]; then
+          BASE1="/mnt/data/v-yigu/hpsv2_all_models_runs/$$SOURCE_RUN_TAG/$$SOURCE_MODEL/$$SOURCE_REWARD_BACKEND"
+          BASE2="/mnt/data/v-yigu/hpsv2_all_models_runs/$$SOURCE_RUN_TAG/$$SOURCE_MODEL"
+          BASE3="/mnt/data/v-yigu/hpsv2_all_models_runs/$$SOURCE_RUN_TAG"
+          if [ -d "$$BASE1" ]; then
+            METHOD_PARENT="$$(ls -dt "$$BASE1"/run_* 2>/dev/null | head -1 || true)"
+          fi
+          if [ -z "$$METHOD_PARENT" ] && [ -d "$$BASE2" ]; then
+            METHOD_PARENT="$$(ls -dt "$$BASE2"/run_* 2>/dev/null | head -1 || true)"
+          fi
+          if [ -z "$$METHOD_PARENT" ] && [ -d "$$BASE3" ]; then
+            METHOD_PARENT="$$(ls -dt "$$BASE3"/run_* 2>/dev/null | head -1 || true)"
+          fi
+        fi
+        if [ ! -d "$$METHOD_PARENT" ]; then
+          echo "ERROR: method_parent does not exist: $$METHOD_PARENT"
+          echo "List available dirs:"
+          ls -d /mnt/data/v-yigu/hpsv2_all_models_runs/$$SOURCE_RUN_TAG/*/ 2>/dev/null || echo "(none)"
+          exit 1
+        fi
+        echo "source_run_tag=$$SOURCE_RUN_TAG source_model=$$SOURCE_MODEL source_reward_backend=$$SOURCE_REWARD_BACKEND"
+        echo "method_parent=$$METHOD_PARENT layout=$$LAYOUT methods=$$METHODS"
+        for method in $$METHODS; do
+          METHOD_DIR="$$METHOD_PARENT/$$method"
+          if [ ! -d "$$METHOD_DIR" ]; then
+            echo "SKIP: $$METHOD_DIR does not exist"
+            continue
+          fi
+          OUT_JSON="$$METHOD_DIR/reward_eval_$$(echo $$EVAL_BACKENDS | tr ' ' '_').json"
+          echo "EVAL: method=$$method dir=$$METHOD_DIR backends=$$EVAL_BACKENDS"
+          "$$REWARD_PY" evaluate_best_images_multi_reward.py \
+            --layout "$$LAYOUT" \
+            --method_out "$$METHOD_DIR" \
+            --method "$$method" \
+            --backends $$EVAL_BACKENDS \
+            --reward_device "$$EVAL_DEVICE" \
+            --image_reward_model ImageReward-v1.0 \
+            --pickscore_model yuvalkirstain/PickScore_v1 \
+            --allow_missing_backends \
+            --out_json "$$OUT_JSON" \
+            || echo "WARN: eval failed for method=$$method"
+          echo "DONE: $$OUT_JSON"
+        done
+      - echo "All evaluations complete."
+
+    submit_args:
+      env:
+        DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: True
+        SHARED_MEMORY_PERCENT: 0.5
+
+  max_trials: 10
+  type: grid
+  params:
+    - name: run_tag
+      values: [ "reward_eval_multi_flux" ]
+    - name: hf_token
+      values: [ "YOUR_HF_TOKEN_HERE" ]
+    - name: source_run_tag
+      values: [ "flux_smc_expansion_imagereward" ]
+    - name: source_model
+      values: [ "flux" ]
+    - name: source_reward_backend
+      values: [ "imagereward" ]
+    # method_parent may be "auto" to pick latest run_* under:
+    # /mnt/data/v-yigu/hpsv2_all_models_runs/<source_run_tag>/<source_model>/<source_reward_backend>/
+    # or set an explicit absolute run dir.
+    - name: method_parent
+      values: [ "auto" ]
+    - name: layout
+      values: [ "flux" ]
+    # Space-separated method names matching subdirs under method_parent
+    - name: methods
+      values: [ "baseline smc" ]
+    # Backends supported in reward env: imagereward hpsv2 pickscore hpsv3
+    - name: eval_backends
+      values: [ "imagereward hpsv2 pickscore" ]
+    - name: eval_device
+      values: [ "cuda" ]

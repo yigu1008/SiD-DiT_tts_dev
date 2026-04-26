@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 import sd35_ddp_experiment as base
+from sampling_unified_sd35_lookahead_reweighting import run_mcts_lookahead
 
 
 def _parse_bon_mcts_flags(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
@@ -52,6 +53,46 @@ def _parse_bon_mcts_flags(argv: list[str]) -> tuple[argparse.Namespace, list[str
         default=None,
         help="CFG used in BoN prescreen baseline scoring. Defaults to --baseline_cfg.",
     )
+    parser.add_argument(
+        "--bon_mcts_refine_method",
+        choices=["ours_tree", "mcts"],
+        default="ours_tree",
+        help="Refinement tree-search after BoN prescreen: ours_tree (lookahead prior) or legacy mcts.",
+    )
+    parser.add_argument(
+        "--lookahead_mode",
+        choices=[
+            "standard",
+            "instrumentation",
+            "rollout_prior",
+            "tree_prior",
+            "rollout_tree_prior",
+            "rollout_tree_prior_adaptive_cfg",
+            "adaptive_cfg_width",
+        ],
+        default="rollout_tree_prior_adaptive_cfg",
+    )
+    parser.add_argument(
+        "--lookahead_u_t_def",
+        choices=["latent_delta_rms", "latent_rms", "dx_rms"],
+        default="latent_delta_rms",
+    )
+    parser.add_argument("--lookahead_tau", type=float, default=0.35)
+    parser.add_argument("--lookahead_c_puct", type=float, default=1.20)
+    parser.add_argument("--lookahead_u_ref", type=float, default=0.0)
+    parser.add_argument("--lookahead_w_cfg", type=float, default=1.0)
+    parser.add_argument("--lookahead_w_variant", type=float, default=0.25)
+    parser.add_argument("--lookahead_w_cs", type=float, default=0.10)
+    parser.add_argument("--lookahead_w_q", type=float, default=0.20)
+    parser.add_argument("--lookahead_w_explore", type=float, default=0.05)
+    parser.add_argument("--lookahead_prior_mode", choices=["heuristic", "signal"], default="heuristic")
+    parser.add_argument("--lookahead_w_progress", type=float, default=1.0)
+    parser.add_argument("--lookahead_w_prompt", type=float, default=1.0)
+    parser.add_argument("--lookahead_cfg_width_min", type=int, default=3)
+    parser.add_argument("--lookahead_cfg_width_max", type=int, default=7)
+    parser.add_argument("--lookahead_cfg_anchor_count", type=int, default=2)
+    parser.add_argument("--lookahead_min_visits_for_center", type=int, default=3)
+    parser.add_argument("--lookahead_log_action_topk", type=int, default=12)
     return parser.parse_known_args(argv)
 
 
@@ -99,6 +140,7 @@ def _run_bon_mcts(
     variants: list[str],
     seed: int,
     original_run_mcts: Callable[..., Any],
+    lookahead_run_mcts: Callable[..., Any],
 ) -> Any:
     base_seed = int(seed)
     n_seeds = max(1, int(getattr(args, "bon_mcts_n_seeds", 8)))
@@ -107,12 +149,14 @@ def _run_bon_mcts(
     offset = int(getattr(args, "bon_mcts_seed_offset", 0))
     prescreen_cfg_raw = getattr(args, "bon_mcts_prescreen_cfg", None)
     prescreen_cfg = float(args.baseline_cfg if prescreen_cfg_raw is None else prescreen_cfg_raw)
+    refine_method = str(getattr(args, "bon_mcts_refine_method", "ours_tree")).strip().lower()
 
     seed_pool = [int(base_seed + offset + i * stride) for i in range(n_seeds)]
     print(
         "  bon_mcts: "
         f"prescreen_n={n_seeds} topk={topk} "
-        f"prescreen_cfg={prescreen_cfg:.2f} sim_alloc={args.bon_mcts_sim_alloc}"
+        f"prescreen_cfg={prescreen_cfg:.2f} sim_alloc={args.bon_mcts_sim_alloc} "
+        f"refine={refine_method}"
     )
 
     prescreen_rows: list[dict[str, float | int]] = []
@@ -150,19 +194,22 @@ def _run_bon_mcts(
         if hasattr(run_args, "mcts_n_seeds"):
             run_args.mcts_n_seeds = 1
         seed_i = int(row["seed"])
-        result = original_run_mcts(run_args, ctx, emb, reward_model, prompt, variants, seed_i)
+        if refine_method == "mcts":
+            result = original_run_mcts(run_args, ctx, emb, reward_model, prompt, variants, seed_i)
+        else:
+            result = lookahead_run_mcts(run_args, ctx, emb, reward_model, prompt, variants, seed_i)
         mcts_rows.append(
             {
                 "rank": int(idx + 1),
                 "seed": int(seed_i),
                 "prescreen_score": float(row["prescreen_score"]),
                 "n_sims_used": int(run_args.n_sims),
-                "mcts_score": float(result.score),
+                "tree_search_score": float(result.score),
             }
         )
         print(
             f"    refine {idx + 1}/{len(selected)} seed={seed_i} "
-            f"n_sims={run_args.n_sims} mcts={float(result.score):.4f}"
+            f"n_sims={run_args.n_sims} score={float(result.score):.4f}"
         )
         if best_result is None or float(result.score) > float(best_result.score):
             best_result = result
@@ -180,12 +227,20 @@ def _run_bon_mcts(
         "topk": int(topk),
         "seed_stride": int(stride),
         "seed_offset": int(offset),
+        "refine_method": str(refine_method),
         "sim_alloc": str(getattr(args, "bon_mcts_sim_alloc", "split")),
         "sim_budgets": [int(x) for x in budgets],
         "winner_seed": int(best_seed),
         "prescreen_ranked": prescreen_rows,
-        "mcts_refine": mcts_rows,
+        "tree_refine": mcts_rows,
     }
+    if refine_method != "mcts":
+        diagnostics["bon_mcts"]["lookahead"] = {
+            "lookahead_mode": str(getattr(args, "lookahead_mode", "rollout_tree_prior_adaptive_cfg")),
+            "lookahead_u_t_def": str(getattr(args, "lookahead_u_t_def", "latent_delta_rms")),
+            "lookahead_tau": float(getattr(args, "lookahead_tau", 0.35)),
+            "lookahead_c_puct": float(getattr(args, "lookahead_c_puct", 1.20)),
+        }
     # Keep the concrete result object produced by the active backend's MCTS
     # implementation; just attach merged diagnostics.
     best_result.diagnostics = diagnostics
@@ -206,6 +261,7 @@ def main() -> None:
             variants=variants,
             seed=seed,
             original_run_mcts=original_run_mcts,
+            lookahead_run_mcts=run_mcts_lookahead,
         )
 
     base.parse_args = _make_patched_parse_args(original_parse_args)

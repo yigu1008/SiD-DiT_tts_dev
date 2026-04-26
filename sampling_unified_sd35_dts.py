@@ -78,6 +78,8 @@ class DTSNode:
     children: list["DTSNode"] = field(default_factory=list)
     n_visits: int = 0
     v_hat: float = 0.0
+    # CFG used to produce the transition into this node (root: not applicable).
+    cfg: float = 0.0
     # Latent state AFTER this node's step. Stored on CPU to bound GPU memory.
     latents_cpu: Optional[torch.Tensor] = None
     dx_cpu: Optional[torch.Tensor] = None
@@ -302,6 +304,7 @@ def _expand_and_rollout(
             children=[],
             n_visits=0,
             v_hat=0.0,
+            cfg=float(cfg),
         )
         # Cache latents/dx on CPU for future expansions (skip terminal: we only
         # need the decoded image there).
@@ -355,6 +358,22 @@ def run_dts_star(
     return _run_dts_core(args, ctx, emb, reward_model, prompt, seed, select_mode="dts_star")
 
 
+def _parse_cfg_bank(raw: Any, fallback: float) -> list[float]:
+    """Parse a whitespace-separated CFG bank string. Empty/None → [fallback]."""
+    if raw is None:
+        return [float(fallback)]
+    text = str(raw).strip()
+    if not text:
+        return [float(fallback)]
+    out: list[float] = []
+    for tok in text.replace(",", " ").split():
+        try:
+            out.append(float(tok))
+        except ValueError:
+            continue
+    return out if out else [float(fallback)]
+
+
 def _run_dts_core(
     args: argparse.Namespace,
     ctx: PipelineContext,
@@ -371,7 +390,8 @@ def _run_dts_core(
     pw_alpha = float(getattr(args, "dts_pw_alpha", 0.5))
     c_uct = float(getattr(args, "dts_c_uct", 1.0))
     sde_noise_scale = float(getattr(args, "dts_sde_noise_scale", 0.0))
-    cfg = float(args.baseline_cfg)
+    baseline_cfg = float(args.baseline_cfg)
+    cfg_bank = _parse_cfg_bank(getattr(args, "dts_cfg_bank", ""), baseline_cfg)
     variant_idx = 0  # vanilla DTS: original prompt only.
     use_euler = bool(getattr(args, "euler_sampler", False))
 
@@ -386,9 +406,10 @@ def _run_dts_core(
     best_score = -float("inf")
     best_image: Optional[Image.Image] = None
 
+    cfg_bank_str = " ".join(f"{c:.3g}" for c in cfg_bank)
     print(
         f"  {select_mode}: M={M} lam={lam:.3f} pw=(C={pw_c:.2f},a={pw_alpha:.2f}) "
-        f"c_uct={c_uct:.2f} sde={sde_noise_scale:.3f} cfg={cfg:.2f} "
+        f"c_uct={c_uct:.2f} sde={sde_noise_scale:.3f} cfg_bank=[{cfg_bank_str}] "
         f"steps={total_steps} euler={use_euler}"
     )
 
@@ -415,14 +436,16 @@ def _run_dts_core(
             # Already a leaf — just visit it again (re-backup, no new rollout).
             _backup(path, lam)
             score = float(node.terminal_score) if node.terminal_score is not None else -float("inf")
+            cfg_used = float(node.cfg)
         else:
             # ── Expansion + rollout ──
+            cfg_used = float(cfg_bank[rng.randrange(len(cfg_bank))]) if len(cfg_bank) > 1 else float(cfg_bank[0])
             chain = _expand_and_rollout(
                 args, ctx, emb, reward_model, prompt, node, sched,
                 seed=seed,
                 iteration=it,
                 variant_idx=variant_idx,
-                cfg=cfg,
+                cfg=cfg_used,
                 use_euler=use_euler,
                 sde_noise_scale=sde_noise_scale,
                 initial_latent_dtype=dtype,
@@ -439,19 +462,24 @@ def _run_dts_core(
         if (it + 1) % max(1, M // 8) == 0 or it == 0 or it == M - 1:
             print(f"    iter {it + 1:3d}/{M} best={best_score:.4f} root_v={root.v_hat:.4f} "
                   f"root_children={len(root.children)} N={root.n_visits}")
-        iter_log.append({"iter": int(it), "score": float(score), "best": float(best_score)})
+        iter_log.append({
+            "iter": int(it),
+            "score": float(score),
+            "best": float(best_score),
+            "cfg": float(cfg_used),
+        })
 
     # ── Final selection: descend without expansion ──
     out_image: Optional[Image.Image]
     out_score: float
     final_node = root
-    final_path_depths: list[int] = []
+    final_path: list[DTSNode] = []
     while final_node.children:
         if select_mode == "dts":
             final_node = _select_child_dts(final_node, lam, rng)
         else:
             final_node = max(final_node.children, key=lambda c: float(c.v_hat))
-        final_path_depths.append(int(final_node.depth))
+        final_path.append(final_node)
 
     if final_node.image is not None and final_node.terminal_score is not None:
         out_image = final_node.image
@@ -465,7 +493,11 @@ def _run_dts_core(
     if out_image is None:
         raise RuntimeError("DTS produced no terminal sample.")
 
-    actions = [(variant_idx, cfg, 0.0) for _ in range(total_steps)]
+    if len(final_path) == total_steps:
+        actions = [(variant_idx, float(n.cfg), 0.0) for n in final_path]
+    else:
+        # Fallback: use baseline_cfg if final descent was incomplete.
+        actions = [(variant_idx, baseline_cfg, 0.0) for _ in range(total_steps)]
     diagnostics = {
         "select_mode": select_mode,
         "M": int(M),
@@ -474,9 +506,11 @@ def _run_dts_core(
         "pw_alpha": float(pw_alpha),
         "c_uct": float(c_uct),
         "sde_noise_scale": float(sde_noise_scale),
-        "cfg": float(cfg),
+        "cfg_bank": [float(c) for c in cfg_bank],
+        "baseline_cfg": float(baseline_cfg),
         "best_seen_score": float(best_score) if math.isfinite(best_score) else None,
-        "final_path_depths": final_path_depths,
+        "final_path_depths": [int(n.depth) for n in final_path],
+        "final_path_cfgs": [float(n.cfg) for n in final_path],
         "root_v_hat": float(root.v_hat),
         "root_children": len(root.children),
         "iter_log_tail": iter_log[-min(8, len(iter_log)) :],

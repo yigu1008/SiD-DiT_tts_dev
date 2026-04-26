@@ -113,6 +113,7 @@ search:
       - export DTS_PW_ALPHA={dts_pw_alpha}
       - export DTS_C_UCT={dts_c_uct}
       - export DTS_SDE_NOISE_SCALE={dts_sde_noise_scale}
+      - export DTS_CFG_BANK='{dts_cfg_bank}'
       # ── Final pin: restore packages that earlier installs may have downgraded ──
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
@@ -158,3 +159,7 @@ search:
       values: [ 1.0 ]
     - name: dts_sde_noise_scale
       values: [ 0.0 ]
+    # Empty string → use baseline_cfg only (vanilla DTS).
+    # Set e.g. "1.0 1.5 2.0 2.5" to enable per-rollout CFG sampling.
+    - name: dts_cfg_bank
+      values: [ "" ]

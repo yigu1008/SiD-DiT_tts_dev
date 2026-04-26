@@ -246,6 +246,7 @@ BON_MCTS_SEED_OFFSET="${BON_MCTS_SEED_OFFSET:-0}"
 BON_MCTS_SIM_ALLOC="${BON_MCTS_SIM_ALLOC:-split}"
 BON_MCTS_MIN_SIMS="${BON_MCTS_MIN_SIMS:-8}"
 BON_MCTS_PRESCREEN_CFG="${BON_MCTS_PRESCREEN_CFG:-}"
+BON_MCTS_REFINE_METHOD="${BON_MCTS_REFINE_METHOD:-ours_tree}"
 # Diffusion Tree Sampling (DTS) / Diffusion Tree Search (DTS*)
 DTS_M_ITER="${DTS_M_ITER:-64}"
 DTS_LAMBDA="${DTS_LAMBDA:-1.0}"
@@ -253,6 +254,7 @@ DTS_PW_C="${DTS_PW_C:-1.0}"
 DTS_PW_ALPHA="${DTS_PW_ALPHA:-0.5}"
 DTS_C_UCT="${DTS_C_UCT:-1.0}"
 DTS_SDE_NOISE_SCALE="${DTS_SDE_NOISE_SCALE:-0.0}"
+DTS_CFG_BANK="${DTS_CFG_BANK:-}"
 NOISE_INJECT_MODE="${NOISE_INJECT_MODE:-combined}"
 NOISE_INJECT_SEED_BUDGET="${NOISE_INJECT_SEED_BUDGET:-8}"
 NOISE_INJECT_CANDIDATE_STEPS="${NOISE_INJECT_CANDIDATE_STEPS:-}"
@@ -413,9 +415,10 @@ echo "  eval_best_images: ${EVAL_BEST_IMAGES} eval_backends: ${EVAL_BACKENDS} ev
 echo "  ga: pop=${GA_POPULATION} gens=${GA_GENERATIONS} eval_batch=${GA_EVAL_BATCH}"
 if [[ "${METHODS}" == *"bon_mcts"* ]]; then
   echo "  bon_mcts: prescreen_n=${BON_MCTS_N_SEEDS} topk=${BON_MCTS_TOPK} sim_alloc=${BON_MCTS_SIM_ALLOC} min_sims=${BON_MCTS_MIN_SIMS}"
+  echo "            refine=${BON_MCTS_REFINE_METHOD} lookahead_mode=${LOOKAHEAD_METHOD_MODE} (u_t_def=${LOOKAHEAD_U_T_DEF})"
 fi
 if [[ "${METHODS}" == *"dts"* ]]; then
-  echo "  dts: M=${DTS_M_ITER} lambda=${DTS_LAMBDA} pw=(C=${DTS_PW_C},a=${DTS_PW_ALPHA}) c_uct=${DTS_C_UCT} sde=${DTS_SDE_NOISE_SCALE}"
+  echo "  dts: M=${DTS_M_ITER} lambda=${DTS_LAMBDA} pw=(C=${DTS_PW_C},a=${DTS_PW_ALPHA}) c_uct=${DTS_C_UCT} sde=${DTS_SDE_NOISE_SCALE} cfg_bank='${DTS_CFG_BANK}'"
 fi
 echo "  use_qwen: ${USE_QWEN} (precompute=${PRECOMPUTE_REWRITES})"
 echo "  rewrites_file: ${REWRITES_FILE}"
@@ -973,6 +976,22 @@ run_method() {
       --bon_mcts_seed_offset "${BON_MCTS_SEED_OFFSET}"
       --bon_mcts_sim_alloc "${BON_MCTS_SIM_ALLOC}"
       --bon_mcts_min_sims "${BON_MCTS_MIN_SIMS}"
+      --bon_mcts_refine_method "${BON_MCTS_REFINE_METHOD}"
+      --lookahead_mode "${LOOKAHEAD_METHOD_MODE}"
+      --lookahead_u_t_def "${LOOKAHEAD_U_T_DEF}"
+      --lookahead_tau "${LOOKAHEAD_TAU}"
+      --lookahead_c_puct "${LOOKAHEAD_C_PUCT}"
+      --lookahead_u_ref "${LOOKAHEAD_U_REF}"
+      --lookahead_w_cfg "${LOOKAHEAD_W_CFG}"
+      --lookahead_w_variant "${LOOKAHEAD_W_VARIANT}"
+      --lookahead_w_cs "${LOOKAHEAD_W_CS}"
+      --lookahead_w_q "${LOOKAHEAD_W_Q}"
+      --lookahead_w_explore "${LOOKAHEAD_W_EXPLORE}"
+      --lookahead_cfg_width_min "${LOOKAHEAD_CFG_WIDTH_MIN}"
+      --lookahead_cfg_width_max "${LOOKAHEAD_CFG_WIDTH_MAX}"
+      --lookahead_cfg_anchor_count "${LOOKAHEAD_CFG_ANCHOR_COUNT}"
+      --lookahead_min_visits_for_center "${LOOKAHEAD_MIN_VISITS_FOR_CENTER}"
+      --lookahead_log_action_topk "${LOOKAHEAD_LOG_ACTION_TOPK}"
     )
     if [[ -n "${BON_MCTS_PRESCREEN_CFG}" ]]; then
       extra+=(--bon_mcts_prescreen_cfg "${BON_MCTS_PRESCREEN_CFG}")
@@ -987,6 +1006,7 @@ run_method() {
       --dts_pw_alpha "${DTS_PW_ALPHA}"
       --dts_c_uct "${DTS_C_UCT}"
       --dts_sde_noise_scale "${DTS_SDE_NOISE_SCALE}"
+      --dts_cfg_bank "${DTS_CFG_BANK}"
     )
   fi
   if [[ "${SMC_VARIANT_EXPANSION:-0}" == "1" ]]; then

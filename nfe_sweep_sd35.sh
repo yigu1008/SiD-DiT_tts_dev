@@ -217,6 +217,7 @@ run_one_config() {
         "DTS_PW_ALPHA=${DTS_PW_ALPHA:-0.5}"
         "DTS_C_UCT=${DTS_C_UCT:-1.0}"
         "DTS_SDE_NOISE_SCALE=${DTS_SDE_NOISE_SCALE:-0.0}"
+        "DTS_CFG_BANK=${DTS_CFG_BANK:-}"
       )
       ;;
     *)

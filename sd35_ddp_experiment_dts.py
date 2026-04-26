@@ -69,6 +69,17 @@ def _parse_dts_flags(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
             "Ignored for SiD/SenseFlow (re-noising provides natural stochasticity)."
         ),
     )
+    parser.add_argument(
+        "--dts_cfg_bank",
+        type=str,
+        default="",
+        help=(
+            "Optional whitespace/comma-separated CFG bank to sample from per "
+            "expansion (e.g. '1.0 2.0 3.0'). Empty → use baseline_cfg only. "
+            "Each rollout draws one cfg uniformly and applies it to every "
+            "denoiser step in that rollout."
+        ),
+    )
     return parser.parse_known_args(argv)
 
 

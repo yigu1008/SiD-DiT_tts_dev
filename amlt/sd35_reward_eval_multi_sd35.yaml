@@ -76,48 +76,71 @@ search:
       - export METHODS='{methods}'
       - export LAYOUT={layout}
       - |
-        if [ "$$METHOD_PARENT" = "auto" ] || [ "$$METHOD_PARENT" = "AUTO" ]; then
-          BASE1="/mnt/data/v-yigu/hpsv2_all_models_runs/$$SOURCE_RUN_TAG/$$SOURCE_MODEL/$$SOURCE_REWARD_BACKEND"
-          BASE2="/mnt/data/v-yigu/hpsv2_all_models_runs/$$SOURCE_RUN_TAG/$$SOURCE_MODEL"
-          BASE3="/mnt/data/v-yigu/hpsv2_all_models_runs/$$SOURCE_RUN_TAG"
-          if [ -d "$$BASE1" ]; then
-            METHOD_PARENT="$$(ls -dt "$$BASE1"/run_* 2>/dev/null | head -1 || true)"
-          fi
-          if [ -z "$$METHOD_PARENT" ] && [ -d "$$BASE2" ]; then
-            METHOD_PARENT="$$(ls -dt "$$BASE2"/run_* 2>/dev/null | head -1 || true)"
-          fi
-          if [ -z "$$METHOD_PARENT" ] && [ -d "$$BASE3" ]; then
-            METHOD_PARENT="$$(ls -dt "$$BASE3"/run_* 2>/dev/null | head -1 || true)"
-          fi
+        BASE1="/mnt/data/v-yigu/hpsv2_all_models_runs/$$SOURCE_RUN_TAG/$$SOURCE_MODEL/$$SOURCE_REWARD_BACKEND"
+        BASE2="/mnt/data/v-yigu/hpsv2_all_models_runs/$$SOURCE_RUN_TAG/$$SOURCE_MODEL"
+        BASE3="/mnt/data/v-yigu/hpsv2_all_models_runs/$$SOURCE_RUN_TAG"
+        RUN_PARENTS=()
+
+        if [ "$$METHOD_PARENT" = "auto_all" ] || [ "$$METHOD_PARENT" = "AUTO_ALL" ]; then
+          for base in "$$BASE1" "$$BASE2" "$$BASE3"; do
+            if [ -d "$$base" ]; then
+              while IFS= read -r run_dir; do
+                [ -n "$$run_dir" ] && RUN_PARENTS+=("$$run_dir")
+              done < <(ls -dt "$$base"/run_* 2>/dev/null || true)
+            fi
+            if [ "$${#RUN_PARENTS[@]}" -gt 0 ]; then
+              break
+            fi
+          done
+        elif [ "$$METHOD_PARENT" = "auto" ] || [ "$$METHOD_PARENT" = "AUTO" ]; then
+          for base in "$$BASE1" "$$BASE2" "$$BASE3"; do
+            if [ -d "$$base" ]; then
+              latest="$$(ls -dt "$$base"/run_* 2>/dev/null | head -1 || true)"
+              if [ -n "$$latest" ]; then
+                RUN_PARENTS=("$$latest")
+                break
+              fi
+            fi
+          done
+        else
+          RUN_PARENTS=("$$METHOD_PARENT")
         fi
-        if [ ! -d "$$METHOD_PARENT" ]; then
-          echo "ERROR: method_parent does not exist: $$METHOD_PARENT"
+
+        if [ "$${#RUN_PARENTS[@]}" -eq 0 ]; then
+          echo "ERROR: no run directories resolved for METHOD_PARENT=$$METHOD_PARENT"
           echo "List available dirs:"
           ls -d /mnt/data/v-yigu/hpsv2_all_models_runs/$$SOURCE_RUN_TAG/*/ 2>/dev/null || echo "(none)"
           exit 1
         fi
         echo "source_run_tag=$$SOURCE_RUN_TAG source_model=$$SOURCE_MODEL source_reward_backend=$$SOURCE_REWARD_BACKEND"
-        echo "method_parent=$$METHOD_PARENT layout=$$LAYOUT methods=$$METHODS"
-        for method in $$METHODS; do
-          METHOD_DIR="$$METHOD_PARENT/$$method"
-          if [ ! -d "$$METHOD_DIR" ]; then
-            echo "SKIP: $$METHOD_DIR does not exist"
+        echo "run_count=$${#RUN_PARENTS[@]} layout=$$LAYOUT methods=$$METHODS"
+        for RUN_PARENT in "$${RUN_PARENTS[@]}"; do
+          if [ ! -d "$$RUN_PARENT" ]; then
+            echo "SKIP: run dir missing $$RUN_PARENT"
             continue
           fi
-          OUT_JSON="$$METHOD_DIR/reward_eval_$$(echo $$EVAL_BACKENDS | tr ' ' '_').json"
-          echo "EVAL: method=$$method dir=$$METHOD_DIR backends=$$EVAL_BACKENDS"
-          "$$REWARD_PY" evaluate_best_images_multi_reward.py \
-            --layout "$$LAYOUT" \
-            --method_out "$$METHOD_DIR" \
-            --method "$$method" \
-            --backends $$EVAL_BACKENDS \
-            --reward_device "$$EVAL_DEVICE" \
-            --image_reward_model ImageReward-v1.0 \
-            --pickscore_model yuvalkirstain/PickScore_v1 \
-            --allow_missing_backends \
-            --out_json "$$OUT_JSON" \
-            || echo "WARN: eval failed for method=$$method"
-          echo "DONE: $$OUT_JSON"
+          echo "Evaluating run_dir=$$RUN_PARENT"
+          for method in $$METHODS; do
+            METHOD_DIR="$$RUN_PARENT/$$method"
+            if [ ! -d "$$METHOD_DIR" ]; then
+              echo "SKIP: $$METHOD_DIR does not exist"
+              continue
+            fi
+            OUT_JSON="$$METHOD_DIR/reward_eval_$$(echo $$EVAL_BACKENDS | tr ' ' '_').json"
+            echo "EVAL: method=$$method dir=$$METHOD_DIR backends=$$EVAL_BACKENDS"
+            "$$REWARD_PY" evaluate_best_images_multi_reward.py \
+              --layout "$$LAYOUT" \
+              --method_out "$$METHOD_DIR" \
+              --method "$$method" \
+              --backends $$EVAL_BACKENDS \
+              --reward_device "$$EVAL_DEVICE" \
+              --image_reward_model ImageReward-v1.0 \
+              --pickscore_model yuvalkirstain/PickScore_v1 \
+              --allow_missing_backends \
+              --out_json "$$OUT_JSON" \
+              || echo "WARN: eval failed for method=$$method run=$$RUN_PARENT"
+            echo "DONE: $$OUT_JSON"
+          done
         done
       - echo "All evaluations complete."
 
@@ -134,16 +157,20 @@ search:
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: source_run_tag
-      values: [ "sd35_sid_smc_expansion_imagereward" ]
+      values: [ "senseflow_smc_expansion_hpsv3_server" ]
     - name: source_model
       values: [ "sd35" ]
     - name: source_reward_backend
-      values: [ "imagereward" ]
-    # method_parent may be "auto" to pick latest run_* under:
+      values: [ "hpsv3" ]
+    # method_parent values:
+    #   auto_all: evaluate every run_* under the resolved source path
+    #   auto:     evaluate only latest run_*
+    #   <path>:   evaluate an explicit run dir
+    #
+    # Resolved source path:
     # /mnt/data/v-yigu/hpsv2_all_models_runs/<source_run_tag>/<source_model>/<source_reward_backend>/
-    # or set an explicit absolute run dir.
     - name: method_parent
-      values: [ "auto" ]
+      values: [ "auto_all" ]
     - name: layout
       values: [ "sd35" ]
     # Space-separated method names matching subdirs under method_parent
@@ -151,6 +178,6 @@ search:
       values: [ "baseline smc" ]
     # Backends supported in reward env: imagereward hpsv2 pickscore hpsv3
     - name: eval_backends
-      values: [ "imagereward hpsv2 pickscore" ]
+      values: [ "hpsv3 imagereward hpsv2 pickscore" ]
     - name: eval_device
       values: [ "cuda" ]

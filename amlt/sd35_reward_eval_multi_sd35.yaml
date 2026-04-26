@@ -54,7 +54,7 @@ search:
       - source /opt/conda/etc/profile.d/conda.sh
       - CONDA_BASE=/opt/conda REWARD_ENV_NAME=reward bash setup_reward_env.sh
       - export REWARD_PY=/opt/conda/envs/reward/bin/python
-      - "$$REWARD_PY" -c "import torch, transformers; print('reward env torch='+torch.__version__, 'transformers='+transformers.__version__); import hpsv3, hpsv2, ImageReward; print('reward env backends import OK')"
+      - $$REWARD_PY -c "import torch, transformers; print('reward env torch='+torch.__version__, 'transformers='+transformers.__version__); import hpsv3, hpsv2, ImageReward; print('reward env backends import OK')"
       # ── Cache dirs & symlinks ──────────────────────────────────────────────
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
@@ -65,7 +65,7 @@ search:
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
       # ── Preload reward model weights (use reward env's python) ────────────
       - export REWARD_BACKENDS='{eval_backends}'
-      - "$$REWARD_PY" preload_reward_models.py
+      - $$REWARD_PY preload_reward_models.py
       # ── Run eval for each method (uses reward env python) ─────────────────
       - export SOURCE_RUN_TAG={source_run_tag}
       - export SOURCE_MODEL={source_model}

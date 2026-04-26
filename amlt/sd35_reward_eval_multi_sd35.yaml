@@ -79,16 +79,20 @@ search:
         BASE1="/mnt/data/v-yigu/hpsv2_all_models_runs/$$SOURCE_RUN_TAG/$$SOURCE_MODEL/$$SOURCE_REWARD_BACKEND"
         BASE2="/mnt/data/v-yigu/hpsv2_all_models_runs/$$SOURCE_RUN_TAG/$$SOURCE_MODEL"
         BASE3="/mnt/data/v-yigu/hpsv2_all_models_runs/$$SOURCE_RUN_TAG"
-        RUN_PARENTS=()
+        RUN_PARENT_LIST=""
+        RUN_COUNT=0
 
         if [ "$$METHOD_PARENT" = "auto_all" ] || [ "$$METHOD_PARENT" = "AUTO_ALL" ]; then
           for base in "$$BASE1" "$$BASE2" "$$BASE3"; do
             if [ -d "$$base" ]; then
               while IFS= read -r run_dir; do
-                [ -n "$$run_dir" ] && RUN_PARENTS+=("$$run_dir")
+                if [ -n "$$run_dir" ]; then
+                  RUN_PARENT_LIST="$$RUN_PARENT_LIST $$run_dir"
+                  RUN_COUNT=$$((RUN_COUNT + 1))
+                fi
               done < <(ls -dt "$$base"/run_* 2>/dev/null || true)
             fi
-            if [ "$${#RUN_PARENTS[@]}" -gt 0 ]; then
+            if [ "$$RUN_COUNT" -gt 0 ]; then
               break
             fi
           done
@@ -97,24 +101,26 @@ search:
             if [ -d "$$base" ]; then
               latest="$$(ls -dt "$$base"/run_* 2>/dev/null | head -1 || true)"
               if [ -n "$$latest" ]; then
-                RUN_PARENTS=("$$latest")
+                RUN_PARENT_LIST="$$latest"
+                RUN_COUNT=1
                 break
               fi
             fi
           done
         else
-          RUN_PARENTS=("$$METHOD_PARENT")
+          RUN_PARENT_LIST="$$METHOD_PARENT"
+          RUN_COUNT=1
         fi
 
-        if [ "$${#RUN_PARENTS[@]}" -eq 0 ]; then
+        if [ "$$RUN_COUNT" -eq 0 ]; then
           echo "ERROR: no run directories resolved for METHOD_PARENT=$$METHOD_PARENT"
           echo "List available dirs:"
           ls -d /mnt/data/v-yigu/hpsv2_all_models_runs/$$SOURCE_RUN_TAG/*/ 2>/dev/null || echo "(none)"
           exit 1
         fi
         echo "source_run_tag=$$SOURCE_RUN_TAG source_model=$$SOURCE_MODEL source_reward_backend=$$SOURCE_REWARD_BACKEND"
-        echo "run_count=$${#RUN_PARENTS[@]} layout=$$LAYOUT methods=$$METHODS"
-        for RUN_PARENT in "$${RUN_PARENTS[@]}"; do
+        echo "run_count=$$RUN_COUNT layout=$$LAYOUT methods=$$METHODS"
+        for RUN_PARENT in $$RUN_PARENT_LIST; do
           if [ ! -d "$$RUN_PARENT" ]; then
             echo "SKIP: run dir missing $$RUN_PARENT"
             continue

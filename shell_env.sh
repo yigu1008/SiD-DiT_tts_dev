@@ -44,12 +44,40 @@ if [[ -d "/opt/conda/envs/ptca/bin" ]]; then
 fi
 
 # Stable python executable selection.
+# Prefer a Python that can import torch (needed by local multi-GPU launchers).
 if [[ -z "${PYTHON_BIN:-}" ]]; then
-  if command -v python3 >/dev/null 2>&1; then
-    export PYTHON_BIN="python3"
-  else
-    export PYTHON_BIN="python"
-  fi
+  _sid_pick_torch_python() {
+    local cand
+    local -a cands=()
+    # Current shell python first.
+    if command -v python3 >/dev/null 2>&1; then cands+=("python3"); fi
+    if command -v python >/dev/null 2>&1; then cands+=("python"); fi
+    # Common local/cluster envs used in this repo.
+    if [[ -x "/Users/guyi/miniconda3/bin/python3" ]]; then cands+=("/Users/guyi/miniconda3/bin/python3"); fi
+    if [[ -x "/opt/conda/envs/ptca/bin/python" ]]; then cands+=("/opt/conda/envs/ptca/bin/python"); fi
+    if [[ -x "/home/ygu/miniconda3/envs/sid_dit/bin/python" ]]; then cands+=("/home/ygu/miniconda3/envs/sid_dit/bin/python"); fi
+
+    for cand in "${cands[@]}"; do
+      if "${cand}" - <<'PY' >/dev/null 2>&1
+import torch
+print(torch.__version__)
+PY
+      then
+        echo "${cand}"
+        return 0
+      fi
+    done
+
+    # Fallback (may not have torch, but keeps behavior predictable).
+    if command -v python3 >/dev/null 2>&1; then
+      echo "python3"
+    else
+      echo "python"
+    fi
+    return 0
+  }
+
+  export PYTHON_BIN="$(_sid_pick_torch_python)"
 fi
 
 # Prefer the CUDA/cuDNN libraries bundled with the active torch install.

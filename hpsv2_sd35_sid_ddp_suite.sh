@@ -246,6 +246,13 @@ BON_MCTS_SEED_OFFSET="${BON_MCTS_SEED_OFFSET:-0}"
 BON_MCTS_SIM_ALLOC="${BON_MCTS_SIM_ALLOC:-split}"
 BON_MCTS_MIN_SIMS="${BON_MCTS_MIN_SIMS:-8}"
 BON_MCTS_PRESCREEN_CFG="${BON_MCTS_PRESCREEN_CFG:-}"
+# Diffusion Tree Sampling (DTS) / Diffusion Tree Search (DTS*)
+DTS_M_ITER="${DTS_M_ITER:-64}"
+DTS_LAMBDA="${DTS_LAMBDA:-1.0}"
+DTS_PW_C="${DTS_PW_C:-1.0}"
+DTS_PW_ALPHA="${DTS_PW_ALPHA:-0.5}"
+DTS_C_UCT="${DTS_C_UCT:-1.0}"
+DTS_SDE_NOISE_SCALE="${DTS_SDE_NOISE_SCALE:-0.0}"
 NOISE_INJECT_MODE="${NOISE_INJECT_MODE:-combined}"
 NOISE_INJECT_SEED_BUDGET="${NOISE_INJECT_SEED_BUDGET:-8}"
 NOISE_INJECT_CANDIDATE_STEPS="${NOISE_INJECT_CANDIDATE_STEPS:-}"
@@ -406,6 +413,9 @@ echo "  eval_best_images: ${EVAL_BEST_IMAGES} eval_backends: ${EVAL_BACKENDS} ev
 echo "  ga: pop=${GA_POPULATION} gens=${GA_GENERATIONS} eval_batch=${GA_EVAL_BATCH}"
 if [[ "${METHODS}" == *"bon_mcts"* ]]; then
   echo "  bon_mcts: prescreen_n=${BON_MCTS_N_SEEDS} topk=${BON_MCTS_TOPK} sim_alloc=${BON_MCTS_SIM_ALLOC} min_sims=${BON_MCTS_MIN_SIMS}"
+fi
+if [[ "${METHODS}" == *"dts"* ]]; then
+  echo "  dts: M=${DTS_M_ITER} lambda=${DTS_LAMBDA} pw=(C=${DTS_PW_C},a=${DTS_PW_ALPHA}) c_uct=${DTS_C_UCT} sde=${DTS_SDE_NOISE_SCALE}"
 fi
 echo "  use_qwen: ${USE_QWEN} (precompute=${PRECOMPUTE_REWRITES})"
 echo "  rewrites_file: ${REWRITES_FILE}"
@@ -871,6 +881,10 @@ run_method() {
       fi
       ;;
     beam) mode_arg="beam" ;;
+    dts|dts_star)
+      mode_arg="mcts"
+      runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_dts.py"
+      ;;
     *)
       echo "Error: unsupported method '${method}' for SD3.5 suite." >&2
       exit 1
@@ -963,6 +977,17 @@ run_method() {
     if [[ -n "${BON_MCTS_PRESCREEN_CFG}" ]]; then
       extra+=(--bon_mcts_prescreen_cfg "${BON_MCTS_PRESCREEN_CFG}")
     fi
+  fi
+  if [[ "${runner_script}" == "${SCRIPT_DIR}/sd35_ddp_experiment_dts.py" ]]; then
+    extra+=(
+      --dts_method "${method}"
+      --dts_m_iter "${DTS_M_ITER}"
+      --dts_lambda "${DTS_LAMBDA}"
+      --dts_pw_c "${DTS_PW_C}"
+      --dts_pw_alpha "${DTS_PW_ALPHA}"
+      --dts_c_uct "${DTS_C_UCT}"
+      --dts_sde_noise_scale "${DTS_SDE_NOISE_SCALE}"
+    )
   fi
   if [[ "${SMC_VARIANT_EXPANSION:-0}" == "1" ]]; then
     extra+=(--smc_variant_expansion)

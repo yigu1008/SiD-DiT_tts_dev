@@ -44,7 +44,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SD35_BACKEND_LIST="${SD35_BACKEND_LIST:-${SD35_BACKEND:-sid sd35_base}}"
-SWEEP_METHODS="${SWEEP_METHODS:-bon beam smc bon_mcts}"
+SWEEP_METHODS="${SWEEP_METHODS:-bon beam smc bon_mcts dts dts_star}"
 
 NUM_PROMPTS="${NUM_PROMPTS:-8}"
 GEN_BATCH_SIZE_SWEEP="${GEN_BATCH_SIZE:-1}"
@@ -138,6 +138,9 @@ compute_knobs_for() {
       local x; x="$(ceil_div "${target_nfe}" $(( 2 * STEPS )))"; (( x < 1 )) && x=1
       knob_label="n_seeds_eq_n_sims"; knob_value="${x}"
       nfe_actual=$(( 2 * x * STEPS )) ;;
+    dts|dts_star)
+      local m; m="$(ceil_div "${target_nfe}" "${STEPS}")"; (( m < 1 )) && m=1
+      knob_label="dts_m_iter"; knob_value="${m}"; nfe_actual=$(( m * STEPS )) ;;
     *)
       echo "Error: unknown method ${method}" >&2; return 1 ;;
   esac
@@ -202,6 +205,18 @@ run_one_config() {
         "BON_MCTS_PRESCREEN_CFG=${BASELINE_CFG}"
         "N_SIMS=${x}" "MCTS_KEY_MODE=count"
         "MCTS_KEY_STEP_COUNT=${BON_MCTS_KEY_STEP_COUNT}"
+      )
+      ;;
+    dts|dts_star)
+      local m; m="$(ceil_div "${target_nfe}" "${STEPS}")"; (( m < 1 )) && m=1
+      env_pairs+=(
+        "N_VARIANTS=1" "CFG_SCALES=${BASELINE_CFG}"
+        "DTS_M_ITER=${m}"
+        "DTS_LAMBDA=${DTS_LAMBDA:-1.0}"
+        "DTS_PW_C=${DTS_PW_C:-1.0}"
+        "DTS_PW_ALPHA=${DTS_PW_ALPHA:-0.5}"
+        "DTS_C_UCT=${DTS_C_UCT:-1.0}"
+        "DTS_SDE_NOISE_SCALE=${DTS_SDE_NOISE_SCALE:-0.0}"
       )
       ;;
     *)

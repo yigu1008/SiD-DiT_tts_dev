@@ -13,6 +13,8 @@ fi
 OUT_ROOT="${OUT_ROOT:-/data/ygu/hpsv2_sd35_sid_ddp}"
 METHODS="${METHODS:-baseline greedy mcts ga}"
 SD35_BACKEND="${SD35_BACKEND:-sid}"
+# Optional custom transformer checkpoint (e.g., post-trained Flow-GRPO .pt/.pth).
+SD35_CKPT="${SD35_CKPT:-}"
 SD35_SIGMAS="${SD35_SIGMAS:-}"
 
 START_INDEX="${START_INDEX:-0}"
@@ -335,6 +337,11 @@ if [[ ! -f "${PROMPT_FILE}" ]]; then
   exit 1
 fi
 
+if [[ -n "${SD35_CKPT}" && ! -f "${SD35_CKPT}" ]]; then
+  echo "Error: SD35_CKPT not found: ${SD35_CKPT}" >&2
+  exit 1
+fi
+
 mkdir -p "${OUT_ROOT}"
 chmod -R u+rwX "${OUT_ROOT}" 2>/dev/null || true
 RUN_TS="$(date +%Y%m%d_%H%M%S)"
@@ -409,6 +416,9 @@ if [[ "${MCTS_FRESH_NOISE_SAMPLES}" != "1" || -n "${MCTS_FRESH_NOISE_STEPS}" || 
   echo "  fresh_noise: steps='${MCTS_FRESH_NOISE_STEPS}' samples=${MCTS_FRESH_NOISE_SAMPLES} scale=${MCTS_FRESH_NOISE_SCALE} key_steps=${MCTS_FRESH_NOISE_KEY_STEPS}"
 fi
 echo "  sd35_backend: ${SD35_BACKEND} sd35_sigmas: ${SD35_SIGMAS:-<none>}"
+if [[ -n "${SD35_CKPT}" ]]; then
+  echo "  sd35_ckpt: ${SD35_CKPT}"
+fi
 echo "  nproc_per_node: ${NUM_GPUS}"
 echo "  reward_backend: ${REWARD_BACKEND}"
 echo "  eval_best_images: ${EVAL_BEST_IMAGES} eval_backends: ${EVAL_BACKENDS} eval_device: ${EVAL_REWARD_DEVICE}"
@@ -934,6 +944,9 @@ run_method() {
   fi
   if [[ -n "${SD35_SIGMAS}" ]]; then
     extra+=(--sigmas ${SD35_SIGMAS})
+  fi
+  if [[ -n "${SD35_CKPT}" ]]; then
+    extra+=(--ckpt "${SD35_CKPT}")
   fi
   if [[ "${runner_script}" == "${SCRIPT_DIR}/sd35_ddp_experiment_dynamic_cfg.py" ]]; then
     extra+=(

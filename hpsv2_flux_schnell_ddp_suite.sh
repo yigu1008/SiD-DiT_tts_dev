@@ -19,6 +19,8 @@ FLUX_SIGMAS="${FLUX_SIGMAS:-}"
 START_INDEX="${START_INDEX:-0}"
 END_INDEX="${END_INDEX:--1}"
 SAVE_FIRST_K="${SAVE_FIRST_K:-10}"
+SAVE_IMAGES="${SAVE_IMAGES:-1}"
+SAVE_BEST_IMAGES="${SAVE_BEST_IMAGES:-1}"
 
 STEPS="${STEPS:-4}"
 SEED="${SEED:-42}"
@@ -488,7 +490,14 @@ ensure_xformers_runtime
 post_eval_best_images() {
   local method_out="$1"
   local method_name="$2"
-  if [[ "${EVAL_BEST_IMAGES}" != "1" || ( "${SAVE_IMAGES}" != "1" && "${SAVE_BEST_IMAGES}" != "1" ) ]]; then
+  if [[ "${EVAL_BEST_IMAGES}" != "1" ]]; then
+    return 0
+  fi
+  if [[ "${SAVE_FIRST_K}" == "0" ]]; then
+    echo "[post-eval] skip method=${method_name}: SAVE_FIRST_K=0 (no images expected)"
+    return 0
+  fi
+  if [[ "${SAVE_IMAGES}" != "1" && "${SAVE_BEST_IMAGES}" != "1" ]]; then
     return 0
   fi
   local -a cmd=(

@@ -1,5 +1,8 @@
 description: sd35-reward-eval-multi
 
+# Post-eval generated images with multiple reward backends, sharded across
+# GPUs by (method × backend). User supplies a literal method_parent path.
+
 target:
   service: sing
   name: GenAI-Shared-UKSouth2
@@ -10,7 +13,7 @@ env_defaults:
   service: sing
   PRIORITY: high
   NODES: 1
-  GPUS: 1
+  GPUS: 8
   MEM: 80
 
 environment:
@@ -49,8 +52,6 @@ search:
       - export HUGGING_FACE_HUB_TOKEN={hf_token}
       - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
       # ── Build the isolated `reward` conda env (transformers==4.45.2) ───────
-      # This env is independent from ptca's conda env. Avoids torchvision /
-      # wandb / qwen version conflicts seen when running eval in ptca.
       - source /opt/conda/etc/profile.d/conda.sh
       - CONDA_BASE=/opt/conda REWARD_ENV_NAME=reward bash setup_reward_env.sh
       - export REWARD_PY=/opt/conda/envs/reward/bin/python
@@ -66,45 +67,53 @@ search:
       # ── Preload reward model weights (use reward env's python) ────────────
       - export REWARD_BACKENDS='{eval_backends}'
       - $$REWARD_PY preload_reward_models.py
-      # ── Run eval for each method (uses reward env python) ─────────────────
-      # method_parent: full path to directory containing method subdirs.
-      #   sd35:  <run_root>/sd35
-      #   flux:  <run_root>/<run_subdir>   e.g. run_20260418_182000
+      # ── Run eval, sharded (method × backend) across GPUs ─────────────────
       - export METHOD_PARENT={method_parent}
       - export EVAL_DEVICE={eval_device}
       - export EVAL_BACKENDS='{eval_backends}'
       - export METHODS='{methods}'
       - export LAYOUT={layout}
+      - export NUM_GPUS=${GPUS}
       - |
         if [ ! -d "$$METHOD_PARENT" ]; then
           echo "ERROR: method_parent does not exist: $$METHOD_PARENT"
-          echo "List available dirs:"
-          ls -d /mnt/data/v-yigu/hpsv2_all_models_runs/{source_run_tag}/*/ 2>/dev/null || echo "(none)"
           exit 1
         fi
-        echo "method_parent=$$METHOD_PARENT layout=$$LAYOUT methods=$$METHODS"
+        echo "method_parent=$$METHOD_PARENT layout=$$LAYOUT methods=$$METHODS backends=$$EVAL_BACKENDS gpus=$$NUM_GPUS"
+        pids=""
+        i=0
         for method in $$METHODS; do
           METHOD_DIR="$$METHOD_PARENT/$$method"
           if [ ! -d "$$METHOD_DIR" ]; then
             echo "SKIP: $$METHOD_DIR does not exist"
             continue
           fi
-          OUT_JSON="$$METHOD_DIR/reward_eval_$$(echo $$EVAL_BACKENDS | tr ' ' '_').json"
-          echo "EVAL: method=$$method dir=$$METHOD_DIR backends=$$EVAL_BACKENDS"
-          "$$REWARD_PY" evaluate_best_images_multi_reward.py \
-            --layout "$$LAYOUT" \
-            --method_out "$$METHOD_DIR" \
-            --method "$$method" \
-            --backends $$EVAL_BACKENDS \
-            --reward_device "$$EVAL_DEVICE" \
-            --image_reward_model ImageReward-v1.0 \
-            --pickscore_model yuvalkirstain/PickScore_v1 \
-            --allow_missing_backends \
-            --out_json "$$OUT_JSON" \
-            || echo "WARN: eval failed for method=$$method"
-          echo "DONE: $$OUT_JSON"
+          for backend in $$EVAL_BACKENDS; do
+            gpu=$$((i % NUM_GPUS))
+            i=$$((i + 1))
+            OUT_JSON="$$METHOD_DIR/reward_eval_$${backend}.json"
+            LOG_FILE="$$METHOD_DIR/reward_eval_$${backend}.log"
+            echo "[$$i] LAUNCH method=$$method backend=$$backend gpu=$$gpu out=$$OUT_JSON"
+            ( CUDA_VISIBLE_DEVICES="$$gpu" "$$REWARD_PY" evaluate_best_images_multi_reward.py \
+                --layout "$$LAYOUT" \
+                --method_out "$$METHOD_DIR" \
+                --method "$$method" \
+                --backends "$$backend" \
+                --reward_device "$$EVAL_DEVICE" \
+                --image_reward_model ImageReward-v1.0 \
+                --pickscore_model yuvalkirstain/PickScore_v1 \
+                --allow_missing_backends \
+                --out_json "$$OUT_JSON" \
+                >"$$LOG_FILE" 2>&1 ) &
+            pids="$$pids $$!"
+            if [ $$((i % NUM_GPUS)) -eq 0 ]; then
+              for pid in $$pids; do wait $$pid || echo "WARN: pid=$$pid failed"; done
+              pids=""
+            fi
+          done
         done
-      - echo "All evaluations complete."
+        for pid in $$pids; do wait $$pid || echo "WARN: pid=$$pid failed"; done
+        echo "All evaluations complete."
 
     submit_args:
       env:
@@ -118,18 +127,15 @@ search:
       values: [ "reward_eval_multi" ]
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
-    - name: source_run_tag
-      values: [ "sd35_base_bon_filtering_imagereward" ]
-    # method_parent: full path to dir containing method subdirs
-    #   SD35 example:  /mnt/data/v-yigu/hpsv2_all_models_runs/<source_run_tag>/sd35
-    #   Flux example:  /mnt/data/v-yigu/hpsv2_all_models_runs/<source_run_tag>/run_20260418_182000
+    # Literal absolute path to a run dir whose subdirs are method names.
+    # Example: /mnt/data/v-yigu/hpsv2_all_models_runs/<source_run>/sd35/<reward_backend>/run_<ts>
     - name: method_parent
-      values: [ "/mnt/data/v-yigu/hpsv2_all_models_runs/sd35_base_bon_filtering_imagereward/sd35" ]
+      values: [ "/mnt/data/v-yigu/hpsv2_all_models_runs/REPLACE_ME" ]
     - name: layout
       values: [ "sd35" ]
     # Space-separated method names matching subdirs under method_parent
     - name: methods
-      values: [ "baseline bon_mcts" ]
+      values: [ "baseline dts dts_star" ]
     # Backends supported in reward env: imagereward hpsv2 pickscore hpsv3
     - name: eval_backends
       values: [ "imagereward hpsv2 pickscore hpsv3" ]

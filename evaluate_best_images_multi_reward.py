@@ -124,20 +124,36 @@ def _collect_sd35_records(method_out: str, method: str) -> tuple[list[ImageRecor
 
 _SANA_FLUX_METHOD_ALIASES: dict[str, list[str]] = {
     "bon_mcts": ["mcts", "bon_mcts"],
+    "noise": ["noise_inject", "noise"],
+    "noiseinj": ["noise_inject", "noise"],
+    "noise_inject": ["noise_inject", "noise"],
 }
+
+
+def _ordered_unique(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        v = str(raw).strip().lower()
+        if not v or v in seen:
+            continue
+        out.append(v)
+        seen.add(v)
+    return out
 
 
 def _sana_flux_image_suffixes(method: str) -> list[str]:
     m = str(method).strip().lower()
     if m == "baseline":
         return ["baseline"]
-    return _SANA_FLUX_METHOD_ALIASES.get(m, [m])
+    return _ordered_unique(_SANA_FLUX_METHOD_ALIASES.get(m, [m]))
 
 
 def _collect_sana_flux_records(method_out: str, method: str) -> tuple[list[ImageRecord], list[str]]:
     records: list[ImageRecord] = []
     missing: list[str] = []
-    suffixes = _sana_flux_image_suffixes(method)
+    method_l = str(method).strip().lower()
+    suffixes = _sana_flux_image_suffixes(method_l)
     for summary_path in sorted(glob.glob(os.path.join(method_out, "rank_*", "summary.json"))):
         rank_dir = os.path.dirname(summary_path)
         with open(summary_path, encoding="utf-8") as f:
@@ -148,18 +164,44 @@ def _collect_sana_flux_records(method_out: str, method: str) -> tuple[list[Image
             prompt_index = _slug_to_index(slug)
             samples = row.get("samples", [])
             for sample_idx, sample in enumerate(samples):
-                if method == "baseline":
+                if method_l == "baseline":
                     objective_score = sample.get("baseline_score")
                 else:
                     objective_score = sample.get("search_score")
+
+                row_suffixes = list(suffixes)
+                row_search_method = str(row.get("search_method", "")).strip().lower()
+                if row_search_method:
+                    row_suffixes.append(row_search_method)
+                row_suffixes = _ordered_unique(row_suffixes)
+
                 image_path = ""
-                for suffix in suffixes:
+                for suffix in row_suffixes:
                     candidate = os.path.join(rank_dir, f"{slug}_s{sample_idx}_{suffix}.png")
                     if os.path.exists(candidate):
                         image_path = candidate
                         break
+
                 if not image_path:
-                    image_path = os.path.join(rank_dir, f"{slug}_s{sample_idx}_{suffixes[0]}.png")
+                    wildcard = os.path.join(rank_dir, f"{slug}_s{sample_idx}_*.png")
+                    any_candidates = sorted(glob.glob(wildcard))
+                    if method_l == "baseline":
+                        for candidate in any_candidates:
+                            if candidate.endswith("_baseline.png"):
+                                image_path = candidate
+                                break
+                    else:
+                        for candidate in any_candidates:
+                            name = os.path.basename(candidate).lower()
+                            if name.endswith("_comparison.png") or name.endswith("_baseline.png"):
+                                continue
+                            image_path = candidate
+                            break
+                    if not image_path and any_candidates:
+                        image_path = any_candidates[0]
+
+                if not image_path:
+                    image_path = os.path.join(rank_dir, f"{slug}_s{sample_idx}_{row_suffixes[0]}.png")
                 rec = ImageRecord(
                     prompt_index=prompt_index,
                     slug=slug,

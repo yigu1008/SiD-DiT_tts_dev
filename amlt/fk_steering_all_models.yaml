@@ -1,0 +1,177 @@
+description: fk-steering-all-models
+
+# FK-steering "diff" potential (Singhal et al. 2025) evaluation across distilled
+# and base text-to-image models. Single grid: one trial per backend, each runs
+# only `methods=baseline smc` with --smc_potential=diff (no variant expansion).
+#
+# Backends covered (one trial each):
+#   senseflow_large : SD3.5-large + SenseFlow distillation, 4 steps, no CFG
+#   sd35_sid        : SiD-distilled SD3.5-large, 4 steps, real CFG ~1.0
+#   sd35_base       : SD3.5-large base, 28 steps, real CFG 4.5
+#   flux_schnell    : FLUX.1-schnell, 4 steps, no CFG
+#   flux_tdd        : FLUX.1-dev + RED-AIGC/TDD LoRA, 8 steps, real CFG 2.0
+#
+# Per-backend SMC_K is sized so SMC_K * STEPS ≈ 256 NFE/prompt (sd35_base
+# rounds to 252 since 28 doesn't divide 256 evenly).
+
+target:
+  service: sing
+  name: GenAI-Shared-UKSouth2
+  workspace_name: Singularity-GenAI-WS-UKSouth2
+  resource_group: singularity-genai-gpu-uksouth2
+
+env_defaults:
+  service: sing
+  PRIORITY: high
+  NODES: 1
+  GPUS: 8
+  MEM: 80
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - export PATH=/home/aiscuser/.local/bin:$$PATH
+    - pip install --user datasets huggingface_hub hpsv2
+    - pip list
+
+code:
+  local_dir: ./
+
+storage:
+  output:
+    storage_account_name: vigstandard
+    container_name: data
+    mount_dir: /mnt/data
+
+search:
+  job_template:
+    name: fk-steering-{target_model}-{run_tag}
+    sku: ${NODES}x${MEM}G${GPUS}-IB
+    sla_tier: Standard
+    process_count_per_node: 1
+    priority: high
+    mpi: False
+    command:
+      - set -x
+      - unset REWARD_BACKEND REWARD_TYPE REWARD_BACKENDS || true
+      - export PYTHONNOUSERSITE=1
+      - unset PYTHONPATH || true
+      - export SID_FORCE_WANDB_STUB=1
+      - export WANDB_DISABLED=true
+      # ── Paths ──────────────────────────────────────────────────────────────
+      - export PATH=/home/aiscuser/.local/bin:$$PATH
+      - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
+      - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
+      - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
+      - export HF_TOKEN={hf_token}
+      - export HUGGING_FACE_HUB_TOKEN={hf_token}
+      - export AZFUSE_USE_FUSE=0
+      - export NCCL_ASYNC_ERROR_HANDLING=0
+      - export NCCL_P2P_LEVEL=NVL
+      # ── Install deps ───────────────────────────────────────────────────────
+      - source /opt/conda/etc/profile.d/conda.sh
+      - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
+      - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
+      - /opt/conda/envs/ptca/bin/python -c "import os, torch; print('[torch-check]', torch.__version__, 'cuda=', torch.version.cuda, 'is_available=', torch.cuda.is_available(), 'count=', torch.cuda.device_count())"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
+      - /opt/conda/envs/ptca/bin/python -c "import xformers, xformers.ops; print('xformers ok', xformers.__version__)" || (/opt/conda/envs/ptca/bin/pip uninstall -y xformers && echo 'xformers disabled')
+      - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
+      # ── Cache dirs ─────────────────────────────────────────────────────────
+      - export NUM_GPUS=${GPUS}
+      - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
+      - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
+      - mkdir -p /mnt/data/v-yigu/model_cache/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
+      - mkdir -p /home/aiscuser/.cache
+      - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
+      - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
+      - /opt/conda/envs/ptca/bin/python preload_reward_models.py
+      # ── Per-backend dispatch ───────────────────────────────────────────────
+      # AMLT substitutes {target_model} at job creation; everything else is
+      # resolved at runtime via shell case on TARGET_MODEL.
+      - export TARGET_MODEL={target_model}
+      - export AUTO_BACKEND_STEPS=0
+      - export HF_HUB_ENABLE_HF_TRANSFER=0
+      - if [ "$$TARGET_MODEL" = "senseflow" ]; then export RUN_SD35=1; export RUN_FLUX=0; export SD35_BACKEND=senseflow_large; export STEPS=4; export BASELINE_CFG=0.0; export CFG_SCALES='0.0'; export SMC_CFG_SCALE=0.0; export SMC_GUIDANCE_SCALE=0.0; export SMC_K=64; export REWARD_PREP_REPOS='stabilityai/stable-diffusion-3.5-large domiso/SenseFlow'; fi
+      - if [ "$$TARGET_MODEL" = "sd35_sid" ]; then export RUN_SD35=1; export RUN_FLUX=0; export SD35_BACKEND=sid; export STEPS=4; export BASELINE_CFG=1.0; export CFG_SCALES='1.0'; export SMC_CFG_SCALE=1.0; export SMC_GUIDANCE_SCALE=1.0; export SMC_K=64; export REWARD_PREP_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large'; fi
+      - if [ "$$TARGET_MODEL" = "sd35_base" ]; then export RUN_SD35=1; export RUN_FLUX=0; export SD35_BACKEND=sd35_base; export STEPS=28; export BASELINE_CFG=4.5; export CFG_SCALES='4.5'; export SMC_CFG_SCALE=4.5; export SMC_GUIDANCE_SCALE=4.5; export SMC_K=9; export REWARD_PREP_REPOS='stabilityai/stable-diffusion-3.5-large'; fi
+      - if [ "$$TARGET_MODEL" = "flux_schnell" ]; then export RUN_SD35=0; export RUN_FLUX=1; export FLUX_BACKEND=flux; export STEPS=4; export BASELINE_CFG=0.0; export BASELINE_GUIDANCE_SCALE=0.0; export CFG_SCALES='0.0'; export SMC_CFG_SCALE=0.0; export SMC_GUIDANCE_SCALE=0.0; export SMC_K=64; export REWARD_PREP_REPOS='black-forest-labs/FLUX.1-schnell'; fi
+      - if [ "$$TARGET_MODEL" = "flux_tdd" ]; then export RUN_SD35=0; export RUN_FLUX=1; export FLUX_BACKEND=tdd_flux; export STEPS=8; export BASELINE_CFG=2.0; export BASELINE_GUIDANCE_SCALE=2.0; export CFG_SCALES='2.0'; export SMC_CFG_SCALE=2.0; export SMC_GUIDANCE_SCALE=2.0; export SMC_K=32; export REWARD_PREP_REPOS='black-forest-labs/FLUX.1-dev'; fi
+      - if [ -z "$${TARGET_MODEL}" ] || [ -z "$${SMC_K:-}" ]; then echo "ERROR: unknown target_model=$$TARGET_MODEL"; exit 1; fi
+      - echo "[fk-steering] TARGET_MODEL=$$TARGET_MODEL STEPS=$$STEPS SMC_K=$$SMC_K NFE=$$((SMC_K * STEPS)) BASELINE_CFG=$$BASELINE_CFG"
+      # ── Preload model snapshots per backend ────────────────────────────────
+      - for repo in $$REWARD_PREP_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo"; done
+      - if [ "$$TARGET_MODEL" = "flux_tdd" ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import hf_hub_download; import os; p = hf_hub_download(repo_id='RED-AIGC/TDD', filename='FLUX.1-dev_tdd_adv_lora_weights.safetensors', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True); print('TDD LoRA cache OK:', p)"; fi
+      - export HF_HUB_OFFLINE=1
+      - export TRANSFORMERS_OFFLINE=1
+      # ── Prompt file & run knobs ────────────────────────────────────────────
+      - export OUT_ROOT=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}/$$TARGET_MODEL
+      - export PROMPT_FILE=./hpsv2_subset.txt
+      - export START_INDEX=0
+      - export END_INDEX={num_prompts}
+      - export SEED={seed}
+      # FK-diff: only baseline + smc, no variant expansion needed.
+      - export METHODS='baseline smc'
+      - export REWARD_BACKEND=imagereward
+      - export REWARD_BACKENDS='{reward_backends}'
+      - export EVAL_BACKENDS='{eval_backends}'
+      - export EVAL_BEST_IMAGES=1
+      - export EVAL_REWARD_DEVICE=cuda
+      - export EVAL_ALLOW_MISSING_BACKENDS=0
+      # ── FK-steering knobs ──────────────────────────────────────────────────
+      - export SMC_POTENTIAL=diff
+      - export SMC_LAMBDA={smc_lambda}
+      - export SMC_GAMMA=0.10
+      - export ESS_THRESHOLD={ess_threshold}
+      - export RESAMPLE_START_FRAC={resample_start_frac}
+      - export SMC_VARIANT_EXPANSION=0
+      - export SMC_VARIANT_IDX=0
+      - export N_VARIANTS=1
+      - export USE_QWEN=0
+      - export PRECOMPUTE_REWRITES=0
+      - export REWARDS_OVERWRITE=0
+      - export CORRECTION_STRENGTHS='0.0'
+      - export SAVE_BEST_IMAGES=1
+      - export SAVE_IMAGES=0
+      - export SAVE_VARIANTS=0
+      # ── Final transformers/datasets pin ────────────────────────────────────
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets, transformers; print('final pin ok', 'transformers='+md.version('transformers'), md.version('ftfy'), md.version('regex'), md.version('xxhash'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'))"
+      # ── Run ────────────────────────────────────────────────────────────────
+      - bash hpsv2_sd35_flux_allalgos.sh
+
+    submit_args:
+      env:
+        DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: True
+        SHARED_MEMORY_PERCENT: 0.5
+
+  max_trials: 5
+  type: grid
+  params:
+    - name: run_tag
+      values: [ "fk_steering_all_models" ]
+    - name: hf_token
+      values: [ "YOUR_HF_TOKEN_HERE" ]
+    - name: target_model
+      values: [ "senseflow", "sd35_sid", "sd35_base", "flux_schnell", "flux_tdd" ]
+    - name: num_prompts
+      values: [ 8 ]
+    - name: seed
+      values: [ 42 ]
+    - name: reward_backends
+      values: [ "imagereward hpsv2 pickscore" ]
+    - name: eval_backends
+      values: [ "imagereward hpsv2 pickscore" ]
+    # ── FK-steering hyperparams (shared across all backends) ────────────────
+    # smc_lambda is the FK inverse temperature; 10.0 is a moderate setting
+    # that's been used in the FK-steering paper for reward-tempered SMC.
+    - name: smc_lambda
+      values: [ 10.0 ]
+    - name: ess_threshold
+      values: [ 0.5 ]
+    - name: resample_start_frac
+      values: [ 0.3 ]

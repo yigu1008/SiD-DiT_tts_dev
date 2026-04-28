@@ -140,6 +140,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Optional HF LoRA repo (e.g. RED-AIGC/TDD). Loaded via hf_hub_download + load_lora_weights + fuse_lora.")
     p.add_argument("--lora_filename", default=os.environ.get("LORA_FILENAME"),
                    help="Filename inside --lora_repo (e.g. FLUX.1-dev_tdd_adv_lora_weights.safetensors).")
+    p.add_argument("--lora_path", default=os.environ.get("LORA_PATH"),
+                   help="Optional local LoRA file/dir path. When set, overrides --lora_repo/--lora_filename.")
     p.add_argument("--lora_scale", type=float, default=None,
                    help="fuse_lora scale (e.g. 0.125 for TDD-FLUX).")
     p.add_argument("--prompt", default=None)
@@ -190,7 +192,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     p.add_argument(
         "--reward_backend",
-        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend"],
+        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "all"],
         default="imagereward",
     )
     p.add_argument(
@@ -395,6 +397,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # SMC
     p.add_argument("--smc_k", type=int, default=12)
     p.add_argument("--smc_gamma", type=float, default=0.10)
+    p.add_argument(
+        "--smc_potential",
+        choices=["tempering", "diff"],
+        default="tempering",
+        help="SMC potential type. 'tempering' = standard DAS geometric tempering "
+             "(weight bump = lam_t * r̂_t with lam_t = (1+gamma)^(T-1-t) - 1). "
+             "'diff' = FK-steering difference potential (Singhal et al. 2025): "
+             "weight bump = smc_lambda * (r̂_t - r̂_{t-1}); telescopes to smc_lambda * r̂_final.",
+    )
+    p.add_argument(
+        "--smc_lambda",
+        type=float,
+        default=10.0,
+        help="FK-steering inverse temperature lambda used when --smc_potential=diff.",
+    )
     p.add_argument("--ess_threshold", type=float, default=0.5)
     p.add_argument("--resample_start_frac", type=float, default=0.3)
     p.add_argument("--smc_guidance_scale", type=float, default=1.25)
@@ -542,6 +559,73 @@ def cuda_free_gb(device: str) -> float | None:
     return float(free_bytes) / (1024 ** 3)
 
 
+def _hf_offline_mode() -> bool:
+    return str(os.environ.get("HF_HUB_OFFLINE", "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_flux_lora_source(args: argparse.Namespace) -> tuple[str | None, str | None]:
+    """Resolve LoRA source to (path_or_repo, weight_name_or_none).
+
+    Returns:
+      - local file: ("/abs/path/file.safetensors", None)
+      - local dir + named file: ("/abs/path/dir", "adapter.safetensors")
+      - hf cached download path: ("/cache/.../file.safetensors", None)
+      - no LoRA configured: (None, None)
+    """
+    lora_path = getattr(args, "lora_path", None)
+    lora_repo = getattr(args, "lora_repo", None)
+    lora_filename = getattr(args, "lora_filename", None)
+
+    if lora_path:
+        p = Path(str(lora_path)).expanduser()
+        if not p.is_absolute():
+            p = (Path.cwd() / p).resolve()
+        if not p.exists():
+            raise FileNotFoundError(f"LoRA path not found: {p}")
+        if p.is_dir() and lora_filename:
+            return str(p), str(lora_filename)
+        return str(p), None
+
+    if not lora_repo:
+        return None, None
+
+    # Local-path repo override (directory or file).
+    repo_path = Path(str(lora_repo)).expanduser()
+    if repo_path.exists():
+        if not repo_path.is_absolute():
+            repo_path = (Path.cwd() / repo_path).resolve()
+        if repo_path.is_dir() and lora_filename:
+            return str(repo_path), str(lora_filename)
+        return str(repo_path), None
+
+    # HF repo id path.
+    if not lora_filename:
+        return str(lora_repo), None
+
+    from huggingface_hub import hf_hub_download
+
+    offline = _hf_offline_mode()
+    dl_kwargs: dict[str, Any] = {
+        "repo_id": str(lora_repo),
+        "filename": str(lora_filename),
+        "cache_dir": os.environ.get("HF_HOME"),
+        "token": os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"),
+        "local_files_only": bool(offline),
+    }
+    try:
+        cached = hf_hub_download(**dl_kwargs)
+    except Exception as exc:
+        if offline:
+            raise RuntimeError(
+                "HF_HUB_OFFLINE=1 and TDD LoRA is not available in local cache. "
+                f"Missing: repo={lora_repo} file={lora_filename}. "
+                "Pre-download it before enabling offline mode, or set --lora_path "
+                "to a local LoRA file."
+            ) from exc
+        raise
+    return str(cached), None
+
+
 def load_pipeline(args: argparse.Namespace, device: str, dtype: torch.dtype) -> FluxContext:
     print(
         f"Loading FLUX pipeline: {args.model_id} "
@@ -565,14 +649,15 @@ def load_pipeline(args: argparse.Namespace, device: str, dtype: torch.dtype) -> 
         )
         pipe.transformer = FluxTransformer2DModel.from_pretrained(args.transformer_id, **kwargs).to(device)
 
-    lora_repo = getattr(args, "lora_repo", None)
-    lora_filename = getattr(args, "lora_filename", None)
-    if lora_repo:
-        from huggingface_hub import hf_hub_download
-        lora_path = hf_hub_download(repo_id=str(lora_repo), filename=str(lora_filename)) if lora_filename else str(lora_repo)
+    lora_source, lora_weight = _resolve_flux_lora_source(args)
+    if lora_source:
         scale = float(getattr(args, "lora_scale", 1.0) or 1.0)
-        print(f"Loading FLUX LoRA: repo={lora_repo} file={lora_filename} fuse_scale={scale}")
-        pipe.load_lora_weights(lora_path)
+        if lora_weight:
+            print(f"Loading FLUX LoRA: source={lora_source} weight={lora_weight} fuse_scale={scale}")
+            pipe.load_lora_weights(lora_source, weight_name=lora_weight)
+        else:
+            print(f"Loading FLUX LoRA: source={lora_source} fuse_scale={scale}")
+            pipe.load_lora_weights(lora_source)
         pipe.fuse_lora(lora_scale=scale)
         try:
             pipe.unload_lora_weights()
@@ -2442,6 +2527,7 @@ def run_smc(
     t_values = build_t_schedule(int(args.steps), getattr(args, "sigmas", None))
     start_idx = int((1.0 - float(args.resample_start_frac)) * int(args.steps))
     log_w = torch.zeros(k, device=ctx.device, dtype=torch.float32)
+    prev_step_scores = torch.zeros(k, device=ctx.device, dtype=torch.float32)
     ess_hist: list[float] = []
     reward_hist: list[float] = []
     resample_count = 0
@@ -2452,11 +2538,14 @@ def run_smc(
     proposal_mode = str(getattr(args, "smc_expansion_proposal", "uniform"))
     proposal_tau = max(1e-6, float(getattr(args, "smc_expansion_tau", 1.0)))
     use_lookahead = bool(getattr(args, "smc_expansion_lookahead", False))
+    potential = str(getattr(args, "smc_potential", "tempering"))
+    fk_lambda = float(getattr(args, "smc_lambda", 10.0))
 
     print(
         f"  smc: K={k} expansion={use_expansion} bank_size={len(bank)} M={expansion_factor} "
-        f"prop={proposal_mode} lookahead={use_lookahead} "
-        f"gamma={float(args.smc_gamma):.3f} ess_thr={float(args.ess_threshold):.2f} euler={use_euler}"
+        f"prop={proposal_mode} lookahead={use_lookahead} potential={potential} "
+        f"gamma={float(args.smc_gamma):.3f} lambda={fk_lambda:.3f} "
+        f"ess_thr={float(args.ess_threshold):.2f} euler={use_euler}"
     )
 
     for step_idx, t_val in enumerate(t_values):
@@ -2506,8 +2595,15 @@ def run_smc(
         step_scores = score_dx_batch(ctx, reward_model, prompt, _final_decode_tensor(latents, dx, use_euler))
         step_scores_list = [float(v) for v in step_scores.detach().cpu().tolist()]
         reward_hist.append(float(step_scores.mean().item()))
-        lam = (1.0 + float(args.smc_gamma)) ** (int(args.steps) - 1 - step_idx) - 1.0
-        log_w = log_w + float(lam) * step_scores
+        if potential == "diff":
+            # FK-steering difference potential: g_t = exp(lam * (r̂_t - r̂_{t-1}));
+            # log-weight bump telescopes to lam * r̂_final across steps.
+            log_w = log_w + fk_lambda * (step_scores - prev_step_scores)
+            lam = fk_lambda  # used by lookahead branch below
+        else:
+            lam = (1.0 + float(args.smc_gamma)) ** (int(args.steps) - 1 - step_idx) - 1.0
+            log_w = log_w + float(lam) * step_scores
+        prev_step_scores = step_scores.clone()
         w = torch.softmax(log_w, dim=0)
         ess = float(1.0 / torch.sum(w * w).item())
         ess_hist.append(ess)
@@ -2519,6 +2615,7 @@ def run_smc(
                 if use_euler:
                     latents = latents[idx].clone()
                 particle_actions = [particle_actions[int(i)] for i in idx.tolist()]
+                prev_step_scores = prev_step_scores[idx].clone()
                 log_w = torch.zeros_like(log_w)
                 resample_count += 1
                 continue
@@ -2527,6 +2624,7 @@ def run_smc(
             children_dx: list[torch.Tensor] = []
             children_actions: list[tuple[int, float]] = []
             children_logw: list[float] = []
+            children_prev: list[float] = []
             for pi in range(k):
                 if proposal_mode == "score_softmax" and len(bank) > 1:
                     base = float(step_scores_list[pi])
@@ -2541,8 +2639,11 @@ def run_smc(
                     children_lat.append(latents[pi : pi + 1])
                     children_dx.append(dx[pi : pi + 1])
                     children_logw.append(float(log_w[pi].item()))
+                    children_prev.append(float(prev_step_scores[pi].item()))
 
             child_logw = torch.tensor(children_logw, device=dx.device, dtype=torch.float32)
+            children_prev_tensor = torch.tensor(children_prev, device=dx.device, dtype=torch.float32)
+            la_t: torch.Tensor | None = None
             if use_lookahead and step_idx + 1 < len(t_values):
                 next_t_val = float(t_values[step_idx + 1])
                 next_t_4d = torch.tensor(next_t_val, device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
@@ -2571,7 +2672,10 @@ def run_smc(
                     la_score = score_dx_batch(ctx, reward_model, prompt, la_tensor)
                     la_scores.append(float(la_score[0].item()))
                 la_t = torch.tensor(la_scores, device=dx.device, dtype=torch.float32)
-                child_logw = child_logw + float(lam) * la_t
+                if potential == "diff":
+                    child_logw = child_logw + fk_lambda * (la_t - children_prev_tensor)
+                else:
+                    child_logw = child_logw + float(lam) * la_t
 
             child_weights = torch.softmax(child_logw, dim=0)
             idx = systematic_resample(child_weights)
@@ -2579,6 +2683,11 @@ def run_smc(
             latents = torch.cat([children_lat[int(i)] for i in chosen], dim=0)
             dx = torch.cat([children_dx[int(i)] for i in chosen], dim=0)
             particle_actions = [children_actions[int(i)] for i in chosen]
+            chosen_idx_t = torch.tensor(chosen, device=dx.device, dtype=torch.long)
+            if la_t is not None:
+                prev_step_scores = la_t.index_select(0, chosen_idx_t).clone()
+            else:
+                prev_step_scores = children_prev_tensor.index_select(0, chosen_idx_t).clone()
             log_w = torch.zeros_like(log_w)
             resample_count += 1
             expansion_events += 1
@@ -2588,8 +2697,14 @@ def run_smc(
     best_idx = int(torch.argmax(final_scores).item())
     best_img = decode_to_pil(ctx, final_decode[best_idx : best_idx + 1])
     best_action = particle_actions[best_idx]
+    if potential == "diff":
+        smc_style = "fk_diff_variant_expansion" if use_expansion else "fk_diff"
+    else:
+        smc_style = "das_tempered_resampling_variant_expansion" if use_expansion else "das_tempered_resampling"
     diagnostics = {
-        "smc_style": "das_tempered_resampling_variant_expansion" if use_expansion else "das_tempered_resampling",
+        "smc_style": smc_style,
+        "smc_potential": potential,
+        "smc_lambda": float(fk_lambda),
         "smc_k": int(k),
         "gamma": float(args.smc_gamma),
         "guidance_scale": float(default_guidance),

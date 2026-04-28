@@ -38,6 +38,8 @@ N_SIMS="${N_SIMS:-60}"
 UCB_C="${UCB_C:-1.41}"
 SMC_K="${SMC_K:-8}"
 SMC_GAMMA="${SMC_GAMMA:-0.10}"
+SMC_POTENTIAL="${SMC_POTENTIAL:-tempering}"
+SMC_LAMBDA="${SMC_LAMBDA:-10.0}"
 ESS_THRESHOLD="${ESS_THRESHOLD:-0.5}"
 RESAMPLE_START_FRAC="${RESAMPLE_START_FRAC:-0.3}"
 SMC_CFG_SCALE="${SMC_CFG_SCALE:-1.25}"
@@ -467,7 +469,7 @@ ensure_imagereward_runtime() {
   fi
   local backend_lc
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
-  if [[ "${backend_lc}" != "imagereward" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]] && ! eval_backend_requested "imagereward"; then
+  if [[ "${backend_lc}" != "imagereward" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" && "${backend_lc}" != "all" ]] && ! eval_backend_requested "imagereward"; then
     return 0
   fi
   local _stamp="${HOME}/.cache/sid_deps/reward_deps_ok_v2"
@@ -531,7 +533,7 @@ ensure_pickscore_runtime() {
   fi
   local backend_lc _stamp
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
-  if [[ "${backend_lc}" != "pickscore" && "${backend_lc}" != "auto" ]] && ! eval_backend_requested "pickscore"; then
+  if [[ "${backend_lc}" != "pickscore" && "${backend_lc}" != "auto" && "${backend_lc}" != "all" ]] && ! eval_backend_requested "pickscore"; then
     return 0
   fi
   _stamp="${HOME}/.cache/sid_deps/reward_deps_ok_v2"
@@ -558,7 +560,7 @@ ensure_hpsv2_runtime() {
   fi
   local backend_lc _stamp
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
-  if [[ "${backend_lc}" != "hpsv2" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]] && ! eval_backend_requested "hpsv2"; then
+  if [[ "${backend_lc}" != "hpsv2" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" && "${backend_lc}" != "all" ]] && ! eval_backend_requested "hpsv2"; then
     return 0
   fi
   _stamp="${HOME}/.cache/sid_deps/reward_deps_ok_v2"
@@ -583,7 +585,7 @@ ensure_hpsv3_runtime() {
   fi
   local backend_lc _stamp hpsv3_impl
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
-  if [[ "${backend_lc}" != "hpsv3" && "${backend_lc}" != "auto" ]] && ! eval_backend_requested "hpsv3"; then
+  if [[ "${backend_lc}" != "hpsv3" && "${backend_lc}" != "auto" && "${backend_lc}" != "all" ]] && ! eval_backend_requested "hpsv3"; then
     return 0
   fi
   hpsv3_impl="$(echo "${SID_HPSV3_IMPL:-auto}" | tr '[:upper:]' '[:lower:]')"
@@ -1126,6 +1128,8 @@ PY
     --noise_inject_variant_idx "${NOISE_INJECT_VARIANT_IDX}" \
     --smc_k "${SMC_K}" \
     --smc_gamma "${SMC_GAMMA}" \
+    --smc_potential "${SMC_POTENTIAL}" \
+    --smc_lambda "${SMC_LAMBDA}" \
     --ess_threshold "${ESS_THRESHOLD}" \
     --resample_start_frac "${RESAMPLE_START_FRAC}" \
     --smc_cfg_scale "${SMC_CFG_SCALE}" \

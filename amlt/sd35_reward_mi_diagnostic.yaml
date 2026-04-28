@@ -1,0 +1,103 @@
+description: sd35-reward-mi-diagnostic
+
+target:
+  service: sing
+  name: GenAI-Shared-UKSouth2
+  workspace_name: Singularity-GenAI-WS-UKSouth2
+  resource_group: singularity-genai-gpu-uksouth2
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - export PATH=/home/aiscuser/.local/bin:$$PATH
+    - pip install --user datasets huggingface_hub
+
+code:
+  local_dir: ./
+
+storage:
+  output:
+    storage_account_name: vigstandard
+    container_name: data
+    mount_dir: /mnt/data
+
+search:
+  job_template:
+    name: sd35-mi-{run_tag}
+    sku: 1x80G1-A100-IB
+    process_count_per_node: 1
+    mpi: false
+    command:
+      - set -euo pipefail
+      - export PYTHONNOUSERSITE=1
+      - unset PYTHONPATH || true
+      - export PATH=/home/aiscuser/.local/bin:$$PATH
+      - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
+      - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
+      - export HF_TOKEN={hf_token}
+      - export HUGGING_FACE_HUB_TOKEN={hf_token}
+      - export WANDB_DISABLED=true
+      - source /opt/conda/etc/profile.d/conda.sh
+      - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
+      - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
+      - /opt/conda/envs/ptca/bin/python preload_reward_models.py
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('YGu1998/SiD-DiT-SD3.5-large', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('SD3.5-SiD cache OK')"
+      - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('Qwen cache OK')"; fi
+      - export OUT_DIR=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}/mi_diagnostic
+      - mkdir -p $$OUT_DIR
+      - export MODE=full
+      - export PROMPT_FILE=./hpsv2_subset.txt
+      - export N_PROMPTS={n_prompts}
+      - export N_SEEDS={n_seeds}
+      - export N_REWRITES={n_rewrites}
+      - export CFG_SCALES='{cfg_scales}'
+      - export DEFAULT_CFG={default_cfg}
+      - export BACKEND={sd35_backend}
+      - export STEPS={steps}
+      - export REWARD_BACKEND={reward_backend}
+      - export USE_QWEN={use_qwen}
+      - export MINE_STEPS={mine_steps}
+      - export MINE_BATCH_SIZE={mine_batch_size}
+      - export MINE_RESTARTS={mine_restarts}
+      - export MINE_DEVICE=cuda
+      - export DATASET_CSV=$$OUT_DIR/mi_diag_sd35_dataset.csv
+      - export REPORT_JSON=$$OUT_DIR/mi_diag_sd35_report.json
+      - export TABLE_CSV=$$OUT_DIR/mi_diag_sd35_table.csv
+      - bash run_sd35_reward_mi_diagnostic_local.sh
+
+    submit_args:
+      env:
+        DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: true
+
+  type: grid
+  max_trials: 1
+  params:
+    - name: run_tag
+      values: [ "sd35_reward_mi_diagnostic" ]
+    - name: hf_token
+      values: [ "YOUR_HF_TOKEN_HERE" ]
+    - name: n_prompts
+      values: [ 50 ]
+    - name: n_seeds
+      values: [ 16 ]
+    - name: n_rewrites
+      values: [ 3 ]
+    - name: cfg_scales
+      values: [ "1.0 3.0 5.0 7.0 9.0" ]
+    - name: default_cfg
+      values: [ 5.0 ]
+    - name: sd35_backend
+      values: [ "sid" ]
+    - name: steps
+      values: [ 4 ]
+    - name: reward_backend
+      values: [ "imagereward" ]
+    - name: use_qwen
+      values: [ 1 ]
+    - name: mine_steps
+      values: [ 10000 ]
+    - name: mine_batch_size
+      values: [ 1024 ]
+    - name: mine_restarts
+      values: [ 3 ]
+

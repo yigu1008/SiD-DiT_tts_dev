@@ -110,6 +110,7 @@ class UnifiedRewardScorer:
       - hpsv3
       - hpsv2
       - blend        : weighted average of ImageReward and HPSv2
+      - all          : equal-weight mean of imagereward, pickscore, hpsv3, hpsv2 (available subset)
       - auto         : prefer unifiedreward, then imagereward, then pickscore, then hpsv3, then hpsv2
     """
 
@@ -188,7 +189,7 @@ class UnifiedRewardScorer:
         max_new_tokens: int = 512,
         unifiedreward_prompt_mode: str = "standard",
     ) -> None:
-        valid = {"auto", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "unified", "unifiedreward"}
+        valid = {"auto", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "all", "unified", "unifiedreward"}
         if backend not in valid:
             raise ValueError(f"Unsupported backend: {backend}")
         if unifiedreward_prompt_mode not in {"standard", "strict"}:

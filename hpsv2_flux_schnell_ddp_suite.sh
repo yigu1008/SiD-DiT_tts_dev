@@ -172,6 +172,8 @@ NOISE_INJECT_GUIDANCE="${NOISE_INJECT_GUIDANCE:-}"
 
 SMC_K="${SMC_K:-12}"
 SMC_GAMMA="${SMC_GAMMA:-0.10}"
+SMC_POTENTIAL="${SMC_POTENTIAL:-tempering}"
+SMC_LAMBDA="${SMC_LAMBDA:-10.0}"
 SMC_GUIDANCE_SCALE="${SMC_GUIDANCE_SCALE:-1.25}"
 SMC_CHUNK="${SMC_CHUNK:-4}"
 
@@ -327,7 +329,7 @@ ensure_imagereward_runtime() {
   fi
   local backend_lc
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
-  if [[ "${backend_lc}" != "imagereward" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]] && ! eval_backend_requested "imagereward"; then
+  if [[ "${backend_lc}" != "imagereward" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" && "${backend_lc}" != "all" ]] && ! eval_backend_requested "imagereward"; then
     return 0
   fi
   if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_DEPS_STAMP}" ]]; then return 0; fi
@@ -387,7 +389,7 @@ ensure_pickscore_runtime() {
   fi
   local backend_lc
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
-  if [[ "${backend_lc}" != "pickscore" && "${backend_lc}" != "auto" ]] && ! eval_backend_requested "pickscore"; then
+  if [[ "${backend_lc}" != "pickscore" && "${backend_lc}" != "auto" && "${backend_lc}" != "all" ]] && ! eval_backend_requested "pickscore"; then
     return 0
   fi
   if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_DEPS_STAMP}" ]]; then return 0; fi
@@ -413,7 +415,7 @@ ensure_hpsv2_runtime() {
   fi
   local backend_lc
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
-  if [[ "${backend_lc}" != "hpsv2" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" ]] && ! eval_backend_requested "hpsv2"; then
+  if [[ "${backend_lc}" != "hpsv2" && "${backend_lc}" != "auto" && "${backend_lc}" != "blend" && "${backend_lc}" != "all" ]] && ! eval_backend_requested "hpsv2"; then
     return 0
   fi
   if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_DEPS_STAMP}" ]]; then return 0; fi
@@ -437,7 +439,7 @@ ensure_hpsv3_runtime() {
   fi
   local backend_lc
   backend_lc="$(echo "${REWARD_BACKEND}" | tr '[:upper:]' '[:lower:]')"
-  if [[ "${backend_lc}" != "hpsv3" && "${backend_lc}" != "auto" ]] && ! eval_backend_requested "hpsv3"; then
+  if [[ "${backend_lc}" != "hpsv3" && "${backend_lc}" != "auto" && "${backend_lc}" != "all" ]] && ! eval_backend_requested "hpsv3"; then
     return 0
   fi
   if [[ "${FORCE_INSTALL_DEPS:-0}" != "1" ]] && [[ -f "${_DEPS_STAMP}" ]]; then return 0; fi
@@ -855,6 +857,8 @@ for method in ${METHODS}; do
       smc_args=(
         --smc_k "${SMC_K}"
         --smc_gamma "${SMC_GAMMA}"
+        --smc_potential "${SMC_POTENTIAL}"
+        --smc_lambda "${SMC_LAMBDA}"
         --smc_guidance_scale "${SMC_GUIDANCE_SCALE}"
         --smc_chunk "${SMC_CHUNK}"
       )

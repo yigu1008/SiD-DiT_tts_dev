@@ -228,6 +228,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Number of beams to keep per step in beam search.")
     parser.add_argument("--smc_k", type=int, default=8)
     parser.add_argument("--smc_gamma", type=float, default=0.10)
+    parser.add_argument(
+        "--smc_potential",
+        choices=["tempering", "diff"],
+        default="tempering",
+        help="SMC potential type. 'tempering' = standard DAS geometric tempering "
+             "(weight bump = lam_t * r̂_t with lam_t = (1+gamma)^(T-1-t) - 1). "
+             "'diff' = FK-steering difference potential (Singhal et al. 2025): "
+             "weight bump = smc_lambda * (r̂_t - r̂_{t-1}); telescopes to smc_lambda * r̂_final.",
+    )
+    parser.add_argument(
+        "--smc_lambda",
+        type=float,
+        default=10.0,
+        help="FK-steering inverse temperature lambda used when --smc_potential=diff.",
+    )
     parser.add_argument("--ess_threshold", type=float, default=0.5)
     parser.add_argument("--resample_start_frac", type=float, default=0.3)
     parser.add_argument("--smc_cfg_scale", type=float, default=1.25)
@@ -329,7 +344,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--reward_backend",
-        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend"],
+        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "all"],
         default="unifiedreward",
     )
     parser.add_argument(
@@ -3238,6 +3253,7 @@ def run_smc(
     start_idx = int((1.0 - float(args.resample_start_frac)) * int(args.steps))
     start_idx = max(0, min(int(args.steps) - 1, start_idx))
     log_w = torch.zeros(k, device=ctx.device, dtype=torch.float32)
+    prev_step_scores = torch.zeros(k, device=ctx.device, dtype=torch.float32)
     ess_hist: list[float] = []
     score_hist: list[float] = []
     resample_count = 0
@@ -3249,11 +3265,14 @@ def run_smc(
     proposal_mode = str(getattr(args, "smc_expansion_proposal", "uniform"))
     proposal_tau = max(1e-6, float(getattr(args, "smc_expansion_tau", 1.0)))
     use_lookahead = bool(getattr(args, "smc_expansion_lookahead", False))
+    potential = str(getattr(args, "smc_potential", "tempering"))
+    fk_lambda = float(getattr(args, "smc_lambda", 10.0))
 
     print(
         f"  smc(das): K={k} expansion={use_expansion} bank_size={len(bank)} "
         f"M={expansion_factor} prop={proposal_mode} lookahead={use_lookahead} "
-        f"gamma={float(args.smc_gamma):.3f} ess_thr={float(args.ess_threshold):.2f} euler={use_euler}"
+        f"potential={potential} gamma={float(args.smc_gamma):.3f} "
+        f"lambda={fk_lambda:.3f} ess_thr={float(args.ess_threshold):.2f} euler={use_euler}"
     )
 
     def _forward_particle(
@@ -3313,8 +3332,15 @@ def run_smc(
         step_scores = torch.tensor(step_scores_list, device=dx.device, dtype=torch.float32)
         score_hist.append(float(step_scores.mean().item()))
 
-        lam = (1.0 + float(args.smc_gamma)) ** (int(args.steps) - 1 - step_idx) - 1.0
-        log_w = log_w + float(lam) * step_scores
+        if potential == "diff":
+            # FK-steering difference potential: g_t = exp(lam * (r̂_t - r̂_{t-1}));
+            # log-weight bump telescopes to lam * r̂_final across steps.
+            log_w = log_w + fk_lambda * (step_scores - prev_step_scores)
+            lam = fk_lambda  # used by lookahead branch below
+        else:
+            lam = (1.0 + float(args.smc_gamma)) ** (int(args.steps) - 1 - step_idx) - 1.0
+            log_w = log_w + float(lam) * step_scores
+        prev_step_scores = step_scores.clone()
         weights = torch.softmax(log_w, dim=0)
         ess = float(1.0 / torch.sum(weights * weights).item())
         ess_hist.append(ess)
@@ -3325,6 +3351,7 @@ def run_smc(
                 dx = dx[idx].clone()
                 latents = latents[idx].clone()
                 particle_actions = [particle_actions[int(i)] for i in idx.tolist()]
+                prev_step_scores = prev_step_scores[idx].clone()
                 log_w = torch.zeros_like(log_w)
                 resample_count += 1
                 continue
@@ -3337,6 +3364,7 @@ def run_smc(
             children_actions: list[tuple[int, float, float]] = []
             children_parent: list[int] = []
             children_logw: list[float] = []
+            children_prev: list[float] = []
 
             for pi in range(k):
                 if proposal_mode == "score_softmax" and len(bank) > 1:
@@ -3357,12 +3385,15 @@ def run_smc(
                     children_lat.append(latents[pi : pi + 1])
                     children_dx.append(dx[pi : pi + 1])
                     children_logw.append(float(log_w[pi].item()))
+                    children_prev.append(float(prev_step_scores[pi].item()))
 
             n_children = len(children_actions)
             if n_children <= 0:
                 continue
 
             child_logw_tensor = torch.tensor(children_logw, device=dx.device, dtype=torch.float32)
+            children_prev_tensor = torch.tensor(children_prev, device=dx.device, dtype=torch.float32)
+            la_scores_tensor: torch.Tensor | None = None
             if use_lookahead and step_idx + 1 < int(args.steps):
                 next_t_flat, next_t_4d, next_dt = sched[step_idx + 1]
                 la_scores: list[float] = []
@@ -3385,7 +3416,10 @@ def run_smc(
                     new_lat_children.append(la_lat)
                     new_dx_children.append(la_dx)
                 la_scores_tensor = torch.tensor(la_scores, device=dx.device, dtype=torch.float32)
-                child_logw_tensor = child_logw_tensor + float(lam) * la_scores_tensor
+                if potential == "diff":
+                    child_logw_tensor = child_logw_tensor + fk_lambda * (la_scores_tensor - children_prev_tensor)
+                else:
+                    child_logw_tensor = child_logw_tensor + float(lam) * la_scores_tensor
 
             child_weights = torch.softmax(child_logw_tensor, dim=0)
             idx = _systematic_resample(child_weights, n_samples=k)
@@ -3400,6 +3434,14 @@ def run_smc(
                 latents = torch.cat([children_lat[int(i)] for i in chosen], dim=0)
                 dx = torch.cat([children_dx[int(i)] for i in chosen], dim=0)
             particle_actions = [children_actions[int(i)] for i in chosen]
+            # Reindex per-particle running prev score for FK-diff. With lookahead,
+            # children's "current" score is la_score; otherwise it's still the
+            # parent's step_score (== children_prev_tensor[chosen]).
+            chosen_idx_t = torch.tensor(chosen, device=dx.device, dtype=torch.long)
+            if la_scores_tensor is not None:
+                prev_step_scores = la_scores_tensor.index_select(0, chosen_idx_t).clone()
+            else:
+                prev_step_scores = children_prev_tensor.index_select(0, chosen_idx_t).clone()
             log_w = torch.zeros_like(log_w)
             resample_count += 1
             expansion_events += 1
@@ -3409,8 +3451,14 @@ def run_smc(
     final_scores = [float(score_image(reward_model, prompt, img)) for img in final_images]
     best_idx = int(np.argmax(final_scores))
     best_action = particle_actions[best_idx]
+    if potential == "diff":
+        smc_style = "fk_diff_variant_expansion" if use_expansion else "fk_diff"
+    else:
+        smc_style = "das_tempered_resampling_variant_expansion" if use_expansion else "das_tempered_resampling"
     diagnostics = {
-        "smc_style": "das_tempered_resampling_variant_expansion" if use_expansion else "das_tempered_resampling",
+        "smc_style": smc_style,
+        "smc_potential": potential,
+        "smc_lambda": float(fk_lambda),
         "smc_k": int(k),
         "smc_variant_expansion": bool(use_expansion),
         "smc_expansion_bank": [list(a) for a in bank],

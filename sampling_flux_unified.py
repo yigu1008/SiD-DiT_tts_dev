@@ -73,6 +73,23 @@ _BACKEND_CONFIGS: dict[str, dict[str, Any]] = {
         "x0_sampler": False,
         "euler_sampler": False,
     },
+    # TDD-distilled FLUX.1-dev (RED-AIGC). 8-step LoRA fused at scale 0.125;
+    # uses real CFG (unlike schnell). Recipe: load FLUX.1-dev → load
+    # FLUX.1-dev_tdd_adv_lora_weights.safetensors → fuse_lora(scale=0.125).
+    "tdd_flux": {
+        "model_id": "black-forest-labs/FLUX.1-dev",
+        "transformer_id": None,
+        "transformer_subfolder": None,
+        "sigmas": None,
+        "dtype": "bf16",
+        "lora_repo": "RED-AIGC/TDD",
+        "lora_filename": "FLUX.1-dev_tdd_adv_lora_weights.safetensors",
+        "lora_scale": 0.125,
+        "max_sequence_length": 256,
+        "baseline_guidance_scale": 2.0,
+        "ga_guidance_scales": [1.5, 2.0, 2.5, 3.0, 3.5],
+        "cfg_scales": [1.5, 2.0, 2.5, 3.0, 3.5],
+    },
 }
 
 
@@ -110,7 +127,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--search_method", choices=["greedy", "mcts", "ga", "smc", "bon", "beam", "noise_inject"], default="ga")
     p.add_argument(
         "--backend",
-        choices=["flux", "senseflow_flux"],
+        choices=["flux", "senseflow_flux", "tdd_flux"],
         default=None,
         help="Convenience shortcut: sets model/transformer/sigmas/guidance defaults for FLUX variants.",
     )
@@ -119,6 +136,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Optional HuggingFace transformer repo override (e.g. domiso/SenseFlow).")
     p.add_argument("--transformer_subfolder", default=None,
                    help="Optional subfolder inside --transformer_id.")
+    p.add_argument("--lora_repo", default=os.environ.get("LORA_REPO"),
+                   help="Optional HF LoRA repo (e.g. RED-AIGC/TDD). Loaded via hf_hub_download + load_lora_weights + fuse_lora.")
+    p.add_argument("--lora_filename", default=os.environ.get("LORA_FILENAME"),
+                   help="Filename inside --lora_repo (e.g. FLUX.1-dev_tdd_adv_lora_weights.safetensors).")
+    p.add_argument("--lora_scale", type=float, default=None,
+                   help="fuse_lora scale (e.g. 0.125 for TDD-FLUX).")
     p.add_argument("--prompt", default=None)
     p.add_argument("--prompt_file", default=None)
     p.add_argument("--n_prompts", type=int, default=-1)
@@ -414,13 +437,20 @@ def _apply_backend_defaults(args: argparse.Namespace) -> argparse.Namespace:
     cfg = _BACKEND_CONFIGS.get(args.backend or "", {})
 
     # Fill nullable fields first.
-    for key in ("model_id", "transformer_id", "transformer_subfolder", "sigmas"):
+    for key in ("model_id", "transformer_id", "transformer_subfolder", "sigmas",
+                "lora_repo", "lora_filename", "lora_scale"):
         if getattr(args, key, None) is None and key in cfg:
             setattr(args, key, cfg[key])
 
     # dtype has a parser default; only force backend dtype when backend explicitly set.
     if args.backend and "dtype" in cfg:
         args.dtype = str(cfg["dtype"])
+
+    # Backend-supplied max_sequence_length overrides parser default (512) only
+    # when the user kept that default. TDD-FLUX wants 256.
+    if args.backend and "max_sequence_length" in cfg:
+        if int(getattr(args, "max_sequence_length", 512)) == 512:
+            args.max_sequence_length = int(cfg["max_sequence_length"])
 
     # Euler sampler from backend config
     if not getattr(args, "euler_sampler", False) and cfg.get("euler_sampler", False):
@@ -440,6 +470,19 @@ def _apply_backend_defaults(args: argparse.Namespace) -> argparse.Namespace:
             _DEFAULT_BASELINE_GUIDANCE
         ):
             args.baseline_guidance_scale = float(cfg.get("baseline_guidance_scale", 0.0))
+
+    # TDD-FLUX defaults: real CFG (≈2.0), 8 steps, max_seq_len=256.
+    if (args.backend or "") == "tdd_flux":
+        if list(getattr(args, "ga_guidance_scales", [])) == list(_DEFAULT_GUIDANCE_SCALES):
+            args.ga_guidance_scales = list(cfg.get("ga_guidance_scales", [2.0]))
+        if getattr(args, "cfg_scales", None) is None:
+            args.cfg_scales = list(cfg.get("cfg_scales", args.ga_guidance_scales))
+        elif list(args.cfg_scales) == list(_DEFAULT_GUIDANCE_SCALES):
+            args.cfg_scales = list(cfg.get("cfg_scales", [2.0]))
+        if float(getattr(args, "baseline_guidance_scale", _DEFAULT_BASELINE_GUIDANCE)) == float(
+            _DEFAULT_BASELINE_GUIDANCE
+        ):
+            args.baseline_guidance_scale = float(cfg.get("baseline_guidance_scale", 2.0))
 
     if args.model_id is None:
         args.model_id = str(_BACKEND_CONFIGS["flux"]["model_id"])
@@ -521,6 +564,20 @@ def load_pipeline(args: argparse.Namespace, device: str, dtype: torch.dtype) -> 
             f"subfolder={transformer_subfolder}"
         )
         pipe.transformer = FluxTransformer2DModel.from_pretrained(args.transformer_id, **kwargs).to(device)
+
+    lora_repo = getattr(args, "lora_repo", None)
+    lora_filename = getattr(args, "lora_filename", None)
+    if lora_repo:
+        from huggingface_hub import hf_hub_download
+        lora_path = hf_hub_download(repo_id=str(lora_repo), filename=str(lora_filename)) if lora_filename else str(lora_repo)
+        scale = float(getattr(args, "lora_scale", 1.0) or 1.0)
+        print(f"Loading FLUX LoRA: repo={lora_repo} file={lora_filename} fuse_scale={scale}")
+        pipe.load_lora_weights(lora_path)
+        pipe.fuse_lora(lora_scale=scale)
+        try:
+            pipe.unload_lora_weights()
+        except Exception:
+            pass
     pipe.transformer.eval().requires_grad_(False)
     pipe.vae.eval().requires_grad_(False)
     if getattr(pipe, "text_encoder", None) is not None:

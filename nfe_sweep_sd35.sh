@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
 # NFE-vs-quality sweep for SD3.5-SID and/or SD3.5-base across:
-#   bon, beam, smc, bon_mcts
+#   bon, beam, smc, bon_mcts, mcts, fksteering, noise_inject, ...
 #
 # How it works:
 #   For each (backend, method, target_nfe) the driver picks a knob value
-#   (BON_N, BEAM_WIDTH, SMC_K, BON_MCTS_N_SEEDS=N_SIMS) so the *expected*
+#   (BON_N, BEAM_WIDTH, SMC_K, BON_MCTS_N_SEEDS=N_SIMS, ...) so the *expected*
 #   number of transformer forwards lands on target_nfe, then invokes
 #   hpsv2_sd35_sid_ddp_suite.sh with that single method and 1 image per GPU.
 #
 # NFE accounting (rounded; baseline assumes single variant + single CFG):
-#   baseline   : STEPS
-#   bon        : BON_N * STEPS
-#   beam       : BEAM_WIDTH * |cfgs| * |variants| * STEPS
-#   smc        : SMC_K * STEPS                     (expansion off for clean NFE)
-#   bon_mcts   : (BON_MCTS_N_SEEDS + N_SIMS) * STEPS    (topk=1, sim_alloc=full)
-#   greedy     : N_VARIANTS * STEPS                (per-step branching, pick best)
-#   ga         : GA_POPULATION * GA_GENERATIONS * STEPS  (elite carryover ignored)
-#   dts/dts*   : DTS_M_ITER * STEPS                (M trajectories × per-step calls)
+#   baseline    : STEPS
+#   bon         : BON_N * STEPS
+#   beam        : BEAM_WIDTH * |cfgs| * |variants| * STEPS
+#   smc         : SMC_K * STEPS                       (expansion off for clean NFE)
+#   fksteering  : SMC_K * STEPS                       (smc with diff potential)
+#   bon_mcts    : (BON_MCTS_N_SEEDS + N_SIMS) * STEPS  (topk=1, sim_alloc=full)
+#   mcts        : N_SIMS * STEPS                      (raw simulations, no prescreen)
+#   greedy      : N_VARIANTS * STEPS                  (per-step branching, pick best)
+#   ga          : GA_POPULATION * GA_GENERATIONS * STEPS  (elite carryover ignored)
+#   dts/dts*    : DTS_M_ITER * STEPS                  (M trajectories × per-step calls)
+#   noise_inject: SEED_BUDGET * EPS_SAMPLES * STEPS_PER_ROLLOUT
 #
 # Per-config layout:
 #   ${OUT_ROOT_BASE}/${SD35_BACKEND}/sweep_<TS>/${method}_nfe<N>/run_<TS>/<method>/
@@ -47,11 +50,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SD35_BACKEND_LIST="${SD35_BACKEND_LIST:-${SD35_BACKEND:-sid sd35_base}}"
-SWEEP_METHODS="${SWEEP_METHODS:-bon beam smc bon_mcts greedy ga dts dts_star}"
+SWEEP_METHODS="${SWEEP_METHODS:-bon beam smc fksteering bon_mcts mcts greedy ga dts dts_star noise_inject}"
 
 # GA defaults — generations fixed, population scaled to hit target_nfe.
 GA_GENERATIONS_SWEEP="${GA_GENERATIONS:-8}"
 GA_ELITES_SWEEP="${GA_ELITES:-3}"
+
+# FK-steering defaults — diff potential, λ controls reward weighting.
+FKSTEERING_LAMBDA_SWEEP="${FKSTEERING_LAMBDA:-${SMC_LAMBDA:-10.0}}"
+
+# Noise-inject defaults — scale via SEED_BUDGET; eps_samples × steps_per_rollout fixed.
+NOISE_INJECT_EPS_SAMPLES_SWEEP="${NOISE_INJECT_EPS_SAMPLES:-4}"
+NOISE_INJECT_STEPS_PER_ROLLOUT_SWEEP="${NOISE_INJECT_STEPS_PER_ROLLOUT:-1}"
+NOISE_INJECT_GAMMA_BANK_SWEEP="${NOISE_INJECT_GAMMA_BANK:-0.0 0.25 0.5}"
+NOISE_INJECT_MODE_SWEEP="${NOISE_INJECT_MODE:-combined}"
+NOISE_INJECT_INCLUDE_NO_INJECT_SWEEP="${NOISE_INJECT_INCLUDE_NO_INJECT:-1}"
 
 NUM_PROMPTS="${NUM_PROMPTS:-8}"
 GEN_BATCH_SIZE_SWEEP="${GEN_BATCH_SIZE:-1}"
@@ -138,13 +151,22 @@ compute_knobs_for() {
       local w; w="$(ceil_div "${target_nfe}" "${denom}")"; (( w < 1 )) && w=1
       knob_label="beam_width"; knob_value="${w}"
       nfe_actual=$(( w * n_cfgs * BEAM_N_VARIANTS * STEPS )) ;;
-    smc)
+    smc|fksteering)
       local k; k="$(ceil_div "${target_nfe}" "${STEPS}")"; (( k < 2 )) && k=2
       knob_label="smc_k"; knob_value="${k}"; nfe_actual=$(( k * STEPS )) ;;
     bon_mcts)
       local x; x="$(ceil_div "${target_nfe}" $(( 2 * STEPS )))"; (( x < 1 )) && x=1
       knob_label="n_seeds_eq_n_sims"; knob_value="${x}"
       nfe_actual=$(( 2 * x * STEPS )) ;;
+    mcts)
+      local s; s="$(ceil_div "${target_nfe}" "${STEPS}")"; (( s < 1 )) && s=1
+      knob_label="n_sims"; knob_value="${s}"; nfe_actual=$(( s * STEPS )) ;;
+    noise_inject)
+      local denom=$(( NOISE_INJECT_EPS_SAMPLES_SWEEP * NOISE_INJECT_STEPS_PER_ROLLOUT_SWEEP ))
+      (( denom < 1 )) && denom=1
+      local sb; sb="$(ceil_div "${target_nfe}" "${denom}")"; (( sb < 1 )) && sb=1
+      knob_label="seed_budget"; knob_value="${sb}"
+      nfe_actual=$(( sb * denom )) ;;
     greedy)
       local n; n="$(ceil_div "${target_nfe}" "${STEPS}")"; (( n < 1 )) && n=1
       knob_label="n_variants"; knob_value="${n}"; nfe_actual=$(( n * STEPS )) ;;
@@ -209,6 +231,41 @@ run_one_config() {
         "N_VARIANTS=1" "CFG_SCALES=${BASELINE_CFG}" "SMC_K=${k}"
         "SMC_CFG_SCALE=${BASELINE_CFG}" "SMC_VARIANT_IDX=0"
         "ESS_THRESHOLD=0.5" "RESAMPLE_START_FRAC=0.3"
+        "SMC_POTENTIAL=tempering"
+      )
+      ;;
+    fksteering)
+      local k; k="$(ceil_div "${target_nfe}" "${STEPS}")"; (( k < 2 )) && k=2
+      # fksteering is SMC with diff potential — runner method is "smc",
+      # synthetic label "fksteering" is preserved via the per-config OUT_ROOT layout.
+      env_pairs[0]="METHODS=smc"
+      env_pairs+=(
+        "N_VARIANTS=1" "CFG_SCALES=${BASELINE_CFG}" "SMC_K=${k}"
+        "SMC_CFG_SCALE=${BASELINE_CFG}" "SMC_VARIANT_IDX=0"
+        "ESS_THRESHOLD=0.5" "RESAMPLE_START_FRAC=0.3"
+        "SMC_POTENTIAL=diff" "SMC_LAMBDA=${FKSTEERING_LAMBDA_SWEEP}"
+      )
+      ;;
+    mcts)
+      local s; s="$(ceil_div "${target_nfe}" "${STEPS}")"; (( s < 1 )) && s=1
+      env_pairs+=(
+        "N_VARIANTS=1" "CFG_SCALES=${MCTS_CFG_BANK}"
+        "N_SIMS=${s}" "MCTS_KEY_MODE=count"
+        "MCTS_KEY_STEP_COUNT=${BON_MCTS_KEY_STEP_COUNT}"
+      )
+      ;;
+    noise_inject)
+      local denom=$(( NOISE_INJECT_EPS_SAMPLES_SWEEP * NOISE_INJECT_STEPS_PER_ROLLOUT_SWEEP ))
+      (( denom < 1 )) && denom=1
+      local sb; sb="$(ceil_div "${target_nfe}" "${denom}")"; (( sb < 1 )) && sb=1
+      env_pairs+=(
+        "N_VARIANTS=1" "CFG_SCALES=${BASELINE_CFG}"
+        "NOISE_INJECT_MODE=${NOISE_INJECT_MODE_SWEEP}"
+        "NOISE_INJECT_SEED_BUDGET=${sb}"
+        "NOISE_INJECT_EPS_SAMPLES=${NOISE_INJECT_EPS_SAMPLES_SWEEP}"
+        "NOISE_INJECT_STEPS_PER_ROLLOUT=${NOISE_INJECT_STEPS_PER_ROLLOUT_SWEEP}"
+        "NOISE_INJECT_GAMMA_BANK=${NOISE_INJECT_GAMMA_BANK_SWEEP}"
+        "NOISE_INJECT_INCLUDE_NO_INJECT=${NOISE_INJECT_INCLUDE_NO_INJECT_SWEEP}"
       )
       ;;
     bon_mcts)

@@ -168,6 +168,8 @@ search:
       - export RUN_FLUX=0
       - export SD35_BACKEND={sd35_backend}
       - export SD35_CKPT='{sd35_ckpt}'
+      - export SD35_LORA_PATH='{sd35_lora_path}'
+      - export SD35_LORA_SCALE='{sd35_lora_scale}'
       - if [ "$$AUTO_BACKEND_STEPS" != "0" ]; then if [ "$$SD35_BACKEND" = "sid" ]; then export STEPS=4; elif [ "$$SD35_BACKEND" = "sd35_base" ]; then export STEPS=28; fi; fi
       - echo "Resolved STEPS=$$STEPS (backend=$$SD35_BACKEND auto_backend_steps=$$AUTO_BACKEND_STEPS)"
       - export USE_QWEN={use_qwen}
@@ -205,6 +207,10 @@ search:
       values: [ "sd35_base" ]
     - name: sd35_ckpt
       values: [ "/mnt/data/v-yigu/checkpoints/flow_grpo_posttrained.pt" ]
+    - name: sd35_lora_path
+      values: [ "" ]
+    - name: sd35_lora_scale
+      values: [ "1.0" ]
     - name: prompt_style
       values: [ "all" ]
     - name: start_index

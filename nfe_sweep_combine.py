@@ -116,11 +116,16 @@ def write_combined_csv(rows: list[dict[str, object]], eval_cols: list[str], out_
 
 
 _METHOD_STYLE = {
-    "bon":      {"color": "#1f77b4", "marker": "o"},
+    "bon":      {"color": "#8c564b", "marker": "h"},
     "beam":     {"color": "#ff7f0e", "marker": "s"},
     "smc":      {"color": "#2ca02c", "marker": "^"},
-    "bon_mcts": {"color": "#d62728", "marker": "D"},
+    "bon_mcts": {"color": "#9467bd", "marker": "P"},
+    "mcts":     {"color": "#d62728", "marker": "D"},
     "baseline": {"color": "#7f7f7f", "marker": "x"},
+    "greedy":   {"color": "#17becf", "marker": "o"},
+    "ga":       {"color": "#1f77b4", "marker": "v"},
+    "dts":      {"color": "#e377c2", "marker": "*"},
+    "dts_star": {"color": "#bcbd22", "marker": "X"},
 }
 
 

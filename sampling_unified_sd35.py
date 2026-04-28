@@ -77,6 +77,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--model_id", default=os.environ.get("MODEL_ID"))
     parser.add_argument("--ckpt", default=None)
+    parser.add_argument(
+        "--lora_path",
+        default=None,
+        help="Optional LoRA checkpoint path (directory or a single weights file).",
+    )
+    parser.add_argument(
+        "--lora_scale",
+        type=float,
+        default=1.0,
+        help="Optional LoRA scale (applied when --lora_path is set).",
+    )
     parser.add_argument("--transformer_id", default=os.environ.get("TRANSFORMER_ID"),
                         help="HuggingFace repo for the transformer (e.g. domiso/SenseFlow).")
     parser.add_argument("--transformer_subfolder", default=None,
@@ -461,10 +472,68 @@ def _resolve_out_dir(path_str: str) -> str:
 
 def normalize_paths(args: argparse.Namespace) -> argparse.Namespace:
     args.ckpt = _resolve_optional_file(args.ckpt, "ckpt")
+    args.lora_path = _resolve_optional_file(args.lora_path, "lora_path")
     args.prompt_file = _resolve_optional_file(args.prompt_file, "prompt_file")
     args.rewrites_file = _resolve_optional_file(args.rewrites_file, "rewrites_file")
     args.out_dir = _resolve_out_dir(args.out_dir)
     return args
+
+
+def _load_optional_lora(pipe: Any, lora_path: str | None, lora_scale: float) -> None:
+    if not lora_path:
+        return
+    if not hasattr(pipe, "load_lora_weights"):
+        raise RuntimeError("Pipeline does not support LoRA loading (missing load_lora_weights).")
+
+    p = Path(lora_path)
+    load_src = str(p if p.is_dir() else p.parent)
+    load_kwargs: dict[str, Any] = {}
+    if p.is_file():
+        load_kwargs["weight_name"] = p.name
+
+    adapter_name = "flow_grpo_lora"
+    loaded = False
+    last_exc: Exception | None = None
+    for kwargs in ({**load_kwargs, "adapter_name": adapter_name}, load_kwargs):
+        try:
+            pipe.load_lora_weights(load_src, **kwargs)
+            loaded = True
+            break
+        except TypeError:
+            # Older diffusers builds may not accept adapter_name.
+            continue
+        except Exception as exc:  # pragma: no cover - backend-specific
+            last_exc = exc
+            break
+    if not loaded:
+        if last_exc is None:
+            raise RuntimeError(f"Failed to load LoRA from {lora_path}")
+        raise RuntimeError(f"Failed to load LoRA from {lora_path}: {type(last_exc).__name__}: {last_exc}") from last_exc
+
+    scale = float(lora_scale)
+    scaled = False
+    if hasattr(pipe, "set_adapters"):
+        set_attempts = [
+            ({"adapter_names": [adapter_name], "adapter_weights": [scale]},),
+            ({"adapter_name": adapter_name, "adapter_weights": scale},),
+            ({"adapter_names": [adapter_name]},),
+            ({"adapter_name": adapter_name},),
+        ]
+        for (kwargs,) in set_attempts:
+            try:
+                pipe.set_adapters(**kwargs)
+                scaled = True
+                break
+            except Exception:
+                continue
+    if not scaled and hasattr(pipe, "fuse_lora"):
+        try:
+            pipe.fuse_lora(lora_scale=scale)
+            scaled = True
+        except Exception:
+            pass
+
+    print(f"Loaded LoRA from {lora_path} scale={scale:.4f} applied_scale={scaled}")
 
 
 def _unwrap_state_dict(raw: Any, depth: int = 0) -> Any:
@@ -613,6 +682,7 @@ def load_pipeline(args: argparse.Namespace) -> PipelineContext:
             f"  loaded={len(state_dict) - len(unexpected)}/{len(state_dict)} "
             f"missing={len(missing)} unexpected={len(unexpected)}"
         )
+    _load_optional_lora(pipe, getattr(args, "lora_path", None), float(getattr(args, "lora_scale", 1.0)))
 
     pipe.transformer.eval()
     latent_c = pipe.transformer.config.in_channels

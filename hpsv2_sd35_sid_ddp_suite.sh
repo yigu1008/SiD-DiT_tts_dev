@@ -15,6 +15,8 @@ METHODS="${METHODS:-baseline greedy mcts ga}"
 SD35_BACKEND="${SD35_BACKEND:-sid}"
 # Optional custom transformer checkpoint (e.g., post-trained Flow-GRPO .pt/.pth).
 SD35_CKPT="${SD35_CKPT:-}"
+SD35_LORA_PATH="${SD35_LORA_PATH:-}"
+SD35_LORA_SCALE="${SD35_LORA_SCALE:-1.0}"
 SD35_SIGMAS="${SD35_SIGMAS:-}"
 
 START_INDEX="${START_INDEX:-0}"
@@ -338,7 +340,17 @@ if [[ ! -f "${PROMPT_FILE}" ]]; then
 fi
 
 if [[ -n "${SD35_CKPT}" && ! -f "${SD35_CKPT}" ]]; then
-  echo "Error: SD35_CKPT not found: ${SD35_CKPT}" >&2
+  if [[ -n "${SD35_LORA_PATH}" ]]; then
+    echo "[warn] SD35_CKPT not found (${SD35_CKPT}); continuing with SD35_LORA_PATH=${SD35_LORA_PATH}" >&2
+    SD35_CKPT=""
+  else
+    echo "Error: SD35_CKPT not found: ${SD35_CKPT}" >&2
+    exit 1
+  fi
+fi
+
+if [[ -n "${SD35_LORA_PATH}" && ! -e "${SD35_LORA_PATH}" ]]; then
+  echo "Error: SD35_LORA_PATH not found: ${SD35_LORA_PATH}" >&2
   exit 1
 fi
 
@@ -418,6 +430,9 @@ fi
 echo "  sd35_backend: ${SD35_BACKEND} sd35_sigmas: ${SD35_SIGMAS:-<none>}"
 if [[ -n "${SD35_CKPT}" ]]; then
   echo "  sd35_ckpt: ${SD35_CKPT}"
+fi
+if [[ -n "${SD35_LORA_PATH}" ]]; then
+  echo "  sd35_lora: ${SD35_LORA_PATH} (scale=${SD35_LORA_SCALE})"
 fi
 echo "  nproc_per_node: ${NUM_GPUS}"
 echo "  reward_backend: ${REWARD_BACKEND}"
@@ -947,6 +962,9 @@ run_method() {
   fi
   if [[ -n "${SD35_CKPT}" ]]; then
     extra+=(--ckpt "${SD35_CKPT}")
+  fi
+  if [[ -n "${SD35_LORA_PATH}" ]]; then
+    extra+=(--lora_path "${SD35_LORA_PATH}" --lora_scale "${SD35_LORA_SCALE}")
   fi
   if [[ "${runner_script}" == "${SCRIPT_DIR}/sd35_ddp_experiment_dynamic_cfg.py" ]]; then
     extra+=(

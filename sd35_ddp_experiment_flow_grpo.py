@@ -32,6 +32,12 @@ def _inject_flow_grpo_defaults(argv: list[str]) -> list[str]:
     flow_grpo_ckpt = os.environ.get("FLOW_GRPO_CKPT", "").strip()
     if flow_grpo_ckpt and not _has_flag(out[1:], "ckpt"):
         out.extend(["--ckpt", flow_grpo_ckpt])
+    flow_grpo_lora = os.environ.get("FLOW_GRPO_LORA_PATH", "").strip() or os.environ.get("SD35_LORA_PATH", "").strip()
+    if flow_grpo_lora and not _has_flag(out[1:], "lora_path"):
+        out.extend(["--lora_path", flow_grpo_lora])
+    flow_grpo_lora_scale = os.environ.get("FLOW_GRPO_LORA_SCALE", "").strip() or os.environ.get("SD35_LORA_SCALE", "").strip()
+    if flow_grpo_lora_scale and not _has_flag(out[1:], "lora_scale"):
+        out.extend(["--lora_scale", flow_grpo_lora_scale])
     return out
 
 
@@ -46,4 +52,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -42,6 +42,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--model_id", default=os.environ.get("MODEL_ID"))
     parser.add_argument("--ckpt", default=None)
+    parser.add_argument(
+        "--lora_path",
+        default=None,
+        help="Optional LoRA checkpoint path (directory or single weights file).",
+    )
+    parser.add_argument(
+        "--lora_scale",
+        type=float,
+        default=1.0,
+        help="LoRA scale when --lora_path is provided.",
+    )
     parser.add_argument("--transformer_id", default=os.environ.get("TRANSFORMER_ID"),
                         help="HuggingFace repo for the transformer (e.g. domiso/SenseFlow).")
     parser.add_argument("--transformer_subfolder", default=None,
@@ -311,6 +322,7 @@ def _resolve_out_dir(path_str: str) -> str:
 def normalize_paths(args: argparse.Namespace) -> argparse.Namespace:
     args.prompt_file = _resolve_file(args.prompt_file, "prompt_file")
     args.ckpt = _resolve_optional_file(args.ckpt, "ckpt")
+    args.lora_path = _resolve_optional_file(args.lora_path, "lora_path")
     args.rewrites_file = _resolve_optional_file(args.rewrites_file, "rewrites_file")
     args.out_dir = _resolve_out_dir(args.out_dir)
     return args

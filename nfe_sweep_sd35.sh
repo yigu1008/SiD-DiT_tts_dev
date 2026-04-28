@@ -14,6 +14,9 @@
 #   beam       : BEAM_WIDTH * |cfgs| * |variants| * STEPS
 #   smc        : SMC_K * STEPS                     (expansion off for clean NFE)
 #   bon_mcts   : (BON_MCTS_N_SEEDS + N_SIMS) * STEPS    (topk=1, sim_alloc=full)
+#   greedy     : N_VARIANTS * STEPS                (per-step branching, pick best)
+#   ga         : GA_POPULATION * GA_GENERATIONS * STEPS  (elite carryover ignored)
+#   dts/dts*   : DTS_M_ITER * STEPS                (M trajectories × per-step calls)
 #
 # Per-config layout:
 #   ${OUT_ROOT_BASE}/${SD35_BACKEND}/sweep_<TS>/${method}_nfe<N>/run_<TS>/<method>/
@@ -44,7 +47,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SD35_BACKEND_LIST="${SD35_BACKEND_LIST:-${SD35_BACKEND:-sid sd35_base}}"
-SWEEP_METHODS="${SWEEP_METHODS:-bon beam smc bon_mcts dts dts_star}"
+SWEEP_METHODS="${SWEEP_METHODS:-bon beam smc bon_mcts greedy ga dts dts_star}"
+
+# GA defaults — generations fixed, population scaled to hit target_nfe.
+GA_GENERATIONS_SWEEP="${GA_GENERATIONS:-8}"
+GA_ELITES_SWEEP="${GA_ELITES:-3}"
 
 NUM_PROMPTS="${NUM_PROMPTS:-8}"
 GEN_BATCH_SIZE_SWEEP="${GEN_BATCH_SIZE:-1}"
@@ -138,6 +145,14 @@ compute_knobs_for() {
       local x; x="$(ceil_div "${target_nfe}" $(( 2 * STEPS )))"; (( x < 1 )) && x=1
       knob_label="n_seeds_eq_n_sims"; knob_value="${x}"
       nfe_actual=$(( 2 * x * STEPS )) ;;
+    greedy)
+      local n; n="$(ceil_div "${target_nfe}" "${STEPS}")"; (( n < 1 )) && n=1
+      knob_label="n_variants"; knob_value="${n}"; nfe_actual=$(( n * STEPS )) ;;
+    ga)
+      local denom=$(( GA_GENERATIONS_SWEEP * STEPS ))
+      local p; p="$(ceil_div "${target_nfe}" "${denom}")"; (( p < 2 )) && p=2
+      knob_label="ga_population"; knob_value="${p}"
+      nfe_actual=$(( p * GA_GENERATIONS_SWEEP * STEPS )) ;;
     dts|dts_star)
       local m; m="$(ceil_div "${target_nfe}" "${STEPS}")"; (( m < 1 )) && m=1
       knob_label="dts_m_iter"; knob_value="${m}"; nfe_actual=$(( m * STEPS )) ;;
@@ -205,6 +220,20 @@ run_one_config() {
         "BON_MCTS_PRESCREEN_CFG=${BASELINE_CFG}"
         "N_SIMS=${x}" "MCTS_KEY_MODE=count"
         "MCTS_KEY_STEP_COUNT=${BON_MCTS_KEY_STEP_COUNT}"
+      )
+      ;;
+    greedy)
+      local n; n="$(ceil_div "${target_nfe}" "${STEPS}")"; (( n < 1 )) && n=1
+      env_pairs+=( "N_VARIANTS=${n}" "CFG_SCALES=${BASELINE_CFG}" )
+      ;;
+    ga)
+      local denom=$(( GA_GENERATIONS_SWEEP * STEPS ))
+      local p; p="$(ceil_div "${target_nfe}" "${denom}")"; (( p < 2 )) && p=2
+      env_pairs+=(
+        "N_VARIANTS=1" "CFG_SCALES=${BASELINE_CFG}"
+        "GA_POPULATION=${p}"
+        "GA_GENERATIONS=${GA_GENERATIONS_SWEEP}"
+        "GA_ELITES=${GA_ELITES_SWEEP}"
       )
       ;;
     dts|dts_star)

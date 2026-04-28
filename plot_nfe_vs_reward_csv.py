@@ -20,13 +20,15 @@ from pathlib import Path
 
 _METHOD_STYLE = {
     "baseline": {"color": "#7f7f7f", "marker": "x"},
-    "greedy": {"color": "#17becf", "marker": "o"},
-    "mcts": {"color": "#d62728", "marker": "D"},
+    "greedy":   {"color": "#17becf", "marker": "o"},
+    "mcts":     {"color": "#d62728", "marker": "D"},
     "bon_mcts": {"color": "#9467bd", "marker": "P"},
-    "beam": {"color": "#ff7f0e", "marker": "s"},
-    "smc": {"color": "#2ca02c", "marker": "^"},
-    "ga": {"color": "#1f77b4", "marker": "v"},
-    "bon": {"color": "#8c564b", "marker": "h"},
+    "beam":     {"color": "#ff7f0e", "marker": "s"},
+    "smc":      {"color": "#2ca02c", "marker": "^"},
+    "ga":       {"color": "#1f77b4", "marker": "v"},
+    "bon":      {"color": "#8c564b", "marker": "h"},
+    "dts":      {"color": "#e377c2", "marker": "*"},
+    "dts_star": {"color": "#bcbd22", "marker": "X"},
 }
 
 

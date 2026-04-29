@@ -210,8 +210,8 @@ search:
 
     submit_args:
       env:
-        DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: True
-        SHARED_MEMORY_PERCENT: 0.5
+        DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: "true"
+        SHARED_MEMORY_PERCENT: "0.5"
 
   max_trials: 1
   type: grid

@@ -50,7 +50,7 @@ search:
     sla_tier: Standard
     process_count_per_node: 1
     priority: high
-    mpi: False
+    mpi: false
     command:
       - set -x
       - unset REWARD_BACKEND REWARD_TYPE REWARD_BACKENDS || true
@@ -146,8 +146,8 @@ search:
 
     submit_args:
       env:
-        DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: True
-        SHARED_MEMORY_PERCENT: 0.5
+        DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: "true"
+        SHARED_MEMORY_PERCENT: "0.5"
 
   max_trials: 5
   type: grid

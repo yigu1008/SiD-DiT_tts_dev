@@ -168,6 +168,7 @@ fi
 echo "[install] final restore: transformers/timm + text/hash + data stack"
 _pip --index-url "${PYPI_INDEX_URL}" \
   "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14" "timm==1.0.15" \
+  "numpy>=1.24,<2" "scipy>=1.13,<1.14" \
   "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1" \
   "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
 _pip --index-url "${PYPI_INDEX_URL}" --no-deps \
@@ -236,6 +237,10 @@ except Exception as exc:
     print("wandb import warning:", exc)
 import xxhash
 print("xxhash", getattr(xxhash, "__version__", "ok"))
+import numpy
+import scipy
+print("numpy", getattr(numpy, "__version__", "ok"))
+print("scipy", getattr(scipy, "__version__", "ok"))
 import pandas
 import pyarrow
 import datasets

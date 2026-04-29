@@ -80,10 +80,12 @@ search:
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
       # ── Preload reward models & SD3.5 weights ─────────────────────────────
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
-      - export SD35_MODEL_ID=YGu1998/SiD-DiT-SD3.5-large
-      - if [ "$$SD35_BACKEND" = "sd35_base" ] || [ "$$SD35_BACKEND" = "senseflow_large" ]; then export SD35_MODEL_ID=stabilityai/stable-diffusion-3.5-large; fi
-      - if [ "$$SD35_BACKEND" = "senseflow_medium" ]; then export SD35_MODEL_ID=stabilityai/stable-diffusion-3.5-medium; fi
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; b=os.environ.get('SD35_BACKEND','sid'); m=os.environ.get('SD35_MODEL_ID','YGu1998/SiD-DiT-SD3.5-large'); snapshot_download(m, cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('SD3.5 cache OK', b, m)"
+      - export SD35_MODEL_ID='{sd35_model_id}'
+      - export SD35_LOCAL_DIR=$(/opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; m=os.environ.get('SD35_MODEL_ID','YGu1998/SiD-DiT-SD3.5-large'); print(snapshot_download(m, cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1))")
+      - echo "SD3.5 cache OK backend=$$SD35_BACKEND model=$$SD35_MODEL_ID local_dir=$$SD35_LOCAL_DIR"
+      - export FLOW_GRPO_LORA_REPO='{flow_grpo_lora_repo}'
+      - export FLOW_GRPO_LORA_LOCAL_DIR=$(/opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; print(snapshot_download(os.environ['FLOW_GRPO_LORA_REPO'], cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1))")
+      - echo "Flow-GRPO LoRA cache OK: $$FLOW_GRPO_LORA_LOCAL_DIR"
       # ── Preload Qwen for prompt rewrites (must happen before offline mode) ──
       - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', token=os.environ.get('HF_TOKEN')); print('Qwen cache OK')"; fi
       - export HF_HUB_OFFLINE=1
@@ -168,7 +170,7 @@ search:
       - export RUN_FLUX=0
       - export SD35_BACKEND={sd35_backend}
       - export SD35_CKPT='{sd35_ckpt}'
-      - export SD35_LORA_PATH='{sd35_lora_path}'
+      - if [ -n "{sd35_lora_path}" ]; then export SD35_LORA_PATH='{sd35_lora_path}'; else export SD35_LORA_PATH="$$FLOW_GRPO_LORA_LOCAL_DIR"; fi
       - export SD35_LORA_SCALE='{sd35_lora_scale}'
       - if [ "$$AUTO_BACKEND_STEPS" != "0" ]; then if [ "$$SD35_BACKEND" = "sid" ]; then export STEPS=4; elif [ "$$SD35_BACKEND" = "sd35_base" ]; then export STEPS=28; fi; fi
       - echo "Resolved STEPS=$$STEPS (backend=$$SD35_BACKEND auto_backend_steps=$$AUTO_BACKEND_STEPS)"
@@ -188,7 +190,10 @@ search:
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
-      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets, transformers; print('final pin ok', 'transformers='+md.version('transformers'), md.version('ftfy'), md.version('regex'), md.version('xxhash'), md.version('pandas'), md.version('pyarrow'), md.version('datasets')); assert hasattr(transformers, 'Qwen2_5_VLForConditionalGeneration'), 'Qwen2_5_VL missing from transformers ' + md.version('transformers')"
+      # Keep NumPy/SciPy compatible with transformer-side optional imports.
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "numpy==1.26.4" "scipy>=1.13,<1.14"
+      # Avoid lazy-importing Qwen2.5-VL in a smoke check (it can pull SciPy paths).
+      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets, transformers, numpy, scipy; print('final pin ok', 'transformers='+md.version('transformers'), 'numpy='+md.version('numpy'), 'scipy='+md.version('scipy'), md.version('ftfy'), md.version('regex'), md.version('xxhash'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'))"
       - bash hpsv2_sd35_flux_allalgos.sh
 
     submit_args:
@@ -205,8 +210,12 @@ search:
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: sd35_backend
       values: [ "sd35_base" ]
+    - name: sd35_model_id
+      values: [ "stabilityai/stable-diffusion-3.5-medium" ]
+    - name: flow_grpo_lora_repo
+      values: [ "jieliu/SD3.5M-FlowGRPO-PickScore" ]
     - name: sd35_ckpt
-      values: [ "/mnt/data/v-yigu/checkpoints/flow_grpo_posttrained.pt" ]
+      values: [ "" ]
     - name: sd35_lora_path
       values: [ "" ]
     - name: sd35_lora_scale

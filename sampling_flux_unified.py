@@ -567,10 +567,14 @@ def _resolve_flux_lora_source(args: argparse.Namespace) -> tuple[str | None, str
     """Resolve LoRA source to (path_or_repo, weight_name_or_none).
 
     Returns:
-      - local file: ("/abs/path/file.safetensors", None)
+      - local file: ("/abs/path/dir", "file.safetensors")
       - local dir + named file: ("/abs/path/dir", "adapter.safetensors")
-      - hf cached download path: ("/cache/.../file.safetensors", None)
+      - hf cached download: ("/cache/.../snapshots/HASH", "file.safetensors")
       - no LoRA configured: (None, None)
+
+    File paths are always split into (parent_dir, basename) so that
+    diffusers receives an explicit weight_name and skips
+    _best_guess_weight_name, which raises in offline mode.
     """
     lora_path = getattr(args, "lora_path", None)
     lora_repo = getattr(args, "lora_repo", None)
@@ -584,6 +588,10 @@ def _resolve_flux_lora_source(args: argparse.Namespace) -> tuple[str | None, str
             raise FileNotFoundError(f"LoRA path not found: {p}")
         if p.is_dir() and lora_filename:
             return str(p), str(lora_filename)
+        if p.is_file():
+            # Split file → (dir, filename) so diffusers doesn't run
+            # _best_guess_weight_name (which fails in offline mode).
+            return str(p.parent), p.name
         return str(p), None
 
     if not lora_repo:
@@ -596,6 +604,8 @@ def _resolve_flux_lora_source(args: argparse.Namespace) -> tuple[str | None, str
             repo_path = (Path.cwd() / repo_path).resolve()
         if repo_path.is_dir() and lora_filename:
             return str(repo_path), str(lora_filename)
+        if repo_path.is_file():
+            return str(repo_path.parent), repo_path.name
         return str(repo_path), None
 
     # HF repo id path.
@@ -623,7 +633,8 @@ def _resolve_flux_lora_source(args: argparse.Namespace) -> tuple[str | None, str
                 "to a local LoRA file."
             ) from exc
         raise
-    return str(cached), None
+    cached_path = Path(str(cached))
+    return str(cached_path.parent), cached_path.name
 
 
 def load_pipeline(args: argparse.Namespace, device: str, dtype: torch.dtype) -> FluxContext:

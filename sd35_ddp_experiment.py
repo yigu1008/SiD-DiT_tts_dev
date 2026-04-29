@@ -131,6 +131,19 @@ def parse_args() -> argparse.Namespace:
                         help="Number of interpolation points inserted between each adjacent variant pair.")
     parser.add_argument("--smc_k", type=int, default=8)
     parser.add_argument("--smc_gamma", type=float, default=0.10)
+    parser.add_argument(
+        "--smc_potential",
+        choices=["tempering", "diff"],
+        default="tempering",
+        help="SMC potential type. 'tempering' = standard DAS geometric tempering. "
+             "'diff' = FK-steering difference potential (weight bump = smc_lambda * (r̂_t - r̂_{t-1})).",
+    )
+    parser.add_argument(
+        "--smc_lambda",
+        type=float,
+        default=10.0,
+        help="FK-steering inverse temperature lambda used when --smc_potential=diff.",
+    )
     parser.add_argument("--ess_threshold", type=float, default=0.5)
     parser.add_argument("--resample_start_frac", type=float, default=0.3)
     parser.add_argument("--smc_cfg_scale", type=float, default=1.25)

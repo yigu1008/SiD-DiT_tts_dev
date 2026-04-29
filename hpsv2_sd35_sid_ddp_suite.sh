@@ -344,11 +344,10 @@ fi
 if [[ -n "${SD35_CKPT}" && ! -f "${SD35_CKPT}" ]]; then
   if [[ -n "${SD35_LORA_PATH}" ]]; then
     echo "[warn] SD35_CKPT not found (${SD35_CKPT}); continuing with SD35_LORA_PATH=${SD35_LORA_PATH}" >&2
-    SD35_CKPT=""
   else
-    echo "Error: SD35_CKPT not found: ${SD35_CKPT}" >&2
-    exit 1
+    echo "[warn] SD35_CKPT not found (${SD35_CKPT}); falling back to HF weights for backend=${SD35_BACKEND}" >&2
   fi
+  SD35_CKPT=""
 fi
 
 if [[ -n "${SD35_LORA_PATH}" && ! -e "${SD35_LORA_PATH}" ]]; then

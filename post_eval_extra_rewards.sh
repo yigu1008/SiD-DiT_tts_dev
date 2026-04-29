@@ -81,7 +81,7 @@ wait_for_health() {
 }
 
 # Discover (method_out, method_name) pairs by walking run_*/<method>/aggregate_ddp.json.
-mapfile -t METHOD_DIRS < <(find "${OUT_ROOT}" -maxdepth 4 -type f -name aggregate_ddp.json 2>/dev/null | sed 's|/aggregate_ddp.json$||' | sort)
+mapfile -t METHOD_DIRS < <(find "${OUT_ROOT}" -maxdepth 6 -type f -name aggregate_ddp.json 2>/dev/null | sed 's|/aggregate_ddp.json$||' | sort)
 if [[ "${#METHOD_DIRS[@]}" -eq 0 ]]; then
   echo "[posthoc] no method dirs with aggregate_ddp.json under ${OUT_ROOT}; nothing to evaluate" >&2
   exit 0

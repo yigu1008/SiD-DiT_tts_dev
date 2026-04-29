@@ -1,0 +1,316 @@
+description: sd35-base-hpsv3-allalgos-server
+
+# Server-pattern run: reward_server.py (HPSv3) on GPU 0, sampling on GPUs 1..7.
+# Methods: baseline, bon, beam, mcts, smc, ga, dts, dts_star.
+# Backend: SD3.5-large base (Euler ODE, 28 steps).
+# DTS_SDE_NOISE_SCALE > 0 is REQUIRED for sd35_base because Euler is
+# deterministic — children would otherwise be identical.
+
+target:
+  service: sing
+  name: GenAI-Shared-UKSouth2
+  workspace_name: Singularity-GenAI-WS-UKSouth2
+  resource_group: singularity-genai-gpu-uksouth2
+
+env_defaults:
+  service: sing
+  PRIORITY: high
+  NODES: 1
+  GPUS: 8
+  MEM: 80
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - export PATH=/home/aiscuser/.local/bin:$$PATH
+    - pip install --user datasets huggingface_hub hpsv2
+
+code:
+  local_dir: ./
+
+storage:
+  output:
+    storage_account_name: vigstandard
+    container_name: data
+    mount_dir: /mnt/data
+
+search:
+  job_template:
+    name: sd35-base-hpsv3-allalgos-{run_tag}
+    sku: ${NODES}x${MEM}G${GPUS}
+    sla_tier: Standard
+    process_count_per_node: 1
+    priority: high
+    mpi: False
+    command:
+      - set -x
+      - unset REWARD_BACKEND REWARD_TYPE REWARD_BACKENDS || true
+      - export PYTHONNOUSERSITE=1
+      - unset PYTHONPATH || true
+      - export SID_FORCE_WANDB_STUB=1
+      - export WANDB_DISABLED=true
+      # ── Paths & HF auth ────────────────────────────────────────────────────
+      - export PATH=/home/aiscuser/.local/bin:$$PATH
+      - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
+      - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
+      - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
+      - export HF_TOKEN={hf_token}
+      - export HUGGING_FACE_HUB_TOKEN={hf_token}
+      - export AZFUSE_USE_FUSE=0
+      - export NCCL_ASYNC_ERROR_HANDLING=0
+      - export NCCL_P2P_LEVEL=NVL
+      # ── ptca deps (sampling) ──────────────────────────────────────────────
+      - source /opt/conda/etc/profile.d/conda.sh
+      - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
+      - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
+      - /opt/conda/envs/ptca/bin/python -c "import os, torch; print('[torch-check]', torch.__version__, 'cuda=', torch.version.cuda, 'is_available=', torch.cuda.is_available(), 'count=', torch.cuda.device_count(), 'cvd=', os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')); assert torch.cuda.is_available() and (torch.version.cuda is not None), 'CPU-only torch detected after requirements install'"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
+      - /opt/conda/envs/ptca/bin/python -c "import xformers, xformers.ops; print('xformers ok', xformers.__version__)" || (/opt/conda/envs/ptca/bin/pip uninstall -y xformers && echo 'xformers disabled')
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "fire" "peft>=0.8.0" "einops>=0.6.0" "opencv-python>=4.5.0" "safetensors>=0.3.0" "accelerate>=0.20.0" "qwen-vl-utils>=0.0.8" "matplotlib" "prettytable" "pandas" "pydantic" "requests" "tensorboard" "packaging" || true
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
+      # ── Cache dirs ────────────────────────────────────────────────────────
+      - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
+      - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
+      - export CLIP_CACHE_DIR=/mnt/data/v-yigu/model_cache/clip
+      - mkdir -p /home/aiscuser/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
+      - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
+      - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
+      # ── Preload SD3.5 + Qwen3 rewriter into HF cache (ptca) ───────────────
+      - export HF_HUB_ENABLE_HF_TRANSFER=0
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('stabilityai/stable-diffusion-3.5-large', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('SD3.5-large cache OK')"
+      - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('Qwen cache OK')"; fi
+      # ── Prompt file ───────────────────────────────────────────────────────
+      - export HPSV2_PROMPT_DIR=/mnt/data/v-yigu/hpsv2_prompt_cache
+      - export PROMPT_STYLE={prompt_style}
+      - OUT_DIR="$$HPSV2_PROMPT_DIR" STYLE="$$PROMPT_STYLE" bash get_hpsv2_prompts.sh
+      - if [ "$$PROMPT_STYLE" = "all" ]; then export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts.txt"; else export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts_$$PROMPT_STYLE.txt"; fi
+      - if [ {use_subset} = 1 ]; then export PROMPT_FILE=./hpsv2_subset.txt; fi
+      # ── Build isolated reward env (HPSv3 + eval backends) ────────────────
+      - export REWARD_ENV_NAME=reward
+      - export REWARD_ENV_SENTINEL_DIR=/tmp
+      - CONDA_BASE=/opt/conda REWARD_ENV_NAME="$$REWARD_ENV_NAME" REWARD_ENV_SENTINEL_DIR="$$REWARD_ENV_SENTINEL_DIR" bash setup_reward_env.sh
+      - export REWARD_ENV_PREFIX=$$(cat "$$REWARD_ENV_SENTINEL_DIR/reward_env_prefix_$$REWARD_ENV_NAME")
+      - export REWARD_PY=$$REWARD_ENV_PREFIX/bin/python
+      - 'echo "Reward env prefix: $$REWARD_ENV_PREFIX"'
+      - 'if [ ! -x "$$REWARD_PY" ]; then echo "Reward env python not found: $$REWARD_PY"; exit 1; fi'
+      - $$REWARD_PY -c "import torch, transformers; print('reward env torch='+torch.__version__, 'transformers='+transformers.__version__)"
+      # ── Preload reward weights in reward env ─────────────────────────────
+      - export REWARD_BACKENDS='{reward_server_backends}'
+      - export STAGE_REWARD_WEIGHTS_LOCAL=1
+      - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
+      - $$REWARD_PY preload_reward_models.py
+      - 'if [ -f "$$REWARD_LOCAL_HF_CACHE/.stage_done" ]; then export REWARD_HF_HOME="$$REWARD_LOCAL_HF_CACHE"; echo "Reward server will use local HF cache: $$REWARD_HF_HOME"; else export REWARD_HF_HOME="$$HF_HOME"; echo "Local staging unavailable; reward server using HF_HOME=$$HF_HOME"; fi'
+      # ── Launch reward server on GPU 0 ────────────────────────────────────
+      - export OUT_ROOT=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}
+      - mkdir -p "$$OUT_ROOT"
+      - export REWARD_SERVER_PORT={reward_server_port}
+      - export REWARD_SERVER_URL=http://localhost:$$REWARD_SERVER_PORT
+      - export REWARD_SERVER_LOG=$$OUT_ROOT/reward_server.log
+      - env -u NCCL_P2P_LEVEL -u NCCL_ASYNC_ERROR_HANDLING -u TORCH_NCCL_ASYNC_ERROR_HANDLING CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false HF_HOME="$$REWARD_HF_HOME" "$$REWARD_PY" -u reward_server.py --port "$$REWARD_SERVER_PORT" --device cuda:0 --backends $$REWARD_BACKENDS --image_reward_model ImageReward-v1.0 --pickscore_model yuvalkirstain/PickScore_v1 > "$$REWARD_SERVER_LOG" 2>&1 &
+      - export REWARD_SERVER_PID=$$!
+      - trap 'kill $$REWARD_SERVER_PID >/dev/null 2>&1 || true' EXIT
+      # ── Wait for /health (up to 60 min) ──────────────────────────────────
+      - export HEALTH_OK=0
+      - for i in $$(seq 1 1200); do if curl -s "$$REWARD_SERVER_URL/health" >/dev/null 2>&1; then export HEALTH_OK=1; break; fi; if ! kill -0 "$$REWARD_SERVER_PID" >/dev/null 2>&1; then echo "Reward server process exited before health check passed"; tail -n 200 "$$REWARD_SERVER_LOG" || true; exit 1; fi; if [ $$((i % 10)) -eq 0 ]; then echo "[health-wait] i=$$i server log tail:"; tail -n 20 "$$REWARD_SERVER_LOG" || true; fi; sleep 3; done
+      - if [ "$$HEALTH_OK" != "1" ]; then echo "Reward server failed to become healthy"; tail -n 400 "$$REWARD_SERVER_LOG"; exit 1; fi
+      - curl -s "$$REWARD_SERVER_URL/health" | tee "$$OUT_ROOT/reward_server_health.json"
+      # ── Qwen rewrite cache ───────────────────────────────────────────────
+      - mkdir -p /mnt/data/v-yigu/hpsv2_rewrite_cache
+      - export REWRITES_FILE=/mnt/data/v-yigu/hpsv2_rewrite_cache/{run_tag}_$$PROMPT_STYLE_{start_index}_{end_index}.json
+      - export USE_QWEN={use_qwen}
+      - export PRECOMPUTE_REWRITES={precompute_rewrites}
+      - export REWRITES_OVERWRITE={rewrites_overwrite}
+      - export QWEN_PRECOMPUTE_DEVICE={qwen_precompute_device}
+      - export QWEN_PRECOMPUTE_BATCH_SIZE={qwen_precompute_batch_size}
+      - export QWEN_PRECOMPUTE_SAVE_EVERY={qwen_precompute_save_every}
+      - export QWEN_PRECOMPUTE_CLEAR_CACHE={qwen_precompute_clear_cache}
+      # ── Sampling env vars ────────────────────────────────────────────────
+      - export START_INDEX={start_index}
+      - export END_INDEX={end_index}
+      - export METHODS='{methods}'
+      - export REWARD_BACKEND=hpsv3
+      - export REWARD_TYPE=hpsv3
+      - export REWARD_BACKENDS=hpsv3
+      - export EVAL_BEST_IMAGES=1
+      - export EVAL_BACKENDS='{eval_backends}'
+      - export REWARD_DEVICE=cuda
+      - export EVAL_REWARD_DEVICE=cuda
+      - export EVAL_ALLOW_MISSING_BACKENDS=0
+      - export CFG_SCALES='{cfg_scales}'
+      - export BASELINE_CFG={baseline_cfg}
+      - export STEPS={steps}
+      - export AUTO_BACKEND_STEPS=0
+      - export N_VARIANTS={n_variants}
+      # ── BoN / Beam knobs ────────────────────────────────────────────────
+      - export BON_N={bon_n}
+      - export BEAM_WIDTH={beam_width}
+      # ── Raw MCTS knobs ──────────────────────────────────────────────────
+      - export N_SIMS={n_sims}
+      - export UCB_C={ucb_c}
+      - export MCTS_KEY_MODE={mcts_key_mode}
+      - export MCTS_KEY_STEP_COUNT={mcts_key_step_count}
+      # ── SMC knobs ───────────────────────────────────────────────────────
+      - export SMC_K={smc_k}
+      - export SMC_GAMMA={smc_gamma}
+      - export ESS_THRESHOLD={ess_threshold}
+      - export RESAMPLE_START_FRAC={resample_start_frac}
+      - export SMC_CFG_SCALE={smc_cfg_scale}
+      - export SMC_VARIANT_IDX={smc_variant_idx}
+      - export SMC_VARIANT_EXPANSION={smc_variant_expansion}
+      # ── GA knobs ────────────────────────────────────────────────────────
+      - export GA_POPULATION={ga_population}
+      - export GA_GENERATIONS={ga_generations}
+      - export GA_ELITES={ga_elites}
+      - export GA_MUTATION_PROB={ga_mutation_prob}
+      - export GA_TOURNAMENT_K={ga_tournament_k}
+      - export GA_SELECTION={ga_selection}
+      - export GA_RANK_PRESSURE={ga_rank_pressure}
+      - export GA_CROSSOVER={ga_crossover}
+      - export GA_LOG_TOPK={ga_log_topk}
+      - export GA_EVAL_BATCH={ga_eval_batch}
+      # ── DTS / DTS* knobs ────────────────────────────────────────────────
+      # Euler ODE is deterministic — DTS_SDE_NOISE_SCALE > 0 is REQUIRED so
+      # children diverge under the same prefix. 0.10 is the validated default.
+      - export DTS_M_ITER={dts_m_iter}
+      - export DTS_LAMBDA={dts_lambda}
+      - export DTS_PW_C={dts_pw_c}
+      - export DTS_PW_ALPHA={dts_pw_alpha}
+      - export DTS_C_UCT={dts_c_uct}
+      - export DTS_SDE_NOISE_SCALE={dts_sde_noise_scale}
+      - export DTS_CFG_BANK=''
+      # ── Misc ────────────────────────────────────────────────────────────
+      - export SEED={seed}
+      - export RUN_SANA=0
+      - export RUN_SD35=1
+      - export RUN_FLUX=0
+      - export SD35_BACKEND=sd35_base
+      - export FLUX_BACKEND=flux
+      - export SAVE_IMAGES=0
+      - export SAVE_BEST_IMAGES=1
+      - export SAVE_VARIANTS=0
+      # ── Restrict sampling to GPUs 1..N-1 (server owns GPU 0) ─────────────
+      - export SAMPLING_GPUS=$$((${GPUS} - 1))
+      - export CUDA_VISIBLE_DEVICES=$$(seq -s, 1 $$SAMPLING_GPUS)
+      - export NUM_GPUS=$$SAMPLING_GPUS
+      - 'echo "Sampling on CUDA_VISIBLE_DEVICES=$$CUDA_VISIBLE_DEVICES NUM_GPUS=$$NUM_GPUS REWARD_SERVER_URL=$$REWARD_SERVER_URL"'
+      # ── Run (reward_unified routes hpsv3/eval via REWARD_SERVER_URL) ─────
+      - bash hpsv2_sd35_flux_allalgos.sh
+
+    submit_args:
+      env:
+        DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: True
+        SHARED_MEMORY_PERCENT: 0.5
+
+  max_trials: 1
+  type: grid
+  params:
+    - name: run_tag
+      values: [ "sd35_base_hpsv3_allalgos_server" ]
+    - name: hf_token
+      values: [ "YOUR_HF_TOKEN_HERE" ]
+    - name: prompt_style
+      values: [ "all" ]
+    - name: start_index
+      values: [ 0 ]
+    - name: end_index
+      values: [ -1 ]
+    - name: use_subset
+      values: [ 1 ]
+    - name: methods
+      values: [ "baseline bon beam mcts smc ga dts dts_star" ]
+    - name: eval_backends
+      values: [ "hpsv3" ]
+    - name: reward_server_backends
+      values: [ "hpsv3" ]
+    - name: reward_server_port
+      values: [ 5100 ]
+    - name: cfg_scales
+      values: [ "3.5 4.0 4.5 5.0 5.5 6.0 7.0" ]
+    - name: baseline_cfg
+      values: [ 4.5 ]
+    - name: steps
+      values: [ 28 ]
+    - name: n_variants
+      values: [ 4 ]
+    # ── BoN / Beam ──
+    - name: bon_n
+      values: [ 16 ]
+    - name: beam_width
+      values: [ 4 ]
+    # ── Raw MCTS ──
+    - name: n_sims
+      values: [ 9 ]
+    - name: ucb_c
+      values: [ 1.41 ]
+    - name: mcts_key_mode
+      values: [ "count" ]
+    - name: mcts_key_step_count
+      values: [ 4 ]
+    # ── SMC ──
+    - name: smc_k
+      values: [ 9 ]
+    - name: smc_gamma
+      values: [ 0.10 ]
+    - name: ess_threshold
+      values: [ 0.5 ]
+    - name: resample_start_frac
+      values: [ 0.3 ]
+    - name: smc_cfg_scale
+      values: [ 4.5 ]
+    - name: smc_variant_idx
+      values: [ 0 ]
+    - name: smc_variant_expansion
+      values: [ 0 ]
+    # ── GA ──
+    - name: ga_population
+      values: [ 24 ]
+    - name: ga_generations
+      values: [ 8 ]
+    - name: ga_elites
+      values: [ 4 ]
+    - name: ga_mutation_prob
+      values: [ 0.15 ]
+    - name: ga_tournament_k
+      values: [ 4 ]
+    - name: ga_selection
+      values: [ "rank" ]
+    - name: ga_rank_pressure
+      values: [ 1.7 ]
+    - name: ga_crossover
+      values: [ "uniform" ]
+    - name: ga_log_topk
+      values: [ 5 ]
+    - name: ga_eval_batch
+      values: [ 2 ]
+    # ── DTS / DTS* ──  (M=8 × STEPS=28 ≈ 224 NFE/prompt)
+    - name: dts_m_iter
+      values: [ 8 ]
+    - name: dts_lambda
+      values: [ 1.0 ]
+    - name: dts_pw_c
+      values: [ 1.0 ]
+    - name: dts_pw_alpha
+      values: [ 0.5 ]
+    - name: dts_c_uct
+      values: [ 1.0 ]
+    - name: dts_sde_noise_scale
+      values: [ 0.10 ]
+    # ── Misc ──
+    - name: seed
+      values: [ 42 ]
+    - name: use_qwen
+      values: [ 1 ]
+    - name: precompute_rewrites
+      values: [ 1 ]
+    - name: rewrites_overwrite
+      values: [ 0 ]
+    - name: qwen_precompute_device
+      values: [ "auto" ]
+    - name: qwen_precompute_batch_size
+      values: [ 16 ]
+    - name: qwen_precompute_save_every
+      values: [ 1 ]
+    - name: qwen_precompute_clear_cache
+      values: [ 1 ]

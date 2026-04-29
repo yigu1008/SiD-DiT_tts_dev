@@ -197,6 +197,16 @@ search:
       - 'echo "Sampling on CUDA_VISIBLE_DEVICES=$$CUDA_VISIBLE_DEVICES NUM_GPUS=$$NUM_GPUS REWARD_SERVER_URL=$$REWARD_SERVER_URL"'
       # ── Run (reward_unified routes hpsv3/eval via REWARD_SERVER_URL) ─────
       - bash hpsv2_sd35_flux_allalgos.sh
+      # ── Phase 2: tear down HPSv3 server, eval extra backends one-at-a-time ──
+      - echo "[posthoc] killing HPSv3 server pid=$$REWARD_SERVER_PID before phase 2"
+      - kill "$$REWARD_SERVER_PID" >/dev/null 2>&1 || true
+      - for k in $$(seq 1 30); do if ! kill -0 "$$REWARD_SERVER_PID" >/dev/null 2>&1; then break; fi; sleep 1; done
+      - fuser -k "$$REWARD_SERVER_PORT/tcp" >/dev/null 2>&1 || true
+      - sleep 5
+      - trap - EXIT
+      - export POSTHOC_EVAL_BACKENDS='{posthoc_eval_backends}'
+      - export POSTHOC_LAYOUT=sd35
+      - REWARD_PY="$$REWARD_PY" REWARD_SERVER_PORT="$$REWARD_SERVER_PORT" REWARD_HF_HOME="$$REWARD_HF_HOME" PYTHON_BIN="$$PYTHON_BIN" OUT_ROOT="$$OUT_ROOT" POSTHOC_EVAL_BACKENDS="$$POSTHOC_EVAL_BACKENDS" POSTHOC_LAYOUT="$$POSTHOC_LAYOUT" bash post_eval_extra_rewards.sh
 
     submit_args:
       env:
@@ -220,10 +230,14 @@ search:
       values: [ 1 ]
     - name: methods
       values: [ "baseline bon beam mcts smc ga dts dts_star" ]
+    # Phase 1 — search loop only loads HPSv3 on GPU 0 to avoid OOM.
     - name: eval_backends
       values: [ "hpsv3" ]
     - name: reward_server_backends
       values: [ "hpsv3" ]
+    # Phase 2 — extra reward backends evaluated post-hoc, one server at a time.
+    - name: posthoc_eval_backends
+      values: [ "imagereward hpsv2 pickscore" ]
     - name: reward_server_port
       values: [ 5100 ]
     - name: cfg_scales

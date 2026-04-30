@@ -46,7 +46,7 @@ storage:
 
 search:
   job_template:
-    name: flux-dyncfgx0-{target_model}-{run_tag}
+    name: flux-dyncfgx0-{target_model}-{search_reward}-{run_tag}
     sku: ${NODES}x${MEM}G${GPUS}
     sla_tier: Standard
     process_count_per_node: 1
@@ -114,7 +114,7 @@ search:
       - $$REWARD_PY preload_reward_models.py
       - 'if [ -f "$$REWARD_LOCAL_HF_CACHE/.stage_done" ]; then export REWARD_HF_HOME="$$REWARD_LOCAL_HF_CACHE"; echo "Reward server will use local HF cache: $$REWARD_HF_HOME"; else export REWARD_HF_HOME="$$HF_HOME"; echo "Local staging unavailable; reward server using HF_HOME=$$HF_HOME"; fi'
       # ── Launch reward server on GPU 0 ────────────────────────────────────
-      - export OUT_ROOT=/mnt/data/v-yigu/hpsv2_dyncfgx0_runs/{target_model}/{run_tag}
+      - export OUT_ROOT=/mnt/data/v-yigu/hpsv2_dyncfgx0_runs/{target_model}/{search_reward}/{run_tag}
       - mkdir -p "$$OUT_ROOT"
       - export REWARD_SERVER_PORT={reward_server_port}
       - export REWARD_SERVER_URL=http://localhost:$$REWARD_SERVER_PORT
@@ -141,11 +141,11 @@ search:
       - export START_INDEX={start_index}
       - export END_INDEX={end_index}
       - export METHODS='dynamic_cfg_x0'
-      - export REWARD_BACKEND=hpsv3
-      - export REWARD_TYPE=hpsv3
-      - export REWARD_BACKENDS=hpsv3
+      - export REWARD_BACKEND={search_reward}
+      - export REWARD_TYPE={search_reward}
+      - export REWARD_BACKENDS={search_reward}
       - export EVAL_BEST_IMAGES=1
-      - export EVAL_BACKENDS='{eval_backends}'
+      - export EVAL_BACKENDS='{search_reward}'
       - export REWARD_DEVICE=cuda
       - export EVAL_REWARD_DEVICE=cuda
       - export EVAL_ALLOW_MISSING_BACKENDS=0
@@ -161,7 +161,7 @@ search:
       - export DYNAMIC_CFG_X0_SCORE_START_FRAC={dynamic_cfg_x0_score_start_frac}
       - export DYNAMIC_CFG_X0_SCORE_END_FRAC={dynamic_cfg_x0_score_end_frac}
       - export DYNAMIC_CFG_X0_SCORE_EVERY={dynamic_cfg_x0_score_every}
-      - export DYNAMIC_CFG_X0_EVALUATORS='{dynamic_cfg_x0_evaluators}'
+      - export DYNAMIC_CFG_X0_EVALUATORS='{search_reward}'
       - export DYNAMIC_CFG_X0_WEIGHT_SCHEDULE={dynamic_cfg_x0_weight_schedule}
       - export DYNAMIC_CFG_X0_PROMPT_TYPE={dynamic_cfg_x0_prompt_type}
       - export DYNAMIC_CFG_X0_CONFIDENCE_GATING={dynamic_cfg_x0_confidence_gating}
@@ -203,11 +203,14 @@ search:
         DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: "true"
         SHARED_MEMORY_PERCENT: "0.5"
 
-  max_trials: 2
+  max_trials: 4
   type: grid
   params:
     - name: run_tag
       values: [ "flux_dyncfgx0_server" ]
+    # ── Two separate runs: one search-time evaluator per run ─────────────
+    - name: search_reward
+      values: [ "hpsv3", "imagereward" ]
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: prompt_style
@@ -221,10 +224,9 @@ search:
     # ── Both FLUX backends covered as a 2-row grid ───────────────────────
     - name: target_model
       values: [ "flux", "tdd_flux" ]
-    # Search-time eval backend (matches search reward); HPSv3 still leads.
-    - name: eval_backends
-      values: [ "hpsv3" ]
-    # Reward server hosts BOTH evaluators used by dynamic_cfg_x0.
+    # Reward server hosts BOTH evaluators (so both runs share the same
+    # server config); the actual search-time evaluator is picked via
+    # {search_reward} above.
     - name: reward_server_backends
       values: [ "hpsv3 imagereward" ]
     # Phase 2 extra backends evaluated post-hoc, one server at a time.
@@ -242,8 +244,6 @@ search:
       values: [ 1.0 ]
     - name: dynamic_cfg_x0_score_every
       values: [ 2 ]
-    - name: dynamic_cfg_x0_evaluators
-      values: [ "imagereward hpsv3" ]
     - name: dynamic_cfg_x0_weight_schedule
       values: [ "piecewise" ]
     - name: dynamic_cfg_x0_prompt_type

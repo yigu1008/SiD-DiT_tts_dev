@@ -148,7 +148,7 @@ search:
       - export EVAL_REWARD_DEVICE=cuda
       - export EVAL_ALLOW_MISSING_BACKENDS=0
       # Per-backend defaults: SiD uses 4 steps + small CFG bank; sd35_base 28 + larger.
-      - 'if [ "{target_model}" = "sid" ]; then export STEPS=4; export BASELINE_CFG=1.0; export CFG_SCALES="1.0 1.25 1.5 1.75 2.0 2.25 2.5"; export DYNAMIC_CFG_X0_GRID_AUTO="1.0 1.25 1.5 1.75 2.0 2.25 2.5"; export DYNAMIC_CFG_X0_CFG_MIN_AUTO=0.5; export DYNAMIC_CFG_X0_CFG_MAX_AUTO=3.0; export DYNAMIC_CFG_X0_CFG_SOFT_MAX_AUTO=2.5; else export STEPS=28; export BASELINE_CFG=4.5; export CFG_SCALES="2.0 3.5 5.0 6.5 8.0"; export DYNAMIC_CFG_X0_GRID_AUTO="2.0 3.5 5.0 6.5 8.0"; export DYNAMIC_CFG_X0_CFG_MIN_AUTO=1.0; export DYNAMIC_CFG_X0_CFG_MAX_AUTO=12.0; export DYNAMIC_CFG_X0_CFG_SOFT_MAX_AUTO=7.5; fi'
+      - 'if [ "{target_model}" = "sid" ]; then export STEPS=4; export BASELINE_CFG=1.0; export CFG_SCALES="1.0 1.25 1.5 1.75 2.0 2.25 2.5"; export DYNAMIC_CFG_X0_GRID_AUTO="1.0 1.25 1.5 1.75 2.0 2.25 2.5"; export DYNAMIC_CFG_X0_CFG_MIN_AUTO=0.5; export DYNAMIC_CFG_X0_CFG_MAX_AUTO=3.0; export DYNAMIC_CFG_X0_CFG_SOFT_MAX_AUTO=2.5; else export STEPS=28; export BASELINE_CFG=4.5; export CFG_SCALES="3.5 4.0 4.5 5.0 5.5 6.0 7.0"; export DYNAMIC_CFG_X0_GRID_AUTO="3.5 4.0 4.5 5.0 5.5 6.0 7.0"; export DYNAMIC_CFG_X0_CFG_MIN_AUTO=2.0; export DYNAMIC_CFG_X0_CFG_MAX_AUTO=8.0; export DYNAMIC_CFG_X0_CFG_SOFT_MAX_AUTO=6.5; fi'
       - export AUTO_BACKEND_STEPS=0
       - export N_VARIANTS={n_variants}
       - export GEN_BATCH_SIZE=1

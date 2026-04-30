@@ -50,6 +50,13 @@ else
     echo "[setup_reward_env] Env already exists at ${PREFIX}, updating ..."
 fi
 
+# Install setuptools + wheel before anything else: ImageReward's setup.py
+# does `from pkg_resources import ...` (which lives in setuptools), and we
+# install ImageReward with --no-build-isolation, so the env's own setuptools
+# must be present.
+echo "[setup_reward_env] Installing build tooling (setuptools, wheel) ..."
+"${PIP}" install --no-cache-dir --upgrade "setuptools>=68" "wheel" "pip"
+
 echo "[setup_reward_env] Installing PyTorch ..."
 "${PIP}" install --no-cache-dir \
     torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 \
@@ -81,9 +88,26 @@ echo "[setup_reward_env] Installing ImageReward ..."
 # above. Use --no-build-isolation so the git install reuses the existing
 # setuptools/wheel rather than fetching a fresh build env (which has been
 # observed to fail behind locked-down package mirrors).
+install_imagereward_from_clone() {
+    local sp_dir
+    sp_dir="$(${PY} -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+    local tmp_dir
+    tmp_dir="$(mktemp -d)"
+    git clone --depth=1 https://github.com/THUDM/ImageReward.git "${tmp_dir}/ImageReward" || return 1
+    if [ -d "${tmp_dir}/ImageReward/ImageReward" ]; then
+        cp -r "${tmp_dir}/ImageReward/ImageReward" "${sp_dir}/" || return 1
+        echo "[setup_reward_env] ImageReward copied into ${sp_dir}/ImageReward"
+        rm -rf "${tmp_dir}"
+        return 0
+    fi
+    rm -rf "${tmp_dir}"
+    return 1
+}
+
 "${PIP}" install --no-cache-dir --no-deps --no-build-isolation "git+https://github.com/THUDM/ImageReward.git" || \
     "${PIP}" install --no-cache-dir --no-deps "git+https://github.com/THUDM/ImageReward.git" || \
     "${PIP}" install --no-cache-dir --no-deps "image-reward==1.5" || \
+    install_imagereward_from_clone || \
     echo "[setup_reward_env] WARNING: ImageReward install failed"
 
 echo "[setup_reward_env] Installing CLIP ..."

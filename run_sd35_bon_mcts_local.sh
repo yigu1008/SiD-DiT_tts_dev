@@ -155,20 +155,31 @@ cmd=(
   --bon_mcts_refine_method "${BON_MCTS_REFINE_METHOD:-ours_tree}"
   --lookahead_mode "${LOOKAHEAD_METHOD_MODE:-rollout_tree_prior_adaptive_cfg}"
   --lookahead_u_t_def "${LOOKAHEAD_U_T_DEF:-latent_delta_rms}"
+  --lookahead_prior_mode "${LOOKAHEAD_PRIOR_MODE:-heuristic}"
   --lookahead_tau "${LOOKAHEAD_TAU:-0.35}"
+  --lookahead_prior_tau "${LOOKAHEAD_PRIOR_TAU:-0.35}"
   --lookahead_c_puct "${LOOKAHEAD_C_PUCT:-1.20}"
   --lookahead_u_ref "${LOOKAHEAD_U_REF:-0.0}"
+  --lookahead_d_ref "${LOOKAHEAD_D_REF:-0.0}"
+  --lookahead_ref_percentile "${LOOKAHEAD_REF_PERCENTILE:-75}"
   --lookahead_w_cfg "${LOOKAHEAD_W_CFG:-1.0}"
   --lookahead_w_variant "${LOOKAHEAD_W_VARIANT:-0.25}"
   --lookahead_w_cs "${LOOKAHEAD_W_CS:-0.10}"
   --lookahead_w_q "${LOOKAHEAD_W_Q:-0.20}"
   --lookahead_w_explore "${LOOKAHEAD_W_EXPLORE:-0.05}"
+  --lookahead_w_update "${LOOKAHEAD_W_UPDATE:-1.0}"
+  --lookahead_w_cond "${LOOKAHEAD_W_COND:-1.0}"
   --lookahead_cfg_width_min "${LOOKAHEAD_CFG_WIDTH_MIN:-3}"
   --lookahead_cfg_width_max "${LOOKAHEAD_CFG_WIDTH_MAX:-7}"
   --lookahead_cfg_anchor_count "${LOOKAHEAD_CFG_ANCHOR_COUNT:-2}"
   --lookahead_min_visits_for_center "${LOOKAHEAD_MIN_VISITS_FOR_CENTER:-3}"
   --lookahead_log_action_topk "${LOOKAHEAD_LOG_ACTION_TOPK:-12}"
 )
+if [[ "${LOOKAHEAD_USE_STEPWISE_REFS:-1}" == "1" ]]; then
+  cmd+=(--lookahead_use_stepwise_refs)
+else
+  cmd+=(--no-lookahead_use_stepwise_refs)
+fi
 if [[ ${#extra_reward_args[@]} -gt 0 ]]; then
   cmd+=("${extra_reward_args[@]}")
 fi

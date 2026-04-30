@@ -19,6 +19,7 @@ import copy
 import json
 import math
 import os
+from collections import defaultdict
 from itertools import combinations
 from typing import Any
 
@@ -112,6 +113,10 @@ class LookaheadMCTSNode:
                 best = action
         return best
 
+    @property
+    def key_step_idx(self) -> int:
+        return int(self.step)
+
 
 def _action_to_dict(action: tuple) -> dict[str, Any]:
     out = {
@@ -166,7 +171,8 @@ def _compute_u_t(
     if key == "latent_delta_rms":
         if parent_latents is None or child_latents is None:
             return 0.0
-        return _rms_tensor(child_latents - parent_latents)
+        # Explicit latent-space displacement signal used for local trajectory feedback.
+        return _rms_tensor(child_latents.float() - parent_latents.float())
     if key == "latent_rms":
         return _rms_tensor(child_latents if child_latents is not None else parent_latents)
     if key == "dx_rms":
@@ -185,6 +191,111 @@ def _softmax_prior(logits: np.ndarray, tau: float) -> np.ndarray:
     if not np.isfinite(s) or s <= 0.0:
         return np.full((logits.size,), 1.0 / float(max(1, logits.size)), dtype=np.float64)
     return (e / s).astype(np.float64)
+
+
+def _normalize_prior(base_prior: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+    if base_prior.size <= 0:
+        return np.zeros((0,), dtype=np.float64)
+    p = np.asarray(base_prior, dtype=np.float64)
+    if p.size <= 0:
+        return np.zeros((0,), dtype=np.float64)
+    p = np.maximum(p, 0.0)
+    s = float(np.sum(p))
+    if (not np.isfinite(s)) or s <= 0.0:
+        return np.full((p.size,), 1.0 / float(max(1, p.size)), dtype=np.float64)
+    return p / max(eps, s)
+
+
+def trajectory_feedback_prior(
+    node: LookaheadMCTSNode,
+    candidates: list[tuple],
+    *,
+    base_prior: np.ndarray | None = None,
+    u_ref: float = 1.0,
+    d_ref: float = 1.0,
+    w_update: float = 1.0,
+    w_cond: float = 1.0,
+    tau: float = 0.35,
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    eps = 1e-6
+    n = int(len(candidates))
+    if n <= 0:
+        empty = np.zeros((0,), dtype=np.float64)
+        return empty, {
+            "base_prior": empty,
+            "expanded": empty.astype(np.int64),
+            "child_u": empty,
+            "child_d": empty,
+            "u_norm": empty,
+            "d_norm": empty,
+            "u_score": empty,
+            "d_score": empty,
+            "phi": empty,
+            "log_weights": empty,
+            "log_prior": empty,
+        }
+
+    if base_prior is None:
+        p0 = np.full((n,), 1.0 / float(max(1, n)), dtype=np.float64)
+    else:
+        p0 = _normalize_prior(np.asarray(base_prior, dtype=np.float64), eps=eps)
+        if p0.size != n:
+            p0 = np.full((n,), 1.0 / float(max(1, n)), dtype=np.float64)
+
+    u_ref_safe = max(eps, float(u_ref))
+    d_ref_safe = max(eps, float(d_ref))
+    tau_safe = max(eps, float(tau))
+    w_u = float(w_update)
+    w_d = float(w_cond)
+
+    expanded = np.zeros((n,), dtype=np.int64)
+    child_u = np.zeros((n,), dtype=np.float64)
+    child_d = np.zeros((n,), dtype=np.float64)
+    u_norm = np.zeros((n,), dtype=np.float64)
+    d_norm = np.zeros((n,), dtype=np.float64)
+    u_score = np.zeros((n,), dtype=np.float64)
+    d_score = np.zeros((n,), dtype=np.float64)
+    phi = np.zeros((n,), dtype=np.float64)
+    log_weights = np.zeros((n,), dtype=np.float64)
+
+    for i, action in enumerate(candidates):
+        child = node.children.get(action)
+        if child is None:
+            continue
+        expanded[i] = 1
+        u_val = max(float(child.u_t), eps)
+        d_val = max(float(child.d_t), eps)
+        child_u[i] = u_val
+        child_d[i] = d_val
+        u_norm[i] = u_val / u_ref_safe
+        d_norm[i] = d_val / d_ref_safe
+        u_score[i] = -math.log1p(float(u_norm[i]))
+        d_score[i] = math.tanh(math.log1p(float(d_norm[i])))
+        phi[i] = (w_u * u_score[i]) + (w_d * d_score[i])
+        log_weights[i] = phi[i] / tau_safe
+
+    log_prior = np.log(np.maximum(p0, eps)) + log_weights
+    log_prior = log_prior - float(np.max(log_prior))
+    prior = np.exp(log_prior)
+    s = float(np.sum(prior))
+    if (not np.isfinite(s)) or s <= 0.0:
+        prior = p0
+    else:
+        prior = prior / s
+
+    return prior.astype(np.float64), {
+        "base_prior": p0.astype(np.float64),
+        "expanded": expanded,
+        "child_u": child_u,
+        "child_d": child_d,
+        "u_norm": u_norm,
+        "d_norm": d_norm,
+        "u_score": u_score,
+        "d_score": d_score,
+        "phi": phi,
+        "log_weights": log_weights,
+        "log_prior": log_prior.astype(np.float64),
+    }
 
 
 def _zscore(x: float, values: list[float]) -> float:
@@ -228,6 +339,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     extra.add_argument("--lookahead_tau", type=float, default=0.35)
     extra.add_argument("--lookahead_c_puct", type=float, default=1.20)
     extra.add_argument("--lookahead_u_ref", type=float, default=0.0, help="Optional fixed u_t normalization ref.")
+    extra.add_argument("--lookahead_d_ref", type=float, default=0.0, help="Optional fixed d_t normalization ref.")
+    extra.add_argument("--lookahead_ref_percentile", type=float, default=75.0)
+    extra.add_argument("--lookahead_prior_tau", type=float, default=0.35)
+    extra.add_argument("--lookahead_w_update", type=float, default=1.0)
+    extra.add_argument("--lookahead_w_cond", type=float, default=1.0)
+    extra.add_argument("--lookahead_use_stepwise_refs", action=argparse.BooleanOptionalAction, default=True)
 
     extra.add_argument("--lookahead_w_cfg", type=float, default=1.0)
     extra.add_argument("--lookahead_w_variant", type=float, default=0.25)
@@ -237,12 +354,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
     extra.add_argument(
         "--lookahead_prior_mode",
-        choices=["heuristic", "progress_prompt"],
+        choices=["heuristic", "progress_prompt", "signal", "trajectory_feedback"],
         default="heuristic",
         help=(
             "Action-logit builder. 'heuristic' (default) uses cfg/variant/cs/q/explore terms. "
-            "'progress_prompt' builds ℓ(a) = -w_progress·u_t(a) + w_prompt·d_t(a) from per-action "
-            "||x0_child − x0_parent|| and ||ε_cond − ε_uncond||."
+            "'progress_prompt'/'signal'/'trajectory_feedback' use local trajectory feedback over explored children."
         ),
     )
     extra.add_argument("--lookahead_w_progress", type=float, default=1.0)
@@ -452,8 +568,8 @@ def run_mcts_lookahead(
         return candidates[0]
 
     root = LookaheadMCTSNode(step=0, dx=dx0, latents=start_latents, parent=None, incoming_action=None, u_t=0.0, d_t=0.0)
-    u_values_seen: list[float] = []
-    d_values_seen: list[float] = []
+    u_ref_by_step: dict[int, list[float]] = defaultdict(list)
+    d_ref_by_step: dict[int, list[float]] = defaultdict(list)
     best_global_score = -float("inf")
     best_global_dx = None
     best_global_path_internal: list[tuple] = []
@@ -464,7 +580,6 @@ def run_mcts_lookahead(
     n_sims = max(1, int(getattr(args, "n_sims", 50)))
     ucb_c = float(getattr(args, "ucb_c", 1.41))
     c_puct = float(getattr(args, "lookahead_c_puct", 1.20))
-    tau = float(getattr(args, "lookahead_tau", 0.35))
     topk = int(getattr(args, "lookahead_log_action_topk", -1))
     min_visits_for_center = max(1, int(getattr(args, "lookahead_min_visits_for_center", 3)))
     cfg_w_min = max(1, int(getattr(args, "lookahead_cfg_width_min", 3)))
@@ -473,24 +588,41 @@ def run_mcts_lookahead(
     if cfg_w_min > len(cfg_values):
         cfg_w_min = len(cfg_values)
 
-    def current_u_ref() -> float:
+    use_stepwise_refs = bool(getattr(args, "lookahead_use_stepwise_refs", True))
+    ref_percentile = float(getattr(args, "lookahead_ref_percentile", 75.0))
+    ref_percentile = float(np.clip(ref_percentile, 0.0, 100.0))
+
+    def _pool_values(pool: dict[int, list[float]], key_step_idx: int) -> list[float]:
+        if use_stepwise_refs:
+            return list(pool.get(int(key_step_idx), []))
+        out: list[float] = []
+        for vals in pool.values():
+            out.extend(float(x) for x in vals)
+        return out
+
+    def current_u_ref(key_step_idx: int) -> float:
         fixed_ref = float(getattr(args, "lookahead_u_ref", 0.0))
         if fixed_ref > 0.0:
             return max(1e-6, fixed_ref)
-        if len(u_values_seen) <= 0:
+        vals = _pool_values(u_ref_by_step, int(key_step_idx))
+        if len(vals) <= 0:
             return 1.0
-        arr = np.asarray(u_values_seen, dtype=np.float64)
-        q = float(np.percentile(arr, 75))
+        arr = np.asarray(vals, dtype=np.float64)
+        q = float(np.percentile(arr, ref_percentile))
         if np.isfinite(q) and q > 1e-8:
             return q
         m = float(np.mean(np.abs(arr)))
         return max(1e-6, m if m > 1e-8 else 1.0)
 
-    def current_d_ref() -> float:
-        if len(d_values_seen) <= 0:
+    def current_d_ref(key_step_idx: int) -> float:
+        fixed_ref = float(getattr(args, "lookahead_d_ref", 0.0))
+        if fixed_ref > 0.0:
+            return max(1e-6, fixed_ref)
+        vals = _pool_values(d_ref_by_step, int(key_step_idx))
+        if len(vals) <= 0:
             return 1.0
-        arr = np.asarray(d_values_seen, dtype=np.float64)
-        q = float(np.percentile(arr, 75))
+        arr = np.asarray(vals, dtype=np.float64)
+        q = float(np.percentile(arr, ref_percentile))
         if np.isfinite(q) and q > 1e-8:
             return q
         m = float(np.mean(np.abs(arr)))
@@ -525,10 +657,10 @@ def run_mcts_lookahead(
                 best_cfg = float(action[1])
         return None if best_cfg is None else float(best_cfg)
 
-    def cfg_width_from_u(u_t: float) -> int:
+    def cfg_width_from_u(u_t: float, key_step_idx: int) -> int:
         if not adaptive_cfg_width:
             return int(len(cfg_values))
-        u_ref = current_u_ref()
+        u_ref = current_u_ref(int(key_step_idx))
         ratio = float(np.clip(float(u_t) / max(1e-6, u_ref), 0.0, 2.0))
         frac = float(np.clip(ratio / 2.0, 0.0, 1.0))
         raw = float(cfg_w_min) + (float(cfg_w_max - cfg_w_min) * frac)
@@ -570,7 +702,7 @@ def run_mcts_lookahead(
                 center_source = "incoming_cfg_fallback"
             if center is None:
                 center = float(getattr(args, "baseline_cfg", cfg_values[0]))
-            width = cfg_width_from_u(node.u_t)
+            width = cfg_width_from_u(node.u_t, node.key_step_idx)
             nearest = sorted(cfg_values, key=lambda c: (abs(float(c) - float(center)), float(c)))
             cfg_bank = sorted(_dedup_float_list([float(x) for x in nearest[:width]] + root_cfg_anchors))
 
@@ -587,54 +719,23 @@ def run_mcts_lookahead(
             "cfg_bank_width": int(width),
             "cfg_center": float(center),
             "cfg_center_source": str(center_source),
-            "u_ref": float(current_u_ref()),
+            "u_ref": float(current_u_ref(node.key_step_idx)),
+            "d_ref": float(current_d_ref(node.key_step_idx)),
             "candidate_count": int(len(actions)),
             "adaptive_cfg_width": bool(adaptive_cfg_width),
         }
         return meta, actions
 
-    def compute_action_logits(node: LookaheadMCTSNode, candidates: list[tuple]) -> np.ndarray:
+    def compute_heuristic_logits(node: LookaheadMCTSNode, candidates: list[tuple]) -> np.ndarray:
         if len(candidates) <= 0:
             return np.zeros((0,), dtype=np.float64)
-        prior_mode = str(getattr(args, "lookahead_prior_mode", "heuristic")).strip().lower()
-        if prior_mode == "progress_prompt":
-            w_progress = float(getattr(args, "lookahead_w_progress", 1.0))
-            w_prompt = float(getattr(args, "lookahead_w_prompt", 1.0))
-            u_ref = max(1e-6, current_u_ref())
-            d_ref = max(1e-6, current_d_ref())
-            # For tried actions, look up child's measured u_t/d_t. For untried
-            # actions, use the mean of tried children under this node (so they
-            # sit at a neutral, average-influence baseline).
-            tried_u: list[float] = []
-            tried_d: list[float] = []
-            for action in candidates:
-                child = node.children.get(action)
-                if child is None:
-                    continue
-                tried_u.append(float(child.u_t))
-                tried_d.append(float(child.d_t))
-            fallback_u = float(np.mean(tried_u)) if len(tried_u) > 0 else float(u_ref)
-            fallback_d = float(np.mean(tried_d)) if len(tried_d) > 0 else float(d_ref)
-            out = np.zeros((len(candidates),), dtype=np.float64)
-            for i, action in enumerate(candidates):
-                child = node.children.get(action)
-                if child is not None:
-                    u_val = float(child.u_t)
-                    d_val = float(child.d_t)
-                else:
-                    u_val = float(fallback_u)
-                    d_val = float(fallback_d)
-                u_norm = float(u_val) / u_ref
-                d_norm = float(d_val) / d_ref
-                out[i] = (-w_progress * u_norm) + (w_prompt * d_norm)
-            return out
 
         w_cfg = float(getattr(args, "lookahead_w_cfg", 1.0))
         w_variant = float(getattr(args, "lookahead_w_variant", 0.25))
         w_cs = float(getattr(args, "lookahead_w_cs", 0.10))
         w_q = float(getattr(args, "lookahead_w_q", 0.20))
         w_explore = float(getattr(args, "lookahead_w_explore", 0.05))
-        u_ratio = float(np.clip(float(node.u_t) / max(1e-6, current_u_ref()), 0.0, 2.0))
+        u_ratio = float(np.clip(float(node.u_t) / max(1e-6, current_u_ref(node.key_step_idx)), 0.0, 2.0))
         u01 = float(np.clip(u_ratio, 0.0, 1.0))
         cfg_target = float(cfg_min + (cfg_span * u01))
         cs_target = float(cs_min + (cs_span * (1.0 - u01)))
@@ -676,6 +777,51 @@ def run_mcts_lookahead(
             )
         return out
 
+    def compute_action_prior(
+        node: LookaheadMCTSNode,
+        candidates: list[tuple],
+    ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+        if len(candidates) <= 0:
+            empty = np.zeros((0,), dtype=np.float64)
+            return empty, empty, {}
+        base_tau = float(getattr(args, "lookahead_tau", 0.35))
+        base_logits = compute_heuristic_logits(node, candidates)
+        base_prior = _softmax_prior(base_logits, tau=base_tau)
+        prior_mode = str(getattr(args, "lookahead_prior_mode", "heuristic")).strip().lower()
+        signal_modes = {"progress_prompt", "signal", "trajectory_feedback"}
+        if prior_mode not in signal_modes:
+            return base_logits, base_prior, {
+                "base_prior": base_prior,
+                "feedback": None,
+                "prior_mode": prior_mode,
+            }
+
+        w_update = float(getattr(args, "lookahead_w_update", getattr(args, "lookahead_w_progress", 1.0)))
+        w_cond = float(getattr(args, "lookahead_w_cond", getattr(args, "lookahead_w_prompt", 1.0)))
+        prior_tau = float(getattr(args, "lookahead_prior_tau", base_tau))
+        u_ref = float(current_u_ref(node.key_step_idx))
+        d_ref = float(current_d_ref(node.key_step_idx))
+        prior, feedback = trajectory_feedback_prior(
+            node,
+            candidates,
+            base_prior=base_prior,
+            u_ref=u_ref,
+            d_ref=d_ref,
+            w_update=w_update,
+            w_cond=w_cond,
+            tau=prior_tau,
+        )
+        return np.asarray(feedback["log_prior"], dtype=np.float64), prior, {
+            "base_prior": base_prior,
+            "feedback": feedback,
+            "u_ref": u_ref,
+            "d_ref": d_ref,
+            "prior_mode": prior_mode,
+            "w_update": w_update,
+            "w_cond": w_cond,
+            "prior_tau": prior_tau,
+        }
+
     def sample_with_prior(candidates: list[tuple], prior: np.ndarray) -> tuple:
         if len(candidates) <= 0:
             raise RuntimeError("Cannot sample from empty candidates.")
@@ -705,6 +851,7 @@ def run_mcts_lookahead(
         candidates: list[tuple],
         logits: np.ndarray,
         prior: np.ndarray,
+        prior_debug: dict[str, Any] | None = None,
     ) -> tuple[list[dict[str, Any]], list[float], list[float]]:
         rows: list[dict[str, Any]] = []
         if len(candidates) <= 0:
@@ -714,6 +861,8 @@ def run_mcts_lookahead(
             order = sorted(order, key=lambda i: float(prior[i]), reverse=True)[:topk]
         out_logits: list[float] = []
         out_prior: list[float] = []
+        feedback = None if prior_debug is None else prior_debug.get("feedback")
+        base_prior = None if prior_debug is None else prior_debug.get("base_prior")
         for i in order:
             action = candidates[i]
             visits = int(node.action_visits.get(action, 0))
@@ -721,6 +870,18 @@ def run_mcts_lookahead(
             row = _action_to_dict(action)
             row["visits"] = int(visits)
             row["q_mean"] = float(q_mean)
+            if base_prior is not None and i < len(base_prior):
+                row["base_prior"] = float(base_prior[i])
+            if feedback is not None:
+                row["expanded"] = bool(int(feedback["expanded"][i]))
+                row["child_u"] = float(feedback["child_u"][i])
+                row["child_d"] = float(feedback["child_d"][i])
+                row["u_norm"] = float(feedback["u_norm"][i])
+                row["d_norm"] = float(feedback["d_norm"][i])
+                row["u_score"] = float(feedback["u_score"][i])
+                row["d_score"] = float(feedback["d_score"][i])
+                row["phi"] = float(feedback["phi"][i])
+                row["feedback_log_weight"] = float(feedback["log_weights"][i])
             rows.append(row)
             out_logits.append(float(logits[i]))
             out_prior.append(float(prior[i]))
@@ -736,18 +897,33 @@ def run_mcts_lookahead(
         candidates: list[tuple],
         logits: np.ndarray,
         prior: np.ndarray,
+        prior_debug: dict[str, Any] | None,
         chosen_action: tuple,
         selection_mode: str,
         preview_reward: float | None,
     ) -> None:
-        rows, part_logits, part_prior = log_candidates(node, candidates, logits, prior)
+        rows, part_logits, part_prior = log_candidates(node, candidates, logits, prior, prior_debug=prior_debug)
+        prior_mode = "heuristic"
+        prior_tau = float(getattr(args, "lookahead_tau", 0.35))
+        w_update = float(getattr(args, "lookahead_w_update", getattr(args, "lookahead_w_progress", 1.0)))
+        w_cond = float(getattr(args, "lookahead_w_cond", getattr(args, "lookahead_w_prompt", 1.0)))
+        if prior_debug is not None:
+            prior_mode = str(prior_debug.get("prior_mode", prior_mode))
+            prior_tau = float(prior_debug.get("prior_tau", prior_tau))
+            w_update = float(prior_debug.get("w_update", w_update))
+            w_cond = float(prior_debug.get("w_cond", w_cond))
         logs.append(
             {
                 "sim": int(sim_idx),
                 "phase": str(phase),
                 "step_idx": int(node.step),
                 "u_t": float(node.u_t),
-                "u_ref": float(candidate_meta.get("u_ref", current_u_ref())),
+                "u_ref": float(candidate_meta.get("u_ref", current_u_ref(node.key_step_idx))),
+                "d_ref": float(candidate_meta.get("d_ref", current_d_ref(node.key_step_idx))),
+                "prior_mode": str(prior_mode),
+                "w_update": float(w_update),
+                "w_cond": float(w_cond),
+                "prior_tau": float(prior_tau),
                 "selection_mode": str(selection_mode),
                 "candidate_count": int(candidate_meta.get("candidate_count", len(candidates))),
                 "cfg_bank": [float(x) for x in candidate_meta.get("cfg_bank", [])],
@@ -790,11 +966,11 @@ def run_mcts_lookahead(
         candidates: list[tuple] = []
         logits = np.zeros((0,), dtype=np.float64)
         prior = np.zeros((0,), dtype=np.float64)
+        prior_debug: dict[str, Any] | None = None
 
         while not node.is_leaf(n_key):
             candidate_meta, candidates = node_candidates(node)
-            logits = compute_action_logits(node, candidates)
-            prior = _softmax_prior(logits, tau=tau)
+            logits, prior, prior_debug = compute_action_prior(node, candidates)
             untried = node.untried_actions(candidates)
             if len(untried) > 0:
                 action = select_untried_with_optional_prior(node, candidates, prior)
@@ -816,6 +992,7 @@ def run_mcts_lookahead(
                 candidates=candidates,
                 logits=logits,
                 prior=prior,
+                prior_debug=prior_debug,
                 chosen_action=action,
                 selection_mode=selection_mode,
                 preview_reward=None,
@@ -856,9 +1033,9 @@ def run_mcts_lookahead(
                 )
                 child_d = float(seg_stats.get("cfg_delta_rms", 0.0))
                 if np.isfinite(child_u) and child_u > 0.0:
-                    u_values_seen.append(float(child_u))
+                    u_ref_by_step[int(node.key_step_idx)].append(float(child_u))
                 if np.isfinite(child_d) and child_d > 0.0:
-                    d_values_seen.append(float(child_d))
+                    d_ref_by_step[int(node.key_step_idx)].append(float(child_d))
                 node.children[action] = LookaheadMCTSNode(
                     step=node.step + 1,
                     dx=child_dx,
@@ -871,8 +1048,7 @@ def run_mcts_lookahead(
             path.append((node, action))
             if candidate_meta is None:
                 candidate_meta, candidates = node_candidates(node)
-                logits = compute_action_logits(node, candidates)
-                prior = _softmax_prior(logits, tau=tau)
+                logits, prior, prior_debug = compute_action_prior(node, candidates)
             append_decision_log(
                 sim_logs,
                 sim_idx=sim,
@@ -882,6 +1058,7 @@ def run_mcts_lookahead(
                 candidates=candidates,
                 logits=logits,
                 prior=prior,
+                prior_debug=prior_debug,
                 chosen_action=action,
                 selection_mode="expand",
                 preview_reward=None,
@@ -895,8 +1072,7 @@ def run_mcts_lookahead(
         rollout_actions: list[tuple] = []
         while rollout_key_idx < n_key:
             r_meta, r_candidates = node_candidates(rollout_node)
-            r_logits = compute_action_logits(rollout_node, r_candidates)
-            r_prior = _softmax_prior(r_logits, tau=tau)
+            r_logits, r_prior, r_prior_debug = compute_action_prior(rollout_node, r_candidates)
             if use_rollout_prior:
                 rollout_action = sample_with_prior(r_candidates, r_prior)
                 roll_mode = "rollout_prior"
@@ -914,6 +1090,7 @@ def run_mcts_lookahead(
                 candidates=r_candidates,
                 logits=r_logits,
                 prior=r_prior,
+                prior_debug=r_prior_debug,
                 chosen_action=rollout_action,
                 selection_mode=roll_mode,
                 preview_reward=None,
@@ -944,9 +1121,9 @@ def run_mcts_lookahead(
             )
             child_d = float(seg_stats_r.get("cfg_delta_rms", 0.0))
             if np.isfinite(child_u) and child_u > 0.0:
-                u_values_seen.append(float(child_u))
+                u_ref_by_step[int(rollout_node.key_step_idx)].append(float(child_u))
             if np.isfinite(child_d) and child_d > 0.0:
-                d_values_seen.append(float(child_d))
+                d_ref_by_step[int(rollout_node.key_step_idx)].append(float(child_d))
             rollout_key_idx += 1
             if rollout_key_idx < n_key:
                 rollout_node = LookaheadMCTSNode(
@@ -979,8 +1156,7 @@ def run_mcts_lookahead(
 
         if (sim + 1) % log_every == 0 or sim == 0:
             root_meta, root_candidates = node_candidates(root)
-            root_logits = compute_action_logits(root, root_candidates)
-            root_prior = _softmax_prior(root_logits, tau=tau)
+            _root_logits, root_prior, _root_prior_debug = compute_action_prior(root, root_candidates)
             order = sorted(range(len(root_candidates)), key=lambda i: float(root_prior[i]), reverse=True)[:8]
             root_top = []
             for i in order:
@@ -1223,13 +1399,56 @@ def run_mcts_lookahead(
                     }
                 )
 
-    u_arr = np.asarray(u_values_seen, dtype=np.float64) if len(u_values_seen) > 0 else np.asarray([], dtype=np.float64)
-    d_arr = np.asarray(d_values_seen, dtype=np.float64) if len(d_values_seen) > 0 else np.asarray([], dtype=np.float64)
+    def _flatten_pool(pool: dict[int, list[float]]) -> np.ndarray:
+        vals: list[float] = []
+        for _k in sorted(pool.keys()):
+            vals.extend(float(x) for x in pool[_k])
+        return np.asarray(vals, dtype=np.float64) if len(vals) > 0 else np.asarray([], dtype=np.float64)
+
+    def _summary_stats(arr: np.ndarray) -> dict[str, float | int]:
+        if arr.size <= 0:
+            return {
+                "count": 0,
+                "mean": 0.0,
+                "std": 0.0,
+                "min": 0.0,
+                "max": 0.0,
+                "median": 0.0,
+                "p75": 0.0,
+            }
+        return {
+            "count": int(arr.size),
+            "mean": float(arr.mean()),
+            "std": float(arr.std()),
+            "min": float(arr.min()),
+            "max": float(arr.max()),
+            "median": float(np.percentile(arr, 50.0)),
+            "p75": float(np.percentile(arr, 75.0)),
+        }
+
+    def _step_stats(pool: dict[int, list[float]], ref_fn: Any) -> dict[str, dict[str, float | int]]:
+        out: dict[str, dict[str, float | int]] = {}
+        for key_idx in range(n_key):
+            arr = np.asarray(pool.get(int(key_idx), []), dtype=np.float64)
+            row = _summary_stats(arr)
+            row["ref"] = float(ref_fn(int(key_idx)))
+            out[str(int(key_idx))] = row
+        return out
+
+    u_arr = _flatten_pool(u_ref_by_step)
+    d_arr = _flatten_pool(d_ref_by_step)
+    u_stats_by_step = _step_stats(u_ref_by_step, current_u_ref)
+    d_stats_by_step = _step_stats(d_ref_by_step, current_d_ref)
     diagnostics = {
         "lookahead_mode": str(getattr(args, "lookahead_mode", "rollout_prior")),
         "lookahead_prior_mode": str(getattr(args, "lookahead_prior_mode", "heuristic")),
         "lookahead_w_progress": float(getattr(args, "lookahead_w_progress", 1.0)),
         "lookahead_w_prompt": float(getattr(args, "lookahead_w_prompt", 1.0)),
+        "lookahead_w_update": float(getattr(args, "lookahead_w_update", getattr(args, "lookahead_w_progress", 1.0))),
+        "lookahead_w_cond": float(getattr(args, "lookahead_w_cond", getattr(args, "lookahead_w_prompt", 1.0))),
+        "lookahead_prior_tau": float(getattr(args, "lookahead_prior_tau", getattr(args, "lookahead_tau", 0.35))),
+        "lookahead_ref_percentile": float(getattr(args, "lookahead_ref_percentile", 75.0)),
+        "lookahead_use_stepwise_refs": bool(getattr(args, "lookahead_use_stepwise_refs", True)),
         "selected_source": str(selected_source),
         "key_steps": [int(x) for x in key_steps],
         "n_key": int(n_key),
@@ -1254,20 +1473,18 @@ def run_mcts_lookahead(
         },
         "u_t_def": str(getattr(args, "lookahead_u_t_def", "latent_delta_rms")),
         "u_t_stats": {
-            "count": int(u_arr.size),
-            "mean": float(u_arr.mean()) if u_arr.size > 0 else 0.0,
-            "std": float(u_arr.std()) if u_arr.size > 0 else 0.0,
-            "min": float(u_arr.min()) if u_arr.size > 0 else 0.0,
-            "max": float(u_arr.max()) if u_arr.size > 0 else 0.0,
-            "u_ref_final": float(current_u_ref()),
+            **_summary_stats(u_arr),
+            "u_ref_final": float(current_u_ref(0)),
+            "ref_by_step": {k: float(v["ref"]) for k, v in u_stats_by_step.items()},
+            "observed_by_step": {k: int(v["count"]) for k, v in u_stats_by_step.items()},
+            "stats_by_step": u_stats_by_step,
         },
         "d_t_stats": {
-            "count": int(d_arr.size),
-            "mean": float(d_arr.mean()) if d_arr.size > 0 else 0.0,
-            "std": float(d_arr.std()) if d_arr.size > 0 else 0.0,
-            "min": float(d_arr.min()) if d_arr.size > 0 else 0.0,
-            "max": float(d_arr.max()) if d_arr.size > 0 else 0.0,
-            "d_ref_final": float(current_d_ref()),
+            **_summary_stats(d_arr),
+            "d_ref_final": float(current_d_ref(0)),
+            "ref_by_step": {k: float(v["ref"]) for k, v in d_stats_by_step.items()},
+            "observed_by_step": {k: int(v["count"]) for k, v in d_stats_by_step.items()},
+            "stats_by_step": d_stats_by_step,
         },
         "cfg_range": [float(cfg_min), float(cfg_max)],
         "cfg_values": [float(x) for x in cfg_values],

@@ -58,14 +58,21 @@ fi
 
 LOOKAHEAD_MODES="${LOOKAHEAD_MODES:-standard instrumentation rollout_prior tree_prior rollout_tree_prior rollout_tree_prior_adaptive_cfg adaptive_cfg_width}"
 LOOKAHEAD_U_T_DEF="${LOOKAHEAD_U_T_DEF:-latent_delta_rms}"
+LOOKAHEAD_PRIOR_MODE="${LOOKAHEAD_PRIOR_MODE:-heuristic}"
 LOOKAHEAD_TAU="${LOOKAHEAD_TAU:-0.35}"
+LOOKAHEAD_PRIOR_TAU="${LOOKAHEAD_PRIOR_TAU:-0.35}"
 LOOKAHEAD_C_PUCT="${LOOKAHEAD_C_PUCT:-1.20}"
 LOOKAHEAD_U_REF="${LOOKAHEAD_U_REF:-0.0}"
+LOOKAHEAD_D_REF="${LOOKAHEAD_D_REF:-0.0}"
+LOOKAHEAD_REF_PERCENTILE="${LOOKAHEAD_REF_PERCENTILE:-75}"
 LOOKAHEAD_W_CFG="${LOOKAHEAD_W_CFG:-1.0}"
 LOOKAHEAD_W_VARIANT="${LOOKAHEAD_W_VARIANT:-0.25}"
 LOOKAHEAD_W_CS="${LOOKAHEAD_W_CS:-0.10}"
 LOOKAHEAD_W_Q="${LOOKAHEAD_W_Q:-0.20}"
 LOOKAHEAD_W_EXPLORE="${LOOKAHEAD_W_EXPLORE:-0.05}"
+LOOKAHEAD_W_UPDATE="${LOOKAHEAD_W_UPDATE:-1.0}"
+LOOKAHEAD_W_COND="${LOOKAHEAD_W_COND:-1.0}"
+LOOKAHEAD_USE_STEPWISE_REFS="${LOOKAHEAD_USE_STEPWISE_REFS:-1}"
 LOOKAHEAD_CFG_WIDTH_MIN="${LOOKAHEAD_CFG_WIDTH_MIN:-3}"
 LOOKAHEAD_CFG_WIDTH_MAX="${LOOKAHEAD_CFG_WIDTH_MAX:-7}"
 LOOKAHEAD_CFG_ANCHOR_COUNT="${LOOKAHEAD_CFG_ANCHOR_COUNT:-2}"
@@ -165,6 +172,10 @@ export TRANSFORMERS_OFFLINE=1
 run_mode() {
   local lookahead_mode="$1"
   local mode_dir="${RUN_DIR}/lookahead_mode_${lookahead_mode}"
+  local stepwise_flag="--lookahead_use_stepwise_refs"
+  if [[ "${LOOKAHEAD_USE_STEPWISE_REFS}" != "1" ]]; then
+    stepwise_flag="--no-lookahead_use_stepwise_refs"
+  fi
   mkdir -p "${mode_dir}"
   echo
   echo "[$(date '+%F %T')] lookahead_mode=${lookahead_mode} start -> ${mode_dir}"
@@ -231,14 +242,21 @@ run_mode() {
     --out_dir "${mode_dir}" \
     --lookahead_mode "${lookahead_mode}" \
     --lookahead_u_t_def "${LOOKAHEAD_U_T_DEF}" \
+    --lookahead_prior_mode "${LOOKAHEAD_PRIOR_MODE}" \
     --lookahead_tau "${LOOKAHEAD_TAU}" \
+    --lookahead_prior_tau "${LOOKAHEAD_PRIOR_TAU}" \
     --lookahead_c_puct "${LOOKAHEAD_C_PUCT}" \
     --lookahead_u_ref "${LOOKAHEAD_U_REF}" \
+    --lookahead_d_ref "${LOOKAHEAD_D_REF}" \
+    --lookahead_ref_percentile "${LOOKAHEAD_REF_PERCENTILE}" \
     --lookahead_w_cfg "${LOOKAHEAD_W_CFG}" \
     --lookahead_w_variant "${LOOKAHEAD_W_VARIANT}" \
     --lookahead_w_cs "${LOOKAHEAD_W_CS}" \
     --lookahead_w_q "${LOOKAHEAD_W_Q}" \
     --lookahead_w_explore "${LOOKAHEAD_W_EXPLORE}" \
+    --lookahead_w_update "${LOOKAHEAD_W_UPDATE}" \
+    --lookahead_w_cond "${LOOKAHEAD_W_COND}" \
+    "${stepwise_flag}" \
     --lookahead_cfg_width_min "${LOOKAHEAD_CFG_WIDTH_MIN}" \
     --lookahead_cfg_width_max "${LOOKAHEAD_CFG_WIDTH_MAX}" \
     --lookahead_cfg_anchor_count "${LOOKAHEAD_CFG_ANCHOR_COUNT}" \

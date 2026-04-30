@@ -151,10 +151,10 @@ search:
       - export REWARD_BACKEND={search_reward}
       - export REWARD_TYPE={search_reward}
       - export REWARD_BACKENDS={search_reward}
-      # Phase-1 eval covers BOTH server-hosted rewards so the hpsv3- and
-      # imagereward-guided runs share the same metric set; phase-2 adds
-      # hpsv2/pickscore via per-backend posthoc servers.
-      - export EVAL_BACKENDS='imagereward hpsv3'
+      # Phase-1 eval covers ALL FOUR server-hosted rewards (imagereward,
+      # hpsv3, hpsv2, pickscore) so the hpsv3- and imagereward-guided runs
+      # share a fully differentiated metric set in a single phase.
+      - export EVAL_BACKENDS='imagereward hpsv3 hpsv2 pickscore'
       - export EVAL_BEST_IMAGES=1
       - export EVAL_REWARD_DEVICE=cuda
       - export EVAL_ALLOW_MISSING_BACKENDS=0
@@ -218,15 +218,14 @@ search:
       values: [ 8 ]
     - name: seed
       values: [ 42 ]
-    # Reward server hosts BOTH evaluators (so both runs share the same
-    # server config); the actual search-time evaluator is picked via
-    # {search_reward} above.
+    # Reward server hosts ALL FOUR evaluators (hpsv3 + imagereward +
+    # hpsv2 + pickscore) so phase-1 eval is fully differentiated; the
+    # actual search-time evaluator is picked via {search_reward} above.
     - name: reward_server_backends
-      values: [ "hpsv3 imagereward" ]
-    # Phase 2 extra backends evaluated post-hoc, one server at a time.
-    # (imagereward + hpsv3 already covered in phase 1; phase 2 fills hpsv2/pickscore.)
+      values: [ "hpsv3 imagereward hpsv2 pickscore" ]
+    # Phase 2 left empty — phase 1 already covers all four metrics.
     - name: posthoc_eval_backends
-      values: [ "hpsv2 pickscore" ]
+      values: [ "" ]
     - name: reward_server_port
       values: [ 5101 ]
     # ── FK-steering hyperparams (shared across all backends) ────────────────

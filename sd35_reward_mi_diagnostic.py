@@ -177,6 +177,15 @@ def _build_sampler_args(args: argparse.Namespace) -> argparse.Namespace:
     return ns
 
 
+def _csv_safe(text: str) -> str:
+    """Strip newlines / CRs / NULs so one logical row can never span multiple
+    physical lines, regardless of how downstream tools quote/read the file.
+    Embedded newlines have caused shard-CSV column-shift on resume."""
+    if text is None:
+        return ""
+    return str(text).replace("\r\n", " ").replace("\n", " ").replace("\r", " ").replace("\x00", "")
+
+
 def _existing_key_set(csv_path: str) -> set[tuple[int, int, int, int]]:
     out: set[tuple[int, int, int, int]] = set()
     if not os.path.exists(csv_path):
@@ -184,7 +193,11 @@ def _existing_key_set(csv_path: str) -> set[tuple[int, int, int, int]]:
     with open(csv_path, encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            out.add((int(row["prompt_id"]), int(row["seed_id"]), int(row["variant_id"]), int(row["cfg_id"])))
+            try:
+                out.add((int(row["prompt_id"]), int(row["seed_id"]), int(row["variant_id"]), int(row["cfg_id"])))
+            except (ValueError, TypeError, KeyError):
+                # Skip malformed rows (column-shift from a prior partial write).
+                continue
     return out
 
 
@@ -272,9 +285,9 @@ def generate_dataset(args: argparse.Namespace) -> None:
                         writer.writerow(
                             {
                                 "prompt_id": int(prompt_id),
-                                "original_prompt": original_prompt,
+                                "original_prompt": _csv_safe(original_prompt),
                                 "variant_id": int(variant_id),
-                                "variant_text": variant_text,
+                                "variant_text": _csv_safe(variant_text),
                                 "seed_id": int(seed_id),
                                 "cfg_id": int(cfg_id),
                                 "cfg_value": float(cfg_val),

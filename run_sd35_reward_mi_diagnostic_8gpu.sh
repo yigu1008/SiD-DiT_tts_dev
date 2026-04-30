@@ -161,6 +161,7 @@ if [[ "${MODE}" == "generate" || "${MODE}" == "full" ]]; then
   fi
 
   # Merge shard CSVs with globally-unique prompt_id (offset by cumulative sizes).
+  # Skips malformed rows (column-shift from partial writes) instead of crashing.
   "${PYTHON_BIN}" - <<PY
 import csv, os
 shard_dir   = os.environ["SHARD_DIR"]
@@ -168,8 +169,8 @@ out_csv     = os.environ["DATASET_CSV"]
 n_shards    = int(os.environ["NUM_GPUS"])
 sizes = [int(x.strip()) for x in open(os.path.join(shard_dir, "shard_sizes.txt"))]
 offsets = [sum(sizes[:k]) for k in range(n_shards)]
-header = None
 written = 0
+skipped = 0
 os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
 with open(out_csv, "w", encoding="utf-8", newline="") as fout:
     writer = None
@@ -180,6 +181,7 @@ with open(out_csv, "w", encoding="utf-8", newline="") as fout:
         if not os.path.exists(path):
             print(f"[8gpu] WARN: missing shard csv {path}")
             continue
+        shard_skipped = 0
         with open(path, "r", encoding="utf-8", newline="") as fin:
             reader = csv.DictReader(fin)
             if writer is None:
@@ -187,10 +189,18 @@ with open(out_csv, "w", encoding="utf-8", newline="") as fout:
                 writer = csv.DictWriter(fout, fieldnames=header)
                 writer.writeheader()
             for row in reader:
-                row["prompt_id"] = str(int(row["prompt_id"]) + offsets[k])
+                try:
+                    pid = int(row["prompt_id"])
+                except (ValueError, TypeError, KeyError):
+                    shard_skipped += 1
+                    continue
+                row["prompt_id"] = str(pid + offsets[k])
                 writer.writerow(row)
                 written += 1
-print(f"[8gpu] merged {written} rows → {out_csv}")
+        if shard_skipped:
+            print(f"[8gpu] WARN: shard {k}: skipped {shard_skipped} malformed row(s)")
+            skipped += shard_skipped
+print(f"[8gpu] merged {written} rows → {out_csv} (skipped {skipped} malformed)")
 PY
 fi
 

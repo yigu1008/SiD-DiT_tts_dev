@@ -945,6 +945,34 @@ def make_latents(ctx: PipelineContext, seed: int, height: int, width: int, dtype
 
 
 @torch.no_grad()
+def transformer_step_split(
+    args: argparse.Namespace,
+    ctx: PipelineContext,
+    latents: torch.Tensor,
+    emb: EmbeddingContext,
+    variant_idx: int,
+    t_flat: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run the transformer once with [uncond, cond] concatenated and return
+    (flow_u, flow_c) split outputs. Always uses two evaluations regardless of
+    any caller-provided cfg, so dynamic-CFG search can recombine for many w
+    without re-running the model."""
+    pe = emb.cond_text[variant_idx]
+    pp = emb.cond_pooled[variant_idx]
+    n = latents.shape[0]
+    ctx.nfe += 2
+    flow = ctx.pipe.transformer(
+        hidden_states=torch.cat([latents, latents]),
+        encoder_hidden_states=torch.cat([emb.uncond_text.expand(n, -1, -1), pe.expand(n, -1, -1)]),
+        pooled_projections=torch.cat([emb.uncond_pooled.expand(n, -1), pp.expand(n, -1)]),
+        timestep=args.time_scale * torch.cat([t_flat, t_flat]),
+        return_dict=False,
+    )[0]
+    flow_u, flow_c = flow.chunk(2)
+    return flow_u, flow_c
+
+
+@torch.no_grad()
 def transformer_step(
     args: argparse.Namespace,
     ctx: PipelineContext,
@@ -974,15 +1002,7 @@ def transformer_step(
             stats_out["cfg_delta_rms"] = 0.0
         return velocity
 
-    ctx.nfe += 2  # uncond + cond = 2 evaluations
-    flow = ctx.pipe.transformer(
-        hidden_states=torch.cat([latents, latents]),
-        encoder_hidden_states=torch.cat([emb.uncond_text.expand(n, -1, -1), pe.expand(n, -1, -1)]),
-        pooled_projections=torch.cat([emb.uncond_pooled.expand(n, -1), pp.expand(n, -1)]),
-        timestep=args.time_scale * torch.cat([t_flat, t_flat]),
-        return_dict=False,
-    )[0]
-    flow_u, flow_c = flow.chunk(2)
+    flow_u, flow_c = transformer_step_split(args, ctx, latents, emb, variant_idx, t_flat)
     if stats_out is not None:
         diff = (flow_c - flow_u).detach().float()
         stats_out["cfg_delta_rms"] = float(torch.sqrt(torch.mean(diff * diff)).item())

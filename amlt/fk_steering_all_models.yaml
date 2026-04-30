@@ -1,8 +1,8 @@
 description: fk-steering-all-models
 
-# FK-steering "diff" potential (Singhal et al. 2025) evaluation across distilled
-# and base text-to-image models. Single grid: one trial per backend, each runs
-# only `methods=baseline smc` with --smc_potential=diff (no variant expansion).
+# DAS tempering SMC evaluation across distilled and base text-to-image models.
+# Single grid: one trial per backend, each runs only `methods=baseline smc`
+# with --smc_potential=tempering (no variant expansion).
 #
 # Backends covered (one trial each):
 #   senseflow_large : SD3.5-large + SenseFlow distillation, 4 steps, no CFG
@@ -11,8 +11,8 @@ description: fk-steering-all-models
 #   flux_schnell    : FLUX.1-schnell, 4 steps, no CFG
 #   flux_tdd        : FLUX.1-dev + RED-AIGC/TDD LoRA, 8 steps, real CFG 2.0
 #
-# Per-backend SMC_K is sized so SMC_K * STEPS ≈ 256 NFE/prompt (sd35_base
-# rounds to 252 since 28 doesn't divide 256 evenly).
+# Shared particle budget for all backends in this run:
+#   SMC_K = 8
 
 target:
   service: sing
@@ -98,11 +98,11 @@ search:
       - export TARGET_MODEL={target_model}
       - export AUTO_BACKEND_STEPS=0
       - export HF_HUB_ENABLE_HF_TRANSFER=0
-      - if [ "$$TARGET_MODEL" = "senseflow" ]; then export RUN_SD35=1; export RUN_FLUX=0; export SD35_BACKEND=senseflow_large; export STEPS=4; export BASELINE_CFG=0.0; export CFG_SCALES='0.0'; export SMC_CFG_SCALE=0.0; export SMC_GUIDANCE_SCALE=0.0; export SMC_K=64; export REWARD_PREP_REPOS='stabilityai/stable-diffusion-3.5-large domiso/SenseFlow'; fi
-      - if [ "$$TARGET_MODEL" = "sd35_sid" ]; then export RUN_SD35=1; export RUN_FLUX=0; export SD35_BACKEND=sid; export STEPS=4; export BASELINE_CFG=1.0; export CFG_SCALES='1.0'; export SMC_CFG_SCALE=1.0; export SMC_GUIDANCE_SCALE=1.0; export SMC_K=64; export REWARD_PREP_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large'; fi
-      - if [ "$$TARGET_MODEL" = "sd35_base" ]; then export RUN_SD35=1; export RUN_FLUX=0; export SD35_BACKEND=sd35_base; export STEPS=28; export BASELINE_CFG=4.5; export CFG_SCALES='4.5'; export SMC_CFG_SCALE=4.5; export SMC_GUIDANCE_SCALE=4.5; export SMC_K=9; export REWARD_PREP_REPOS='stabilityai/stable-diffusion-3.5-large'; fi
-      - if [ "$$TARGET_MODEL" = "flux_schnell" ]; then export RUN_SD35=0; export RUN_FLUX=1; export FLUX_BACKEND=flux; export STEPS=4; export BASELINE_CFG=0.0; export BASELINE_GUIDANCE_SCALE=0.0; export CFG_SCALES='0.0'; export SMC_CFG_SCALE=0.0; export SMC_GUIDANCE_SCALE=0.0; export SMC_K=64; export REWARD_PREP_REPOS='black-forest-labs/FLUX.1-schnell'; fi
-      - if [ "$$TARGET_MODEL" = "flux_tdd" ]; then export RUN_SD35=0; export RUN_FLUX=1; export FLUX_BACKEND=tdd_flux; export STEPS=8; export BASELINE_CFG=2.0; export BASELINE_GUIDANCE_SCALE=2.0; export CFG_SCALES='2.0'; export SMC_CFG_SCALE=2.0; export SMC_GUIDANCE_SCALE=2.0; export SMC_K=32; export REWARD_PREP_REPOS='black-forest-labs/FLUX.1-dev'; fi
+      - if [ "$$TARGET_MODEL" = "senseflow" ]; then export RUN_SD35=1; export RUN_FLUX=0; export SD35_BACKEND=senseflow_large; export STEPS=4; export BASELINE_CFG=0.0; export CFG_SCALES='0.0'; export SMC_CFG_SCALE=0.0; export SMC_GUIDANCE_SCALE=0.0; export SMC_K=8; export REWARD_PREP_REPOS='stabilityai/stable-diffusion-3.5-large domiso/SenseFlow'; fi
+      - if [ "$$TARGET_MODEL" = "sd35_sid" ]; then export RUN_SD35=1; export RUN_FLUX=0; export SD35_BACKEND=sid; export STEPS=4; export BASELINE_CFG=1.0; export CFG_SCALES='1.0'; export SMC_CFG_SCALE=1.0; export SMC_GUIDANCE_SCALE=1.0; export SMC_K=8; export REWARD_PREP_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large'; fi
+      - if [ "$$TARGET_MODEL" = "sd35_base" ]; then export RUN_SD35=1; export RUN_FLUX=0; export SD35_BACKEND=sd35_base; export STEPS=28; export BASELINE_CFG=4.5; export CFG_SCALES='4.5'; export SMC_CFG_SCALE=4.5; export SMC_GUIDANCE_SCALE=4.5; export SMC_K=8; export REWARD_PREP_REPOS='stabilityai/stable-diffusion-3.5-large'; fi
+      - if [ "$$TARGET_MODEL" = "flux_schnell" ]; then export RUN_SD35=0; export RUN_FLUX=1; export FLUX_BACKEND=flux; export STEPS=4; export BASELINE_CFG=0.0; export BASELINE_GUIDANCE_SCALE=0.0; export CFG_SCALES='0.0'; export SMC_CFG_SCALE=0.0; export SMC_GUIDANCE_SCALE=0.0; export SMC_K=8; export REWARD_PREP_REPOS='black-forest-labs/FLUX.1-schnell'; fi
+      - if [ "$$TARGET_MODEL" = "flux_tdd" ]; then export RUN_SD35=0; export RUN_FLUX=1; export FLUX_BACKEND=tdd_flux; export STEPS=8; export BASELINE_CFG=2.0; export BASELINE_GUIDANCE_SCALE=2.0; export CFG_SCALES='2.0'; export SMC_CFG_SCALE=2.0; export SMC_GUIDANCE_SCALE=2.0; export SMC_K=8; export REWARD_PREP_REPOS='black-forest-labs/FLUX.1-dev'; fi
       - 'if [ -z "$$TARGET_MODEL" ] || [ -z "$$SMC_K" ]; then echo "ERROR: unknown target_model=$$TARGET_MODEL"; exit 1; fi'
       - echo "[fk-steering] TARGET_MODEL=$$TARGET_MODEL STEPS=$$STEPS SMC_K=$$SMC_K NFE=$$((SMC_K * STEPS)) BASELINE_CFG=$$BASELINE_CFG"
       # ── Preload model snapshots per backend ────────────────────────────────
@@ -116,7 +116,7 @@ search:
       - export START_INDEX=0
       - export END_INDEX={num_prompts}
       - export SEED={seed}
-      # FK-diff: only baseline + smc, no variant expansion needed.
+      # DAS/SMC run: only baseline + smc, no variant expansion.
       - export METHODS='baseline smc'
       - export REWARD_BACKEND=imagereward
       - export REWARD_BACKENDS='{reward_backends}'
@@ -124,8 +124,8 @@ search:
       - export EVAL_BEST_IMAGES=1
       - export EVAL_REWARD_DEVICE=cuda
       - export EVAL_ALLOW_MISSING_BACKENDS=0
-      # ── FK-steering knobs ──────────────────────────────────────────────────
-      - export SMC_POTENTIAL=diff
+      # ── DAS/SMC knobs ──────────────────────────────────────────────────────
+      - export SMC_POTENTIAL=tempering
       - export SMC_LAMBDA={smc_lambda}
       - export SMC_GAMMA=0.10
       - export ESS_THRESHOLD={ess_threshold}

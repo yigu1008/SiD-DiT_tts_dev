@@ -261,6 +261,21 @@ DTS_PW_ALPHA="${DTS_PW_ALPHA:-0.5}"
 DTS_C_UCT="${DTS_C_UCT:-1.0}"
 DTS_SDE_NOISE_SCALE="${DTS_SDE_NOISE_SCALE:-0.0}"
 DTS_CFG_BANK="${DTS_CFG_BANK:-}"
+# Dynamic-CFG-x0 (per-step adaptive CFG via decoded x0 reward scoring)
+DYNAMIC_CFG_X0_GRID="${DYNAMIC_CFG_X0_GRID:-2.0 3.5 5.0 6.5 8.0}"
+DYNAMIC_CFG_X0_SCORE_START_FRAC="${DYNAMIC_CFG_X0_SCORE_START_FRAC:-0.25}"
+DYNAMIC_CFG_X0_SCORE_END_FRAC="${DYNAMIC_CFG_X0_SCORE_END_FRAC:-1.0}"
+DYNAMIC_CFG_X0_SCORE_EVERY="${DYNAMIC_CFG_X0_SCORE_EVERY:-2}"
+DYNAMIC_CFG_X0_EVALUATORS="${DYNAMIC_CFG_X0_EVALUATORS:-imagereward hpsv3}"
+DYNAMIC_CFG_X0_WEIGHT_SCHEDULE="${DYNAMIC_CFG_X0_WEIGHT_SCHEDULE:-piecewise}"
+DYNAMIC_CFG_X0_PROMPT_TYPE="${DYNAMIC_CFG_X0_PROMPT_TYPE:-general}"
+DYNAMIC_CFG_X0_CONFIDENCE_GATING="${DYNAMIC_CFG_X0_CONFIDENCE_GATING:-1}"
+DYNAMIC_CFG_X0_SMOOTH_WEIGHT="${DYNAMIC_CFG_X0_SMOOTH_WEIGHT:-0.05}"
+DYNAMIC_CFG_X0_HIGH_CFG_PENALTY="${DYNAMIC_CFG_X0_HIGH_CFG_PENALTY:-0.02}"
+DYNAMIC_CFG_X0_CFG_SOFT_MAX="${DYNAMIC_CFG_X0_CFG_SOFT_MAX:-7.5}"
+DYNAMIC_CFG_X0_CFG_MIN="${DYNAMIC_CFG_X0_CFG_MIN:-0.0}"
+DYNAMIC_CFG_X0_CFG_MAX="${DYNAMIC_CFG_X0_CFG_MAX:-12.0}"
+DYNAMIC_CFG_X0_ADD_LOCAL_NEIGHBORHOOD="${DYNAMIC_CFG_X0_ADD_LOCAL_NEIGHBORHOOD:-0}"
 NOISE_INJECT_MODE="${NOISE_INJECT_MODE:-combined}"
 NOISE_INJECT_SEED_BUDGET="${NOISE_INJECT_SEED_BUDGET:-8}"
 NOISE_INJECT_CANDIDATE_STEPS="${NOISE_INJECT_CANDIDATE_STEPS:-}"
@@ -914,6 +929,10 @@ run_method() {
       mode_arg="mcts"
       runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_dts.py"
       ;;
+    dynamic_cfg_x0)
+      mode_arg="base"
+      runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_dynamic_cfg_x0.py"
+      ;;
     *)
       echo "Error: unsupported method '${method}' for SD3.5 suite." >&2
       exit 1
@@ -1040,6 +1059,29 @@ run_method() {
       --dts_sde_noise_scale "${DTS_SDE_NOISE_SCALE}"
       --dts_cfg_bank "${DTS_CFG_BANK}"
     )
+  fi
+  if [[ "${runner_script}" == "${SCRIPT_DIR}/sd35_ddp_experiment_dynamic_cfg_x0.py" ]]; then
+    extra+=(
+      --dynamic_cfg_x0
+      --dynamic_cfg_x0_cfg_grid ${DYNAMIC_CFG_X0_GRID}
+      --dynamic_cfg_x0_score_start_frac "${DYNAMIC_CFG_X0_SCORE_START_FRAC}"
+      --dynamic_cfg_x0_score_end_frac "${DYNAMIC_CFG_X0_SCORE_END_FRAC}"
+      --dynamic_cfg_x0_score_every "${DYNAMIC_CFG_X0_SCORE_EVERY}"
+      --dynamic_cfg_x0_evaluators ${DYNAMIC_CFG_X0_EVALUATORS}
+      --dynamic_cfg_x0_weight_schedule "${DYNAMIC_CFG_X0_WEIGHT_SCHEDULE}"
+      --dynamic_cfg_x0_prompt_type "${DYNAMIC_CFG_X0_PROMPT_TYPE}"
+      --dynamic_cfg_x0_cfg_smooth_weight "${DYNAMIC_CFG_X0_SMOOTH_WEIGHT}"
+      --dynamic_cfg_x0_high_cfg_penalty "${DYNAMIC_CFG_X0_HIGH_CFG_PENALTY}"
+      --dynamic_cfg_x0_cfg_soft_max "${DYNAMIC_CFG_X0_CFG_SOFT_MAX}"
+      --dynamic_cfg_x0_cfg_min "${DYNAMIC_CFG_X0_CFG_MIN}"
+      --dynamic_cfg_x0_cfg_max "${DYNAMIC_CFG_X0_CFG_MAX}"
+    )
+    if [[ "${DYNAMIC_CFG_X0_CONFIDENCE_GATING:-1}" == "0" ]]; then
+      extra+=(--dynamic_cfg_x0_no_confidence_gating)
+    fi
+    if [[ "${DYNAMIC_CFG_X0_ADD_LOCAL_NEIGHBORHOOD:-0}" == "1" ]]; then
+      extra+=(--dynamic_cfg_x0_add_local_neighborhood)
+    fi
   fi
   if [[ "${SMC_VARIANT_EXPANSION:-0}" == "1" ]]; then
     extra+=(--smc_variant_expansion)

@@ -919,6 +919,33 @@ for method in ${METHODS}; do
         --n_variants "${N_VARIANTS}" \
         --cfg_scales ${CFG_SCALES}
       ;;
+    dynamic_cfg_x0)
+      dyncfg_args=(
+        --runner_script "${SCRIPT_DIR}/sampling_flux_unified_dynamic_cfg_x0.py"
+        --n_variants 1
+        --cfg_scales ${CFG_SCALES}
+        --dynamic_cfg_x0
+        --dynamic_cfg_x0_cfg_grid ${DYNAMIC_CFG_X0_GRID:-1.5 2.0 2.5 3.0 3.5}
+        --dynamic_cfg_x0_score_start_frac "${DYNAMIC_CFG_X0_SCORE_START_FRAC:-0.25}"
+        --dynamic_cfg_x0_score_end_frac "${DYNAMIC_CFG_X0_SCORE_END_FRAC:-1.0}"
+        --dynamic_cfg_x0_score_every "${DYNAMIC_CFG_X0_SCORE_EVERY:-2}"
+        --dynamic_cfg_x0_evaluators ${DYNAMIC_CFG_X0_EVALUATORS:-imagereward hpsv3}
+        --dynamic_cfg_x0_weight_schedule "${DYNAMIC_CFG_X0_WEIGHT_SCHEDULE:-piecewise}"
+        --dynamic_cfg_x0_prompt_type "${DYNAMIC_CFG_X0_PROMPT_TYPE:-general}"
+        --dynamic_cfg_x0_cfg_smooth_weight "${DYNAMIC_CFG_X0_SMOOTH_WEIGHT:-0.05}"
+        --dynamic_cfg_x0_high_cfg_penalty "${DYNAMIC_CFG_X0_HIGH_CFG_PENALTY:-0.02}"
+        --dynamic_cfg_x0_cfg_soft_max "${DYNAMIC_CFG_X0_CFG_SOFT_MAX:-3.5}"
+        --dynamic_cfg_x0_cfg_min "${DYNAMIC_CFG_X0_CFG_MIN:-0.0}"
+        --dynamic_cfg_x0_cfg_max "${DYNAMIC_CFG_X0_CFG_MAX:-5.0}"
+      )
+      if [[ "${DYNAMIC_CFG_X0_CONFIDENCE_GATING:-1}" == "0" ]]; then
+        dyncfg_args+=(--dynamic_cfg_x0_no_confidence_gating)
+      fi
+      if [[ "${DYNAMIC_CFG_X0_ADD_LOCAL_NEIGHBORHOOD:-0}" == "1" ]]; then
+        dyncfg_args+=(--dynamic_cfg_x0_add_local_neighborhood)
+      fi
+      run_flux_sharded "dynamic_cfg_x0" "ga" "${dyncfg_args[@]}"
+      ;;
     *)
       echo "Error: unsupported method '${method}' for FLUX suite." >&2
       exit 1

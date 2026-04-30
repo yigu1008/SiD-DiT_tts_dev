@@ -105,6 +105,13 @@ search:
       - 'echo "Reward env prefix: $$REWARD_ENV_PREFIX"'
       - 'if [ ! -x "$$REWARD_PY" ]; then echo "Reward env python not found: $$REWARD_PY"; exit 1; fi'
       - $$REWARD_PY -c "import torch, transformers; print('reward env torch='+torch.__version__, 'transformers='+transformers.__version__)"
+      # ── Strict verify: ImageReward MUST be installed in reward env (the
+      # default setup_reward_env.sh path only WARNs on failure, so a failed
+      # install would otherwise silently leave the server hosting only hpsv3
+      # and break the imagereward-guided run + the cross-run eval). Retry
+      # with the most permissive flags then fail fast if still missing. ──
+      - $$REWARD_PY -c "import ImageReward; print('[verify] reward env ImageReward', ImageReward.__file__)" || $$REWARD_PY -m pip install --no-cache-dir --no-deps --no-build-isolation "git+https://github.com/THUDM/ImageReward.git" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "git+https://github.com/THUDM/ImageReward.git" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "image-reward==1.5" || true
+      - $$REWARD_PY -c "import ImageReward; print('[verify-final] reward env ImageReward', ImageReward.__file__)"
       # ── Preload reward weights in reward env (BOTH hpsv3 and imagereward) ─
       - export REWARD_BACKENDS='{reward_server_backends}'
       - export STAGE_REWARD_WEIGHTS_LOCAL=1
@@ -143,12 +150,15 @@ search:
       - export REWARD_TYPE={search_reward}
       - export REWARD_BACKENDS={search_reward}
       - export EVAL_BEST_IMAGES=1
-      - export EVAL_BACKENDS='{search_reward}'
+      # Phase-1 eval covers BOTH rewards hosted on the server so the hpsv3- and
+      # imagereward-guided runs can be compared on the same metric set; phase-2
+      # adds hpsv2/pickscore in a separate server.
+      - export EVAL_BACKENDS='imagereward hpsv3'
       - export REWARD_DEVICE=cuda
       - export EVAL_REWARD_DEVICE=cuda
       - export EVAL_ALLOW_MISSING_BACKENDS=0
       # Per-backend defaults: SiD uses 4 steps + small CFG bank; sd35_base 28 + larger.
-      - 'if [ "{target_model}" = "sid" ]; then export STEPS=4; export BASELINE_CFG=1.0; export CFG_SCALES="1.0 1.25 1.5 1.75 2.0 2.25 2.5"; export DYNAMIC_CFG_X0_GRID_AUTO="1.0 1.25 1.5 1.75 2.0 2.25 2.5"; export DYNAMIC_CFG_X0_CFG_MIN_AUTO=0.5; export DYNAMIC_CFG_X0_CFG_MAX_AUTO=3.0; export DYNAMIC_CFG_X0_CFG_SOFT_MAX_AUTO=2.5; else export STEPS=28; export BASELINE_CFG=4.5; export CFG_SCALES="3.5 4.0 4.5 5.0 5.5 6.0 7.0"; export DYNAMIC_CFG_X0_GRID_AUTO="3.5 4.0 4.5 5.0 5.5 6.0 7.0"; export DYNAMIC_CFG_X0_CFG_MIN_AUTO=2.0; export DYNAMIC_CFG_X0_CFG_MAX_AUTO=8.0; export DYNAMIC_CFG_X0_CFG_SOFT_MAX_AUTO=6.5; fi'
+      - 'if [ "{target_model}" = "sid" ]; then export STEPS=4; export BASELINE_CFG=1.0; export CFG_SCALES="1.0 1.25 1.5 1.75 2.0 2.25 2.5"; export DYNAMIC_CFG_X0_GRID_AUTO="1.0 1.25 1.5 1.75 2.0 2.25 2.5"; export DYNAMIC_CFG_X0_CFG_MIN_AUTO=0.5; export DYNAMIC_CFG_X0_CFG_MAX_AUTO=3.0; export DYNAMIC_CFG_X0_CFG_SOFT_MAX_AUTO=2.5; else export STEPS=28; export BASELINE_CFG=4.5; export CFG_SCALES="2.5 3.5 4.5 5.5 7.0 9.0 11.0 13.0"; export DYNAMIC_CFG_X0_GRID_AUTO="2.5 3.5 4.5 5.5 7.0 9.0 11.0 13.0"; export DYNAMIC_CFG_X0_CFG_MIN_AUTO=1.5; export DYNAMIC_CFG_X0_CFG_MAX_AUTO=13.0; export DYNAMIC_CFG_X0_CFG_SOFT_MAX_AUTO=11.0; fi'
       - export AUTO_BACKEND_STEPS=0
       - export N_VARIANTS={n_variants}
       - export GEN_BATCH_SIZE=1
@@ -227,8 +237,9 @@ search:
     - name: reward_server_backends
       values: [ "hpsv3 imagereward" ]
     # Phase 2 extra backends evaluated post-hoc, one server at a time.
+    # (imagereward + hpsv3 already covered in phase 1; phase 2 fills hpsv2/pickscore.)
     - name: posthoc_eval_backends
-      values: [ "imagereward hpsv2 pickscore" ]
+      values: [ "hpsv2 pickscore" ]
     - name: reward_server_port
       values: [ 5101 ]
     - name: n_variants

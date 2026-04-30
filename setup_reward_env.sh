@@ -77,8 +77,13 @@ echo "[setup_reward_env] Installing hpsv3 runtime deps ..."
     "tensorboard" "packaging"
 
 echo "[setup_reward_env] Installing ImageReward ..."
-"${PIP}" install --no-cache-dir "image-reward==1.5" || \
-    "${PIP}" install --no-cache-dir "git+https://github.com/THUDM/ImageReward.git" || \
+# Use --no-deps to avoid clobbering the transformers==4.45.2 / trl==0.12.2 pin
+# above. Use --no-build-isolation so the git install reuses the existing
+# setuptools/wheel rather than fetching a fresh build env (which has been
+# observed to fail behind locked-down package mirrors).
+"${PIP}" install --no-cache-dir --no-deps --no-build-isolation "git+https://github.com/THUDM/ImageReward.git" || \
+    "${PIP}" install --no-cache-dir --no-deps "git+https://github.com/THUDM/ImageReward.git" || \
+    "${PIP}" install --no-cache-dir --no-deps "image-reward==1.5" || \
     echo "[setup_reward_env] WARNING: ImageReward install failed"
 
 echo "[setup_reward_env] Installing CLIP ..."

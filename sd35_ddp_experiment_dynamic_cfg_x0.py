@@ -45,13 +45,22 @@ def _make_patched_parse_args(
 def main() -> None:
     original_parse_args = base.parse_args
     original_run_baseline = su.run_baseline
+    original_base_run_baseline = getattr(base, "run_baseline", None)
     base.parse_args = _make_patched_parse_args(original_parse_args)
     su.run_baseline = _run_baseline_dynamic_cfg_x0
+    # sd35_ddp_experiment.py does `from sampling_unified_sd35 import run_baseline`
+    # at module load, so it holds its own reference. Rebind there too, otherwise
+    # the gen_batch_size==1 call site at sd35_ddp_experiment.py:613 keeps using
+    # the original run_baseline and the dynamic-CFG search never executes.
+    if original_base_run_baseline is not None:
+        base.run_baseline = _run_baseline_dynamic_cfg_x0
     try:
         base.main()
     finally:
         base.parse_args = original_parse_args
         su.run_baseline = original_run_baseline
+        if original_base_run_baseline is not None:
+            base.run_baseline = original_base_run_baseline
 
 
 if __name__ == "__main__":

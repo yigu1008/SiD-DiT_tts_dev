@@ -75,6 +75,11 @@ def _sd35_mode_key_and_suffix(method: str) -> tuple[str, str]:
         return "base", "base"
     if m == "base":
         return "base", "base"
+    if m == "dynamic_cfg_x0":
+        # dynamic_cfg_x0 piggybacks on the run_baseline DDP path (via
+        # sd35_ddp_experiment_dynamic_cfg_x0.py monkey-patch), so logs
+        # are written with mode="base" and images as {slug}_base.png.
+        return "base", "base"
     if m.startswith("mcts"):
         # SD3.5 DDP writes mode/image suffix as "mcts" even for method aliases
         # like mcts_lookahead_dynamiccfg, mcts_dynamiccfg_only, etc.

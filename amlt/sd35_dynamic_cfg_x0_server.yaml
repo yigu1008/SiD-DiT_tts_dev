@@ -247,7 +247,7 @@ search:
     # ── Dynamic CFG x0 knobs (CFG bank + min/max/soft_max are set per
     #    target_model in the command body — see STEPS/BASELINE_CFG line). ──
     - name: dynamic_cfg_x0_score_start_frac
-      values: [ 0.25 ]
+      values: [ 0.0 ]
     - name: dynamic_cfg_x0_score_end_frac
       values: [ 1.0 ]
     - name: dynamic_cfg_x0_score_every
@@ -259,9 +259,9 @@ search:
     - name: dynamic_cfg_x0_confidence_gating
       values: [ 1 ]
     - name: dynamic_cfg_x0_smooth_weight
-      values: [ 0.05 ]
+      values: [ 0.0 ]
     - name: dynamic_cfg_x0_high_cfg_penalty
-      values: [ 0.02 ]
+      values: [ 0.01 ]
     - name: dynamic_cfg_x0_add_local_neighborhood
       values: [ 0 ]
     # ── Misc ──

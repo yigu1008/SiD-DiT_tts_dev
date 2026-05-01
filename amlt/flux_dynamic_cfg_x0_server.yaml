@@ -112,6 +112,9 @@ search:
       # install would otherwise silently leave the server hosting only hpsv3
       # and break the imagereward-guided run + the cross-run eval). Retry
       # with the most permissive flags then fail fast if still missing. ──
+      # ── Fix-up envs built before the setuptools/fairscale fixes landed.
+      - $$REWARD_PY -m pip install --no-cache-dir --upgrade "setuptools<80" "wheel" || true
+      - $$REWARD_PY -m pip install --no-cache-dir "fairscale==0.4.4" || $$REWARD_PY -m pip install --no-cache-dir "fairscale" || true
       - $$REWARD_PY -c "import ImageReward; print('[verify] reward env ImageReward', ImageReward.__file__)" || $$REWARD_PY -m pip install --no-cache-dir --no-deps --no-build-isolation "git+https://github.com/THUDM/ImageReward.git" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "git+https://github.com/THUDM/ImageReward.git" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "image-reward==1.5" || true
       - $$REWARD_PY -c "import ImageReward; print('[verify-final] reward env ImageReward', ImageReward.__file__)"
       # ── Preload reward weights in reward env (BOTH hpsv3 and imagereward) ─

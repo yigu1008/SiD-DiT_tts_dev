@@ -51,11 +51,12 @@ else
 fi
 
 # Install setuptools + wheel before anything else: ImageReward's setup.py
-# does `from pkg_resources import ...` (which lives in setuptools), and we
-# install ImageReward with --no-build-isolation, so the env's own setuptools
-# must be present.
-echo "[setup_reward_env] Installing build tooling (setuptools, wheel) ..."
-"${PIP}" install --no-cache-dir --upgrade "setuptools>=68" "wheel" "pip"
+# does `from pkg_resources import ...`. setuptools>=80 made pkg_resources
+# optional / moved it out of the default install, breaking ImageReward's
+# build, so pin to <80. We install with --no-build-isolation so the env's
+# own setuptools must be the one that's used.
+echo "[setup_reward_env] Installing build tooling (setuptools<80, wheel, pip) ..."
+"${PIP}" install --no-cache-dir --upgrade "setuptools<80" "wheel" "pip"
 
 echo "[setup_reward_env] Installing PyTorch ..."
 "${PIP}" install --no-cache-dir \
@@ -109,6 +110,15 @@ install_imagereward_from_clone() {
     "${PIP}" install --no-cache-dir --no-deps "image-reward==1.5" || \
     install_imagereward_from_clone || \
     echo "[setup_reward_env] WARNING: ImageReward install failed"
+
+# ImageReward's BLIP backbone imports `fairscale.nn.checkpoint.checkpoint_activations`
+# at module load. Without it, `import ImageReward` raises ModuleNotFoundError
+# even though the package is technically installed. ImageReward upstream pins
+# fairscale==0.4.4 so we follow that.
+echo "[setup_reward_env] Installing fairscale (ImageReward runtime dep) ..."
+"${PIP}" install --no-cache-dir "fairscale==0.4.4" || \
+    "${PIP}" install --no-cache-dir "fairscale" || \
+    echo "[setup_reward_env] WARNING: fairscale install failed; ImageReward will not import"
 
 echo "[setup_reward_env] Installing CLIP ..."
 "${PIP}" install --no-cache-dir "git+https://github.com/openai/CLIP.git" || \

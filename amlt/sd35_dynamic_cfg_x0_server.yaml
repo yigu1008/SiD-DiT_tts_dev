@@ -105,6 +105,12 @@ search:
       - 'echo "Reward env prefix: $$REWARD_ENV_PREFIX"'
       - 'if [ ! -x "$$REWARD_PY" ]; then echo "Reward env python not found: $$REWARD_PY"; exit 1; fi'
       - $$REWARD_PY -c "import torch, transformers; print('reward env torch='+torch.__version__, 'transformers='+transformers.__version__)"
+      # ── Fix-up envs that were built before the setuptools/fairscale fixes
+      # landed. setuptools>=80 dropped pkg_resources from the default install
+      # (breaking ImageReward's setup.py), and ImageReward's BLIP backbone
+      # imports `fairscale.nn.checkpoint.checkpoint_activations` at module load.
+      - $$REWARD_PY -m pip install --no-cache-dir --upgrade "setuptools<80" "wheel" || true
+      - $$REWARD_PY -m pip install --no-cache-dir "fairscale==0.4.4" || $$REWARD_PY -m pip install --no-cache-dir "fairscale" || true
       # ── Strict verify: ImageReward MUST be installed in reward env (the
       # default setup_reward_env.sh path only WARNs on failure, so a failed
       # install would otherwise silently leave the server hosting only hpsv3

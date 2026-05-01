@@ -181,6 +181,10 @@ search:
       # ── Dynamic CFG x0 knobs ─────────────────────────────────────────────
       - export DYNAMIC_CFG_X0_GRID="$$DYNAMIC_CFG_X0_GRID_AUTO"
       - export DYNAMIC_CFG_X0_SCORE_START_FRAC={dynamic_cfg_x0_score_start_frac}
+      # Per-backend override: 4-step SiD has progress {0, 0.33, 0.67, 1.0}
+      # — score_start=0.5 skips first 2 steps, scores last 2. 28-step
+      # sd35_base keeps the grid value (0.25 = skip first ~7).
+      - 'if [ "{target_model}" = "sid" ]; then export DYNAMIC_CFG_X0_SCORE_START_FRAC=0.5; fi'
       - export DYNAMIC_CFG_X0_SCORE_END_FRAC={dynamic_cfg_x0_score_end_frac}
       - export DYNAMIC_CFG_X0_SCORE_EVERY={dynamic_cfg_x0_score_every}
       - export DYNAMIC_CFG_X0_EVALUATORS='{search_reward}'
@@ -262,7 +266,7 @@ search:
     # ── Dynamic CFG x0 knobs (CFG bank + min/max/soft_max are set per
     #    target_model in the command body — see STEPS/BASELINE_CFG line). ──
     - name: dynamic_cfg_x0_score_start_frac
-      values: [ 0.0 ]
+      values: [ 0.25 ]
     - name: dynamic_cfg_x0_score_end_frac
       values: [ 1.0 ]
     - name: dynamic_cfg_x0_score_every

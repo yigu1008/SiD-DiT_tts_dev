@@ -49,8 +49,18 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-SD35_BACKEND_LIST="${SD35_BACKEND_LIST:-${SD35_BACKEND:-sid sd35_base}}"
-SWEEP_METHODS="${SWEEP_METHODS:-bon beam smc fksteering bon_mcts mcts greedy ga dts dts_star noise_inject}"
+SD35_BACKEND_LIST="${SD35_BACKEND_LIST:-${SD35_BACKEND:-sid senseflow_large sd35_base}}"
+# Default sweep covers all methods used in the all-models NFE-vs-reward plot.
+# mcts and noise_inject are intentionally dropped per the all-models spec.
+SWEEP_METHODS="${SWEEP_METHODS:-baseline bon beam smc fksteering greedy ga dts dts_star dynamic_cfg_x0 sop}"
+
+# ── dynamic_cfg_x0 sweep — vary score_every (held grid fixed = MCTS bank) ───
+DYNAMIC_CFG_X0_SCORE_EVERY_SWEEP_SID="${DYNAMIC_CFG_X0_SCORE_EVERY_SWEEP_SID:-1}"
+DYNAMIC_CFG_X0_SCORE_EVERY_SWEEP_SENSEFLOW="${DYNAMIC_CFG_X0_SCORE_EVERY_SWEEP_SENSEFLOW:-1}"
+DYNAMIC_CFG_X0_SCORE_EVERY_SWEEP_BASE="${DYNAMIC_CFG_X0_SCORE_EVERY_SWEEP_BASE:-1 2 4 7}"
+
+# ── sop sweep — vary (K, M) pair, encoded as K:M tokens ─────────────────────
+SOP_KM_SWEEP="${SOP_KM_SWEEP:-2:2 2:4 4:4 4:8 8:8 8:16 16:16}"
 
 # GA defaults — generations fixed, population scaled to hit target_nfe.
 GA_GENERATIONS_SWEEP="${GA_GENERATIONS:-8}"
@@ -118,19 +128,38 @@ resolve_backend_defaults() {
       NFE_BUDGETS="${NFE_BUDGETS_SID:-16 32 64 128 256 512}"
       BASELINE_CFG="${BASELINE_CFG_SID:-1.0}"
       BEAM_CFG_BANK="${BEAM_CFG_BANK_SID:-1.0 2.0}"
-      MCTS_CFG_BANK="${MCTS_CFG_BANK_SID:-1.0 1.5 2.0}"
+      MCTS_CFG_BANK="${MCTS_CFG_BANK_SID:-1.0 1.5 2.0 2.5}"
       BON_MCTS_KEY_STEP_COUNT="${BON_MCTS_KEY_STEP_COUNT_SID:-2}"
+      DYNCFG_X0_GRID="${DYNCFG_X0_GRID_SID:-1.0 1.5 2.0 2.5}"
+      DYNCFG_X0_START_FRAC="${DYNCFG_X0_START_FRAC_SID:-0.5}"
+      DYNCFG_X0_SCORE_EVERY_SWEEP="${DYNAMIC_CFG_X0_SCORE_EVERY_SWEEP_SID}"
+      ;;
+    senseflow_large)
+      STEPS="${STEPS_SENSEFLOW:-4}"
+      NFE_BUDGETS="${NFE_BUDGETS_SENSEFLOW:-16 32 64 128 256 512}"
+      # senseflow distillation: baseline_cfg overridden to 1.0 per spec
+      # (was 0.0 in earlier configs).
+      BASELINE_CFG="${BASELINE_CFG_SENSEFLOW:-1.0}"
+      BEAM_CFG_BANK="${BEAM_CFG_BANK_SENSEFLOW:-1.0 2.0}"
+      MCTS_CFG_BANK="${MCTS_CFG_BANK_SENSEFLOW:-1.0 1.5 2.0 2.5}"
+      BON_MCTS_KEY_STEP_COUNT="${BON_MCTS_KEY_STEP_COUNT_SENSEFLOW:-2}"
+      DYNCFG_X0_GRID="${DYNCFG_X0_GRID_SENSEFLOW:-1.0 1.5 2.0 2.5}"
+      DYNCFG_X0_START_FRAC="${DYNCFG_X0_START_FRAC_SENSEFLOW:-0.5}"
+      DYNCFG_X0_SCORE_EVERY_SWEEP="${DYNAMIC_CFG_X0_SCORE_EVERY_SWEEP_SENSEFLOW}"
       ;;
     sd35_base)
       STEPS="${STEPS_BASE:-28}"
       NFE_BUDGETS="${NFE_BUDGETS_BASE:-56 112 224 448 896 1792}"
       BASELINE_CFG="${BASELINE_CFG_BASE:-4.5}"
       BEAM_CFG_BANK="${BEAM_CFG_BANK_BASE:-3.5 7.0}"
-      MCTS_CFG_BANK="${MCTS_CFG_BANK_BASE:-3.5 4.5 5.5 7.0}"
+      MCTS_CFG_BANK="${MCTS_CFG_BANK_BASE:-4.0 4.5 5.0 5.5}"
       BON_MCTS_KEY_STEP_COUNT="${BON_MCTS_KEY_STEP_COUNT_BASE:-4}"
+      DYNCFG_X0_GRID="${DYNCFG_X0_GRID_BASE:-4.0 4.5 5.0 5.5}"
+      DYNCFG_X0_START_FRAC="${DYNCFG_X0_START_FRAC_BASE:-0.25}"
+      DYNCFG_X0_SCORE_EVERY_SWEEP="${DYNAMIC_CFG_X0_SCORE_EVERY_SWEEP_BASE}"
       ;;
     *)
-      echo "Error: unsupported backend=${backend} (sid|sd35_base)" >&2
+      echo "Error: unsupported backend=${backend} (sid|senseflow_large|sd35_base)" >&2
       return 1
       ;;
   esac
@@ -154,19 +183,6 @@ compute_knobs_for() {
     smc|fksteering)
       local k; k="$(ceil_div "${target_nfe}" "${STEPS}")"; (( k < 2 )) && k=2
       knob_label="smc_k"; knob_value="${k}"; nfe_actual=$(( k * STEPS )) ;;
-    bon_mcts)
-      local x; x="$(ceil_div "${target_nfe}" $(( 2 * STEPS )))"; (( x < 1 )) && x=1
-      knob_label="n_seeds_eq_n_sims"; knob_value="${x}"
-      nfe_actual=$(( 2 * x * STEPS )) ;;
-    mcts)
-      local s; s="$(ceil_div "${target_nfe}" "${STEPS}")"; (( s < 1 )) && s=1
-      knob_label="n_sims"; knob_value="${s}"; nfe_actual=$(( s * STEPS )) ;;
-    noise_inject)
-      local denom=$(( NOISE_INJECT_EPS_SAMPLES_SWEEP * NOISE_INJECT_STEPS_PER_ROLLOUT_SWEEP ))
-      (( denom < 1 )) && denom=1
-      local sb; sb="$(ceil_div "${target_nfe}" "${denom}")"; (( sb < 1 )) && sb=1
-      knob_label="seed_budget"; knob_value="${sb}"
-      nfe_actual=$(( sb * denom )) ;;
     greedy)
       local n; n="$(ceil_div "${target_nfe}" "${STEPS}")"; (( n < 1 )) && n=1
       knob_label="n_variants"; knob_value="${n}"; nfe_actual=$(( n * STEPS )) ;;
@@ -178,6 +194,15 @@ compute_knobs_for() {
     dts|dts_star)
       local m; m="$(ceil_div "${target_nfe}" "${STEPS}")"; (( m < 1 )) && m=1
       knob_label="dts_m_iter"; knob_value="${m}"; nfe_actual=$(( m * STEPS )) ;;
+    dynamic_cfg_x0)
+      # NFE = STEPS (cfg-split shared); knob is score_every (held grid fixed).
+      knob_label="score_every"; knob_value="${target_nfe}"
+      nfe_actual="${STEPS}" ;;
+    sop)
+      # NFE = N_init * pre_branch + K*M * branch; knob encodes K:M.
+      knob_label="K:M"; knob_value="${target_nfe}"
+      nfe_actual=0  # filled at run-time once start_frac is resolved
+      ;;
     *)
       echo "Error: unknown method ${method}" >&2; return 1 ;;
   esac
@@ -246,37 +271,32 @@ run_one_config() {
         "SMC_POTENTIAL=diff" "SMC_LAMBDA=${FKSTEERING_LAMBDA_SWEEP}"
       )
       ;;
-    mcts)
-      local s; s="$(ceil_div "${target_nfe}" "${STEPS}")"; (( s < 1 )) && s=1
-      env_pairs+=(
-        "N_VARIANTS=1" "CFG_SCALES=${MCTS_CFG_BANK}"
-        "N_SIMS=${s}" "MCTS_KEY_MODE=count"
-        "MCTS_KEY_STEP_COUNT=${BON_MCTS_KEY_STEP_COUNT}"
-      )
-      ;;
-    noise_inject)
-      local denom=$(( NOISE_INJECT_EPS_SAMPLES_SWEEP * NOISE_INJECT_STEPS_PER_ROLLOUT_SWEEP ))
-      (( denom < 1 )) && denom=1
-      local sb; sb="$(ceil_div "${target_nfe}" "${denom}")"; (( sb < 1 )) && sb=1
+    dynamic_cfg_x0)
+      # target_nfe encodes score_every; grid is fixed per backend.
       env_pairs+=(
         "N_VARIANTS=1" "CFG_SCALES=${BASELINE_CFG}"
-        "NOISE_INJECT_MODE=${NOISE_INJECT_MODE_SWEEP}"
-        "NOISE_INJECT_SEED_BUDGET=${sb}"
-        "NOISE_INJECT_EPS_SAMPLES=${NOISE_INJECT_EPS_SAMPLES_SWEEP}"
-        "NOISE_INJECT_STEPS_PER_ROLLOUT=${NOISE_INJECT_STEPS_PER_ROLLOUT_SWEEP}"
-        "NOISE_INJECT_GAMMA_BANK=${NOISE_INJECT_GAMMA_BANK_SWEEP}"
-        "NOISE_INJECT_INCLUDE_NO_INJECT=${NOISE_INJECT_INCLUDE_NO_INJECT_SWEEP}"
+        "DYNAMIC_CFG_X0_GRID=${DYNCFG_X0_GRID}"
+        "DYNAMIC_CFG_X0_SCORE_START_FRAC=${DYNCFG_X0_START_FRAC}"
+        "DYNAMIC_CFG_X0_SCORE_END_FRAC=1.0"
+        "DYNAMIC_CFG_X0_SCORE_EVERY=${target_nfe}"
+        "DYNAMIC_CFG_X0_EVALUATORS=${REWARD_BACKEND}"
+        "DYNAMIC_CFG_X0_SMOOTH_WEIGHT=0.0"
+        "DYNAMIC_CFG_X0_HIGH_CFG_PENALTY=0.0"
       )
       ;;
-    bon_mcts)
-      local x; x="$(ceil_div "${target_nfe}" $(( 2 * STEPS )))"; (( x < 1 )) && x=1
+    sop)
+      # target_nfe is K:M; split into SOP_KEEP_TOP and SOP_BRANCH_FACTOR.
+      local k_val="${target_nfe%:*}" m_val="${target_nfe##*:}"
       env_pairs+=(
-        "N_VARIANTS=1" "CFG_SCALES=${MCTS_CFG_BANK}"
-        "BON_MCTS_N_SEEDS=${x}" "BON_MCTS_TOPK=1"
-        "BON_MCTS_SIM_ALLOC=full" "BON_MCTS_MIN_SIMS=1"
-        "BON_MCTS_PRESCREEN_CFG=${BASELINE_CFG}"
-        "N_SIMS=${x}" "MCTS_KEY_MODE=count"
-        "MCTS_KEY_STEP_COUNT=${BON_MCTS_KEY_STEP_COUNT}"
+        "N_VARIANTS=1" "CFG_SCALES=${BASELINE_CFG}"
+        "SOP_INIT_PATHS=${k_val}"
+        "SOP_KEEP_TOP=${k_val}"
+        "SOP_BRANCH_FACTOR=${m_val}"
+        "SOP_BRANCH_EVERY=1"
+        "SOP_START_FRAC=${DYNCFG_X0_START_FRAC}"
+        "SOP_END_FRAC=1.0"
+        "SOP_SCORE_DECODE=x0_pred"
+        "SOP_VARIANT_IDX=0"
       )
       ;;
     greedy)
@@ -439,7 +459,20 @@ run_one_backend() {
   emit_plan "${sweep_root}"
 
   for method in ${SWEEP_METHODS}; do
-    for nfe in ${NFE_BUDGETS}; do
+    # Pick the per-method sweep dimension.
+    local sweep_values
+    case "${method}" in
+      baseline)
+        # Baseline doesn't sweep; one canonical run.
+        sweep_values="${STEPS}" ;;
+      dynamic_cfg_x0)
+        sweep_values="${DYNCFG_X0_SCORE_EVERY_SWEEP}" ;;
+      sop)
+        sweep_values="${SOP_KM_SWEEP}" ;;
+      *)
+        sweep_values="${NFE_BUDGETS}" ;;
+    esac
+    for nfe in ${sweep_values}; do
       if ! run_one_config "${backend}" "${method}" "${nfe}" "${sweep_root}"; then
         echo "[sweep] WARNING: backend=${backend} method=${method} nfe=${nfe} failed" >&2
       fi

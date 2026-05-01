@@ -19,19 +19,35 @@ from pathlib import Path
 
 
 _METHOD_STYLE = {
-    "baseline":     {"color": "#7f7f7f", "marker": "x"},
-    "greedy":       {"color": "#17becf", "marker": "o"},
-    "mcts":         {"color": "#d62728", "marker": "D"},
-    "bon_mcts":     {"color": "#9467bd", "marker": "P"},
-    "beam":         {"color": "#ff7f0e", "marker": "s"},
-    "smc":          {"color": "#2ca02c", "marker": "^"},
-    "fksteering":   {"color": "#006400", "marker": "<"},
-    "ga":           {"color": "#1f77b4", "marker": "v"},
-    "bon":          {"color": "#8c564b", "marker": "h"},
-    "dts":          {"color": "#e377c2", "marker": "*"},
-    "dts_star":     {"color": "#bcbd22", "marker": "X"},
-    "noise_inject": {"color": "#ff1493", "marker": ">"},
+    "baseline":        {"color": "#7f7f7f", "marker": "x"},
+    "greedy":          {"color": "#17becf", "marker": "o"},
+    "beam":            {"color": "#ff7f0e", "marker": "s"},
+    "smc":             {"color": "#2ca02c", "marker": "^"},
+    "fksteering":      {"color": "#006400", "marker": "<"},
+    "ga":              {"color": "#1f77b4", "marker": "v"},
+    "bon":             {"color": "#8c564b", "marker": "h"},
+    "dts":             {"color": "#e377c2", "marker": "*"},
+    "dts_star":        {"color": "#bcbd22", "marker": "X"},
+    "dynamic_cfg_x0":  {"color": "#4B0082", "marker": "P"},
+    "sop":             {"color": "#FFD700", "marker": "D"},
 }
+
+
+def _compute_nfe(row: dict, flavor: str) -> int | None:
+    """v1=transformer; v2=transformer+reward_eval; v3=v2 + reward_eval if uses_reward_diff."""
+    try:
+        xfm = int(float(row.get("nfe_transformer") or 0))
+        rev = int(float(row.get("nfe_reward_eval") or 0))
+        diff = int(float(row.get("uses_reward_diff") or 0))
+    except (TypeError, ValueError):
+        return None
+    if flavor == "v1":
+        return xfm
+    if flavor == "v2":
+        return xfm + rev
+    if flavor == "v3":
+        return xfm + rev * (2 if diff else 1)
+    return None
 
 
 def _to_float(v: str | None) -> float | None:
@@ -114,8 +130,15 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Output directory for plots (default: <csv_dir>/plots_nfe_vs_reward).",
     )
-    p.add_argument("--x_col", default="target_nfe")
-    p.add_argument("--y_cols", nargs="+", default=None)
+    p.add_argument("--x_col", default="target_nfe",
+                   help="Legacy x column. Ignored when --nfe_flavor is set.")
+    p.add_argument("--nfe_flavor", choices=["v1", "v2", "v3"], default=None,
+                   help="Compute x from canonical CSV columns: v1=transformer, "
+                        "v2=transformer+reward_eval, v3=+2x reward for diff methods.")
+    p.add_argument("--search_reward", default="",
+                   help="Filter by search_reward column (hpsv3, imagereward).")
+    p.add_argument("--y_cols", nargs="+", default=None,
+                   help="Default 'mean_search' when --nfe_flavor is set.")
     p.add_argument(
         "--status",
         default="ok",
@@ -165,9 +188,17 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     rows, header = load_rows(csv_path)
-    y_cols = _choose_y_cols(header, args.y_cols)
+    if args.nfe_flavor:
+        # Canonical mode: x is computed from nfe_* columns, y is mean_search.
+        if args.y_cols is None:
+            y_cols = ["mean_search"]
+        else:
+            y_cols = [c for c in args.y_cols if c in header] or ["mean_search"]
+    else:
+        y_cols = _choose_y_cols(header, args.y_cols)
     backend_filter = _parse_multi(args.backends)
     method_filter = _parse_multi(args.methods)
+    search_reward_filter = str(args.search_reward).strip().lower()
 
     try:
         import matplotlib
@@ -187,9 +218,12 @@ def main() -> None:
         backend = str(r.get("backend", "")).strip()
         method = str(r.get("method", "")).strip()
         status = str(r.get("status", "")).strip().lower()
+        sr = str(r.get("search_reward", "")).strip().lower()
         if backend_filter and backend not in backend_filter:
             continue
         if method_filter and method not in method_filter:
+            continue
+        if search_reward_filter and sr != search_reward_filter:
             continue
         if str(args.status).lower() != "all" and status != str(args.status).lower():
             continue
@@ -200,11 +234,15 @@ def main() -> None:
 
     backends = sorted({str(r.get("backend", "")).strip() for r in filtered_rows if r.get("backend")})
 
+    x_label = f"nfe_{args.nfe_flavor}" if args.nfe_flavor else args.x_col
     for y_col in y_cols:
         # Series by (backend, method)
         series: dict[tuple[str, str], list[tuple[int, float]]] = defaultdict(list)
         for r in filtered_rows:
-            x = _to_int(r.get(args.x_col))
+            if args.nfe_flavor:
+                x = _compute_nfe(r, args.nfe_flavor)
+            else:
+                x = _to_int(r.get(args.x_col))
             y = _to_float(r.get(y_col))
             if x is None or y is None:
                 continue
@@ -230,14 +268,14 @@ def main() -> None:
             plotted += 1
         if args.no_log2_x is False:
             ax.set_xscale("log", base=2)
-        ax.set_xlabel(args.x_col)
+        ax.set_xlabel(x_label)
         ax.set_ylabel(y_col)
-        ax.set_title(f"{y_col} vs {args.x_col} (all)")
+        ax.set_title(f"{y_col} vs {x_label} (all)")
         ax.grid(True, which="both", linestyle=":", alpha=0.4)
         if plotted > 0:
             ax.legend(loc="best", fontsize=8)
         fig.tight_layout()
-        all_out = out_dir / f"all_{_safe_name(y_col)}_vs_{_safe_name(args.x_col)}.png"
+        all_out = out_dir / f"all_{_safe_name(y_col)}_vs_{_safe_name(x_label)}.png"
         fig.savefig(all_out, dpi=int(args.dpi))
         plt.close(fig)
         print(f"[plot] wrote {all_out}")
@@ -265,14 +303,14 @@ def main() -> None:
             if args.no_log2_x is False:
                 ax.set_xscale("log", base=2)
             ax.set_title(backend)
-            ax.set_xlabel(args.x_col)
+            ax.set_xlabel(x_label)
             ax.grid(True, which="both", linestyle=":", alpha=0.4)
         axes[0].set_ylabel(y_col)
         if len(backends) > 0:
             axes[-1].legend(loc="best", fontsize=8)
-        fig2.suptitle(f"{y_col} vs {args.x_col} (by backend)")
+        fig2.suptitle(f"{y_col} vs {x_label} (by backend)")
         fig2.tight_layout()
-        byb_out = out_dir / f"by_backend_{_safe_name(y_col)}_vs_{_safe_name(args.x_col)}.png"
+        byb_out = out_dir / f"by_backend_{_safe_name(y_col)}_vs_{_safe_name(x_label)}.png"
         fig2.savefig(byb_out, dpi=int(args.dpi))
         plt.close(fig2)
         print(f"[plot] wrote {byb_out}")

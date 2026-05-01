@@ -1,0 +1,257 @@
+description: sop-all-models
+
+# Search-over-Paths (SoP) inference-time search baseline across SD3.5-family
+# backends, with two search-time rewards per backend (hpsv3-guided AND
+# imagereward-guided). Reward server (HPSv3 + ImageReward) runs on GPU 0;
+# sampling on GPUs 1..N-1. Phase-1 eval covers BOTH evaluators so the two
+# runs are directly comparable; phase-2 fills hpsv2/pickscore via per-backend
+# posthoc servers.
+#
+# Backends covered (one trial per (backend, search_reward) pair):
+#   senseflow_large : SD3.5-large + SenseFlow distillation, 4 steps, no CFG
+#   sd35_sid        : SiD-distilled SD3.5-large, 4 steps, real CFG ~1.0
+#   sd35_base       : SD3.5-large base, 28 steps, real CFG 4.5
+#
+# NOTE: flux_schnell is NOT covered here — SoP is currently SD3.5-side only
+# (sd35_sop_search.py + sd35_ddp_experiment.py wiring). FLUX would need a
+# parallel sampling_flux_unified_sop.py + suite case; let me know if you
+# want that added.
+#
+# SoP knobs (defaults; override via grid if needed):
+#   N_init=8, branch_M=4, keep_K=4, branch_every=1, start=0.25, score=x0_pred
+# 4-step backends (sid, senseflow) get start=0.5 to skip the first 2 steps
+# (matches the dynamic_cfg_x0 SiD policy — same noise-regime logic).
+
+target:
+  service: sing
+  name: GenAI-Shared-UKSouth2
+  workspace_name: Singularity-GenAI-WS-UKSouth2
+  resource_group: singularity-genai-gpu-uksouth2
+
+env_defaults:
+  service: sing
+  PRIORITY: high
+  NODES: 1
+  GPUS: 8
+  MEM: 80
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - export PATH=/home/aiscuser/.local/bin:$$PATH
+    - pip install --user datasets huggingface_hub hpsv2
+
+code:
+  local_dir: ./
+
+storage:
+  output:
+    storage_account_name: vigstandard
+    container_name: data
+    mount_dir: /mnt/data
+
+search:
+  job_template:
+    name: sop-{target_model}-{search_reward}-{run_tag}
+    sku: ${NODES}x${MEM}G${GPUS}-IB
+    sla_tier: Standard
+    process_count_per_node: 1
+    priority: high
+    mpi: false
+    command:
+      - set -x
+      - unset REWARD_BACKEND REWARD_TYPE REWARD_BACKENDS || true
+      - export PYTHONNOUSERSITE=1
+      - unset PYTHONPATH || true
+      - export SID_FORCE_WANDB_STUB=1
+      - export WANDB_DISABLED=true
+      # ── Paths & HF auth ────────────────────────────────────────────────────
+      - export PATH=/home/aiscuser/.local/bin:$$PATH
+      - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
+      - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
+      - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
+      - export HF_TOKEN={hf_token}
+      - export HUGGING_FACE_HUB_TOKEN={hf_token}
+      - export AZFUSE_USE_FUSE=0
+      - export NCCL_ASYNC_ERROR_HANDLING=0
+      - export NCCL_P2P_LEVEL=NVL
+      # ── Install deps (sampling env) ────────────────────────────────────────
+      - source /opt/conda/etc/profile.d/conda.sh
+      - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
+      - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
+      - /opt/conda/envs/ptca/bin/python -c "import os, torch; print('[torch-check]', torch.__version__, 'cuda=', torch.version.cuda, 'is_available=', torch.cuda.is_available(), 'count=', torch.cuda.device_count())"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
+      - /opt/conda/envs/ptca/bin/python -c "import xformers, xformers.ops; print('xformers ok', xformers.__version__)" || (/opt/conda/envs/ptca/bin/pip uninstall -y xformers && echo 'xformers disabled')
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
+      # ── Cache dirs ─────────────────────────────────────────────────────────
+      - export NUM_GPUS=${GPUS}
+      - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
+      - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
+      - export CLIP_CACHE_DIR=/mnt/data/v-yigu/model_cache/clip
+      - mkdir -p /mnt/data/v-yigu/model_cache/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
+      - mkdir -p /home/aiscuser/.cache
+      - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
+      - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
+      # ── Per-backend dispatch ───────────────────────────────────────────────
+      - export TARGET_MODEL={target_model}
+      - export AUTO_BACKEND_STEPS=0
+      - export HF_HUB_ENABLE_HF_TRANSFER=0
+      - if [ "$$TARGET_MODEL" = "senseflow" ]; then export RUN_SD35=1; export RUN_FLUX=0; export SD35_BACKEND=senseflow_large; export STEPS=4; export BASELINE_CFG=0.0; export CFG_SCALES='0.0'; export SOP_START_FRAC=0.5; export REWARD_PREP_REPOS='stabilityai/stable-diffusion-3.5-large domiso/SenseFlow'; fi
+      - if [ "$$TARGET_MODEL" = "sd35_sid" ]; then export RUN_SD35=1; export RUN_FLUX=0; export SD35_BACKEND=sid; export STEPS=4; export BASELINE_CFG=1.0; export CFG_SCALES='1.0'; export SOP_START_FRAC=0.5; export REWARD_PREP_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large'; fi
+      - if [ "$$TARGET_MODEL" = "sd35_base" ]; then export RUN_SD35=1; export RUN_FLUX=0; export SD35_BACKEND=sd35_base; export STEPS=28; export BASELINE_CFG=4.5; export CFG_SCALES='4.5'; export SOP_START_FRAC=0.25; export REWARD_PREP_REPOS='stabilityai/stable-diffusion-3.5-large'; fi
+      - 'if [ -z "$$TARGET_MODEL" ] || [ -z "$$SOP_START_FRAC" ]; then echo "ERROR: unknown target_model=$$TARGET_MODEL"; exit 1; fi'
+      - echo "[sop] TARGET_MODEL=$$TARGET_MODEL STEPS=$$STEPS BASELINE_CFG=$$BASELINE_CFG SOP_START_FRAC=$$SOP_START_FRAC search_reward={search_reward}"
+      # ── Preload model snapshots per backend ────────────────────────────────
+      - for repo in $$REWARD_PREP_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo"; done
+      # ── Build isolated reward env (HPSv3 + ImageReward) ────────────────────
+      - export REWARD_ENV_NAME=reward
+      - export REWARD_ENV_SENTINEL_DIR=/tmp
+      - CONDA_BASE=/opt/conda REWARD_ENV_NAME="$$REWARD_ENV_NAME" REWARD_ENV_SENTINEL_DIR="$$REWARD_ENV_SENTINEL_DIR" bash setup_reward_env.sh
+      - export REWARD_ENV_PREFIX=$$(cat "$$REWARD_ENV_SENTINEL_DIR/reward_env_prefix_$$REWARD_ENV_NAME")
+      - export REWARD_PY=$$REWARD_ENV_PREFIX/bin/python
+      - 'echo "Reward env prefix: $$REWARD_ENV_PREFIX"'
+      - 'if [ ! -x "$$REWARD_PY" ]; then echo "Reward env python not found: $$REWARD_PY"; exit 1; fi'
+      - $$REWARD_PY -c "import torch, transformers; print('reward env torch='+torch.__version__, 'transformers='+transformers.__version__)"
+      # ── Fix-up envs built before the setuptools/fairscale fixes landed.
+      - $$REWARD_PY -m pip install --no-cache-dir --upgrade "setuptools<80" "wheel" || true
+      - $$REWARD_PY -m pip install --no-cache-dir "fairscale==0.4.4" || $$REWARD_PY -m pip install --no-cache-dir "fairscale" || true
+      - $$REWARD_PY -m pip install --no-cache-dir --no-deps "diffusers>=0.27,<0.31" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "diffusers" || true
+      - $$REWARD_PY -m pip install --no-cache-dir --no-deps "datasets" "wandb" || true
+      - $$REWARD_PY -c "import ImageReward; print('[verify] reward env ImageReward', ImageReward.__file__)" || $$REWARD_PY -m pip install --no-cache-dir --no-deps --no-build-isolation "git+https://github.com/THUDM/ImageReward.git" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "git+https://github.com/THUDM/ImageReward.git" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "image-reward==1.5" || true
+      - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; echo "[patch] ImageReward __init__: $$IR_INIT"; else echo "[patch] WARN: ImageReward __init__ not found"; fi'
+      - $$REWARD_PY -c "import ImageReward; print('[verify-final] reward env ImageReward', ImageReward.__file__)"
+      # ── Preload reward weights in reward env (BOTH hpsv3 and imagereward) ─
+      - export REWARD_BACKENDS='{reward_server_backends}'
+      - export STAGE_REWARD_WEIGHTS_LOCAL=1
+      - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
+      - $$REWARD_PY preload_reward_models.py
+      - 'if [ -f "$$REWARD_LOCAL_HF_CACHE/.stage_done" ]; then export REWARD_HF_HOME="$$REWARD_LOCAL_HF_CACHE"; echo "Reward server will use local HF cache: $$REWARD_HF_HOME"; else export REWARD_HF_HOME="$$HF_HOME"; echo "Local staging unavailable; reward server using HF_HOME=$$HF_HOME"; fi'
+      # ── Launch reward server on GPU 0 ──────────────────────────────────────
+      - export OUT_ROOT=/mnt/data/v-yigu/sop_runs/{run_tag}/{target_model}/{search_reward}
+      - mkdir -p "$$OUT_ROOT"
+      - export REWARD_SERVER_PORT={reward_server_port}
+      - export REWARD_SERVER_URL=http://localhost:$$REWARD_SERVER_PORT
+      - export REWARD_SERVER_LOG=$$OUT_ROOT/reward_server.log
+      - env -u NCCL_P2P_LEVEL -u NCCL_ASYNC_ERROR_HANDLING -u TORCH_NCCL_ASYNC_ERROR_HANDLING CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false HF_HOME="$$REWARD_HF_HOME" "$$REWARD_PY" -u reward_server.py --port "$$REWARD_SERVER_PORT" --device cuda:0 --backends $$REWARD_BACKENDS --image_reward_model ImageReward-v1.0 --pickscore_model yuvalkirstain/PickScore_v1 > "$$REWARD_SERVER_LOG" 2>&1 &
+      - export REWARD_SERVER_PID=$$!
+      - trap 'kill $$REWARD_SERVER_PID >/dev/null 2>&1 || true' EXIT
+      # ── Wait for /health (up to 60 min) ────────────────────────────────────
+      - export HEALTH_OK=0
+      - for i in $$(seq 1 1200); do if curl -s "$$REWARD_SERVER_URL/health" >/dev/null 2>&1; then export HEALTH_OK=1; break; fi; if ! kill -0 "$$REWARD_SERVER_PID" >/dev/null 2>&1; then echo "Reward server process exited before health check passed"; tail -n 200 "$$REWARD_SERVER_LOG" || true; exit 1; fi; if [ $$((i % 10)) -eq 0 ]; then echo "[health-wait] i=$$i server log tail:"; tail -n 20 "$$REWARD_SERVER_LOG" || true; fi; sleep 3; done
+      - if [ "$$HEALTH_OK" != "1" ]; then echo "Reward server failed to become healthy"; tail -n 400 "$$REWARD_SERVER_LOG"; exit 1; fi
+      - curl -s "$$REWARD_SERVER_URL/health" | tee "$$OUT_ROOT/reward_server_health.json"
+      - export HF_HUB_OFFLINE=1
+      - export TRANSFORMERS_OFFLINE=1
+      # ── Prompt file & run knobs ────────────────────────────────────────────
+      - export PROMPT_FILE=./hpsv2_subset.txt
+      - export START_INDEX=0
+      - export END_INDEX={num_prompts}
+      - export SEED={seed}
+      # SoP run: only baseline + sop. The methods string maps to suite cases.
+      - export METHODS='baseline sop'
+      # Search-time reward (drives SoP scoring): one of {hpsv3, imagereward}.
+      - export REWARD_BACKEND={search_reward}
+      - export REWARD_TYPE={search_reward}
+      - export REWARD_BACKENDS={search_reward}
+      # Phase-1 eval covers BOTH server-hosted rewards so the hpsv3- and
+      # imagereward-guided runs share the same metric set.
+      - export EVAL_BACKENDS='imagereward hpsv3'
+      - export EVAL_BEST_IMAGES=1
+      - export EVAL_REWARD_DEVICE=cuda
+      - export EVAL_ALLOW_MISSING_BACKENDS=0
+      # ── SoP knobs ──────────────────────────────────────────────────────────
+      - export SOP_INIT_PATHS={sop_init_paths}
+      - export SOP_BRANCH_FACTOR={sop_branch_factor}
+      - export SOP_KEEP_TOP={sop_keep_top}
+      - export SOP_BRANCH_EVERY={sop_branch_every}
+      # SOP_START_FRAC was set per-backend above; allow grid override only if non-empty.
+      - 'if [ -n "{sop_start_frac_override}" ]; then export SOP_START_FRAC={sop_start_frac_override}; fi'
+      - export SOP_END_FRAC={sop_end_frac}
+      - export SOP_SCORE_DECODE={sop_score_decode}
+      - export SOP_VARIANT_IDX={sop_variant_idx}
+      # ── Run knobs ──────────────────────────────────────────────────────────
+      - export SMC_VARIANT_EXPANSION=0
+      - export N_VARIANTS=1
+      - export USE_QWEN=0
+      - export PRECOMPUTE_REWRITES=0
+      - export REWARDS_OVERWRITE=0
+      - export CORRECTION_STRENGTHS='0.0'
+      - export SAVE_BEST_IMAGES=1
+      - export SAVE_IMAGES=0
+      - export SAVE_VARIANTS=0
+      # ── Final transformers/datasets pin (sampling env) ─────────────────────
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets, transformers; print('final pin ok', 'transformers='+md.version('transformers'), md.version('ftfy'), md.version('regex'), md.version('xxhash'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'))"
+      # ── Restrict sampling to GPUs 1..N-1 (server owns GPU 0) ───────────────
+      - export SAMPLING_GPUS=$$((${GPUS} - 1))
+      - export CUDA_VISIBLE_DEVICES=$$(seq -s, 1 $$SAMPLING_GPUS)
+      - export NUM_GPUS=$$SAMPLING_GPUS
+      - 'echo "Sampling on CUDA_VISIBLE_DEVICES=$$CUDA_VISIBLE_DEVICES NUM_GPUS=$$NUM_GPUS REWARD_SERVER_URL=$$REWARD_SERVER_URL search_reward={search_reward}"'
+      # ── Run (SD3.5 suite handles sid/senseflow/sd35_base via SD35_BACKEND) ─
+      - bash hpsv2_sd35_sid_ddp_suite.sh
+      # ── Phase 2: tear down server, eval extra backends one-at-a-time ───────
+      - echo "[posthoc] killing reward server pid=$$REWARD_SERVER_PID before phase 2"
+      - kill "$$REWARD_SERVER_PID" >/dev/null 2>&1 || true
+      - for k in $$(seq 1 30); do if ! kill -0 "$$REWARD_SERVER_PID" >/dev/null 2>&1; then break; fi; sleep 1; done
+      - fuser -k "$$REWARD_SERVER_PORT/tcp" >/dev/null 2>&1 || true
+      - sleep 5
+      - trap - EXIT
+      - export POSTHOC_EVAL_BACKENDS='{posthoc_eval_backends}'
+      - export POSTHOC_LAYOUT=sd35
+      - REWARD_PY="$$REWARD_PY" REWARD_SERVER_PORT="$$REWARD_SERVER_PORT" REWARD_HF_HOME="$$REWARD_HF_HOME" PYTHON_BIN="$$PYTHON_BIN" OUT_ROOT="$$OUT_ROOT" POSTHOC_EVAL_BACKENDS="$$POSTHOC_EVAL_BACKENDS" POSTHOC_LAYOUT="$$POSTHOC_LAYOUT" bash post_eval_extra_rewards.sh
+
+    submit_args:
+      env:
+        DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: "true"
+        SHARED_MEMORY_PERCENT: "0.5"
+
+  max_trials: 6
+  type: grid
+  params:
+    - name: run_tag
+      values: [ "sop_all_models" ]
+    # ── Two separate runs: one search-time evaluator per run ────────────────
+    - name: search_reward
+      values: [ "hpsv3", "imagereward" ]
+    - name: hf_token
+      values: [ "YOUR_HF_TOKEN_HERE" ]
+    - name: target_model
+      values: [ "senseflow", "sd35_sid", "sd35_base" ]
+    - name: num_prompts
+      values: [ 200 ]
+    - name: seed
+      values: [ 42 ]
+    - name: reward_server_backends
+      values: [ "hpsv3 imagereward" ]
+    - name: posthoc_eval_backends
+      values: [ "hpsv2 pickscore" ]
+    - name: reward_server_port
+      values: [ 5102 ]
+    # ── SoP hyperparams ─────────────────────────────────────────────────────
+    # NFE per prompt ≈ N·(start_steps) + K·M·(branch_steps) + K. Tune K, M
+    # to match your MCTS/SMC budget. With defaults below and 28-step base:
+    # ~8·7 + 4·4·21 + 4 = 396 transformer evals per prompt.
+    - name: sop_init_paths
+      values: [ 8 ]
+    - name: sop_branch_factor
+      values: [ 4 ]
+    - name: sop_keep_top
+      values: [ 4 ]
+    - name: sop_branch_every
+      values: [ 1 ]
+    # Empty string means "use the per-backend default set in the command body";
+    # supply a non-empty value here to force a single value across all backends.
+    - name: sop_start_frac_override
+      values: [ "" ]
+    - name: sop_end_frac
+      values: [ 1.0 ]
+    # x0_pred: decode + score x0 at every branch step. Use "final" for a
+    # cheaper variant that scores only at the end (less guidance).
+    - name: sop_score_decode
+      values: [ "x0_pred" ]
+    - name: sop_variant_idx
+      values: [ 0 ]

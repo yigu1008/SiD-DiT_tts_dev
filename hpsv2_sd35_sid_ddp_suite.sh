@@ -276,6 +276,14 @@ DYNAMIC_CFG_X0_CFG_SOFT_MAX="${DYNAMIC_CFG_X0_CFG_SOFT_MAX:-7.5}"
 DYNAMIC_CFG_X0_CFG_MIN="${DYNAMIC_CFG_X0_CFG_MIN:-0.0}"
 DYNAMIC_CFG_X0_CFG_MAX="${DYNAMIC_CFG_X0_CFG_MAX:-12.0}"
 DYNAMIC_CFG_X0_ADD_LOCAL_NEIGHBORHOOD="${DYNAMIC_CFG_X0_ADD_LOCAL_NEIGHBORHOOD:-0}"
+SOP_INIT_PATHS="${SOP_INIT_PATHS:-8}"
+SOP_BRANCH_FACTOR="${SOP_BRANCH_FACTOR:-4}"
+SOP_KEEP_TOP="${SOP_KEEP_TOP:-4}"
+SOP_BRANCH_EVERY="${SOP_BRANCH_EVERY:-1}"
+SOP_START_FRAC="${SOP_START_FRAC:-0.25}"
+SOP_END_FRAC="${SOP_END_FRAC:-1.0}"
+SOP_SCORE_DECODE="${SOP_SCORE_DECODE:-x0_pred}"
+SOP_VARIANT_IDX="${SOP_VARIANT_IDX:-0}"
 NOISE_INJECT_MODE="${NOISE_INJECT_MODE:-combined}"
 NOISE_INJECT_SEED_BUDGET="${NOISE_INJECT_SEED_BUDGET:-8}"
 NOISE_INJECT_CANDIDATE_STEPS="${NOISE_INJECT_CANDIDATE_STEPS:-}"
@@ -933,6 +941,9 @@ run_method() {
       mode_arg="base"
       runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_dynamic_cfg_x0.py"
       ;;
+    sop)
+      mode_arg="sop"
+      ;;
     *)
       echo "Error: unsupported method '${method}' for SD3.5 suite." >&2
       exit 1
@@ -1082,6 +1093,19 @@ run_method() {
     if [[ "${DYNAMIC_CFG_X0_ADD_LOCAL_NEIGHBORHOOD:-0}" == "1" ]]; then
       extra+=(--dynamic_cfg_x0_add_local_neighborhood)
     fi
+  fi
+  # ── SoP knobs (only meaningful when --modes sop is requested) ────────────
+  if [[ "${mode_arg}" == "sop" ]]; then
+    extra+=(
+      --sop_init_paths "${SOP_INIT_PATHS}"
+      --sop_branch_factor "${SOP_BRANCH_FACTOR}"
+      --sop_keep_top "${SOP_KEEP_TOP}"
+      --sop_branch_every "${SOP_BRANCH_EVERY}"
+      --sop_start_frac "${SOP_START_FRAC}"
+      --sop_end_frac "${SOP_END_FRAC}"
+      --sop_score_decode "${SOP_SCORE_DECODE}"
+      --sop_variant_idx "${SOP_VARIANT_IDX}"
+    )
   fi
   if [[ "${SMC_VARIANT_EXPANSION:-0}" == "1" ]]; then
     extra+=(--smc_variant_expansion)

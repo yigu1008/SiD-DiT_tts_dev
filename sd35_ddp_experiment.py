@@ -30,6 +30,7 @@ from sampling_unified_sd35 import (
     run_smc,
     save_comparison,
 )
+from sd35_sop_search import add_sop_args, run_sop_search
 
 
 def parse_args() -> argparse.Namespace:
@@ -62,7 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end_index", type=int, default=-1, help="Exclusive end index; -1 means all.")
     parser.add_argument("--out_dir", default="./sd35_ddp_out")
 
-    parser.add_argument("--modes", nargs="+", choices=["base", "greedy", "mcts", "ga", "smc", "bon", "beam", "noise"], default=["base", "greedy", "mcts", "ga"])
+    parser.add_argument("--modes", nargs="+", choices=["base", "greedy", "mcts", "ga", "smc", "bon", "beam", "noise", "sop"], default=["base", "greedy", "mcts", "ga"])
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--seed_per_prompt", action="store_true", help="Use seed + prompt_index for each prompt.")
 
@@ -189,6 +190,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--noise_inject_max_policies", type=int, default=0)
     parser.add_argument("--noise_inject_variant_idx", type=int, default=0)
     parser.add_argument("--noise_inject_cfg", type=float, default=None)
+    add_sop_args(parser)
     parser.add_argument(
         "--correction_strengths",
         nargs="+",
@@ -799,6 +801,31 @@ def main() -> None:
                         "nfe": int(ctx.nfe + ctx.correction_nfe),
                         "actions": [[int(v), float(c), float(r)] for v, c, r in noise.actions],
                         "search_diagnostics": noise.diagnostics,
+                    })
+                    total_rows_written += 1
+
+                if "sop" in args.modes:
+                    ctx.nfe = 0
+                    ctx.correction_nfe = 0
+                    sop = run_sop_search(
+                        args, ctx, emb, reward_model, prompt, seed,
+                        cfg_scale=float(args.baseline_cfg),
+                    )
+                    if args.save_images or args.save_best_images:
+                        sop.image.save(os.path.join(img_dir, f"{slug}_sop.png"))
+                    if args.save_images:
+                        save_comparison(
+                            os.path.join(img_dir, f"{slug}_sop_comp.png"),
+                            base_img, sop.image, base_score, sop.score, sop.actions,
+                        )
+                    _write_row(rank_log_f, {
+                        "prompt_index": prompt_index, "prompt": prompt, "seed": seed,
+                        "mode": "sop", "score": float(sop.score),
+                        "delta_vs_base": float(sop.score - base_score),
+                        "baseline_score": float(base_score),
+                        "nfe": int(ctx.nfe + ctx.correction_nfe),
+                        "actions": [[int(v), float(c), float(r)] for v, c, r in sop.actions],
+                        "search_diagnostics": sop.diagnostics,
                     })
                     total_rows_written += 1
 

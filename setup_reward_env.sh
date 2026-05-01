@@ -120,6 +120,39 @@ echo "[setup_reward_env] Installing fairscale (ImageReward runtime dep) ..."
     "${PIP}" install --no-cache-dir "fairscale" || \
     echo "[setup_reward_env] WARNING: fairscale install failed; ImageReward will not import"
 
+# ImageReward/__init__.py does `from .ReFL import *`, and ReFL.py imports
+# `diffusers` at top-level. We don't need diffusers for inference (only for
+# training-time ReFL fine-tuning), but the import has to succeed for the
+# package to load. Install with --no-deps so it can't upgrade the pinned
+# transformers==4.45.2 (which would break hpsv3). Pin to a range that
+# requires transformers<=4.45 era to be safe.
+echo "[setup_reward_env] Installing diffusers (--no-deps; ImageReward.ReFL import) ..."
+"${PIP}" install --no-cache-dir --no-deps "diffusers>=0.27,<0.31" || \
+    "${PIP}" install --no-cache-dir --no-deps "diffusers" || \
+    echo "[setup_reward_env] WARNING: diffusers install failed; ImageReward will not import"
+
+# Other ReFL.py top-level imports that have bitten us in the past. Install
+# with --no-deps so they cannot upgrade transformers / huggingface_hub.
+echo "[setup_reward_env] Installing other ReFL deps (datasets, wandb; --no-deps) ..."
+"${PIP}" install --no-cache-dir --no-deps "datasets" "wandb" || \
+    echo "[setup_reward_env] WARNING: datasets/wandb install failed"
+
+# Belt and suspenders: ReFL is a training-time module; we only need ImageReward
+# for inference. Patch ImageReward/__init__.py to skip the ReFL import so a
+# missing optional dep can never break `import ImageReward`. Idempotent.
+echo "[setup_reward_env] Patching ImageReward/__init__.py to skip ReFL import ..."
+IR_INIT="$(${PY} -c 'import importlib.util,sys; s=importlib.util.find_spec("ImageReward"); print(s.origin if s else "")' 2>/dev/null || echo "")"
+if [ -n "${IR_INIT}" ] && [ -f "${IR_INIT}" ]; then
+    if ! grep -q '^# (patched-no-ReFL)' "${IR_INIT}"; then
+        sed -i 's|^from \.ReFL import|# (patched-no-ReFL) from .ReFL import|' "${IR_INIT}" || true
+        echo "[setup_reward_env] Patched ${IR_INIT}"
+    else
+        echo "[setup_reward_env] ${IR_INIT} already patched"
+    fi
+else
+    echo "[setup_reward_env] WARNING: could not locate ImageReward/__init__.py to patch"
+fi
+
 echo "[setup_reward_env] Installing CLIP ..."
 "${PIP}" install --no-cache-dir "git+https://github.com/openai/CLIP.git" || \
     "${PIP}" install --no-cache-dir "clip-anytorch" || \

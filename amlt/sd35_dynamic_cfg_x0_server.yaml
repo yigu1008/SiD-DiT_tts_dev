@@ -111,12 +111,21 @@ search:
       # imports `fairscale.nn.checkpoint.checkpoint_activations` at module load.
       - $$REWARD_PY -m pip install --no-cache-dir --upgrade "setuptools<80" "wheel" || true
       - $$REWARD_PY -m pip install --no-cache-dir "fairscale==0.4.4" || $$REWARD_PY -m pip install --no-cache-dir "fairscale" || true
+      # ImageReward/__init__.py imports .ReFL which transitively pulls
+      # diffusers/datasets/wandb. Install with --no-deps so they can't bump
+      # the pinned transformers==4.45.2.
+      - $$REWARD_PY -m pip install --no-cache-dir --no-deps "diffusers>=0.27,<0.31" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "diffusers" || true
+      - $$REWARD_PY -m pip install --no-cache-dir --no-deps "datasets" "wandb" || true
       # ── Strict verify: ImageReward MUST be installed in reward env (the
       # default setup_reward_env.sh path only WARNs on failure, so a failed
       # install would otherwise silently leave the server hosting only hpsv3
       # and break the imagereward-guided run + the cross-run eval). Retry
       # with the most permissive flags then fail fast if still missing. ──
       - $$REWARD_PY -c "import ImageReward; print('[verify] reward env ImageReward', ImageReward.__file__)" || $$REWARD_PY -m pip install --no-cache-dir --no-deps --no-build-isolation "git+https://github.com/THUDM/ImageReward.git" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "git+https://github.com/THUDM/ImageReward.git" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "image-reward==1.5" || true
+      # Belt and suspenders: comment out the ReFL import in __init__.py so
+      # missing training-time deps can never break `import ImageReward`.
+      # Idempotent. Runs AFTER any reinstall fallback so it survives.
+      - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; echo "[patch] ImageReward __init__: $$IR_INIT"; else echo "[patch] WARN: ImageReward __init__ not found"; fi'
       - $$REWARD_PY -c "import ImageReward; print('[verify-final] reward env ImageReward', ImageReward.__file__)"
       # ── Preload reward weights in reward env (BOTH hpsv3 and imagereward) ─
       - export REWARD_BACKENDS='{reward_server_backends}'

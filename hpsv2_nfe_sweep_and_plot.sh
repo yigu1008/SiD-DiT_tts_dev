@@ -30,7 +30,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 NUM_PROMPTS="${NUM_PROMPTS:-8}"
 SEED="${SEED:-42}"
-REWARD_BACKENDS="${REWARD_BACKENDS:-imagereward hpsv3}"
+# One search-time reward per invocation. The AMLT yaml grids over this so each
+# trial runs hpsv3 OR imagereward — never both in the same job. Pass multiple
+# values only if you actually want them sequenced inside one job.
+REWARD_BACKENDS="${REWARD_BACKENDS:-imagereward}"
 
 OUT_ROOT_BASE_SD35="${OUT_ROOT_BASE_SD35:-/tmp/sd35_nfe_sweep}"
 OUT_ROOT_BASE_FLUX="${OUT_ROOT_BASE_FLUX:-/tmp/flux_nfe_sweep}"

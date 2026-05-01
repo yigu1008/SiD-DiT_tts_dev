@@ -1,15 +1,16 @@
-description: nfe-sweep-smoke
+description: nfe-sweep-all-models
 
-# Smoke test for the all-models NFE-vs-reward pipeline.
-# Runs the single-bash entry on a minimal config to validate end-to-end
-# wiring before launching the full sweep:
-#   - 1 backend (sid)
-#   - 1 search reward (imagereward)
-#   - 4 prompts
-#   - default method list (baseline, bon, beam, smc, fksteering, greedy, ga,
-#     dts, dts_star, dynamic_cfg_x0, sop)
+# Full NFE-vs-reward sweep across 4 backends and 11 methods.
+# Two AMLT trials in parallel — one per search_reward (hpsv3, imagereward).
+# Each trial covers:
+#   - SD3.5 family: sid, senseflow_large, sd35_base   (via nfe_sweep_sd35.sh)
+#   - FLUX family : flux_schnell                       (via nfe_sweep_flux.sh)
+#   - Methods     : baseline, bon, beam, smc, fksteering, greedy, ga, dts,
+#                   dts_star, dynamic_cfg_x0, sop      (no mcts, no noise_inject)
 #
-# Output: /mnt/data/v-yigu/nfe_smoke/<run_tag>/figures/{v1,v2,v3}_imagereward/
+# Output:
+#   /mnt/data/v-yigu/nfe_full/{run_tag}/{search_reward}/combined.csv
+#   /mnt/data/v-yigu/nfe_full/{run_tag}/{search_reward}/figures/{v1,v2,v3}_{sr}/
 
 target:
   service: sing
@@ -41,7 +42,7 @@ storage:
 
 search:
   job_template:
-    name: nfe-smoke-{run_tag}
+    name: nfe-full-{search_reward}-{run_tag}
     sku: ${NODES}x${MEM}G${GPUS}-IB
     sla_tier: Standard
     process_count_per_node: 1
@@ -75,8 +76,9 @@ search:
       - mkdir -p /mnt/data/v-yigu/model_cache/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2
       - mkdir -p /home/aiscuser/.cache
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
-      # ── Preload SD3.5 SID model ────────────────────────────────────────────
-      - for repo in 'YGu1998/SiD-DiT-SD3.5-large' 'stabilityai/stable-diffusion-3.5-large'; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo"; done
+      # ── Preload all 4 backends' weights ────────────────────────────────────
+      - export ALL_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large domiso/SenseFlow black-forest-labs/FLUX.1-schnell'
+      - for repo in $$ALL_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo"; done
       # ── Build isolated reward env ──────────────────────────────────────────
       - export REWARD_ENV_NAME=reward
       - export REWARD_ENV_SENTINEL_DIR=/tmp
@@ -97,17 +99,18 @@ search:
       - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
       - REWARD_BACKENDS="$$REWARD_BACKENDS_SERVER" $$REWARD_PY preload_reward_models.py
       - 'if [ -f "$$REWARD_LOCAL_HF_CACHE/.stage_done" ]; then export REWARD_HF_HOME="$$REWARD_LOCAL_HF_CACHE"; else export REWARD_HF_HOME="$$HF_HOME"; fi'
-      - export OUT_ROOT_BASE_PLOTS=/mnt/data/v-yigu/nfe_smoke/{run_tag}
+      - export OUT_ROOT_BASE_PLOTS=/mnt/data/v-yigu/nfe_full/{run_tag}/{search_reward}
       - mkdir -p "$$OUT_ROOT_BASE_PLOTS"
-      - export REWARD_SERVER_PORT=5103
+      - export REWARD_SERVER_PORT={reward_server_port}
       - export REWARD_SERVER_URL=http://localhost:$$REWARD_SERVER_PORT
       - export REWARD_SERVER_LOG=$$OUT_ROOT_BASE_PLOTS/reward_server.log
       - env -u NCCL_P2P_LEVEL -u NCCL_ASYNC_ERROR_HANDLING -u TORCH_NCCL_ASYNC_ERROR_HANDLING CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false HF_HOME="$$REWARD_HF_HOME" "$$REWARD_PY" -u reward_server.py --port "$$REWARD_SERVER_PORT" --device cuda:0 --backends $$REWARD_BACKENDS_SERVER --image_reward_model ImageReward-v1.0 > "$$REWARD_SERVER_LOG" 2>&1 &
       - export REWARD_SERVER_PID=$$!
       - trap 'kill $$REWARD_SERVER_PID >/dev/null 2>&1 || true' EXIT
       - export HEALTH_OK=0
-      - for i in $$(seq 1 600); do if curl -s "$$REWARD_SERVER_URL/health" >/dev/null 2>&1; then export HEALTH_OK=1; break; fi; if ! kill -0 "$$REWARD_SERVER_PID" >/dev/null 2>&1; then echo "Reward server died"; tail -n 200 "$$REWARD_SERVER_LOG"; exit 1; fi; sleep 3; done
+      - for i in $$(seq 1 1200); do if curl -s "$$REWARD_SERVER_URL/health" >/dev/null 2>&1; then export HEALTH_OK=1; break; fi; if ! kill -0 "$$REWARD_SERVER_PID" >/dev/null 2>&1; then echo "Reward server died"; tail -n 200 "$$REWARD_SERVER_LOG"; exit 1; fi; sleep 3; done
       - if [ "$$HEALTH_OK" != "1" ]; then echo "Reward server failed to become healthy"; tail -n 400 "$$REWARD_SERVER_LOG"; exit 1; fi
+      - curl -s "$$REWARD_SERVER_URL/health" | tee "$$OUT_ROOT_BASE_PLOTS/reward_server_health.json"
       # ── Final transformers/datasets pin (sampling env) ─────────────────────
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
@@ -117,13 +120,12 @@ search:
       - export NUM_GPUS=$$SAMPLING_GPUS
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
-      # ── Run the smoke pipeline ─────────────────────────────────────────────
-      # 1 backend × 1 reward × {num_prompts} prompts.
+      # ── Run the full pipeline (single search_reward per trial) ─────────────
       - export NUM_PROMPTS={num_prompts}
       - export SEED={seed}
       - export REWARD_BACKENDS={search_reward}
-      - export SD35_BACKEND_LIST=sid
-      - export FLUX_BACKEND_LIST=
+      - export SD35_BACKEND_LIST="sid senseflow_large sd35_base"
+      - export FLUX_BACKEND_LIST=flux_schnell
       - export OUT_ROOT_BASE_SD35=$$OUT_ROOT_BASE_PLOTS/sd35
       - export OUT_ROOT_BASE_FLUX=$$OUT_ROOT_BASE_PLOTS/flux
       - export OUT_ROOT_BASE_PLOTS=$$OUT_ROOT_BASE_PLOTS
@@ -139,13 +141,15 @@ search:
   type: grid
   params:
     - name: run_tag
-      values: [ "smoke" ]
+      values: [ "nfe_full" ]
+    # Two parallel trials, one per search_reward.
+    - name: search_reward
+      values: [ "imagereward", "hpsv3" ]
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: num_prompts
-      values: [ 4 ]
+      values: [ 8 ]
     - name: seed
       values: [ 42 ]
-    # One AMLT trial per search reward (separate jobs, run in parallel).
-    - name: search_reward
-      values: [ "imagereward", "hpsv3" ]
+    - name: reward_server_port
+      values: [ 5104 ]

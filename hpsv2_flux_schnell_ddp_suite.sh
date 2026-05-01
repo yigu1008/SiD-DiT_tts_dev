@@ -946,6 +946,22 @@ for method in ${METHODS}; do
       fi
       run_flux_sharded "dynamic_cfg_x0" "ga" "${dyncfg_args[@]}"
       ;;
+    sop)
+      sop_args=(
+        --runner_script "${SCRIPT_DIR}/sampling_flux_unified_sop.py"
+        --n_variants 1
+        --cfg_scales ${CFG_SCALES}
+        --sop_init_paths "${SOP_INIT_PATHS:-8}"
+        --sop_branch_factor "${SOP_BRANCH_FACTOR:-4}"
+        --sop_keep_top "${SOP_KEEP_TOP:-4}"
+        --sop_branch_every "${SOP_BRANCH_EVERY:-1}"
+        --sop_start_frac "${SOP_START_FRAC:-0.25}"
+        --sop_end_frac "${SOP_END_FRAC:-1.0}"
+        --sop_score_decode "${SOP_SCORE_DECODE:-x0_pred}"
+        --sop_variant_idx "${SOP_VARIANT_IDX:-0}"
+      )
+      run_flux_sharded "sop" "ga" "${sop_args[@]}"
+      ;;
     *)
       echo "Error: unsupported method '${method}' for FLUX suite." >&2
       exit 1

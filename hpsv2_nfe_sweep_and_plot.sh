@@ -28,6 +28,10 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Heartbeat to prevent AMLT inactivity suspend.
+source "${SCRIPT_DIR}/_heartbeat.sh"
+start_heartbeat "nfe-sweep"
+
 NUM_PROMPTS="${NUM_PROMPTS:-8}"
 SEED="${SEED:-42}"
 # One search-time reward per invocation. The AMLT yaml grids over this so each

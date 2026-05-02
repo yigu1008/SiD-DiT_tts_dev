@@ -28,6 +28,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Heartbeat to prevent AMLT inactivity suspend.
+source "${SCRIPT_DIR}/_heartbeat.sh"
+start_heartbeat "sop-all-backends"
+
 : "${RUN_ROOT:?RUN_ROOT must be set}"
 : "${PROMPT_FILE:?PROMPT_FILE must be set}"
 : "${REWARD_BACKEND:?REWARD_BACKEND must be set}"

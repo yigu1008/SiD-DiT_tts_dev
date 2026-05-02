@@ -25,6 +25,10 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Heartbeat to prevent AMLT inactivity suspend.
+source "${SCRIPT_DIR}/_heartbeat.sh"
+start_heartbeat "cherry-pick"
+
 : "${BACKEND:?BACKEND must be set (sid, senseflow_large, sd35_base, flux_schnell)}"
 : "${RUN_ROOT:?RUN_ROOT must be set}"
 

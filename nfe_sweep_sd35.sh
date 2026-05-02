@@ -49,6 +49,12 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Heartbeat to prevent AMLT inactivity suspend.
+if [[ -f "${SCRIPT_DIR}/_heartbeat.sh" ]]; then
+  source "${SCRIPT_DIR}/_heartbeat.sh"
+  start_heartbeat "nfe-sweep-sd35"
+fi
+
 SD35_BACKEND_LIST="${SD35_BACKEND_LIST:-${SD35_BACKEND:-sid senseflow_large sd35_base}}"
 # Default sweep covers all methods used in the all-models NFE-vs-reward plot.
 # mcts and noise_inject are intentionally dropped per the all-models spec.

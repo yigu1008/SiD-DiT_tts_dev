@@ -13,6 +13,12 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Heartbeat to prevent AMLT inactivity suspend.
+if [[ -f "${SCRIPT_DIR}/_heartbeat.sh" ]]; then
+  source "${SCRIPT_DIR}/_heartbeat.sh"
+  start_heartbeat "nfe-sweep-flux"
+fi
+
 FLUX_BACKEND_LIST="${FLUX_BACKEND_LIST:-flux_schnell}"
 SWEEP_METHODS="${SWEEP_METHODS:-baseline bon beam smc fksteering greedy ga dts dts_star dynamic_cfg_x0 sop}"
 

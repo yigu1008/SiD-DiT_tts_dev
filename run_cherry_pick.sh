@@ -39,9 +39,12 @@ mkdir -p "${PROMPTS_DIR}"
 PROMPT_FILE="${PROMPTS_DIR}/backend_${BACKEND}.txt"
 
 # ── Step 1: sample prompts (one-time per backend) ───────────────────────────
+# Prompt download needs HF online — caller may have set HF_HUB_OFFLINE=1 for
+# the sampling phase, so temporarily disable it here.
 if [[ ! -f "${PROMPT_FILE}" ]]; then
   echo "[cherry] sampling prompts → ${PROMPT_FILE}"
-  "${PYTHON_BIN}" "${SCRIPT_DIR}/cherry_pick_prompts.py" \
+  env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE \
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/cherry_pick_prompts.py" \
     --n_prompts "${N_PROMPTS}" \
     --out_dir "${PROMPTS_DIR}" \
     --backends "${BACKEND}"

@@ -15,42 +15,68 @@ from pathlib import Path
 BACKENDS = ["sid", "senseflow_large", "sd35_base", "flux_schnell"]
 
 
-def _load_hpsv2_prompts() -> list[str]:
-    """Pull HPSv2 prompts from HuggingFace (xswu/HPSv2 — all 4 splits)."""
+# HPSv2 prompts: the official author repo `xswu/HPSv2` is a *code* repo, not a
+# dataset. The HPSv2 prompts ship inside the pi-Flow paper's mirror at
+# `Lakonik/t2i-prompts-hpsv2` (test split, 3200 prompts, column `prompt`).
+_HPSV2_CANDIDATES = [
+    ("Lakonik/t2i-prompts-hpsv2", "test"),
+]
+# DrawBench: `sayakpaul/drawbench` (CSV, train split, column `Prompts`) is the
+# canonical mirror; `shunk031/DrawBench` is an alternative.
+_DRAWBENCH_CANDIDATES = [
+    ("sayakpaul/drawbench", "train"),
+    ("shunk031/DrawBench", "train"),
+]
+
+
+def _load_hf_prompts(candidates: list[tuple[str, str]], label: str) -> list[str]:
+    """Try multiple HF dataset names; return prompts from the first that works."""
     try:
         from datasets import load_dataset
     except ImportError as e:
         raise RuntimeError("pip install datasets") from e
-    prompts: list[str] = []
-    # Splits: photo, anime, concept-art, paintings.
-    for split in ["test"]:
+    for repo, split in candidates:
         try:
-            ds = load_dataset("xswu/HPSv2", split=split)
-            for row in ds:
-                p = row.get("prompt") or row.get("text") or ""
-                if isinstance(p, str) and p.strip():
-                    prompts.append(p.strip())
+            ds = load_dataset(repo, split=split)
         except Exception as exc:
-            print(f"[cherry] warn: failed to load HPSv2 split={split}: {exc}")
-    return prompts
+            print(f"[cherry] {label}: {repo}:{split} unavailable ({type(exc).__name__})")
+            continue
+        prompts: list[str] = []
+        for row in ds:
+            p = (
+                row.get("prompt") or row.get("Prompts") or row.get("text") or
+                row.get("caption") or ""
+            )
+            if isinstance(p, str) and p.strip():
+                prompts.append(p.strip())
+        if prompts:
+            print(f"[cherry] {label}: loaded {len(prompts)} from {repo}:{split}")
+            return prompts
+    return []
+
+
+def _load_local_fallback(repo_root: Path) -> list[str]:
+    """If HF is unreachable, fall back to local hpsv2_subset.txt in the repo."""
+    candidates = [
+        repo_root / "hpsv2_subset.txt",
+        repo_root.parent / "hpsv2_subset.txt",
+    ]
+    for path in candidates:
+        if path.exists():
+            with path.open(encoding="utf-8") as f:
+                prompts = [line.strip() for line in f if line.strip()]
+            if prompts:
+                print(f"[cherry] local fallback: loaded {len(prompts)} prompts from {path}")
+                return prompts
+    return []
+
+
+def _load_hpsv2_prompts() -> list[str]:
+    return _load_hf_prompts(_HPSV2_CANDIDATES, "HPSv2")
 
 
 def _load_drawbench_prompts() -> list[str]:
-    """Pull DrawBench prompts (sayakpaul/drawbench)."""
-    try:
-        from datasets import load_dataset
-    except ImportError as e:
-        raise RuntimeError("pip install datasets") from e
-    prompts: list[str] = []
-    try:
-        ds = load_dataset("sayakpaul/drawbench", split="train")
-        for row in ds:
-            p = row.get("Prompts") or row.get("prompt") or row.get("text") or ""
-            if isinstance(p, str) and p.strip():
-                prompts.append(p.strip())
-    except Exception as exc:
-        print(f"[cherry] warn: failed to load DrawBench: {exc}")
-    return prompts
+    return _load_hf_prompts(_DRAWBENCH_CANDIDATES, "DrawBench")
 
 
 def main() -> None:
@@ -72,9 +98,17 @@ def main() -> None:
     print(f"[cherry]   {len(drawbench)} DrawBench prompts")
 
     union = list({*hpsv2, *drawbench})  # de-dupe across sources
+    if len(union) < args.n_prompts:
+        # HF unreachable or returned too few — fall back to local subset.
+        repo_root = Path(__file__).resolve().parent
+        local = _load_local_fallback(repo_root)
+        union = list({*union, *local})
     union.sort()  # deterministic order before sampling
     if len(union) < args.n_prompts:
-        raise RuntimeError(f"Union has only {len(union)} prompts; need {args.n_prompts}")
+        raise RuntimeError(
+            f"Union has only {len(union)} prompts; need {args.n_prompts}. "
+            f"HF datasets unreachable AND local hpsv2_subset.txt missing/short."
+        )
     print(f"[cherry] union (deduped): {len(union)} prompts")
 
     for i, backend in enumerate(args.backends):

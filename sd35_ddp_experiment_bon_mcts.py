@@ -5,6 +5,8 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
+import mcts_hybrid_ut_dt
+import mcts_improved
 import sd35_ddp_experiment as base
 from sampling_unified_sd35_lookahead_reweighting import run_mcts_lookahead
 
@@ -55,10 +57,17 @@ def _parse_bon_mcts_flags(argv: list[str]) -> tuple[argparse.Namespace, list[str
     )
     parser.add_argument(
         "--bon_mcts_refine_method",
-        choices=["ours_tree", "mcts"],
+        choices=["ours_tree", "mcts", "mcts_improved", "hybrid_ut_dt"],
         default="ours_tree",
-        help="Refinement tree-search after BoN prescreen: ours_tree (lookahead prior) or legacy mcts.",
+        help="Refinement tree-search after BoN prescreen: "
+             "ours_tree (full lookahead module) | "
+             "mcts (vanilla UCB1) | "
+             "mcts_improved (UCB1-Tuned + reward norm + x0-pred bootstrap) | "
+             "hybrid_ut_dt (U_t/D_t latent priors + reward norm + x0-pred bootstrap).",
     )
+    # Surface flag groups for both improved variants.
+    mcts_improved.add_mcts_improved_args(parser)
+    mcts_hybrid_ut_dt.add_mcts_hybrid_args(parser)
     parser.add_argument(
         "--lookahead_mode",
         choices=[
@@ -147,6 +156,8 @@ def _run_bon_mcts(
     seed: int,
     original_run_mcts: Callable[..., Any],
     lookahead_run_mcts: Callable[..., Any],
+    improved_run_mcts: Callable[..., Any],
+    hybrid_run_mcts: Callable[..., Any],
 ) -> Any:
     base_seed = int(seed)
     n_seeds = max(1, int(getattr(args, "bon_mcts_n_seeds", 8)))
@@ -202,7 +213,11 @@ def _run_bon_mcts(
         seed_i = int(row["seed"])
         if refine_method == "mcts":
             result = original_run_mcts(run_args, ctx, emb, reward_model, prompt, variants, seed_i)
-        else:
+        elif refine_method == "mcts_improved":
+            result = improved_run_mcts(run_args, ctx, emb, reward_model, prompt, variants, seed_i)
+        elif refine_method == "hybrid_ut_dt":
+            result = hybrid_run_mcts(run_args, ctx, emb, reward_model, prompt, variants, seed_i)
+        else:  # ours_tree
             result = lookahead_run_mcts(run_args, ctx, emb, reward_model, prompt, variants, seed_i)
         mcts_rows.append(
             {
@@ -268,6 +283,8 @@ def main() -> None:
             seed=seed,
             original_run_mcts=original_run_mcts,
             lookahead_run_mcts=run_mcts_lookahead,
+            improved_run_mcts=mcts_improved.run_mcts_improved,
+            hybrid_run_mcts=mcts_hybrid_ut_dt.run_mcts_hybrid_ut_dt,
         )
 
     base.parse_args = _make_patched_parse_args(original_parse_args)

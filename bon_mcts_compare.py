@@ -18,7 +18,7 @@ from collections import defaultdict
 from pathlib import Path
 
 
-CONFIG_VARIANTS = ["default", "prescreen_high_cfg", "wide_topk", "large_pool", "vanilla_refine"]
+CONFIG_VARIANTS = ["default", "wide_topk", "large_pool", "vanilla_refine", "improved_refine", "hybrid_refine"]
 BACKENDS = ["sid", "senseflow_large"]
 
 

@@ -88,8 +88,8 @@ def _nfe_for(method: str, knob: str, steps: int, baseline_cfg: float, beam_cfg_n
         grid_size = 4
         return s, scored_steps * grid_size
     if method == "sop":
-        # knob is "K:M".
-        m = re.match(r"(\d+):(\d+)", str(knob))
+        # knob is "K:M" (or legacy "KxM" from older flux sweeps).
+        m = re.match(r"(\d+)[:x](\d+)", str(knob))
         if not m:
             return 0, 0
         k_val, m_val = int(m.group(1)), int(m.group(2))

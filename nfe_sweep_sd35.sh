@@ -245,6 +245,11 @@ run_one_config() {
   )
 
   case "${method}" in
+    baseline)
+      # No NFE knob — single point at STEPS forwards. The suite handles
+      # mode_arg="base" itself; we just need N_VARIANTS=1 and CFG_SCALES=baseline.
+      env_pairs+=( "N_VARIANTS=1" "CFG_SCALES=${BASELINE_CFG}" )
+      ;;
     bon)
       local n; n="$(ceil_div "${target_nfe}" "${STEPS}")"; (( n < 1 )) && n=1
       env_pairs+=( "N_VARIANTS=1" "CFG_SCALES=${BASELINE_CFG}" "BON_N=${n}" )

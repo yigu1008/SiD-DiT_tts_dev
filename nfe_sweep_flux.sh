@@ -74,7 +74,7 @@ resolve_backend_defaults() {
 
 run_one_config() {
   local backend="$1" method="$2" target_nfe="$3" sweep_root="$4"
-  local label="${method}_nfe${target_nfe//:/x}"
+  local label="${method}_nfe${target_nfe}"
   local config_root="${sweep_root}/${label}"
   mkdir -p "${config_root}"
 

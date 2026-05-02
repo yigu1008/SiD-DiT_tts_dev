@@ -944,6 +944,10 @@ run_method() {
     sop)
       mode_arg="sop"
       ;;
+    mcts_improved|mcts_v2)
+      mode_arg="mcts"
+      runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_mcts_improved.py"
+      ;;
     *)
       echo "Error: unsupported method '${method}' for SD3.5 suite." >&2
       exit 1

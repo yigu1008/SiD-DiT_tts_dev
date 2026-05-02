@@ -35,6 +35,10 @@ N_VARIANTS="${N_VARIANTS:-3}"
 CFG_SCALES="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5}"
 BASELINE_CFG="${BASELINE_CFG:-1.0}"
 N_SIMS="${N_SIMS:-60}"
+# Per-backend N_SIMS recommendation: 25 for 4-step distilled backends
+# (sid, senseflow_*) — they're cheap per-prompt so spending 60 sims is
+# overkill. 60 is kept for sd35_base (28-step). Override happens after the
+# per-backend block below so users can still force a value via env var.
 UCB_C="${UCB_C:-1.41}"
 SMC_K="${SMC_K:-8}"
 SMC_GAMMA="${SMC_GAMMA:-0.10}"
@@ -337,6 +341,17 @@ if [[ "${SD35_BACKEND}" == "senseflow_large" || "${SD35_BACKEND}" == "senseflow_
   fi
   if [[ "${BASELINE_CFG}" == "1.0" ]]; then
     BASELINE_CFG="0.0"
+  fi
+  # 4-step backend — drop N_SIMS unless caller explicitly set it.
+  if [[ "${N_SIMS}" == "60" ]]; then
+    N_SIMS="25"
+  fi
+fi
+
+# SiD (4-step distilled) — same N_SIMS reduction as senseflow.
+if [[ "${SD35_BACKEND}" == "sid" ]]; then
+  if [[ "${N_SIMS}" == "60" ]]; then
+    N_SIMS="25"
   fi
 fi
 
@@ -923,6 +938,15 @@ run_method() {
       ;;
     ga) mode_arg="ga" ;;
     smc|smc_das) mode_arg="smc" ;;
+    fksteering)
+      # FK-steering = SMC with reward-gradient (diff) potential.
+      # Override SMC_POTENTIAL for this method without affecting an outer
+      # `smc` run in the same suite invocation. SMC_LAMBDA defaults to 10.0
+      # but caller can override via FKSTEERING_LAMBDA env.
+      mode_arg="smc"
+      SMC_POTENTIAL="diff"
+      SMC_LAMBDA="${FKSTEERING_LAMBDA:-${SMC_LAMBDA:-10.0}}"
+      ;;
     bon) mode_arg="bon" ;;
     bon_mcts)
       mode_arg="mcts"

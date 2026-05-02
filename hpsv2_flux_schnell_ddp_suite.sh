@@ -155,6 +155,12 @@ GA_GUIDANCE_SCALES="${GA_GUIDANCE_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5}"
 N_VARIANTS="${N_VARIANTS:-5}"
 CFG_SCALES="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5}"
 N_SIMS="${N_SIMS:-50}"
+# 4-step distilled FLUX backends (flux_schnell, ≤8-step tdd_flux) don't need
+# 50 sims to converge — drop to 25 unless caller explicitly set it. Detect
+# by STEPS (already resolved by AUTO_BACKEND_STEPS / yaml at this point).
+if [[ "${N_SIMS}" == "50" && -n "${STEPS:-}" && "${STEPS}" -le 8 ]]; then
+  N_SIMS="25"
+fi
 UCB_C="${UCB_C:-1.41}"
 MCTS_FRESH_NOISE_STEPS="${MCTS_FRESH_NOISE_STEPS:-}"
 MCTS_FRESH_NOISE_SAMPLES="${MCTS_FRESH_NOISE_SAMPLES:-1}"
@@ -884,6 +890,18 @@ for method in ${METHODS}; do
         fi
       fi
       run_flux_sharded "smc" "smc" "${smc_args[@]}"
+      ;;
+    fksteering)
+      # FK-steering = SMC with reward-gradient (diff) potential.
+      fksteering_args=(
+        --smc_k "${SMC_K}"
+        --smc_gamma "${SMC_GAMMA}"
+        --smc_potential "diff"
+        --smc_lambda "${FKSTEERING_LAMBDA:-${SMC_LAMBDA:-10.0}}"
+        --smc_guidance_scale "${SMC_GUIDANCE_SCALE}"
+        --smc_chunk "${SMC_CHUNK}"
+      )
+      run_flux_sharded "fksteering" "smc" "${fksteering_args[@]}"
       ;;
     bon)
       run_flux_sharded "bon" "bon" \

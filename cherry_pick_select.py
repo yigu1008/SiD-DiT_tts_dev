@@ -17,6 +17,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import shutil
 from collections import defaultdict
 from pathlib import Path
@@ -44,26 +45,60 @@ def _find_method_dirs(run_root: Path) -> dict[str, Path]:
     return found
 
 
+_SEED_FROM_PATH = re.compile(r"/seed(\d+)/")
+
+
+def _seed_from_path(method_dir: Path) -> int | None:
+    """Extract the outer seed (set by run_cherry_pick.sh's seed loop) from the path.
+
+    Cherry-pick layout: <RUN_ROOT>/<backend>/seed<NN>/run_<TS>/<method>/.
+    """
+    m = _SEED_FROM_PATH.search(str(method_dir))
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            return None
+    return None
+
+
 def _load_per_prompt_scores(method_dir: Path) -> dict[tuple[int, int], dict]:
-    """Return {(prompt_index, seed): {hpsv3, imagereward, image_path}} for one method."""
+    """Return {(prompt_index, seed): {hpsv3, imagereward, image_path}} for one method.
+
+    Schema written by evaluate_best_images_multi_reward.py:
+      {"rows": [{"prompt_index", "slug", "sample_index", "prompt",
+                 "image_path", "method", "objective_score",
+                 "scores": {"imagereward": <f>, "hpsv3": <f>, ...}}, ...]}
+    The seed is NOT in the JSON — derive from the path's `seed<NN>` segment.
+    """
     eval_path = method_dir / "best_images_multi_reward.json"
     if not eval_path.exists():
         return {}
+    seed = _seed_from_path(method_dir)
+    if seed is None:
+        # Last-resort: try sample_index as a stand-in (may collide across outer runs).
+        seed = -1
+
     payload = json.loads(eval_path.read_text())
-    out: dict[tuple[int, int], dict] = {}
     rows = payload.get("rows") or payload.get("entries") or []
+    out: dict[tuple[int, int], dict] = {}
     for row in rows:
         try:
             p_idx = int(row.get("prompt_index", -1))
-            seed = int(row.get("seed", -1))
         except (ValueError, TypeError):
             continue
-        if p_idx < 0 or seed < 0:
+        if p_idx < 0:
             continue
-        per_backend = row.get("per_backend") or row.get("rewards") or {}
-        hpsv3 = float(per_backend.get("hpsv3", float("nan"))) if isinstance(per_backend, dict) else float("nan")
-        ir = float(per_backend.get("imagereward", float("nan"))) if isinstance(per_backend, dict) else float("nan")
-        out[(p_idx, seed)] = {
+        # Prefer seed from path; fall back to sample_index if path didn't yield one.
+        s = seed if seed >= 0 else int(row.get("sample_index", 0))
+
+        scores = row.get("scores") or row.get("per_backend") or row.get("rewards") or {}
+        if not isinstance(scores, dict):
+            scores = {}
+        hpsv3 = float(scores.get("hpsv3", float("nan"))) if scores.get("hpsv3") is not None else float("nan")
+        ir = float(scores.get("imagereward", float("nan"))) if scores.get("imagereward") is not None else float("nan")
+
+        out[(p_idx, s)] = {
             "hpsv3": hpsv3,
             "imagereward": ir,
             "image_path": row.get("image_path"),

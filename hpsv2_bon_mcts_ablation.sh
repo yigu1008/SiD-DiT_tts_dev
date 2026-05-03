@@ -35,7 +35,11 @@ fi
 PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/hpsv2_subset.txt}"
 NUM_PROMPTS="${NUM_PROMPTS:-8}"
 SEED="${SEED:-42}"
-N_SIMS="${N_SIMS:-25}"
+# N_SIMS=60 keeps each refine tree deep enough for ours_tree / hybrid priors
+# to converge (topk=2 split → ~30 sims per tree). The 4-step suite auto-drops
+# N_SIMS to 25 by default for cost; here we explicitly override it back up
+# because shallow trees defeat the point of comparing prior strategies.
+N_SIMS="${N_SIMS:-60}"
 REWARD_BACKEND="${REWARD_BACKEND:-imagereward}"
 EVAL_BACKENDS="${EVAL_BACKENDS:-imagereward hpsv3}"
 

@@ -1,22 +1,22 @@
-description: bon-mcts-prescreen-ablation
+description: unified-root-vs-bon-mcts
 
-# All bon_mcts config variants × backends in ONE AMLT job.
-# The bash driver `hpsv2_bon_mcts_ablation.sh` loops over (backend × variant)
-# sequentially. One reward server boot, one env build, ~12 sequential cells.
+# Compare unified_root MCTS (seed pool at the tree root) against the
+# existing bon_mcts results (which the user already has from cherry-pick).
 #
-# Configs (set inside the bash driver):
-#   default              : n_seeds=8  topk=2  refine=ours_tree (lookahead-prior MCTS)
-#   wide_topk            : n_seeds=8  topk=4  refine=ours_tree
-#   large_pool           : n_seeds=16 topk=2  refine=ours_tree
-#   vanilla_refine       : refine=mcts (no prior — bare baseline)
-#   improved_refine      : refine=mcts_improved (UCB1-Tuned + reward norm + x0_pred)
-#   hybrid_refine        : refine=hybrid_ut_dt (U_t/D_t prior + reward norm + x0_pred)
+# Runs only `unified_root` method on the same prompts/seeds as cherry-pick
+# so post-hoc comparison is apples-to-apples. After sampling, phase-2 evals
+# include pickscore + hpsv2 (server can't host all four at once on GPU 0).
+#
+# Single AMLT job: loops sequentially over backends in `run_unified_root.sh`.
+# 4 SD3.5-family backends + flux_schnell skipped (unified_root is SD3.5-only
+# in this round).
 #
 # Output:
-#   /mnt/data/v-yigu/bon_mcts_ablation/{run_tag}/<backend>/<variant>/...
-#
-# Compare:
-#   python3 bon_mcts_compare.py --root /mnt/data/v-yigu/bon_mcts_ablation/{run_tag}
+#   /mnt/data/v-yigu/unified_root/{run_tag}/<backend>/seed<S>/<run_dir>/unified_root/
+#     ├── images/<slug>_unified_root.png
+#     ├── logs/rank_*.jsonl
+#     ├── aggregate_ddp.json
+#     └── best_images_multi_reward_aggregate.json   (eval: imagereward + hpsv3 + hpsv2 + pickscore)
 
 target:
   service: sing
@@ -48,7 +48,7 @@ storage:
 
 search:
   job_template:
-    name: bonmcts-ablation-{run_tag}
+    name: unified-root-{run_tag}
     sku: ${NODES}x${MEM}G${GPUS}-IB
     sla_tier: Standard
     process_count_per_node: 1
@@ -60,6 +60,7 @@ search:
       - unset PYTHONPATH || true
       - export SID_FORCE_WANDB_STUB=1
       - export WANDB_DISABLED=true
+      # ── Paths & HF auth ────────────────────────────────────────────────────
       - export PATH=/home/aiscuser/.local/bin:$$PATH
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
@@ -74,8 +75,8 @@ search:
       - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
-      # ── Cache + preload BOTH backends' weights up-front ───────────────────
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "datasets>=2.19.0"
+      # ── Cache + preload ALL backends' weights up-front ────────────────────
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
@@ -84,7 +85,7 @@ search:
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
       - export ALL_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large domiso/SenseFlow'
       - for repo in $$ALL_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo"; done
-      # ── Reward env (HPSv3 + ImageReward) + ImageReward fix-up cascade ─────
+      # ── Reward env + ImageReward fix-up cascade ────────────────────────────
       - export REWARD_ENV_NAME=reward
       - export REWARD_ENV_SENTINEL_DIR=/tmp
       - CONDA_BASE=/opt/conda REWARD_ENV_NAME="$$REWARD_ENV_NAME" REWARD_ENV_SENTINEL_DIR="$$REWARD_ENV_SENTINEL_DIR" bash setup_reward_env.sh
@@ -96,13 +97,13 @@ search:
       - $$REWARD_PY -m pip install --no-cache-dir --no-deps "datasets" "wandb" || true
       - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; fi'
       - $$REWARD_PY -c "import ImageReward; print('[verify] ImageReward', ImageReward.__file__)"
-      # ── Reward server boot (hosts hpsv3 + imagereward) ─────────────────────
+      # ── Reward server (HPSv3 + ImageReward; pickscore + hpsv2 in phase 2) ──
       - export REWARD_BACKENDS_SERVER='hpsv3 imagereward'
       - export STAGE_REWARD_WEIGHTS_LOCAL=1
       - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
       - REWARD_BACKENDS="$$REWARD_BACKENDS_SERVER" $$REWARD_PY preload_reward_models.py
       - 'if [ -f "$$REWARD_LOCAL_HF_CACHE/.stage_done" ]; then export REWARD_HF_HOME="$$REWARD_LOCAL_HF_CACHE"; else export REWARD_HF_HOME="$$HF_HOME"; fi'
-      - export RUN_ROOT=/mnt/data/v-yigu/bon_mcts_ablation/{run_tag}
+      - export RUN_ROOT=/mnt/data/v-yigu/unified_root/{run_tag}
       - mkdir -p "$$RUN_ROOT"
       - export REWARD_SERVER_PORT={reward_server_port}
       - export REWARD_SERVER_URL=http://localhost:$$REWARD_SERVER_PORT
@@ -113,23 +114,30 @@ search:
       - export HEALTH_OK=0
       - for i in $$(seq 1 1200); do if curl -s "$$REWARD_SERVER_URL/health" >/dev/null 2>&1; then export HEALTH_OK=1; break; fi; if ! kill -0 "$$REWARD_SERVER_PID" >/dev/null 2>&1; then echo "Reward server died"; tail -n 200 "$$REWARD_SERVER_LOG"; exit 1; fi; sleep 3; done
       - if [ "$$HEALTH_OK" != "1" ]; then echo "Reward server failed to become healthy"; tail -n 400 "$$REWARD_SERVER_LOG"; exit 1; fi
-      # ── Final transformers/datasets pin (sampling env) ─────────────────────
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
-      # ── GPU split: server on 0, sampling on 1..N-1 ─────────────────────────
       - export SAMPLING_GPUS=$$((${GPUS} - 1))
       - export CUDA_VISIBLE_DEVICES=$$(seq -s, 1 $$SAMPLING_GPUS)
       - export NUM_GPUS=$$SAMPLING_GPUS
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
-      # ── Run the ablation in one bash ───────────────────────────────────────
-      - export NUM_PROMPTS={num_prompts}
-      - export SEED={seed}
-      - export REWARD_BACKEND={search_reward}
-      - export N_SIMS=60
+      # ── Phase 1: run unified_root across backends ──────────────────────────
       - export BACKENDS="{backends}"
-      - export VARIANTS="{variants}"
-      - bash hpsv2_bon_mcts_ablation.sh
+      - export N_PROMPTS={n_prompts}
+      - export SEEDS="{seeds}"
+      - export N_SIMS={n_sims}
+      - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
+      - bash run_unified_root.sh
+      # ── Phase 2: posthoc eval (hpsv2 + pickscore) per backend ──────────────
+      - echo "[posthoc] killing reward server pid=$$REWARD_SERVER_PID before phase 2"
+      - kill "$$REWARD_SERVER_PID" >/dev/null 2>&1 || true
+      - for k in $$(seq 1 30); do if ! kill -0 "$$REWARD_SERVER_PID" >/dev/null 2>&1; then break; fi; sleep 1; done
+      - fuser -k "$$REWARD_SERVER_PORT/tcp" >/dev/null 2>&1 || true
+      - sleep 5
+      - trap - EXIT
+      - export POSTHOC_EVAL_BACKENDS='hpsv2 pickscore'
+      - export POSTHOC_LAYOUT=sd35
+      - 'for bk in $$BACKENDS; do echo "[posthoc] === $${bk} ==="; for seed_dir in $$RUN_ROOT/$${bk}/seed*; do [ -d "$$seed_dir" ] || continue; OUT_ROOT="$$seed_dir" REWARD_PY="$$REWARD_PY" REWARD_SERVER_PORT="$$REWARD_SERVER_PORT" REWARD_HF_HOME="$$REWARD_HF_HOME" PYTHON_BIN="$$PYTHON_BIN" POSTHOC_EVAL_BACKENDS="$$POSTHOC_EVAL_BACKENDS" POSTHOC_LAYOUT="$$POSTHOC_LAYOUT" bash post_eval_extra_rewards.sh || echo "[posthoc] WARN $$seed_dir failed"; done; done'
 
     submit_args:
       env:
@@ -140,18 +148,16 @@ search:
   type: grid
   params:
     - name: run_tag
-      values: [ "bon_mcts_ablation" ]
+      values: [ "unified_root" ]
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
-    - name: num_prompts
-      values: [ 8 ]
-    - name: seed
-      values: [ 42 ]
-    - name: search_reward
-      values: [ "imagereward" ]
+    - name: n_prompts
+      values: [ 100 ]
+    - name: seeds
+      values: [ "42 43 44 45" ]
+    - name: n_sims
+      values: [ 30 ]
     - name: backends
-      values: [ "sid senseflow_large" ]
-    - name: variants
-      values: [ "default wide_topk large_pool vanilla_refine improved_refine hybrid_refine" ]
+      values: [ "sid senseflow_large sd35_base" ]
     - name: reward_server_port
-      values: [ 5108 ]
+      values: [ 5109 ]

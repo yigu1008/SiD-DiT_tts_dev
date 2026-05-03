@@ -972,6 +972,10 @@ run_method() {
       mode_arg="mcts"
       runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_mcts_improved.py"
       ;;
+    unified_root)
+      mode_arg="mcts"
+      runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_unified_root.py"
+      ;;
     *)
       echo "Error: unsupported method '${method}' for SD3.5 suite." >&2
       exit 1

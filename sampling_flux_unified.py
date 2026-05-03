@@ -192,7 +192,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     p.add_argument(
         "--reward_backend",
-        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "all"],
+        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "all", "composite_hpsv3_ir"],
         default="imagereward",
     )
     p.add_argument(

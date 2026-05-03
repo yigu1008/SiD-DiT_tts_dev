@@ -1,0 +1,152 @@
+description: mcts-param-ablation
+
+# Single-trial MCTS-hyperparam ablation.
+# Anchored at: bon_mcts + refine_method=mcts (vanilla) + reward=imagereward.
+# 8 cells × 2 backends (sid + senseflow_large) = 16 cells, all sequential
+# in `hpsv2_mcts_param_ablation.sh`.
+#
+# Cells (one-at-a-time around `default`):
+#   default     N_SIMS=30 TOPK=2 UCB_C=1.0  MIN_SIMS=8
+#   n_sims_15   N_SIMS=15
+#   n_sims_60   N_SIMS=60
+#   n_sims_120  N_SIMS=120
+#   topk_1      TOPK=1
+#   topk_4      TOPK=4 MIN_SIMS=4
+#   ucb_c_0.5   UCB_C=0.5
+#   ucb_c_2.0   UCB_C=2.0
+#
+# Output:
+#   /mnt/data/v-yigu/mcts_param/{run_tag}/<backend>/<cell>/seed<S>/<run_dir>/bon_mcts/
+
+target:
+  service: sing
+  name: GenAI-Shared-UKSouth2
+  workspace_name: Singularity-GenAI-WS-UKSouth2
+  resource_group: singularity-genai-gpu-uksouth2
+
+env_defaults:
+  service: sing
+  PRIORITY: high
+  NODES: 1
+  GPUS: 8
+  MEM: 80
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - export PATH=/home/aiscuser/.local/bin:$$PATH
+    - pip install --user datasets huggingface_hub hpsv2
+
+code:
+  local_dir: ./
+
+storage:
+  output:
+    storage_account_name: vigstandard
+    container_name: data
+    mount_dir: /mnt/data
+
+search:
+  job_template:
+    name: mcts-param-{run_tag}
+    sku: ${NODES}x${MEM}G${GPUS}-IB
+    sla_tier: Standard
+    process_count_per_node: 1
+    priority: high
+    mpi: false
+    command:
+      - set -x
+      - export PYTHONNOUSERSITE=1
+      - unset PYTHONPATH || true
+      - export SID_FORCE_WANDB_STUB=1
+      - export WANDB_DISABLED=true
+      - export PATH=/home/aiscuser/.local/bin:$$PATH
+      - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
+      - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
+      - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
+      - export HF_TOKEN={hf_token}
+      - export HUGGING_FACE_HUB_TOKEN={hf_token}
+      - export NCCL_ASYNC_ERROR_HANDLING=0
+      - export NCCL_P2P_LEVEL=NVL
+      # ── Sampling env ───────────────────────────────────────────────────────
+      - source /opt/conda/etc/profile.d/conda.sh
+      - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
+      - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "datasets>=2.19.0"
+      # ── Cache + per-backend preload ───────────────────────────────────────
+      - export NUM_GPUS=${GPUS}
+      - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
+      - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
+      - mkdir -p /mnt/data/v-yigu/model_cache/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2
+      - mkdir -p /home/aiscuser/.cache
+      - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
+      - export ALL_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large domiso/SenseFlow'
+      - for repo in $$ALL_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo"; done
+      # ── Reward env + ImageReward fix-up cascade ────────────────────────────
+      - export REWARD_ENV_NAME=reward
+      - export REWARD_ENV_SENTINEL_DIR=/tmp
+      - CONDA_BASE=/opt/conda REWARD_ENV_NAME="$$REWARD_ENV_NAME" REWARD_ENV_SENTINEL_DIR="$$REWARD_ENV_SENTINEL_DIR" bash setup_reward_env.sh
+      - export REWARD_ENV_PREFIX=$$(cat "$$REWARD_ENV_SENTINEL_DIR/reward_env_prefix_$$REWARD_ENV_NAME")
+      - export REWARD_PY=$$REWARD_ENV_PREFIX/bin/python
+      - $$REWARD_PY -m pip install --no-cache-dir --upgrade "setuptools<80" "wheel" || true
+      - $$REWARD_PY -m pip install --no-cache-dir "fairscale==0.4.4" || true
+      - $$REWARD_PY -m pip install --no-cache-dir --no-deps "diffusers>=0.27,<0.31" || true
+      - $$REWARD_PY -m pip install --no-cache-dir --no-deps "datasets" "wandb" || true
+      - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; fi'
+      - $$REWARD_PY -c "import ImageReward; print('[verify] ImageReward', ImageReward.__file__)"
+      # ── Reward server (HPSv3 + ImageReward; eval covers both) ─────────────
+      - export REWARD_BACKENDS_SERVER='hpsv3 imagereward'
+      - export STAGE_REWARD_WEIGHTS_LOCAL=1
+      - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
+      - REWARD_BACKENDS="$$REWARD_BACKENDS_SERVER" $$REWARD_PY preload_reward_models.py
+      - 'if [ -f "$$REWARD_LOCAL_HF_CACHE/.stage_done" ]; then export REWARD_HF_HOME="$$REWARD_LOCAL_HF_CACHE"; else export REWARD_HF_HOME="$$HF_HOME"; fi'
+      - export RUN_ROOT=/mnt/data/v-yigu/mcts_param/{run_tag}
+      - mkdir -p "$$RUN_ROOT"
+      - export REWARD_SERVER_PORT={reward_server_port}
+      - export REWARD_SERVER_URL=http://localhost:$$REWARD_SERVER_PORT
+      - export REWARD_SERVER_LOG=$$RUN_ROOT/reward_server.log
+      - env -u NCCL_P2P_LEVEL -u NCCL_ASYNC_ERROR_HANDLING -u TORCH_NCCL_ASYNC_ERROR_HANDLING CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false HF_HOME="$$REWARD_HF_HOME" "$$REWARD_PY" -u reward_server.py --port "$$REWARD_SERVER_PORT" --device cuda:0 --backends $$REWARD_BACKENDS_SERVER --image_reward_model ImageReward-v1.0 > "$$REWARD_SERVER_LOG" 2>&1 &
+      - export REWARD_SERVER_PID=$$!
+      - trap 'kill $$REWARD_SERVER_PID >/dev/null 2>&1 || true' EXIT
+      - export HEALTH_OK=0
+      - for i in $$(seq 1 1200); do if curl -s "$$REWARD_SERVER_URL/health" >/dev/null 2>&1; then export HEALTH_OK=1; break; fi; if ! kill -0 "$$REWARD_SERVER_PID" >/dev/null 2>&1; then echo "Reward server died"; tail -n 200 "$$REWARD_SERVER_LOG"; exit 1; fi; sleep 3; done
+      - if [ "$$HEALTH_OK" != "1" ]; then echo "Reward server failed to become healthy"; tail -n 400 "$$REWARD_SERVER_LOG"; exit 1; fi
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - export SAMPLING_GPUS=$$((${GPUS} - 1))
+      - export CUDA_VISIBLE_DEVICES=$$(seq -s, 1 $$SAMPLING_GPUS)
+      - export NUM_GPUS=$$SAMPLING_GPUS
+      - export HF_HUB_OFFLINE=1
+      - export TRANSFORMERS_OFFLINE=1
+      # ── Run the ablation (sequential cells × seeds × backends) ─────────────
+      - export BACKENDS="{backends}"
+      - export CELLS="{cells}"
+      - export N_PROMPTS={n_prompts}
+      - export SEEDS="{seeds}"
+      - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
+      - bash hpsv2_mcts_param_ablation.sh
+
+    submit_args:
+      env:
+        DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: "true"
+        SHARED_MEMORY_PERCENT: "0.5"
+
+  max_trials: 1
+  type: grid
+  params:
+    - name: run_tag
+      values: [ "mcts_param_ablation" ]
+    - name: hf_token
+      values: [ "YOUR_HF_TOKEN_HERE" ]
+    - name: n_prompts
+      values: [ 100 ]
+    - name: seeds
+      values: [ "42 43 44 45" ]
+    - name: backends
+      values: [ "sid senseflow_large" ]
+    - name: cells
+      values: [ "default n_sims_15 n_sims_60 n_sims_120 topk_1 topk_4 ucb_c_0.5 ucb_c_2.0" ]
+    - name: reward_server_port
+      values: [ 5110 ]

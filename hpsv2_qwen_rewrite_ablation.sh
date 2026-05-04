@@ -83,43 +83,73 @@ _apply_cell() {
     esac
 }
 
-# Verify the Qwen model is in HF cache where transformers actually looks
-# (i.e. $HF_HOME/hub/models--*/snapshots/*/config.json). The AMLT yaml's
-# prefetch loop passes cache_dir=$HF_HOME which writes to $HF_HOME/models--*/
-# (no `hub/` prefix); transformers does NOT find files there. So we both
-# check the `hub/`-prefixed path AND, on miss, snapshot_download WITHOUT
-# cache_dir so HF uses $HF_HOME natively (→ $HF_HOME/hub/models--*/).
+# Ensure the Qwen model is loadable by transformers under HF_HUB_OFFLINE=1.
+# The on-disk check (config.json exists?) is necessary but NOT sufficient —
+# previous prefetches with `cache_dir=$HF_HOME` wrote files to a parallel
+# layout whose snapshots/ symlinks are dangling under the canonical hub/
+# path. We test actual loadability via AutoTokenizer; on failure, force a
+# clean fetch and retest.
 _ensure_qwen_cached() {
     local repo="$1"
     local cache_root="${HF_HOME:-${HOME}/.cache/huggingface}"
-    local hub_dir="${cache_root}/hub/models--${repo//\//--}"
-    if [[ -d "${hub_dir}" ]] && find "${hub_dir}/snapshots" -maxdepth 2 -name 'config.json' 2>/dev/null | grep -q .; then
-        echo "[qwen-ablation] cache HIT for ${repo} → ${hub_dir}"
+
+    _try_load_offline() {
+        env HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HOME="${cache_root}" \
+            "${PYTHON_BIN}" -c "
+from transformers import AutoTokenizer
+import sys
+AutoTokenizer.from_pretrained(sys.argv[1])
+" "${repo}" >/dev/null 2>&1
+    }
+
+    if _try_load_offline; then
+        echo "[qwen-ablation] cache HIT (loadable offline): ${repo}"
         return 0
     fi
-    # Wrong-prefix detection: AMLT prefetch wrote here.
-    local stale_dir="${cache_root}/models--${repo//\//--}"
-    if [[ -d "${stale_dir}" ]] && find "${stale_dir}/snapshots" -maxdepth 2 -name 'config.json' 2>/dev/null | grep -q .; then
-        echo "[qwen-ablation] found ${repo} at WRONG prefix (${stale_dir}); re-fetching to hub/"
-    else
-        echo "[qwen-ablation] cache MISS for ${repo} → fetching to ${cache_root}/hub/"
-    fi
+    echo "[qwen-ablation] cache MISS / corrupt for ${repo} → fetching to ${cache_root}/hub/"
+
+    # Fetch to canonical $HF_HOME/hub/. If a dangling layout exists from a
+    # past prefetch, force_download=True rewrites snapshots/ symlinks.
     env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE HF_HOME="${cache_root}" \
         "${PYTHON_BIN}" -c "
 import os, sys
 from huggingface_hub import snapshot_download
-# NOTE: no cache_dir kwarg — let HF use HF_HOME natively (→ HF_HOME/hub/models--*/).
 snapshot_download(sys.argv[1],
                   token=os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN'),
-                  resume_download=True, max_workers=2)
+                  resume_download=True, max_workers=2,
+                  force_download=False)
 print('[qwen-ablation] prefetch OK:', sys.argv[1])
+" "${repo}" || {
+        echo "[qwen-ablation] WARN initial fetch failed; retrying with force_download=True" >&2
+        env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE HF_HOME="${cache_root}" \
+            "${PYTHON_BIN}" -c "
+import os, sys
+from huggingface_hub import snapshot_download
+snapshot_download(sys.argv[1],
+                  token=os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN'),
+                  max_workers=2, force_download=True)
+print('[qwen-ablation] force-prefetch OK:', sys.argv[1])
 " "${repo}"
-    # Verify the post-fetch state.
-    if ! ls "${hub_dir}/snapshots/"*/config.json >/dev/null 2>&1; then
-        echo "[qwen-ablation] FATAL: ${repo} still not at ${hub_dir}/snapshots/*/config.json after prefetch" >&2
-        return 1
+    }
+
+    # Re-test loadability under offline mode.
+    if ! _try_load_offline; then
+        # One more shot: force_download=True (rewrites all symlinks/blobs).
+        echo "[qwen-ablation] still not loadable; final attempt with force_download=True" >&2
+        env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE HF_HOME="${cache_root}" \
+            "${PYTHON_BIN}" -c "
+import os, sys
+from huggingface_hub import snapshot_download
+snapshot_download(sys.argv[1],
+                  token=os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN'),
+                  max_workers=2, force_download=True)
+" "${repo}" || true
+        if ! _try_load_offline; then
+            echo "[qwen-ablation] FATAL: ${repo} still not loadable offline after force-fetch" >&2
+            return 1
+        fi
     fi
-    echo "[qwen-ablation] verified ${repo} at ${hub_dir}"
+    echo "[qwen-ablation] verified loadable offline: ${repo}"
 }
 
 _apply_backend() {

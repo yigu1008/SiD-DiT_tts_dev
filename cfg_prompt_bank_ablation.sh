@@ -294,13 +294,18 @@ if [[ "${RUN_POSTHOC:-1}" == "1" ]]; then
     echo "================================================================"
     posthoc_failed=()
     for backend in ${BACKENDS}; do
+        case "${backend}" in
+            flux*) layout=flux ;;
+            *)     layout=sd35 ;;
+        esac
         for cell in ${CELLS_CFG} ${CELLS_PB}; do
             for seed in ${SEEDS}; do
                 cell_root="${RUN_ROOT}/${backend}/${cell}/seed${seed}"
                 [[ -d "${cell_root}" ]] || continue
                 for method_dir in $(find "${cell_root}" -maxdepth 3 -type d -name 'bon_mcts' 2>/dev/null); do
-                    echo "[posthoc] eval ${method_dir}"
+                    echo "[posthoc] eval ${method_dir} (layout=${layout})"
                     if "${PYTHON_BIN}" "${SCRIPT_DIR}/evaluate_best_images_multi_reward.py" \
+                        --layout "${layout}" \
                         --method_out "${method_dir}" \
                         --method bon_mcts \
                         --backends hpsv3 pickscore \

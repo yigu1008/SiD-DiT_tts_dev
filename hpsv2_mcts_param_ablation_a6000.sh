@@ -187,6 +187,7 @@ if [[ "${RUN_POSTHOC:-1}" == "1" ]]; then
                 for method_dir in $(find "${cell_root}" -maxdepth 3 -type d -name 'bon_mcts' 2>/dev/null); do
                     echo "[posthoc] eval ${method_dir}"
                     if "${PYTHON_BIN}" "${SCRIPT_DIR}/evaluate_best_images_multi_reward.py" \
+                        --layout sd35 \
                         --method_out "${method_dir}" \
                         --method bon_mcts \
                         --backends hpsv3 pickscore \

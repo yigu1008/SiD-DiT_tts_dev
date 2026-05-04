@@ -1,7 +1,8 @@
 description: qwen-rewrite-ablation
 
-# Single-trial ablation: Qwen3-4B vs Qwen3-7B prompt rewrites, downstream
+# Single-trial ablation: Qwen3-4B vs Qwen3-8B prompt rewrites, downstream
 # bon_mcts (refine_method=mcts, reward=imagereward).
+# (Qwen3-7B doesn't exist on HF — the lineup is 0.6/1.7/4/8/14/32B.)
 #
 # 2 cells × 2 backends (sid + senseflow_large) × 4 seeds = 16 sequential
 # suite invocations in `hpsv2_qwen_rewrite_ablation.sh`. One reward server
@@ -9,7 +10,7 @@ description: qwen-rewrite-ablation
 #
 # Cells:
 #   qwen_4b    QWEN_ID=Qwen/Qwen3-4B
-#   qwen_7b    QWEN_ID=Qwen/Qwen3-7B
+#   qwen_8b    QWEN_ID=Qwen/Qwen3-8B
 #
 # Output:
 #   /mnt/data/v-yigu/qwen_rewrite/{run_tag}/<backend>/<cell>/seed<S>/<run_dir>/bon_mcts/
@@ -78,7 +79,8 @@ search:
       - mkdir -p /mnt/data/v-yigu/model_cache/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2
       - mkdir -p /home/aiscuser/.cache
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
-      - export ALL_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large domiso/SenseFlow Qwen/Qwen3-4B Qwen/Qwen3-7B'
+      # Qwen3-7B doesn't exist on HF; the lineup is 0.6/1.7/4/8/14/32B. Use 8B.
+      - export ALL_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large domiso/SenseFlow Qwen/Qwen3-4B Qwen/Qwen3-8B'
       - for repo in $$ALL_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo"; done
       # ── Reward env + ImageReward fix-up cascade ────────────────────────────
       - export REWARD_ENV_NAME=reward
@@ -143,6 +145,6 @@ search:
     - name: backends
       values: [ "sid senseflow_large" ]
     - name: cells
-      values: [ "qwen_4b qwen_7b" ]
+      values: [ "qwen_4b qwen_8b" ]
     - name: reward_server_port
       values: [ 5111 ]

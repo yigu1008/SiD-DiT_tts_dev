@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ablation: Qwen3-4B vs Qwen3-7B for prompt rewriting, with bon_mcts downstream.
+# Ablation: Qwen3-4B vs Qwen3-8B for prompt rewriting, with bon_mcts downstream.
 #
 # Anchors (held fixed across both cells):
 #   refine_method   = mcts (vanilla)
@@ -12,14 +12,15 @@
 #
 # Cells:
 #   qwen_4b   QWEN_ID=Qwen/Qwen3-4B  (current default — your baseline rewrite quality)
-#   qwen_7b   QWEN_ID=Qwen/Qwen3-7B  (larger LLM — testing if better rewrites help search)
+#   qwen_8b   QWEN_ID=Qwen/Qwen3-8B  (next larger Qwen3 size — Qwen3-7B does NOT
+#                                     exist on HF; the lineup is 0.6/1.7/4/8/14/32B)
 #
 # Caller env (typically AMLT yaml):
 #   RUN_ROOT, REWARD_SERVER_URL
 #
 # Optional:
 #   BACKENDS  (default "sid senseflow_large")
-#   CELLS     (default "qwen_4b qwen_7b")
+#   CELLS     (default "qwen_4b qwen_8b")
 #   FAIL_FAST (default 0)
 
 set -euo pipefail
@@ -32,7 +33,7 @@ start_heartbeat "qwen-rewrite-ablation"
 : "${REWARD_SERVER_URL:?REWARD_SERVER_URL must be set}"
 
 BACKENDS="${BACKENDS:-sid senseflow_large}"
-CELLS="${CELLS:-qwen_4b qwen_7b}"
+CELLS="${CELLS:-qwen_4b qwen_8b}"
 FAIL_FAST="${FAIL_FAST:-0}"
 
 N_PROMPTS="${N_PROMPTS:-100}"
@@ -74,8 +75,8 @@ _apply_cell() {
         qwen_4b)
             export QWEN_ID="Qwen/Qwen3-4B"
             ;;
-        qwen_7b)
-            export QWEN_ID="Qwen/Qwen3-7B"
+        qwen_8b)
+            export QWEN_ID="Qwen/Qwen3-8B"
             ;;
         *)
             echo "[ablation] ERROR unknown cell '$1'" >&2; return 1 ;;
@@ -156,4 +157,4 @@ if (( ${#failed[@]} > 0 )); then
     exit 1
 fi
 echo "[qwen-ablation] DONE all (${BACKENDS} × ${CELLS}) cells OK."
-echo "[qwen-ablation] Compare: python3 mcts_param_compare.py --root ${RUN_ROOT} --cells qwen_4b qwen_7b"
+echo "[qwen-ablation] Compare: python3 mcts_param_compare.py --root ${RUN_ROOT} --cells qwen_4b qwen_8b"

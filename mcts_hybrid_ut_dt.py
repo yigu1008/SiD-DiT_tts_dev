@@ -86,6 +86,18 @@ def add_mcts_hybrid_args(parser: argparse.ArgumentParser) -> None:
                         dest="mcts_hybrid_late_step_baseline", action="store_false")
     parser.add_argument("--mcts_hybrid_late_step_frac", type=float, default=0.7)
 
+    # ── Prior-mode ablation (cell selector) ─────────────────────────────────
+    parser.add_argument(
+        "--mcts_hybrid_prior_mode",
+        choices=["ut_dt", "uniform", "random"],
+        default="ut_dt",
+        help="Action prior over expanded children:\n"
+             "  ut_dt  : softmax of (w_u·u_score + w_d·d_score)/τ — full U_t/D_t prior.\n"
+             "          Set w_u=0 for only_d, w_d=0 for only_u.\n"
+             "  uniform: π(a) = 1/|A_expanded| — PUCT bonus with no prior signal.\n"
+             "  random : π(a) ∝ Dirichlet(1) — fresh per-call random weights."
+    )
+
 
 # ── Node with U_t / D_t ─────────────────────────────────────────────────────
 
@@ -126,8 +138,14 @@ def _trajectory_prior(
     w_u: float,
     w_d: float,
     tau: float,
+    prior_mode: str = "ut_dt",
 ) -> dict[tuple, float]:
-    """Per-action prior π(a) ∝ exp(phi(a) / tau) over EXPANDED children only.
+    """Per-action prior π(a) over EXPANDED children only.
+
+    prior_mode:
+      ut_dt   : π(a) ∝ exp(phi(a) / tau)    where phi = w_u·u_score + w_d·d_score
+      uniform : π(a) = 1 / |A_expanded|     (no signal — but PUCT bonus shape)
+      random  : π(a) ∝ Dirichlet(1)         (fresh random per call)
 
     For unexpanded actions, prior = uniform residual mass / count, so PUCT
     still gives them a fair "first visit" allocation through the bonus term.
@@ -145,20 +163,27 @@ def _trajectory_prior(
     if not expanded_children:
         return {a: 1.0 / float(n) for a in actions}
 
-    # Compute phi for expanded children.
-    phis: dict[tuple, float] = {}
-    for a, ch in expanded_children.items():
-        u = max(eps, float(ch.u_t))
-        d = max(eps, float(ch.d_t))
-        u_score = -math.log1p(u / max(eps, u_ref))
-        d_score = math.tanh(math.log1p(d / max(eps, d_ref)))
-        phis[a] = w_u * u_score + w_d * d_score
-
-    # Softmax over expanded actions, with reserved mass for unexpanded ones.
-    log_w = np.array([phis[a] / max(eps, tau) for a in expanded_children])
-    log_w = log_w - float(np.max(log_w))
-    weights = np.exp(np.clip(log_w, -50.0, 50.0))
-    weights = weights / max(eps, float(np.sum(weights)))
+    # Branch on prior_mode.
+    if prior_mode == "uniform":
+        ne = len(expanded_children)
+        weights = np.full((ne,), 1.0 / float(ne), dtype=np.float64)
+    elif prior_mode == "random":
+        ne = len(expanded_children)
+        # Dirichlet(1) → uniform on simplex; uses default RNG so each call differs.
+        weights = np.random.dirichlet(np.ones(ne, dtype=np.float64))
+    else:
+        # ut_dt (default).
+        phis: dict[tuple, float] = {}
+        for a, ch in expanded_children.items():
+            u = max(eps, float(ch.u_t))
+            d = max(eps, float(ch.d_t))
+            u_score = -math.log1p(u / max(eps, u_ref))
+            d_score = math.tanh(math.log1p(d / max(eps, d_ref)))
+            phis[a] = w_u * u_score + w_d * d_score
+        log_w = np.array([phis[a] / max(eps, tau) for a in expanded_children])
+        log_w = log_w - float(np.max(log_w))
+        weights = np.exp(np.clip(log_w, -50.0, 50.0))
+        weights = weights / max(eps, float(np.sum(weights)))
 
     n_unexpanded = n - len(expanded_children)
     # Allocate 1/n to each unexpanded; rescale expanded to (1 - unexpanded_share).
@@ -209,6 +234,7 @@ def run_mcts_hybrid_ut_dt(
     use_x0_bootstrap = bool(getattr(args, "mcts_hybrid_x0_bootstrap", True))
     use_late_baseline = bool(getattr(args, "mcts_hybrid_late_step_baseline", True))
     late_frac = float(getattr(args, "mcts_hybrid_late_step_frac", 0.7))
+    prior_mode = str(getattr(args, "mcts_hybrid_prior_mode", "ut_dt"))
 
     corr_strengths = list(getattr(args, "correction_strengths", [0.0]))
     base_actions = [
@@ -258,7 +284,7 @@ def run_mcts_hybrid_ut_dt(
     print(
         f"  mcts-hybrid-ut-dt: sims={args.n_sims} actions={len(base_actions)} "
         f"steps={args.steps} key_steps={key_steps} "
-        f"u_t_def={u_t_def} d_t_def={d_t_def} tau={tau} c_puct={c_puct} "
+        f"prior_mode={prior_mode} (w_u={w_u} w_d={w_d}) tau={tau} c_puct={c_puct} "
         f"flags=[norm={use_reward_norm} x0={use_x0_bootstrap} late_baseline={use_late_baseline}]"
     )
 
@@ -277,6 +303,7 @@ def run_mcts_hybrid_ut_dt(
                 node, base_actions,
                 u_ref=u_ref, d_ref=d_ref,
                 w_u=w_u, w_d=w_d, tau=tau,
+                prior_mode=prior_mode,
             )
             action = node.best_puct(base_actions, prior, c_puct)
             path.append((node, action))
@@ -409,6 +436,7 @@ def run_mcts_hybrid_ut_dt(
         "exploit_score": float(exploit_score),
         "best_global_score": float(best_global_score),
         "n_sims": int(args.n_sims),
+        "prior_mode": prior_mode,
         "u_t_def": u_t_def,
         "d_t_def": d_t_def,
         "u_ref": u_ref, "d_ref": d_ref,

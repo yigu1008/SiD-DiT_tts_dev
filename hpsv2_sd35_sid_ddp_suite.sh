@@ -1090,6 +1090,18 @@ run_method() {
     if [[ -n "${BON_MCTS_PRESCREEN_CFG}" ]]; then
       extra+=(--bon_mcts_prescreen_cfg "${BON_MCTS_PRESCREEN_CFG}")
     fi
+    # Forward --mcts_hybrid_* flags when refine_method=hybrid_ut_dt. Each
+    # is optional (only emitted if the corresponding env var is non-empty)
+    # so default behavior is unchanged for other refine methods.
+    if [[ "${BON_MCTS_REFINE_METHOD:-}" == "hybrid_ut_dt" ]]; then
+      [[ -n "${MCTS_HYBRID_PRIOR_MODE:-}" ]] && extra+=(--mcts_hybrid_prior_mode "${MCTS_HYBRID_PRIOR_MODE}")
+      [[ -n "${MCTS_HYBRID_W_U:-}" ]]        && extra+=(--mcts_hybrid_w_u "${MCTS_HYBRID_W_U}")
+      [[ -n "${MCTS_HYBRID_W_D:-}" ]]        && extra+=(--mcts_hybrid_w_d "${MCTS_HYBRID_W_D}")
+      [[ -n "${MCTS_HYBRID_TAU:-}" ]]        && extra+=(--mcts_hybrid_tau "${MCTS_HYBRID_TAU}")
+      [[ -n "${MCTS_HYBRID_C_PUCT:-}" ]]     && extra+=(--mcts_hybrid_c_puct "${MCTS_HYBRID_C_PUCT}")
+      [[ -n "${MCTS_HYBRID_U_T_DEF:-}" ]]    && extra+=(--mcts_hybrid_u_t_def "${MCTS_HYBRID_U_T_DEF}")
+      [[ -n "${MCTS_HYBRID_D_T_DEF:-}" ]]    && extra+=(--mcts_hybrid_d_t_def "${MCTS_HYBRID_D_T_DEF}")
+    fi
   fi
   if [[ "${runner_script}" == "${SCRIPT_DIR}/sd35_ddp_experiment_dts.py" ]]; then
     extra+=(

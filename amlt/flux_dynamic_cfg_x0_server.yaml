@@ -90,7 +90,7 @@ search:
       # ── Preload FLUX.1-dev (both flux & tdd_flux derive from it) + Qwen ───
       - export HF_HUB_ENABLE_HF_TRANSFER=0
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-dev', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('FLUX.1-dev cache OK')"
-      - if [ "{target_model}" = "tdd_flux" ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import hf_hub_download; import os; p = hf_hub_download(repo_id='RED-AIGC/TDD', filename='FLUX.1-dev_tdd_adv_lora_weights.safetensors', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True); print('TDD LoRA cache OK:', p)"; fi
+      - if [ "{target_model}" = "tdd_flux" ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import hf_hub_download; import os; p = hf_hub_download(repo_id='RED-AIGC/TDD', filename='FLUX.1-dev_tdd_adv_lora_weights.safetensors', token=os.environ.get('HF_TOKEN'), resume_download=True); print('TDD LoRA cache OK:', p)"; fi
       - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('Qwen cache OK')"; fi
       # ── Prompt file ───────────────────────────────────────────────────────
       - export HPSV2_PROMPT_DIR=/mnt/data/v-yigu/hpsv2_prompt_cache

@@ -35,6 +35,12 @@ from blend_ops import nlerp_all, slerp_pair
 from reward_unified import UnifiedRewardScorer
 
 
+# Optional trail logger for MCTS visualization. If set to a callable
+# `f(event: dict) -> None`, run_mcts emits one event per
+# {sim_start, select, expand, rollout, backup, exploit}. Default: None (no-op).
+MCTS_TRAIL_LOGGER = None
+
+
 REWRITE_SYSTEM = (
     "You are a concise image prompt editor. "
     "Given a text-to-image prompt, produce a single minimally-changed rewrite. "
@@ -2452,7 +2458,8 @@ def run_ga(
 
 
 class MCTSNode:
-    __slots__ = ("step", "dx", "latents", "children", "visits", "action_visits", "action_values")
+    __slots__ = ("step", "dx", "latents", "children", "visits", "action_visits", "action_values", "node_id")
+    _id_counter: int = 0  # auto-increment id for trail visualization
 
     def __init__(self, step: int, dx: torch.Tensor, latents: torch.Tensor | None):
         self.step = step
@@ -2462,6 +2469,8 @@ class MCTSNode:
         self.visits = 0
         self.action_visits: dict[tuple[int, float, float], int] = {}
         self.action_values: dict[tuple[int, float, float], float] = {}
+        self.node_id = MCTSNode._id_counter
+        MCTSNode._id_counter += 1
 
     def is_leaf(self, max_steps: int) -> bool:
         return self.step >= max_steps
@@ -2865,18 +2874,37 @@ def run_mcts(
             f"key_steps={key_steps} ({n_key} branch points)"
         )
 
+    def _emit(event: dict) -> None:
+        if MCTS_TRAIL_LOGGER is not None:
+            try:
+                MCTS_TRAIL_LOGGER(event)
+            except Exception:
+                pass
+
+    _emit({"event": "search_start", "n_sims": int(args.n_sims), "n_key": int(n_key),
+           "key_steps": list(key_steps), "ucb_c": float(args.ucb_c),
+           "n_actions": int(n_actions_first), "root_id": int(root.node_id)})
+
     for sim in range(args.n_sims):
         node = root
         path: list[tuple[MCTSNode, tuple]] = []
         action: tuple | None = None
+        _emit({"event": "sim_start", "sim": sim, "root_id": int(root.node_id)})
 
         while not node.is_leaf(n_key):
             node_actions = _candidate_actions_for_key(node.step)
             untried = node.untried_actions(node_actions)
             if untried:
                 action = untried[np.random.randint(len(untried))]
+                _emit({"event": "select_untried", "sim": sim, "node_id": int(node.node_id),
+                       "depth": int(node.step), "action": list(action)})
                 break
             action = node.best_ucb(node_actions, args.ucb_c)
+            ucb_val = node.ucb(action, args.ucb_c)
+            _emit({"event": "select_ucb", "sim": sim, "node_id": int(node.node_id),
+                   "depth": int(node.step), "action": list(action),
+                   "ucb": float(ucb_val) if math.isfinite(ucb_val) else None,
+                   "visits": int(node.visits)})
             path.append((node, action))
             node = node.children[action]
 
@@ -2894,6 +2922,12 @@ def run_mcts(
                     eps_bank=mcts_eps_bank,
                 )
                 node.children[action] = MCTSNode(node.step + 1, child_dx, child_lat)
+                _emit({"event": "expand", "sim": sim,
+                       "parent_id": int(node.node_id),
+                       "child_id": int(node.children[action].node_id),
+                       "parent_depth": int(node.step),
+                       "child_depth": int(node.step + 1),
+                       "action": list(action)})
             path.append((node, action))
             node = node.children[action]
 
@@ -2922,10 +2956,22 @@ def run_mcts(
             best_global_dx = _final_decode_tensor(rollout_latents, rollout_dx, use_euler).clone()
             best_global_path_internal = [a for _, a in path] + list(rollout_actions)
 
+        _emit({"event": "rollout", "sim": sim,
+               "leaf_id": int(node.node_id),
+               "leaf_depth": int(node.step),
+               "rollout_actions": [list(a) for a in rollout_actions],
+               "score": float(rollout_score),
+               "best_so_far": float(best_global_score)})
+
         for pnode, paction in path:
             pnode.visits += 1
             pnode.action_visits[paction] = pnode.action_visits.get(paction, 0) + 1
             pnode.action_values[paction] = pnode.action_values.get(paction, 0.0) + rollout_score
+
+        _emit({"event": "backup", "sim": sim,
+               "path_node_ids": [int(pn.node_id) for pn, _ in path],
+               "path_actions": [list(a) for _, a in path],
+               "score": float(rollout_score)})
 
         if (sim + 1) % 10 == 0 or sim == 0:
             print(f"    sim {sim + 1:3d}/{args.n_sims} best={best_global_score:.4f}")
@@ -2968,6 +3014,11 @@ def run_mcts(
 
     exploit_img = decode_to_pil(ctx, _final_decode_tensor(replay_lat, replay_dx, use_euler))
     exploit_score = score_image(reward_model, prompt, exploit_img)
+
+    _emit({"event": "exploit", "exploit_actions": [list(a) for a in exploit_path_internal],
+           "exploit_score": float(exploit_score),
+           "best_global_score": float(best_global_score),
+           "n_nodes": int(MCTSNode._id_counter)})
 
     selected_img: Image.Image
     selected_score: float

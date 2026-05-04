@@ -83,27 +83,43 @@ _apply_cell() {
     esac
 }
 
-# Verify the Qwen model is in HF cache; if not (upfront prefetch in AMLT yaml
-# silently failed), pull it now with offline mode disabled. Belt-and-braces:
-# the AMLT prefetch loop has no fail-fast, so this catches its silent misses.
+# Verify the Qwen model is in HF cache where transformers actually looks
+# (i.e. $HF_HOME/hub/models--*/snapshots/*/config.json). The AMLT yaml's
+# prefetch loop passes cache_dir=$HF_HOME which writes to $HF_HOME/models--*/
+# (no `hub/` prefix); transformers does NOT find files there. So we both
+# check the `hub/`-prefixed path AND, on miss, snapshot_download WITHOUT
+# cache_dir so HF uses $HF_HOME natively (→ $HF_HOME/hub/models--*/).
 _ensure_qwen_cached() {
     local repo="$1"
     local cache_root="${HF_HOME:-${HOME}/.cache/huggingface}"
-    local cached_dir="${cache_root}/hub/models--${repo//\//--}"
-    if [[ -d "${cached_dir}" ]] && find "${cached_dir}/snapshots" -maxdepth 2 -name 'config.json' 2>/dev/null | grep -q .; then
+    local hub_dir="${cache_root}/hub/models--${repo//\//--}"
+    if [[ -d "${hub_dir}" ]] && find "${hub_dir}/snapshots" -maxdepth 2 -name 'config.json' 2>/dev/null | grep -q .; then
+        echo "[qwen-ablation] cache HIT for ${repo} → ${hub_dir}"
         return 0
     fi
-    echo "[qwen-ablation] cache MISS for ${repo} → prefetching to ${cache_root}"
-    env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE \
+    # Wrong-prefix detection: AMLT prefetch wrote here.
+    local stale_dir="${cache_root}/models--${repo//\//--}"
+    if [[ -d "${stale_dir}" ]] && find "${stale_dir}/snapshots" -maxdepth 2 -name 'config.json' 2>/dev/null | grep -q .; then
+        echo "[qwen-ablation] found ${repo} at WRONG prefix (${stale_dir}); re-fetching to hub/"
+    else
+        echo "[qwen-ablation] cache MISS for ${repo} → fetching to ${cache_root}/hub/"
+    fi
+    env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE HF_HOME="${cache_root}" \
         "${PYTHON_BIN}" -c "
 import os, sys
 from huggingface_hub import snapshot_download
+# NOTE: no cache_dir kwarg — let HF use HF_HOME natively (→ HF_HOME/hub/models--*/).
 snapshot_download(sys.argv[1],
-                  cache_dir=os.environ.get('HF_HOME'),
                   token=os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN'),
                   resume_download=True, max_workers=2)
 print('[qwen-ablation] prefetch OK:', sys.argv[1])
 " "${repo}"
+    # Verify the post-fetch state.
+    if ! ls "${hub_dir}/snapshots/"*/config.json >/dev/null 2>&1; then
+        echo "[qwen-ablation] FATAL: ${repo} still not at ${hub_dir}/snapshots/*/config.json after prefetch" >&2
+        return 1
+    fi
+    echo "[qwen-ablation] verified ${repo} at ${hub_dir}"
 }
 
 _apply_backend() {

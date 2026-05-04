@@ -81,10 +81,10 @@ search:
       # ── Preload reward models & SD3.5 weights ─────────────────────────────
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
       - export SD35_MODEL_ID='{sd35_model_id}'
-      - export SD35_LOCAL_DIR=$$(/opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; m=os.environ.get('SD35_MODEL_ID','YGu1998/SiD-DiT-SD3.5-large'); print(snapshot_download(m, cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1))")
+      - export SD35_LOCAL_DIR=$$(/opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; m=os.environ.get('SD35_MODEL_ID','YGu1998/SiD-DiT-SD3.5-large'); print(snapshot_download(m, token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1))")
       - echo "SD3.5 cache OK backend=$$SD35_BACKEND model=$$SD35_MODEL_ID local_dir=$$SD35_LOCAL_DIR"
       - export FLOW_GRPO_LORA_REPO='{flow_grpo_lora_repo}'
-      - export FLOW_GRPO_LORA_LOCAL_DIR=$$(/opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; print(snapshot_download(os.environ['FLOW_GRPO_LORA_REPO'], cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1))")
+      - export FLOW_GRPO_LORA_LOCAL_DIR=$$(/opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; print(snapshot_download(os.environ['FLOW_GRPO_LORA_REPO'], token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1))")
       - 'echo "Flow-GRPO LoRA cache OK: $$FLOW_GRPO_LORA_LOCAL_DIR"'
       # ── Preload Qwen for prompt rewrites (must happen before offline mode) ──
       - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', token=os.environ.get('HF_TOKEN')); print('Qwen cache OK')"; fi

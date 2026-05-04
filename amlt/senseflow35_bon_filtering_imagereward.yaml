@@ -83,8 +83,8 @@ search:
       - export SD35_MODEL_ID=YGu1998/SiD-DiT-SD3.5-large
       - if [ "$$SD35_BACKEND" = "sd35_base" ] || [ "$$SD35_BACKEND" = "senseflow_large" ]; then export SD35_MODEL_ID=stabilityai/stable-diffusion-3.5-large; fi
       - if [ "$$SD35_BACKEND" = "senseflow_medium" ]; then export SD35_MODEL_ID=stabilityai/stable-diffusion-3.5-medium; fi
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; b=os.environ.get('SD35_BACKEND','sid'); m=os.environ.get('SD35_MODEL_ID','YGu1998/SiD-DiT-SD3.5-large'); snapshot_download(m, cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('SD3.5 cache OK', b, m)"
-      - if [ "$$SD35_BACKEND" = "senseflow_large" ] || [ "$$SD35_BACKEND" = "senseflow_medium" ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('domiso/SenseFlow', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN')); print('SenseFlow cache OK')"; fi
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; b=os.environ.get('SD35_BACKEND','sid'); m=os.environ.get('SD35_MODEL_ID','YGu1998/SiD-DiT-SD3.5-large'); snapshot_download(m, token=os.environ.get('HF_TOKEN')); print('SD3.5 cache OK', b, m)"
+      - if [ "$$SD35_BACKEND" = "senseflow_large" ] || [ "$$SD35_BACKEND" = "senseflow_medium" ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('domiso/SenseFlow', token=os.environ.get('HF_TOKEN')); print('SenseFlow cache OK')"; fi
       # ── Preload Qwen for prompt rewrites (must happen before offline mode) ──
       - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', token=os.environ.get('HF_TOKEN')); print('Qwen cache OK')"; fi
       - export HF_HUB_OFFLINE=1

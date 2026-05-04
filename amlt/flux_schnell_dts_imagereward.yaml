@@ -82,7 +82,7 @@ search:
       # ── Preload reward + FLUX schnell weights ──────────────────────────────
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
       - export HF_HUB_ENABLE_HF_TRANSFER=0
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('FLUX.1-schnell cache OK')"
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('FLUX.1-schnell cache OK')"
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
       # ── Run knobs ──────────────────────────────────────────────────────────

@@ -55,8 +55,8 @@ search:
       - /opt/conda/envs/ptca/bin/python -c "import ImageReward" 2>/dev/null || /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps --no-build-isolation "git+https://github.com/THUDM/ImageReward.git" || /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "image-reward==1.5"
       - /opt/conda/envs/ptca/bin/python -c "import ImageReward; print('[verify] ImageReward', ImageReward.__file__)"
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
-      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('YGu1998/SiD-DiT-SD3.5-large', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('SD3.5-SiD cache OK')"
-      - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('Qwen cache OK')"; fi
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('YGu1998/SiD-DiT-SD3.5-large', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('SD3.5-SiD cache OK')"
+      - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('Qwen cache OK')"; fi
       - export NUM_GPUS=${GPUS}
       - export OUT_DIR=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}/mi_diagnostic
       - export SHARD_DIR=$$OUT_DIR/shards

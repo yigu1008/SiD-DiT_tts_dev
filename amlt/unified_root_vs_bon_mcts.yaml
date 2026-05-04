@@ -99,7 +99,7 @@ search:
       - mkdir -p /home/aiscuser/.cache
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
       - export ALL_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large domiso/SenseFlow'
-      - for repo in $$ALL_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo"; done
+      - for repo in $$ALL_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo"; done
       # ── Reward env + ImageReward fix-up cascade ────────────────────────────
       - export REWARD_ENV_NAME=reward
       - export REWARD_ENV_SENTINEL_DIR=/tmp

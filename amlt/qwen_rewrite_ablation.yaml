@@ -81,7 +81,13 @@ search:
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
       # Qwen3-7B doesn't exist on HF; the lineup is 0.6/1.7/4/8/14/32B. Use 8B.
       - export ALL_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large domiso/SenseFlow Qwen/Qwen3-4B Qwen/Qwen3-8B'
-      - for repo in $$ALL_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], cache_dir=os.environ.get('HF_HOME'), token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo"; done
+      # IMPORTANT: do NOT pass cache_dir=$HF_HOME — that writes to $HF_HOME/models--*/
+      # (no `hub/` prefix) and transformers cannot find them under HF_HUB_OFFLINE=1.
+      # Letting HF use HF_HOME natively puts files at $HF_HOME/hub/models--*/, where
+      # transformers/diffusers actually look.
+      - for repo in $$ALL_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo" || { echo "FATAL prefetch failed for $$repo"; exit 1; }; done
+      # Verify each repo landed at the hub/-prefixed path transformers reads.
+      - for repo in $$ALL_REPOS; do dir="$$HF_HOME/hub/models--$$(echo $$repo | sed 's|/|--|g')"; if ! ls $$dir/snapshots/*/config.json >/dev/null 2>&1 && ! ls $$dir/snapshots/*/model_index.json >/dev/null 2>&1; then echo "FATAL cache verify failed for $$repo (looked in $$dir)"; exit 1; fi; echo "verify OK: $$repo"; done
       # ── Reward env + ImageReward fix-up cascade ────────────────────────────
       - export REWARD_ENV_NAME=reward
       - export REWARD_ENV_SENTINEL_DIR=/tmp

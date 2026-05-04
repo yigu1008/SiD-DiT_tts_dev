@@ -54,8 +54,13 @@ unset REWARD_SERVER_URL || true
 echo "[cpb-a6000] REWARD_SERVER_URL not set → ImageReward loads inline (local mode)"
 
 BACKENDS="${BACKENDS:-sid senseflow_large flux_schnell}"
-CELLS_CFG="${CELLS_CFG:-cfg_bank_1 cfg_bank_4 cfg_bank_7}"
-CELLS_PB="${CELLS_PB:-prompt_bank_1 prompt_bank_3 prompt_bank_5}"
+# Cell sizes:
+#   cfg_bank cells {3, 7, 9} with min/max held fixed (lo..hi linspace per backend).
+#   prompt_bank cells {1, 4, 7}.
+# Each axis ablated one-at-a-time → 6 cells total per backend (3 cfg + 3 prompt),
+# with the held-other-axis at the size-7 default (matches existing convention).
+CELLS_CFG="${CELLS_CFG:-cfg_bank_3 cfg_bank_7 cfg_bank_9}"
+CELLS_PB="${CELLS_PB:-prompt_bank_1 prompt_bank_4 prompt_bank_7}"
 FAIL_FAST="${FAIL_FAST:-0}"
 SKIP_CFG="${SKIP_CFG:-0}"
 SKIP_PB="${SKIP_PB:-0}"
@@ -146,48 +151,60 @@ _sample_prompts() {
     fi
 }
 
+# Linspace helper: even grid of N values from lo to hi (inclusive).
+_cfg_linspace() {
+    local lo="$1" hi="$2" n="$3"
+    "${PYTHON_BIN}" -c "
+import numpy as np, sys
+lo, hi, n = float(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3])
+print(' '.join(f'{x:.4f}' for x in np.linspace(lo, hi, n)))
+" "${lo}" "${hi}" "${n}"
+}
+
 _apply_cfg_cell() {
+    # Vary CFG bank size {3, 7, 9}; min/max held fixed per backend.
+    # Prompt bank held at default (N_VARIANTS=1, no Qwen).
     export USE_QWEN=0
     export PRECOMPUTE_REWRITES=0
     export N_VARIANTS=1
+    local lo hi
     case "${_CFG_FAMILY}" in
-        sd35_small)
-            case "$1" in
-                cfg_bank_1) export CFG_SCALES="1.5" ;;
-                cfg_bank_4) export CFG_SCALES="1.0 1.5 2.0 2.5" ;;
-                cfg_bank_7) export CFG_SCALES="1.0 1.25 1.5 1.75 2.0 2.25 2.5" ;;
-                *) echo "[cpb-a6000] ERROR unknown cfg cell '$1'" >&2; return 1 ;;
-            esac
-            ;;
-        sd35_base)
-            case "$1" in
-                cfg_bank_1) export CFG_SCALES="4.5" ;;
-                cfg_bank_4) export CFG_SCALES="3.5 4.5 5.5 7.0" ;;
-                cfg_bank_7) export CFG_SCALES="3.5 4.0 4.5 5.0 5.5 6.0 7.0" ;;
-                *) echo "[cpb-a6000] ERROR unknown cfg cell '$1'" >&2; return 1 ;;
-            esac
-            ;;
+        sd35_small)     lo=1.0; hi=2.5 ;;
+        sd35_base)      lo=3.5; hi=7.0 ;;
         flux_distilled)
             echo "[cpb-a6000] WARN cfg cell on flux_distilled is degenerate; skipping"
             return 2
             ;;
     esac
+    case "$1" in
+        cfg_bank_3) export CFG_SCALES="$(_cfg_linspace ${lo} ${hi} 3)" ;;
+        cfg_bank_7) export CFG_SCALES="$(_cfg_linspace ${lo} ${hi} 7)" ;;
+        cfg_bank_9) export CFG_SCALES="$(_cfg_linspace ${lo} ${hi} 9)" ;;
+        *) echo "[cpb-a6000] ERROR unknown cfg cell '$1'" >&2; return 1 ;;
+    esac
 }
 
 _apply_pb_cell() {
+    # Vary N_VARIANTS (prompt bank size) {1, 4, 7}.
+    # CFG bank held at default size-7 bank (the standard control).
     export USE_QWEN=1
     export PRECOMPUTE_REWRITES=1
     case "${_CFG_FAMILY}" in
-        sd35_small)     export CFG_SCALES="1.0 1.5 2.0 2.5" ;;
-        sd35_base)      export CFG_SCALES="3.5 4.5 5.5 7.0" ;;
+        sd35_small)     export CFG_SCALES="$(_cfg_linspace 1.0 2.5 7)" ;;
+        sd35_base)      export CFG_SCALES="$(_cfg_linspace 3.5 7.0 7)" ;;
         flux_distilled) export CFG_SCALES="0.0" ;;
     esac
     case "$1" in
         prompt_bank_1) export N_VARIANTS=1 ;;
-        prompt_bank_3) export N_VARIANTS=3 ;;
-        prompt_bank_5) export N_VARIANTS=5 ;;
+        prompt_bank_4) export N_VARIANTS=4 ;;
+        prompt_bank_7) export N_VARIANTS=7 ;;
         *) echo "[cpb-a6000] ERROR unknown prompt_bank cell '$1'" >&2; return 1 ;;
     esac
+    # N_VARIANTS=1 → no Qwen needed (just the original prompt).
+    if [[ "${N_VARIANTS}" == "1" ]]; then
+        export USE_QWEN=0
+        export PRECOMPUTE_REWRITES=0
+    fi
 }
 
 # Verify Qwen rewrite model in cache (HF_HOME/hub/...).

@@ -46,7 +46,7 @@ storage:
 
 search:
   job_template:
-    name: composite-all-{run_tag}
+    name: comp-{run_tag}
     sku: ${NODES}x${MEM}G${GPUS}-IB
     sla_tier: Standard
     process_count_per_node: 1
@@ -138,7 +138,7 @@ search:
   type: grid
   params:
     - name: run_tag
-      values: [ "composite_all" ]
+      values: [ "composite-all" ]
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: backends

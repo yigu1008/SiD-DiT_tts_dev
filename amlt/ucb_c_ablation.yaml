@@ -67,8 +67,8 @@ search:
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
       - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
-      - 'if [ -z "$$HF_TOKEN" ]; then echo "FATAL: HF_TOKEN not set on submit side (export HF_TOKEN=... locally)"; exit 1; fi'
-      - export HUGGING_FACE_HUB_TOKEN=$$HF_TOKEN
+      - export HF_TOKEN={hf_token}
+      - export HUGGING_FACE_HUB_TOKEN={hf_token}
       - export NCCL_ASYNC_ERROR_HANDLING=0
       - export NCCL_P2P_LEVEL=NVL
       # ── Sampling env ───────────────────────────────────────────────────────
@@ -136,13 +136,14 @@ search:
       env:
         DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: "true"
         SHARED_MEMORY_PERCENT: "0.5"
-        HF_TOKEN: $HF_TOKEN
 
   max_trials: 1
   type: grid
   params:
     - name: run_tag
       values: [ "ucb_c_all" ]
+    - name: hf_token
+      values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: backends
       values: [ "sid senseflow_large flux_schnell" ]
     - name: n_prompts

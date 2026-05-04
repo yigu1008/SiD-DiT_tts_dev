@@ -83,6 +83,29 @@ _apply_cell() {
     esac
 }
 
+# Verify the Qwen model is in HF cache; if not (upfront prefetch in AMLT yaml
+# silently failed), pull it now with offline mode disabled. Belt-and-braces:
+# the AMLT prefetch loop has no fail-fast, so this catches its silent misses.
+_ensure_qwen_cached() {
+    local repo="$1"
+    local cache_root="${HF_HOME:-${HOME}/.cache/huggingface}"
+    local cached_dir="${cache_root}/hub/models--${repo//\//--}"
+    if [[ -d "${cached_dir}" ]] && find "${cached_dir}/snapshots" -maxdepth 2 -name 'config.json' 2>/dev/null | grep -q .; then
+        return 0
+    fi
+    echo "[qwen-ablation] cache MISS for ${repo} → prefetching to ${cache_root}"
+    env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE \
+        "${PYTHON_BIN}" -c "
+import os, sys
+from huggingface_hub import snapshot_download
+snapshot_download(sys.argv[1],
+                  cache_dir=os.environ.get('HF_HOME'),
+                  token=os.environ.get('HF_TOKEN') or os.environ.get('HUGGING_FACE_HUB_TOKEN'),
+                  resume_download=True, max_workers=2)
+print('[qwen-ablation] prefetch OK:', sys.argv[1])
+" "${repo}"
+}
+
 _apply_backend() {
     export SD35_BACKEND="$1"
     case "$1" in
@@ -122,8 +145,15 @@ for backend in ${BACKENDS}; do
             continue
         fi
 
+        if ! _ensure_qwen_cached "${QWEN_ID}"; then
+            echo "[qwen-ablation] FAIL prefetch ${QWEN_ID} → skipping ${backend}/${cell}" >&2
+            failed+=("${backend}/${cell}/qwen-prefetch")
+            if [[ "${FAIL_FAST}" == "1" ]]; then exit 1; fi
+            continue
+        fi
+
         # Per-cell rewrites cache file (keyed by Qwen model). The suite expects
-        # REWRITES_FILE; we set a unique path per (backend, cell) so 4B and 7B
+        # REWRITES_FILE; we set a unique path per (backend, cell) so 4B and 8B
         # don't clobber each other's caches.
         rewrite_tag="${cell}"
         export REWRITES_FILE="${PROMPTS_DIR}/${backend}_${rewrite_tag}_rewrites.json"

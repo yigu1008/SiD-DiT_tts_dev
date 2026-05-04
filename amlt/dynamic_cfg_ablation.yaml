@@ -50,7 +50,7 @@ storage:
 
 search:
   job_template:
-    name: dyncfg-deploy-{run_tag}
+    name: dyncfg-{search_reward}
     sku: ${NODES}x${MEM}G${GPUS}-IB
     sla_tier: Standard
     process_count_per_node: 1
@@ -127,6 +127,7 @@ search:
       - export BACKENDS="{backends}"
       - export N_PROMPTS={n_prompts}
       - export SEEDS="{seeds}"
+      - export SEARCH_REWARD="{search_reward}"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
       - bash dynamic_cfg_ablation.sh
 
@@ -135,7 +136,8 @@ search:
         DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: "true"
         SHARED_MEMORY_PERCENT: "0.5"
 
-  max_trials: 1
+  # 2 search-reward trials (imagereward, hpsv3) × 1 backends-string = 2 trials.
+  max_trials: 2
   type: grid
   params:
     - name: run_tag
@@ -148,5 +150,7 @@ search:
       values: [ 50 ]
     - name: seeds
       values: [ "42" ]
+    - name: search_reward
+      values: [ "imagereward", "hpsv3" ]
     - name: reward_server_port
       values: [ 5116 ]

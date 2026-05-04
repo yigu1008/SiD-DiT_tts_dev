@@ -36,6 +36,15 @@ N_PROMPTS="${N_PROMPTS:-50}"
 SEEDS="${SEEDS:-42}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
+# ── Search reward (one value per AMLT trial: imagereward OR hpsv3) ─────────
+# The yaml drives this via {search_reward}; locally caller can override.
+SEARCH_REWARD="${SEARCH_REWARD:-imagereward}"
+case "${SEARCH_REWARD}" in
+    imagereward|hpsv3) : ;;
+    *) echo "[dyncfg-deploy] ERROR unknown SEARCH_REWARD='${SEARCH_REWARD}' (expected imagereward|hpsv3)" >&2; exit 1 ;;
+esac
+echo "[dyncfg-deploy] SEARCH_REWARD=${SEARCH_REWARD}"
+
 # ── Shared knobs (search-time) ──────────────────────────────────────────────
 export METHODS="baseline dynamic_cfg_x0"
 export START_INDEX=0
@@ -48,10 +57,12 @@ export CORRECTION_STRENGTHS="0.0"
 export SAVE_BEST_IMAGES=1
 export SAVE_IMAGES=0
 export SAVE_VARIANTS=0
-export EVAL_BACKENDS="imagereward"
-export REWARD_BACKEND="imagereward"
-export REWARD_TYPE="imagereward"
-export REWARD_BACKENDS="imagereward"
+# Phase-1 eval covers BOTH rewards (regardless of search_reward) so the two
+# trials can be compared on the same metric set.
+export EVAL_BACKENDS="imagereward hpsv3"
+export REWARD_BACKEND="${SEARCH_REWARD}"
+export REWARD_TYPE="${SEARCH_REWARD}"
+export REWARD_BACKENDS="${SEARCH_REWARD}"
 export EVAL_ALLOW_MISSING_BACKENDS=1
 export EVAL_BEST_IMAGES=1
 export EVAL_REWARD_DEVICE=cuda
@@ -61,7 +72,7 @@ export AUTO_BACKEND_STEPS=0
 export DYNAMIC_CFG_X0_SCORE_START_FRAC="${DYNAMIC_CFG_X0_SCORE_START_FRAC:-0.5}"
 export DYNAMIC_CFG_X0_SCORE_END_FRAC="${DYNAMIC_CFG_X0_SCORE_END_FRAC:-1.0}"
 export DYNAMIC_CFG_X0_SCORE_EVERY="${DYNAMIC_CFG_X0_SCORE_EVERY:-1}"
-export DYNAMIC_CFG_X0_EVALUATORS="imagereward"
+export DYNAMIC_CFG_X0_EVALUATORS="${SEARCH_REWARD}"
 export DYNAMIC_CFG_X0_WEIGHT_SCHEDULE="${DYNAMIC_CFG_X0_WEIGHT_SCHEDULE:-piecewise}"
 export DYNAMIC_CFG_X0_PROMPT_TYPE="${DYNAMIC_CFG_X0_PROMPT_TYPE:-general}"
 export DYNAMIC_CFG_X0_CONFIDENCE_GATING="${DYNAMIC_CFG_X0_CONFIDENCE_GATING:-1}"
@@ -133,7 +144,7 @@ for backend in ${BACKENDS}; do
     _sample_prompts "${backend}"
 
     for seed in ${SEEDS}; do
-        cell_root="${RUN_ROOT}/${backend}/seed${seed}"
+        cell_root="${RUN_ROOT}/${SEARCH_REWARD}/${backend}/seed${seed}"
         mkdir -p "${cell_root}"
         export OUT_ROOT="${cell_root}"
 
@@ -174,7 +185,7 @@ if [[ "${RUN_POSTHOC:-1}" == "1" ]]; then
             *)     layout=sd35 ;;
         esac
         for seed in ${SEEDS}; do
-            cell_root="${RUN_ROOT}/${backend}/seed${seed}"
+            cell_root="${RUN_ROOT}/${SEARCH_REWARD}/${backend}/seed${seed}"
             [[ -d "${cell_root}" ]] || continue
             for method_dir in $(find "${cell_root}" -maxdepth 3 -type d -name 'dynamic_cfg_x0' 2>/dev/null); do
                 echo "[posthoc] eval ${method_dir} (layout=${layout})"

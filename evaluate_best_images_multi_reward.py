@@ -80,6 +80,10 @@ def _sd35_mode_key_and_suffix(method: str) -> tuple[str, str]:
         # sd35_ddp_experiment_dynamic_cfg_x0.py monkey-patch), so logs
         # are written with mode="base" and images as {slug}_base.png.
         return "base", "base"
+    if m == "bon_mcts" or m.startswith("bon_mcts"):
+        # bon_mcts dispatches via sd35_ddp_experiment_bon_mcts.py which writes
+        # mode="mcts" and images as {slug}_mcts.png (same as plain mcts).
+        return "mcts", "mcts"
     if m.startswith("mcts"):
         # SD3.5 DDP writes mode/image suffix as "mcts" even for method aliases
         # like mcts_lookahead_dynamiccfg, mcts_dynamiccfg_only, etc.
@@ -87,6 +91,31 @@ def _sd35_mode_key_and_suffix(method: str) -> tuple[str, str]:
     if m in {"greedy", "ga", "smc", "bon", "beam"}:
         return m, m
     return m, m
+
+
+def _resolve_sd35_image_path(image_dir: str, prompt_index: int, suffix: str) -> str | None:
+    """Return the on-disk image path for prompt_index, tolerating any zero-pad
+    width (writers historically used :05d but some checkpoints saved :06d, etc).
+    Falls back to a glob match by prompt_index."""
+    if prompt_index < 0:
+        return None
+    # Try common paddings first (cheap stat).
+    for pad in (5, 6, 4, 3, 2):
+        cand = os.path.join(image_dir, f"p{prompt_index:0{pad}d}_{suffix}.png")
+        if os.path.exists(cand):
+            return cand
+    # Fallback: glob for any p<digits>_<suffix>.png and parse the integer.
+    target = int(prompt_index)
+    for path in sorted(glob.glob(os.path.join(image_dir, f"p*_{suffix}.png"))):
+        base = os.path.basename(path)  # e.g. "p000003_mcts.png"
+        # strip "p" prefix and "_<suffix>.png" tail, parse remainder as int
+        stem = base[1:].rsplit("_", 1)[0]
+        try:
+            if int(stem) == target:
+                return path
+        except ValueError:
+            continue
+    return None
 
 
 def _collect_sd35_records(method_out: str, method: str) -> tuple[list[ImageRecord], list[str]]:
@@ -109,20 +138,23 @@ def _collect_sd35_records(method_out: str, method: str) -> tuple[list[ImageRecor
                 if str(row.get("mode")) != mode_key:
                     continue
                 prompt_index = int(row.get("prompt_index", -1))
-                slug = f"p{prompt_index:05d}" if prompt_index >= 0 else "p?????"
-                image_path = os.path.join(image_dir, f"{slug}_{suffix}.png")
+                # Logs may be written with one zero-pad width and images with
+                # another (writers diverged historically); resolve via
+                # multi-pad lookup + glob fallback so eval is robust.
+                image_path = _resolve_sd35_image_path(image_dir, prompt_index, suffix)
+                slug_for_record = f"p{prompt_index:05d}" if prompt_index >= 0 else "p?????"
                 rec = ImageRecord(
                     prompt_index=prompt_index,
-                    slug=slug,
+                    slug=slug_for_record,
                     sample_index=0,
                     prompt=str(row.get("prompt", "")),
-                    image_path=image_path,
+                    image_path=image_path or os.path.join(image_dir, f"{slug_for_record}_{suffix}.png"),
                     objective_score=float(row.get("score")) if row.get("score") is not None else None,
                 )
-                if os.path.exists(image_path):
+                if image_path is not None:
                     records.append(rec)
                 else:
-                    missing.append(image_path)
+                    missing.append(rec.image_path)
     records.sort(key=lambda r: (r.prompt_index, r.sample_index))
     return records, missing
 

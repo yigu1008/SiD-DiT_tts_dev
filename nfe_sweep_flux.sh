@@ -20,7 +20,7 @@ if [[ -f "${SCRIPT_DIR}/_heartbeat.sh" ]]; then
 fi
 
 FLUX_BACKEND_LIST="${FLUX_BACKEND_LIST:-flux_schnell}"
-SWEEP_METHODS="${SWEEP_METHODS:-baseline bon beam smc fksteering greedy ga dts dts_star dynamic_cfg_x0 sop}"
+SWEEP_METHODS="${SWEEP_METHODS:-baseline bon beam smc fksteering greedy ga dts dts_star dynamic_cfg_x0 sop bon_mcts}"
 
 GA_GENERATIONS_SWEEP="${GA_GENERATIONS:-8}"
 GA_ELITES_SWEEP="${GA_ELITES:-3}"
@@ -155,6 +155,22 @@ run_one_config() {
         "SOP_INIT_PATHS=${k_val}" "SOP_KEEP_TOP=${k_val}" "SOP_BRANCH_FACTOR=${m_val}"
         "SOP_BRANCH_EVERY=1" "SOP_START_FRAC=${DYNCFG_X0_START_FRAC}" "SOP_END_FRAC=1.0"
         "SOP_SCORE_DECODE=x0_pred" "SOP_VARIANT_IDX=0"
+      ) ;;
+    bon_mcts)
+      # NFE = (N_SEEDS + topk * N_SIMS) * STEPS, with seeds=8 fixed, topk=2.
+      local seeds=8 topk=2
+      local rollouts; rollouts=$(( target_nfe / STEPS - seeds ))
+      (( rollouts < topk * 2 )) && rollouts=$(( topk * 2 ))
+      local n_sims; n_sims=$(( rollouts / topk ))
+      env_pairs+=(
+        "CFG_SCALES=${BASELINE_CFG}"
+        "BON_MCTS_N_SEEDS=${seeds}"
+        "BON_MCTS_TOPK=${topk}"
+        "BON_MCTS_SIM_ALLOC=split"
+        "BON_MCTS_MIN_SIMS=2"
+        "BON_MCTS_REFINE_METHOD=mcts"
+        "N_SIMS=${n_sims}"
+        "UCB_C=${UCB_C:-1.0}"
       ) ;;
     *)
       echo "Error: unsupported method '${method}' in flux sweep" >&2; return 1 ;;

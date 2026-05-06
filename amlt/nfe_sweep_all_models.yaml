@@ -114,6 +114,9 @@ search:
       # ── Final transformers/datasets pin (sampling env) ─────────────────────
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      # matplotlib needed by the plot step at end of hpsv2_nfe_sweep_and_plot.sh.
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "matplotlib>=3.7"
+      - /opt/conda/envs/ptca/bin/python -c "import matplotlib; print('[verify] matplotlib', matplotlib.__version__)"
       # ── Restrict sampling to GPUs 1..N-1 ──────────────────────────────────
       - export SAMPLING_GPUS=$$((${GPUS} - 1))
       - export CUDA_VISIBLE_DEVICES=$$(seq -s, 1 $$SAMPLING_GPUS)

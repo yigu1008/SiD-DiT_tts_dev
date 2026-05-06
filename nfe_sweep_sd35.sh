@@ -58,7 +58,7 @@ fi
 SD35_BACKEND_LIST="${SD35_BACKEND_LIST:-${SD35_BACKEND:-sid senseflow_large sd35_base}}"
 # Default sweep covers all methods used in the all-models NFE-vs-reward plot.
 # mcts and noise_inject are intentionally dropped per the all-models spec.
-SWEEP_METHODS="${SWEEP_METHODS:-baseline bon beam smc fksteering greedy ga dts dts_star dynamic_cfg_x0 sop}"
+SWEEP_METHODS="${SWEEP_METHODS:-baseline bon beam smc fksteering greedy ga dts dts_star dynamic_cfg_x0 sop bon_mcts}"
 
 # ── dynamic_cfg_x0 sweep — vary score_every (held grid fixed = MCTS bank) ───
 DYNAMIC_CFG_X0_SCORE_EVERY_SWEEP_SID="${DYNAMIC_CFG_X0_SCORE_EVERY_SWEEP_SID:-1}"
@@ -209,6 +209,15 @@ compute_knobs_for() {
       knob_label="K:M"; knob_value="${target_nfe}"
       nfe_actual=0  # filled at run-time once start_frac is resolved
       ;;
+    bon_mcts)
+      # NFE = (N_SEEDS + topk * N_SIMS) * STEPS, with N_SEEDS=8 fixed, topk=2.
+      # → N_SIMS = max(2, (target/STEPS - 8) / topk)
+      local seeds=8 topk=2
+      local rollouts; rollouts=$(( target_nfe / STEPS - seeds ))
+      (( rollouts < topk * 2 )) && rollouts=$(( topk * 2 ))
+      local n_sims; n_sims=$(( rollouts / topk ))
+      knob_label="n_sims"; knob_value="${n_sims}"
+      nfe_actual=$(( (seeds + topk * n_sims) * STEPS )) ;;
     *)
       echo "Error: unknown method ${method}" >&2; return 1 ;;
   esac
@@ -335,6 +344,24 @@ run_one_config() {
         "DTS_C_UCT=${DTS_C_UCT:-1.0}"
         "DTS_SDE_NOISE_SCALE=${DTS_SDE_NOISE_SCALE:-0.0}"
         "DTS_CFG_BANK=${DTS_CFG_BANK:-}"
+      )
+      ;;
+    bon_mcts)
+      # NFE-matched bon_mcts: N_SEEDS=8, topk=2, n_sims tuned to hit target.
+      local seeds=8 topk=2
+      local rollouts; rollouts=$(( target_nfe / STEPS - seeds ))
+      (( rollouts < topk * 2 )) && rollouts=$(( topk * 2 ))
+      local n_sims; n_sims=$(( rollouts / topk ))
+      env_pairs+=(
+        "N_VARIANTS=1"
+        "CFG_SCALES=${MCTS_CFG_BANK:-1.0 1.5 2.0 2.5}"
+        "BON_MCTS_N_SEEDS=${seeds}"
+        "BON_MCTS_TOPK=${topk}"
+        "BON_MCTS_SIM_ALLOC=split"
+        "BON_MCTS_MIN_SIMS=2"
+        "BON_MCTS_REFINE_METHOD=mcts"
+        "N_SIMS=${n_sims}"
+        "UCB_C=${UCB_C:-1.0}"
       )
       ;;
     *)

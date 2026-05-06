@@ -56,18 +56,27 @@ N_WINNERS="${N_WINNERS:-8}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 FAIL_FAST="${FAIL_FAST:-0}"
 
+# Search reward is also the prompt-subset tag → distinct (backend, reward)
+# combinations get NON-OVERLAPPING prompt subsets.
+SEARCH_REWARD="${SEARCH_REWARD:-imagereward}"
+case "${SEARCH_REWARD}" in
+    imagereward|hpsv3) : ;;
+    *) echo "[cherry-a6000] ERROR unknown SEARCH_REWARD='${SEARCH_REWARD}'" >&2; exit 1 ;;
+esac
+
 PROMPTS_DIR="${RUN_ROOT}/_prompts"
 mkdir -p "${PROMPTS_DIR}"
-PROMPT_FILE="${PROMPTS_DIR}/backend_${BACKEND}.txt"
+PROMPT_FILE="${PROMPTS_DIR}/backend_${BACKEND}_${SEARCH_REWARD}.txt"
 
-# ── Step 1: sample prompts (one-time per backend) ───────────────────────────
+# ── Step 1: sample prompts (per (backend, search_reward) → unique subset) ───
 if [[ ! -f "${PROMPT_FILE}" ]]; then
     echo "[cherry-a6000] sampling prompts → ${PROMPT_FILE}"
     env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE \
         "${PYTHON_BIN}" "${SCRIPT_DIR}/cherry_pick_prompts.py" \
         --n_prompts "${N_PROMPTS}" \
         --out_dir "${PROMPTS_DIR}" \
-        --backends "${BACKEND}"
+        --backends "${BACKEND}" \
+        --tag "${SEARCH_REWARD}"
 else
     echo "[cherry-a6000] reusing ${PROMPT_FILE}"
 fi
@@ -121,9 +130,9 @@ export SAVE_BEST_IMAGES="${SAVE_BEST_IMAGES:-1}"
 export SAVE_IMAGES="${SAVE_IMAGES:-0}"
 export SAVE_VARIANTS="${SAVE_VARIANTS:-0}"
 export EVAL_BACKENDS="${EVAL_BACKENDS:-imagereward hpsv3}"
-export REWARD_BACKEND="${REWARD_BACKEND:-imagereward}"
-export REWARD_TYPE="${REWARD_TYPE:-imagereward}"
-export REWARD_BACKENDS="${REWARD_BACKENDS:-imagereward hpsv3}"
+export REWARD_BACKEND="${REWARD_BACKEND:-${SEARCH_REWARD}}"
+export REWARD_TYPE="${REWARD_TYPE:-${SEARCH_REWARD}}"
+export REWARD_BACKENDS="${REWARD_BACKENDS:-${SEARCH_REWARD}}"
 export EVAL_BEST_IMAGES="${EVAL_BEST_IMAGES:-1}"
 export EVAL_REWARD_DEVICE="${EVAL_REWARD_DEVICE:-cuda}"
 export EVAL_ALLOW_MISSING_BACKENDS="${EVAL_ALLOW_MISSING_BACKENDS:-1}"
@@ -141,7 +150,7 @@ nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv 2>/dev/n
 
 failed=()
 for seed in ${SEEDS}; do
-    seed_root="${RUN_ROOT}/${BACKEND}/seed${seed}"
+    seed_root="${RUN_ROOT}/${BACKEND}_${SEARCH_REWARD}/seed${seed}"
     mkdir -p "${seed_root}"
     echo
     echo "================================================================"
@@ -158,8 +167,8 @@ for seed in ${SEEDS}; do
 done
 
 # ── Step 3: aggregate winners across all seeds ──────────────────────────────
-selector_root="${RUN_ROOT}/${BACKEND}"
-selector_out="${RUN_ROOT}/${BACKEND}/_winners"
+selector_root="${RUN_ROOT}/${BACKEND}_${SEARCH_REWARD}"
+selector_out="${RUN_ROOT}/${BACKEND}_${SEARCH_REWARD}/_winners"
 echo
 echo "================================================================"
 echo "[cherry-a6000] selecting top-${N_WINNERS} winners from ${selector_root}"

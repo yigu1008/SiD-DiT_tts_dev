@@ -85,6 +85,11 @@ def main() -> None:
     p.add_argument("--out_dir", default="./cherry_pick_prompts")
     p.add_argument("--base_seed", type=int, default=42)
     p.add_argument("--backends", nargs="+", default=BACKENDS)
+    p.add_argument("--tag", default="",
+                   help="Optional tag (e.g., reward name) to vary the per-backend "
+                        "subset seed. Different tags → non-overlapping subsets per "
+                        "(backend, tag). Output filename: backend_<name>_<tag>.txt "
+                        "(or backend_<name>.txt if tag empty).")
     args = p.parse_args()
 
     out_dir = Path(args.out_dir).expanduser().resolve()
@@ -111,10 +116,22 @@ def main() -> None:
         )
     print(f"[cherry] union (deduped): {len(union)} prompts")
 
+    # Stable hash of the tag → integer seed offset (Python's hash() is salted
+    # per-process; use a deterministic CRC32-style fold instead).
+    def _tag_seed(tag: str) -> int:
+        if not tag:
+            return 0
+        h = 0
+        for c in tag.encode("utf-8"):
+            h = ((h * 131) + c) & 0xFFFFFFFF
+        return h
+
+    tag_off = _tag_seed(args.tag)
     for i, backend in enumerate(args.backends):
-        rng = random.Random(args.base_seed + 7 * i + 1)
+        rng = random.Random(args.base_seed + 7 * i + 1 + tag_off)
         sample = rng.sample(union, args.n_prompts)
-        out_path = out_dir / f"backend_{backend}.txt"
+        suffix = f"_{args.tag}" if args.tag else ""
+        out_path = out_dir / f"backend_{backend}{suffix}.txt"
         with out_path.open("w", encoding="utf-8") as f:
             for s in sample:
                 # CSV-safe: strip newlines.

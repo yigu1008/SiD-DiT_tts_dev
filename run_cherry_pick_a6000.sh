@@ -45,13 +45,13 @@ export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
 export SID_FORCE_WANDB_STUB=1
 export WANDB_DISABLED=true
-# Memory-saving swap during prompt encoding (SD3.5 only):
-#   OFFLOAD_TEXT_ENCODER_AFTER_ENCODE=1 → encoders → CPU after each encode
-#   OFFLOAD_TRANSFORMER_DURING_ENCODE=1 → transformer → CPU during encode
-# Together: T5 forward sees ~12 GB free instead of competing with the
-# 17 GB transformer. ~one-time CPU↔GPU shuffle per (prompt, seed) batch.
+# SD3.5 prompt-encoding memory: keep encoders on GPU only during encode_prompt
+# and push them back to CPU after. Transformer stays on GPU (the swap was
+# unsafe — some submodules don't follow .to(device) cleanly under DDP).
 export OFFLOAD_TEXT_ENCODER_AFTER_ENCODE="${OFFLOAD_TEXT_ENCODER_AFTER_ENCODE:-1}"
-export OFFLOAD_TRANSFORMER_DURING_ENCODE="${OFFLOAD_TRANSFORMER_DURING_ENCODE:-1}"
+# Lower T5 max_sequence_length from 256 → 128 to halve T5 attention/MLP memory
+# (most prompts <128 tokens; minor truncation at the very long ones).
+export MAX_SEQ_LEN="${MAX_SEQ_LEN:-128}"
 
 # Inline mode — no reward server.
 unset REWARD_SERVER_URL || true

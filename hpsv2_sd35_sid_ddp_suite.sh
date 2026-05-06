@@ -1267,6 +1267,7 @@ PY
     --bon_n "${BON_N}" \
     --beam_width "${BEAM_WIDTH}" \
     --correction_strengths ${CORRECTION_STRENGTHS} \
+    --max_sequence_length "${MAX_SEQ_LEN:-256}" \
     --out_dir "${method_out}" \
     "${extra[@]}"
 

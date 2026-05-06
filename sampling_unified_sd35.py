@@ -874,7 +874,39 @@ def generate_variants(args: argparse.Namespace, prompt: str, cache: dict[str, An
     return _generate_legacy_variants(args, prompt)
 
 
+def _offload_text_encoders_to_cpu(ctx: PipelineContext) -> None:
+    """Move SD3.5's three text encoders (T5-XXL + 2× CLIP) to CPU and free GPU
+    cache. Frees ~10-12 GB on the sampling rank — important when T5 + transformer
+    co-locate at high seq_len. Idempotent. Encoders auto-move back to device on
+    next encode_prompt call (HF pipelines re-place inputs)."""
+    moved = []
+    for name in ("text_encoder", "text_encoder_2", "text_encoder_3"):
+        enc = getattr(ctx.pipe, name, None)
+        if enc is None:
+            continue
+        try:
+            enc.to("cpu")
+            moved.append(name)
+        except Exception as exc:
+            print(f"[offload] unable to move {name} to cpu: {exc}")
+    if moved:
+        torch.cuda.empty_cache()
+        print(f"[offload] text encoders → CPU: {moved}")
+
+
 def encode_variants(ctx: PipelineContext, variants: list[str], max_sequence_length: int = 256) -> EmbeddingContext:
+    # Ensure text encoders are on the sampling device — they may be on CPU if
+    # the previous batch finished with offload enabled.
+    _offload_after = bool(int(os.environ.get("OFFLOAD_TEXT_ENCODER_AFTER_ENCODE", "0")))
+    if _offload_after:
+        for name in ("text_encoder", "text_encoder_2", "text_encoder_3"):
+            enc = getattr(ctx.pipe, name, None)
+            if enc is not None:
+                try:
+                    enc.to(ctx.device)
+                except Exception:
+                    pass
+
     cond_text: list[torch.Tensor] = []
     cond_pooled: list[torch.Tensor] = []
     for variant in variants:
@@ -900,6 +932,10 @@ def encode_variants(ctx: PipelineContext, variants: list[str], max_sequence_leng
         max_sequence_length=max_sequence_length,
     )
     ue, up = (enc_out[0], enc_out[-1])
+
+    if _offload_after:
+        _offload_text_encoders_to_cpu(ctx)
+
     return EmbeddingContext(
         cond_text=cond_text,
         cond_pooled=cond_pooled,

@@ -45,6 +45,10 @@ export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
 export SID_FORCE_WANDB_STUB=1
 export WANDB_DISABLED=true
+# Move SD3.5 text encoders (T5 + 2x CLIP) to CPU after each encode batch.
+# Frees ~10-12 GB on each sampling rank — keeps SD3.5 + reward_server clear
+# of T5 OOM during sampling steps. Auto-moves back on next encode_prompt.
+export OFFLOAD_TEXT_ENCODER_AFTER_ENCODE="${OFFLOAD_TEXT_ENCODER_AFTER_ENCODE:-1}"
 
 # Inline mode — no reward server.
 unset REWARD_SERVER_URL || true
@@ -107,9 +111,16 @@ case "${BACKEND}" in
         export FLUX_BACKEND=flux; unset SD35_BACKEND || true
         export STEPS="${STEPS:-4}"
         export MODEL_ID="${MODEL_ID:-black-forest-labs/FLUX.1-schnell}"
+        # FLUX.1-schnell is CFG-distilled at 0; mild quality degrades at higher
+        # CFG, but we need a non-degenerate bank to give MCTS / fksteering / SoP
+        # a real action space. Baseline still runs at cfg=0 (the natural mode).
         export BASELINE_GUIDANCE_SCALE="${BASELINE_GUIDANCE_SCALE:-0.0}"
         export BASELINE_CFG="${BASELINE_CFG:-0.0}"
-        export CFG_SCALES="${CFG_SCALES:-0.0}"
+        export CFG_SCALES="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0}"
+        # DTS at Euler-mode flux is deterministic without SDE noise → tree
+        # collapses at non-root nodes. Enable mild SDE noise so dts_star can
+        # actually branch.
+        export DTS_SDE_NOISE_SCALE="${DTS_SDE_NOISE_SCALE:-0.1}"
         ;;
     *)
         echo "[cherry-a6000] ERROR unknown BACKEND=${BACKEND}" >&2

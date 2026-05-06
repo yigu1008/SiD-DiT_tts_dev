@@ -98,7 +98,9 @@ _apply_backend() {
             export RUN_SANA=0; export RUN_SD35=1; export RUN_FLUX=0
             ;;
         flux_schnell)
-            export FLUX_BACKEND=flux_schnell; unset SD35_BACKEND || true
+            # NOTE: --backend accepts {flux, senseflow_flux, tdd_flux};
+            # "flux schnell" = FLUX_BACKEND=flux + MODEL_ID=FLUX.1-schnell.
+            export FLUX_BACKEND=flux; unset SD35_BACKEND || true
             export STEPS=4
             export MODEL_ID="${MODEL_ID:-black-forest-labs/FLUX.1-schnell}"
             # NOTE: flux_schnell is CFG-distilled at 0. Grid is narrow — the

@@ -22,7 +22,8 @@ import shutil
 from collections import defaultdict
 from pathlib import Path
 
-METHODS = ["bon", "smc", "fksteering", "dts_star", "bon_mcts"]
+# Default method set (overridable via --methods).
+METHODS = ["baseline", "fksteering", "dts_star", "bon_mcts"]
 
 
 def _find_method_dirs(run_root: Path) -> dict[str, Path]:
@@ -115,7 +116,17 @@ def main() -> None:
     p.add_argument("--n_winners", type=int, default=8)
     p.add_argument("--rank_metric", choices=["sum", "mean"], default="sum",
                    help="Method score = sum(hpsv3, imagereward) [default] or mean.")
+    p.add_argument("--methods", nargs="+", default=None,
+                   help="Methods to compare (default: baseline fksteering dts_star bon_mcts). "
+                        "bon_mcts is required and must be rank-1 for an entry to be a winner.")
     args = p.parse_args()
+
+    # Allow CLI override of the module-level METHODS list.
+    global METHODS
+    if args.methods:
+        METHODS = list(args.methods)
+        if "bon_mcts" not in METHODS:
+            raise SystemExit("[select] ERROR --methods must include 'bon_mcts'")
 
     run_root = Path(args.run_root).expanduser().resolve()
     out_dir = Path(args.out_dir).expanduser().resolve()

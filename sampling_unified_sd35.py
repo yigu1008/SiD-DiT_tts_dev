@@ -895,10 +895,22 @@ def _offload_text_encoders_to_cpu(ctx: PipelineContext) -> None:
 
 
 def encode_variants(ctx: PipelineContext, variants: list[str], max_sequence_length: int = 256) -> EmbeddingContext:
-    # Ensure text encoders are on the sampling device — they may be on CPU if
-    # the previous batch finished with offload enabled.
+    # Memory-saving swap: during T5/CLIP encode, the transformer (~17 GB) can
+    # be parked on CPU so encoders fit. After encode, encoders go back to CPU
+    # and transformer comes back to GPU. Two env knobs:
+    #   OFFLOAD_TEXT_ENCODER_AFTER_ENCODE=1  → encoders → CPU after encode
+    #   OFFLOAD_TRANSFORMER_DURING_ENCODE=1  → transformer → CPU during encode
     _offload_after = bool(int(os.environ.get("OFFLOAD_TEXT_ENCODER_AFTER_ENCODE", "0")))
-    if _offload_after:
+    _swap_transformer = bool(int(os.environ.get("OFFLOAD_TRANSFORMER_DURING_ENCODE", "0")))
+
+    if _swap_transformer:
+        try:
+            ctx.pipe.transformer.to("cpu")
+            torch.cuda.empty_cache()
+        except Exception as exc:
+            print(f"[offload] failed to park transformer on CPU: {exc}")
+
+    if _offload_after or _swap_transformer:
         for name in ("text_encoder", "text_encoder_2", "text_encoder_3"):
             enc = getattr(ctx.pipe, name, None)
             if enc is not None:
@@ -933,8 +945,16 @@ def encode_variants(ctx: PipelineContext, variants: list[str], max_sequence_leng
     )
     ue, up = (enc_out[0], enc_out[-1])
 
-    if _offload_after:
+    if _offload_after or _swap_transformer:
         _offload_text_encoders_to_cpu(ctx)
+
+    if _swap_transformer:
+        try:
+            ctx.pipe.transformer.to(ctx.device)
+            torch.cuda.empty_cache()
+            print("[offload] transformer → GPU after encode")
+        except Exception as exc:
+            print(f"[offload] failed to restore transformer to GPU: {exc}")
 
     return EmbeddingContext(
         cond_text=cond_text,

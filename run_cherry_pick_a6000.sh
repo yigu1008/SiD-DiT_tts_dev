@@ -45,10 +45,13 @@ export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
 export SID_FORCE_WANDB_STUB=1
 export WANDB_DISABLED=true
-# Move SD3.5 text encoders (T5 + 2x CLIP) to CPU after each encode batch.
-# Frees ~10-12 GB on each sampling rank — keeps SD3.5 + reward_server clear
-# of T5 OOM during sampling steps. Auto-moves back on next encode_prompt.
+# Memory-saving swap during prompt encoding (SD3.5 only):
+#   OFFLOAD_TEXT_ENCODER_AFTER_ENCODE=1 → encoders → CPU after each encode
+#   OFFLOAD_TRANSFORMER_DURING_ENCODE=1 → transformer → CPU during encode
+# Together: T5 forward sees ~12 GB free instead of competing with the
+# 17 GB transformer. ~one-time CPU↔GPU shuffle per (prompt, seed) batch.
 export OFFLOAD_TEXT_ENCODER_AFTER_ENCODE="${OFFLOAD_TEXT_ENCODER_AFTER_ENCODE:-1}"
+export OFFLOAD_TRANSFORMER_DURING_ENCODE="${OFFLOAD_TRANSFORMER_DURING_ENCODE:-1}"
 
 # Inline mode — no reward server.
 unset REWARD_SERVER_URL || true

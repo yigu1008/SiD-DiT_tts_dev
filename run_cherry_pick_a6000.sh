@@ -53,9 +53,18 @@ export OFFLOAD_TEXT_ENCODER_AFTER_ENCODE="${OFFLOAD_TEXT_ENCODER_AFTER_ENCODE:-1
 # (most prompts <128 tokens; minor truncation at the very long ones).
 export MAX_SEQ_LEN="${MAX_SEQ_LEN:-128}"
 
-# Inline mode — no reward server.
-unset REWARD_SERVER_URL || true
-echo "[cherry-a6000] REWARD_SERVER_URL unset → ImageReward + HPSv3 load inline"
+# Use reward server if caller provided REWARD_SERVER_URL; otherwise fall back
+# to inline mode (slow on flux/sd35 — every rank loads HPSv3+IR locally).
+if [[ -n "${REWARD_SERVER_URL:-}" ]]; then
+    if curl -s --max-time 3 "${REWARD_SERVER_URL}/health" >/dev/null 2>&1; then
+        echo "[cherry-a6000] using reward server at ${REWARD_SERVER_URL}"
+    else
+        echo "[cherry-a6000] WARN REWARD_SERVER_URL=${REWARD_SERVER_URL} unhealthy → falling back to inline reward"
+        unset REWARD_SERVER_URL || true
+    fi
+else
+    echo "[cherry-a6000] REWARD_SERVER_URL unset → ImageReward + HPSv3 load inline (slow!)"
+fi
 
 N_PROMPTS="${N_PROMPTS:-30}"
 SEEDS="${SEEDS:-42 43}"

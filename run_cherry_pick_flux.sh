@@ -40,10 +40,19 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 
 mkdir -p "${RUN_ROOT}"
 
-# ── 1. Reward server (skip if SKIP_SERVER=1 and one is already healthy) ────
-if [[ "${SKIP_SERVER}" != "1" ]]; then
-    SERVER_LOG="${RUN_ROOT}/reward_server.log"
-    echo "[flux] booting reward server on GPU(s) ${CUDA_VISIBLE_DEVICES_REWARD} (port ${REWARD_SERVER_PORT})"
+# ── 1. Reward server: auto-detect, reuse if healthy, boot if not ──────────
+REWARD_SERVER_URL="${REWARD_SERVER_URL:-http://localhost:${REWARD_SERVER_PORT}}"
+SERVER_LOG="${RUN_ROOT}/reward_server.log"
+
+if curl -s --max-time 3 "${REWARD_SERVER_URL}/health" >/dev/null 2>&1; then
+    echo "[flux] reusing existing reward server at ${REWARD_SERVER_URL}"
+elif [[ "${SKIP_SERVER}" == "1" ]]; then
+    echo "[flux] FATAL: SKIP_SERVER=1 but no healthy server at ${REWARD_SERVER_URL}" >&2
+    echo "[flux]   either: (a) start a server first, or" >&2
+    echo "[flux]           (b) drop SKIP_SERVER=1 and let this script boot one" >&2
+    exit 1
+else
+    echo "[flux] no healthy server at ${REWARD_SERVER_URL} → booting one on GPU(s) ${CUDA_VISIBLE_DEVICES_REWARD} (port ${REWARD_SERVER_PORT})"
     CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_REWARD}" \
       "${PYTHON_BIN}" "${SCRIPT_DIR}/reward_server.py" \
         --port "${REWARD_SERVER_PORT}" --device cuda:0 \
@@ -54,7 +63,7 @@ if [[ "${SKIP_SERVER}" != "1" ]]; then
     trap 'kill "${SERVER_PID}" >/dev/null 2>&1 || true' EXIT
     HEALTH_OK=0
     for i in $(seq 1 100); do
-        if curl -s "http://localhost:${REWARD_SERVER_PORT}/health" >/dev/null 2>&1; then
+        if curl -s --max-time 3 "${REWARD_SERVER_URL}/health" >/dev/null 2>&1; then
             HEALTH_OK=1; break
         fi
         if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
@@ -62,18 +71,13 @@ if [[ "${SKIP_SERVER}" != "1" ]]; then
             tail -n 80 "${SERVER_LOG}" >&2
             exit 1
         fi
+        if (( i % 10 == 0 )); then echo "[flux] waiting for server health... (${i}s)"; fi
         sleep 3
     done
-    [[ "${HEALTH_OK}" == "1" ]] || { echo "[flux] FATAL server not healthy"; tail -n 80 "${SERVER_LOG}" >&2; exit 1; }
-    echo "[flux] reward server READY"
-    REWARD_SERVER_URL="http://localhost:${REWARD_SERVER_PORT}"
-else
-    echo "[flux] skipping server boot (SKIP_SERVER=1); using REWARD_SERVER_URL=${REWARD_SERVER_URL:-http://localhost:${REWARD_SERVER_PORT}}"
-    REWARD_SERVER_URL="${REWARD_SERVER_URL:-http://localhost:${REWARD_SERVER_PORT}}"
-    if ! curl -s "${REWARD_SERVER_URL}/health" >/dev/null 2>&1; then
-        echo "[flux] FATAL: REWARD_SERVER_URL=${REWARD_SERVER_URL} not healthy"
-        exit 1
+    if [[ "${HEALTH_OK}" != "1" ]]; then
+        echo "[flux] FATAL server failed to become healthy"; tail -n 80 "${SERVER_LOG}" >&2; exit 1
     fi
+    echo "[flux] reward server READY at ${REWARD_SERVER_URL}"
 fi
 
 # ── 2. Run flux × {hpsv3, imagereward} ─────────────────────────────────────

@@ -82,9 +82,14 @@ esac
 
 PROMPTS_DIR="${RUN_ROOT}/_prompts"
 mkdir -p "${PROMPTS_DIR}"
-PROMPT_FILE="${PROMPTS_DIR}/backend_${BACKEND}_${SEARCH_REWARD}.txt"
+# Optional SHUFFLE_ID env: appended to the prompt-subset tag and to the file
+# name so repeating the same (backend, reward) with a new SHUFFLE_ID yields
+# a NEW non-overlapping prompt subset. Default empty → original behaviour.
+SHUFFLE_ID="${SHUFFLE_ID:-}"
+SUBSET_TAG="${SEARCH_REWARD}${SHUFFLE_ID:+_${SHUFFLE_ID}}"
+PROMPT_FILE="${PROMPTS_DIR}/backend_${BACKEND}_${SUBSET_TAG}.txt"
 
-# ── Step 1: sample prompts (per (backend, search_reward) → unique subset) ───
+# ── Step 1: sample prompts (per (backend, search_reward, shuffle_id) → unique subset) ───
 if [[ ! -f "${PROMPT_FILE}" ]]; then
     echo "[cherry-a6000] sampling prompts → ${PROMPT_FILE}"
     env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE \
@@ -92,7 +97,7 @@ if [[ ! -f "${PROMPT_FILE}" ]]; then
         --n_prompts "${N_PROMPTS}" \
         --out_dir "${PROMPTS_DIR}" \
         --backends "${BACKEND}" \
-        --tag "${SEARCH_REWARD}"
+        --tag "${SUBSET_TAG}"
 else
     echo "[cherry-a6000] reusing ${PROMPT_FILE}"
 fi
@@ -173,7 +178,7 @@ nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv 2>/dev/n
 
 failed=()
 for seed in ${SEEDS}; do
-    seed_root="${RUN_ROOT}/${BACKEND}_${SEARCH_REWARD}/seed${seed}"
+    seed_root="${RUN_ROOT}/${BACKEND}_${SUBSET_TAG}/seed${seed}"
     mkdir -p "${seed_root}"
     echo
     echo "================================================================"
@@ -190,8 +195,8 @@ for seed in ${SEEDS}; do
 done
 
 # ── Step 3: aggregate winners across all seeds ──────────────────────────────
-selector_root="${RUN_ROOT}/${BACKEND}_${SEARCH_REWARD}"
-selector_out="${RUN_ROOT}/${BACKEND}_${SEARCH_REWARD}/_winners"
+selector_root="${RUN_ROOT}/${BACKEND}_${SUBSET_TAG}"
+selector_out="${RUN_ROOT}/${BACKEND}_${SUBSET_TAG}/_winners"
 echo
 echo "================================================================"
 echo "[cherry-a6000] selecting top-${N_WINNERS} winners from ${selector_root}"

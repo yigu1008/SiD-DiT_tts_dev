@@ -82,24 +82,37 @@ esac
 
 PROMPTS_DIR="${RUN_ROOT}/_prompts"
 mkdir -p "${PROMPTS_DIR}"
-# Optional SHUFFLE_ID env: appended to the prompt-subset tag and to the file
-# name so repeating the same (backend, reward) with a new SHUFFLE_ID yields
-# a NEW non-overlapping prompt subset. Default empty → original behaviour.
-SHUFFLE_ID="${SHUFFLE_ID:-}"
+# Auto-fresh prompt subset every run unless SHUFFLE_ID is explicitly set.
+# Default behavior: pick the next free vN AND fresh-sample with epoch-based
+# seed so subsets are guaranteed different even if the script is re-run on
+# a new box / clean dir.
+if [[ -z "${SHUFFLE_ID+x}" ]]; then
+    next_n=1
+    while [[ -f "${PROMPTS_DIR}/backend_${BACKEND}_${SEARCH_REWARD}_v${next_n}.txt" ]]; do
+        next_n=$((next_n + 1))
+    done
+    SHUFFLE_ID="v${next_n}"
+    echo "[cherry-a6000] auto-picked SHUFFLE_ID=${SHUFFLE_ID} (next free)"
+fi
 SUBSET_TAG="${SEARCH_REWARD}${SHUFFLE_ID:+_${SHUFFLE_ID}}"
 PROMPT_FILE="${PROMPTS_DIR}/backend_${BACKEND}_${SUBSET_TAG}.txt"
 
-# ── Step 1: sample prompts (per (backend, search_reward, shuffle_id) → unique subset) ───
+# Always re-sample (force a different subset every run by using a new
+# base_seed each invocation, derived from epoch + SHUFFLE_ID hash).
+RESHUFFLE_BASE_SEED="${RESHUFFLE_BASE_SEED:-$(( (42 + $(date +%s) % 100000) ))}"
+
+# ── Step 1: sample prompts ─────────────────────────────────────────────────
 if [[ ! -f "${PROMPT_FILE}" ]]; then
-    echo "[cherry-a6000] sampling prompts → ${PROMPT_FILE}"
+    echo "[cherry-a6000] sampling prompts → ${PROMPT_FILE} (base_seed=${RESHUFFLE_BASE_SEED})"
     env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE \
         "${PYTHON_BIN}" "${SCRIPT_DIR}/cherry_pick_prompts.py" \
         --n_prompts "${N_PROMPTS}" \
         --out_dir "${PROMPTS_DIR}" \
         --backends "${BACKEND}" \
-        --tag "${SUBSET_TAG}"
+        --tag "${SUBSET_TAG}" \
+        --base_seed "${RESHUFFLE_BASE_SEED}"
 else
-    echo "[cherry-a6000] reusing ${PROMPT_FILE}"
+    echo "[cherry-a6000] reusing ${PROMPT_FILE} (delete this file or bump SHUFFLE_ID for a fresh subset)"
 fi
 
 # ── Step 2: per-seed suite runs ─────────────────────────────────────────────

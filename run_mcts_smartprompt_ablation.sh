@@ -208,7 +208,8 @@ for cell in ${CELLS}; do
     echo "  → ${cell_root}"
     echo "================================================================"
 
-    if BON_MCTS_REFINE_METHOD="${REFINE}" \
+    if env \
+       BON_MCTS_REFINE_METHOD="${REFINE}" \
        N_VARIANTS="${CELL_N_VARIANTS}" \
        USE_QWEN="${CELL_USE_QWEN}" \
        PRECOMPUTE_REWRITES="${CELL_USE_QWEN}" \

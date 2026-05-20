@@ -950,7 +950,17 @@ run_method() {
       SMC_LAMBDA="${FKSTEERING_LAMBDA:-${SMC_LAMBDA:-10.0}}"
       ;;
     bon) mode_arg="bon" ;;
-    bon_mcts|bon_mcts_neg|bon_mcts_sigma|bon_mcts_axes)
+    greedy_prompt)
+      # Greedy-over-prompts comparator for #8. Same step-by-step argmax as
+      # `greedy` but restricted to the prompt-rewrite axis (CFG fixed at
+      # baseline, no correction).  Caller may set SYNERGY_REWRITES_FILE.
+      mode_arg="greedy"
+      CFG_SCALES="${BASELINE_CFG}"
+      CORRECTION_STRENGTHS="0.0"
+      N_VARIANTS="${SYNERGY_N_VARIANTS:-${N_VARIANTS}}"
+      REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
+      ;;
+    bon_mcts_static_cfg|bon_mcts_adaptive_cfg|bon_mcts_rewrite_only|bon_mcts_full|bon_mcts|bon_mcts_neg|bon_mcts_sigma|bon_mcts_axes)
       # Action-axis variants share the bon_mcts runner; only differ in which
       # CLI banks (NEG / SIGMA_PERTURB) they pass.  Running them as four
       # methods inside the SAME suite invocation amortizes one pipeline load
@@ -961,8 +971,40 @@ run_method() {
       else
         runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_bon_mcts.py"
       fi
-      # Per-method bank overrides.  Empty bank = use outer env value (or none).
+      # Per-method bank / schedule overrides.  Empty bank = use outer env value (or none).
       case "${method}" in
+        bon_mcts_static_cfg)
+          BON_MCTS_REFINE_METHOD="mcts"
+          LOOKAHEAD_METHOD_MODE=""
+          N_VARIANTS=1
+          REWRITES_FILE=""
+          BON_MCTS_NEG_BANK=""
+          BON_MCTS_SIGMA_PERTURB_BANK=""
+          ;;
+        bon_mcts_adaptive_cfg)
+          BON_MCTS_REFINE_METHOD="ours_tree"
+          LOOKAHEAD_METHOD_MODE="rollout_tree_prior_adaptive_cfg"
+          N_VARIANTS=1
+          REWRITES_FILE=""
+          BON_MCTS_NEG_BANK=""
+          BON_MCTS_SIGMA_PERTURB_BANK=""
+          ;;
+        bon_mcts_rewrite_only)
+          BON_MCTS_REFINE_METHOD="mcts"
+          LOOKAHEAD_METHOD_MODE=""
+          N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
+          REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
+          BON_MCTS_NEG_BANK=""
+          BON_MCTS_SIGMA_PERTURB_BANK=""
+          ;;
+        bon_mcts_full)
+          BON_MCTS_REFINE_METHOD="ours_tree"
+          LOOKAHEAD_METHOD_MODE="rollout_tree_prior_adaptive_cfg"
+          N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
+          REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
+          BON_MCTS_NEG_BANK=""
+          BON_MCTS_SIGMA_PERTURB_BANK=""
+          ;;
         bon_mcts_neg)
           : "${BON_MCTS_NEG_BANK_NEG:=||low quality, blurry, lowres, jpeg artifacts||bad anatomy, deformed, mutated, extra limbs||watermark, signature, text, frame, cropped}"
           BON_MCTS_NEG_BANK="${BON_MCTS_NEG_BANK_NEG}"

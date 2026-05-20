@@ -950,13 +950,41 @@ run_method() {
       SMC_LAMBDA="${FKSTEERING_LAMBDA:-${SMC_LAMBDA:-10.0}}"
       ;;
     bon) mode_arg="bon" ;;
-    bon_mcts)
+    bon_mcts|bon_mcts_neg|bon_mcts_sigma|bon_mcts_axes)
+      # Action-axis variants share the bon_mcts runner; only differ in which
+      # CLI banks (NEG / SIGMA_PERTURB) they pass.  Running them as four
+      # methods inside the SAME suite invocation amortizes one pipeline load
+      # across all four cells.
       mode_arg="mcts"
       if [[ "${SD35_BACKEND}" == "sd35_base" ]]; then
         runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_bon_mcts_sd35base.py"
       else
         runner_script="${SCRIPT_DIR}/sd35_ddp_experiment_bon_mcts.py"
       fi
+      # Per-method bank overrides.  Empty bank = use outer env value (or none).
+      case "${method}" in
+        bon_mcts_neg)
+          : "${BON_MCTS_NEG_BANK_NEG:=||low quality, blurry, lowres}"
+          BON_MCTS_NEG_BANK="${BON_MCTS_NEG_BANK_NEG}"
+          BON_MCTS_SIGMA_PERTURB_BANK=""
+          ;;
+        bon_mcts_sigma)
+          : "${BON_MCTS_SIGMA_BANK_SIGMA:=-0.05 0.0 0.05}"
+          BON_MCTS_NEG_BANK=""
+          BON_MCTS_SIGMA_PERTURB_BANK="${BON_MCTS_SIGMA_BANK_SIGMA}"
+          ;;
+        bon_mcts_axes)
+          : "${BON_MCTS_NEG_BANK_AXES:=||low quality, blurry, lowres}"
+          : "${BON_MCTS_SIGMA_BANK_AXES:=-0.05 0.0 0.05}"
+          BON_MCTS_NEG_BANK="${BON_MCTS_NEG_BANK_AXES}"
+          BON_MCTS_SIGMA_PERTURB_BANK="${BON_MCTS_SIGMA_BANK_AXES}"
+          ;;
+        bon_mcts)
+          # vanilla — no banks unless caller set them outside
+          BON_MCTS_NEG_BANK="${BON_MCTS_NEG_BANK:-}"
+          BON_MCTS_SIGMA_PERTURB_BANK="${BON_MCTS_SIGMA_PERTURB_BANK:-}"
+          ;;
+      esac
       ;;
     beam) mode_arg="beam" ;;
     dts|dts_star)

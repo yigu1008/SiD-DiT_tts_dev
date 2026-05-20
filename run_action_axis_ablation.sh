@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 # Ablation: do negative-prompt branching and sigma-perturbation help bon_mcts?
 #
-# Cells (all use the same anchor as the smartprompt ablation winner):
-#   base        : bon_mcts unchanged (seed-only prescreen axis)        — reference
-#   neg_only    : prescreen fans out over a 2-entry negative bank
-#   sigma_only  : prescreen fans out over a 3-entry sigma-perturb bank
-#   merged      : prescreen fans out over BOTH banks (cartesian)
+# Single-pipeline-load mode: METHODS contains 4 bon_mcts variants + baseline,
+# so the SD3.5 pipeline / T5 encoders / VAE / transformer are loaded ONCE
+# and reused across all 5 method runs.  This saves ~30-60s × 3 pipeline reloads
+# vs. the previous "4 separate suite invocations" version.
 #
-# We hold total prescreens ≈ n_seeds via cycling — wallclock is comparable to
-# the base cell.  Same N_SIMS, same topk, same refine method.
+# Methods (mapped in hpsv2_sd35_sid_ddp_suite.sh:953-988):
+#   baseline       : no-search reference (single CFG sample)
+#   bon_mcts       : current ActDiff (seed-only prescreen)              — base
+#   bon_mcts_neg   : prescreen fans out over a 2-entry negative bank
+#   bon_mcts_sigma : prescreen fans out over a 3-entry sigma-perturb bank
+#   bon_mcts_axes  : merged — both axes fan out (cartesian, cycled mod n_seeds)
 #
-# Outputs per cell:
-#   <RUN_ROOT>/<cell>/run_*/bon_mcts/{images, best_images, aggregate_ddp.json, ...}
+# Output layout (single OUT_ROOT):
+#   <RUN_ROOT>/run_*/{baseline,bon_mcts,bon_mcts_neg,bon_mcts_sigma,bon_mcts_axes}/
+#     {images, best_images, aggregate_ddp.json, best_images_multi_reward_aggregate.json}
 #   <RUN_ROOT>/summary.tsv
 #
 # Caller env (from amlt yaml OR local):
@@ -19,8 +23,6 @@
 #   BACKEND            (default sid)
 #   N_PROMPTS          (default 100)
 #   SEED               (default 42)
-#
-# Local:  bash run_action_axis_ablation.sh
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,16 +41,18 @@ N_PROMPTS="${N_PROMPTS:-100}"
 SEED="${SEED:-42}"
 SEARCH_REWARD="${SEARCH_REWARD:-imagereward}"
 
-# Cell config below — NEG_BANK entries are separated by '||'
-# (so individual negatives can contain spaces/commas).
-# SIGMA bank is whitespace-split floats.
-CELLS="${CELLS:-base neg_only sigma_only merged}"
+# Bank values (override via env if you want to test different banks).
+BON_MCTS_NEG_BANK_NEG="${BON_MCTS_NEG_BANK_NEG:-||low quality, blurry, lowres}"
+BON_MCTS_SIGMA_BANK_SIGMA="${BON_MCTS_SIGMA_BANK_SIGMA:--0.05 0.0 0.05}"
+BON_MCTS_NEG_BANK_AXES="${BON_MCTS_NEG_BANK_AXES:-||low quality, blurry, lowres}"
+BON_MCTS_SIGMA_BANK_AXES="${BON_MCTS_SIGMA_BANK_AXES:--0.05 0.0 0.05}"
+export BON_MCTS_NEG_BANK_NEG BON_MCTS_SIGMA_BANK_SIGMA BON_MCTS_NEG_BANK_AXES BON_MCTS_SIGMA_BANK_AXES
 
 mkdir -p "${RUN_ROOT}"
 SERVER_LOG="${RUN_ROOT}/reward_server.log"
 REWARD_SERVER_URL="${REWARD_SERVER_URL:-http://localhost:${REWARD_SERVER_PORT}}"
 
-# ── 1. Reward server (ImageReward) ─────────────────────────────────────────
+# ── 1. Reward server (ImageReward only — light, fits next to sampling) ─────
 if curl -s --max-time 3 "${REWARD_SERVER_URL}/health" >/dev/null 2>&1; then
     echo "[action-axis] reusing reward server at ${REWARD_SERVER_URL}"
 else
@@ -69,7 +73,7 @@ else
     curl -s --max-time 3 "${REWARD_SERVER_URL}/health" >/dev/null 2>&1 || { echo "FATAL not healthy"; exit 1; }
 fi
 
-# ── 2. Prompt sampling ─────────────────────────────────────────────────────
+# ── 2. Prompt sampling (once, shared across methods) ───────────────────────
 PROMPTS_DIR="${RUN_ROOT}/_prompts"
 mkdir -p "${PROMPTS_DIR}"
 PROMPT_FILE="${PROMPTS_DIR}/backend_${BACKEND}.txt"
@@ -98,8 +102,8 @@ case "${BACKEND}" in
     *) echo "[action-axis] ERROR unsupported BACKEND='${BACKEND}'" >&2; exit 1 ;;
 esac
 
-# ── 4. Shared knobs (anchor on the smartprompt winner) ─────────────────────
-export METHODS="baseline bon_mcts"
+# ── 4. Run all 4 bon_mcts variants + baseline in ONE suite invocation ──────
+export METHODS="${METHODS:-baseline bon_mcts bon_mcts_neg bon_mcts_sigma bon_mcts_axes}"
 export PROMPT_FILE
 export START_INDEX=0
 export END_INDEX="${N_PROMPTS}"
@@ -127,68 +131,39 @@ export EVAL_REWARD_DEVICE=cuda
 export REWARD_SERVER_URL
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_SAMPLE}"
 export MCTS_KEY_STEP_COUNT=2
+export OUT_ROOT="${RUN_ROOT}"
 
+echo
+echo "================================================================"
+echo "[action-axis] single-pass run"
+echo "  METHODS=${METHODS}"
+echo "  NEG bank (neg/axes): ${BON_MCTS_NEG_BANK_NEG}"
+echo "  SIGMA bank (sigma/axes): ${BON_MCTS_SIGMA_BANK_SIGMA}"
+echo "  → ${RUN_ROOT}"
+echo "================================================================"
+
+bash "${SUITE}"
+
+# ── 5. Summarize ───────────────────────────────────────────────────────────
 SUMMARY="${RUN_ROOT}/summary.tsv"
-printf "cell\tneg_bank\tsigma_bank\tmean_search\teval_ir\teval_hpsv3\n" > "${SUMMARY}"
+printf "method\tneg_bank\tsigma_bank\tmean_search\teval_ir\teval_hpsv3\n" > "${SUMMARY}"
 
-# ── 5. Run cells ───────────────────────────────────────────────────────────
-failed=()
-for cell in ${CELLS}; do
-    NEG_BANK=""
-    SIGMA_BANK=""
-    case "${cell}" in
-        base)
-            ;;
-        neg_only)
-            NEG_BANK="||low quality, blurry, lowres"
-            ;;
-        sigma_only)
-            SIGMA_BANK="-0.05 0.0 0.05"
-            ;;
-        merged)
-            NEG_BANK="||low quality, blurry, lowres"
-            SIGMA_BANK="-0.05 0.0 0.05"
-            ;;
-        *)
-            echo "[action-axis] WARN unknown cell '${cell}'" >&2
-            continue
-            ;;
+for method in ${METHODS}; do
+    neg_show="-"; sig_show="-"
+    case "${method}" in
+        bon_mcts_neg)   neg_show="${BON_MCTS_NEG_BANK_NEG}" ;;
+        bon_mcts_sigma) sig_show="${BON_MCTS_SIGMA_BANK_SIGMA}" ;;
+        bon_mcts_axes)  neg_show="${BON_MCTS_NEG_BANK_AXES}"; sig_show="${BON_MCTS_SIGMA_BANK_AXES}" ;;
     esac
-
-    cell_root="${RUN_ROOT}/${cell}"
-    mkdir -p "${cell_root}"
-
-    echo
-    echo "================================================================"
-    echo "[action-axis] cell=${cell}"
-    echo "  NEG_BANK=${NEG_BANK:-<empty>}"
-    echo "  SIGMA_BANK=${SIGMA_BANK:-<empty>}"
-    echo "  → ${cell_root}"
-    echo "================================================================"
-
-    if env \
-        BON_MCTS_NEG_BANK="${NEG_BANK}" \
-        BON_MCTS_SIGMA_PERTURB_BANK="${SIGMA_BANK}" \
-        OUT_ROOT="${cell_root}" \
-        bash "${SUITE}"; then
-        echo "[action-axis] OK ${cell}"
-        agg=$(find "${cell_root}" -name 'aggregate_ddp.json' -path '*/bon_mcts/*' 2>/dev/null | head -1)
-        ir_eval=$(find "${cell_root}" -name 'best_images_multi_reward_aggregate.json' -path '*/bon_mcts/*' 2>/dev/null | head -1)
-        ms="" eir="" eh=""
-        [[ -f "${agg}" ]] && ms=$("${PYTHON_BIN}" -c "import json; print(json.load(open('${agg}')).get('mean_search', ''))")
-        [[ -f "${ir_eval}" ]] && {
-            eir=$("${PYTHON_BIN}" -c "import json; d=json.load(open('${ir_eval}')); print(d.get('imagereward', {}).get('mean', ''))")
-            eh=$("${PYTHON_BIN}" -c "import json; d=json.load(open('${ir_eval}')); print(d.get('hpsv3', {}).get('mean', ''))")
-        }
-        printf "%s\t%s\t%s\t%s\t%s\t%s\n" \
-            "${cell}" "${NEG_BANK:-<empty>}" "${SIGMA_BANK:-<empty>}" \
-            "${ms}" "${eir}" "${eh}" \
-            >> "${SUMMARY}"
-    else
-        rc=$?
-        echo "[action-axis] FAIL ${cell} rc=${rc}" >&2
-        failed+=("${cell}")
-    fi
+    agg=$(find "${RUN_ROOT}" -name 'aggregate_ddp.json' -path "*/${method}/*" 2>/dev/null | head -1)
+    ir_eval=$(find "${RUN_ROOT}" -name 'best_images_multi_reward_aggregate.json' -path "*/${method}/*" 2>/dev/null | head -1)
+    ms="" eir="" eh=""
+    [[ -f "${agg}" ]] && ms=$("${PYTHON_BIN}" -c "import json; print(json.load(open('${agg}')).get('mean_search', ''))")
+    [[ -f "${ir_eval}" ]] && {
+        eir=$("${PYTHON_BIN}" -c "import json; d=json.load(open('${ir_eval}')); print(d.get('imagereward', {}).get('mean', ''))")
+        eh=$("${PYTHON_BIN}" -c "import json; d=json.load(open('${ir_eval}')); print(d.get('hpsv3', {}).get('mean', ''))")
+    }
+    printf "%s\t%s\t%s\t%s\t%s\t%s\n" "${method}" "${neg_show}" "${sig_show}" "${ms}" "${eir}" "${eh}" >> "${SUMMARY}"
 done
 
 echo
@@ -196,4 +171,3 @@ echo "================================================================"
 echo "[action-axis] DONE."
 echo "  RUN_ROOT: ${RUN_ROOT}"
 column -t -s $'\t' "${SUMMARY}" | head -20
-(( ${#failed[@]} > 0 )) && { echo "[action-axis] WARN failures: ${failed[*]}"; exit 1; }

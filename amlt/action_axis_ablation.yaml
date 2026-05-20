@@ -158,7 +158,7 @@ search:
     - name: methods
       values: [ "baseline bon_mcts bon_mcts_neg bon_mcts_sigma bon_mcts_axes" ]
     - name: neg_bank
-      values: [ "||low quality, blurry, lowres" ]
+      values: [ "||low quality, blurry, lowres, jpeg artifacts||bad anatomy, deformed, mutated, extra limbs||watermark, signature, text, frame, cropped" ]
     - name: sigma_bank
       values: [ "-0.05 0.0 0.05" ]
     - name: reward_server_port

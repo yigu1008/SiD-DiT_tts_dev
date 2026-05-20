@@ -42,9 +42,12 @@ SEED="${SEED:-42}"
 SEARCH_REWARD="${SEARCH_REWARD:-imagereward}"
 
 # Bank values (override via env if you want to test different banks).
-BON_MCTS_NEG_BANK_NEG="${BON_MCTS_NEG_BANK_NEG:-||low quality, blurry, lowres}"
+# Negative bank entries are separated by '||'.  Defaults cover 4 distinct
+# failure modes: empty (anchor), quality, anatomy, artifacts.
+_DEFAULT_NEG_BANK='||low quality, blurry, lowres, jpeg artifacts||bad anatomy, deformed, mutated, extra limbs||watermark, signature, text, frame, cropped'
+BON_MCTS_NEG_BANK_NEG="${BON_MCTS_NEG_BANK_NEG:-${_DEFAULT_NEG_BANK}}"
 BON_MCTS_SIGMA_BANK_SIGMA="${BON_MCTS_SIGMA_BANK_SIGMA:--0.05 0.0 0.05}"
-BON_MCTS_NEG_BANK_AXES="${BON_MCTS_NEG_BANK_AXES:-||low quality, blurry, lowres}"
+BON_MCTS_NEG_BANK_AXES="${BON_MCTS_NEG_BANK_AXES:-${_DEFAULT_NEG_BANK}}"
 BON_MCTS_SIGMA_BANK_AXES="${BON_MCTS_SIGMA_BANK_AXES:--0.05 0.0 0.05}"
 export BON_MCTS_NEG_BANK_NEG BON_MCTS_SIGMA_BANK_SIGMA BON_MCTS_NEG_BANK_AXES BON_MCTS_SIGMA_BANK_AXES
 

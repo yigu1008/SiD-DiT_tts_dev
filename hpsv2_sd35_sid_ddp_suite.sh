@@ -964,7 +964,7 @@ run_method() {
       # Per-method bank overrides.  Empty bank = use outer env value (or none).
       case "${method}" in
         bon_mcts_neg)
-          : "${BON_MCTS_NEG_BANK_NEG:=||low quality, blurry, lowres}"
+          : "${BON_MCTS_NEG_BANK_NEG:=||low quality, blurry, lowres, jpeg artifacts||bad anatomy, deformed, mutated, extra limbs||watermark, signature, text, frame, cropped}"
           BON_MCTS_NEG_BANK="${BON_MCTS_NEG_BANK_NEG}"
           BON_MCTS_SIGMA_PERTURB_BANK=""
           ;;
@@ -974,7 +974,7 @@ run_method() {
           BON_MCTS_SIGMA_PERTURB_BANK="${BON_MCTS_SIGMA_BANK_SIGMA}"
           ;;
         bon_mcts_axes)
-          : "${BON_MCTS_NEG_BANK_AXES:=||low quality, blurry, lowres}"
+          : "${BON_MCTS_NEG_BANK_AXES:=||low quality, blurry, lowres, jpeg artifacts||bad anatomy, deformed, mutated, extra limbs||watermark, signature, text, frame, cropped}"
           : "${BON_MCTS_SIGMA_BANK_AXES:=-0.05 0.0 0.05}"
           BON_MCTS_NEG_BANK="${BON_MCTS_NEG_BANK_AXES}"
           BON_MCTS_SIGMA_PERTURB_BANK="${BON_MCTS_SIGMA_BANK_AXES}"

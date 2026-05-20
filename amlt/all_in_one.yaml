@@ -18,7 +18,7 @@ description: composite-and-smartprompt-all
 # uses imagereward — same server serves both fine).
 #
 # Toggle each stage with -p run_composite=1/0 and -p run_smartprompt=1/0.
-# Default: both run.
+# Default: composite only (smartprompt off). Flip -p run_smartprompt=1 to add it.
 
 target:
   service: sing
@@ -160,7 +160,7 @@ search:
       values: [ 30 ]
     # ── Stage 2: smartprompt ablation ─────────────────────────────────────
     - name: run_smartprompt
-      values: [ "1" ]
+      values: [ "0" ]   # default OFF; flip to "1" to also run smartprompt
     - name: smartprompt_backend
       values: [ "sid" ]
     - name: smartprompt_n_prompts

@@ -67,7 +67,13 @@ export N_VARIANTS=1
 export USE_QWEN=0
 export PRECOMPUTE_REWRITES=0
 export REWARDS_OVERWRITE=0
-export CORRECTION_STRENGTHS="0.0"
+# Reward-gradient correction bank.  "0.0" = off (paper-canonical for SMC/FK).
+# Setting non-zero values turns on classifier-guidance-style ∇r pull on the
+# velocity at each step — adds an extra action axis for search methods
+# (bon_mcts, dts, sop, smc, fksteering, …) and triples the per-step action
+# space when the bank has 3 entries.  "0.0 0.5 1.0" matches Universal-Guidance
+# style ranges; expect ~2–3× slower per cell.
+export CORRECTION_STRENGTHS="${CORRECTION_STRENGTHS:-0.0 0.5 1.0}"
 export SAVE_BEST_IMAGES=1
 export SAVE_IMAGES=0
 export SAVE_VARIANTS=0

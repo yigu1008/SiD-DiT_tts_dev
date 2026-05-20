@@ -120,12 +120,12 @@ _run_one_backend() {
         sid)
             suite="${SCRIPT_DIR}/hpsv2_sd35_sid_ddp_suite.sh"; suite_kind="sd35"
             export SD35_BACKEND=sid; export STEPS=4
-            export BASELINE_CFG=1.0; export CFG_SCALES="1.0"
+            export BASELINE_CFG=1.0; export CFG_SCALES="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
             unset FLUX_BACKEND || true ;;
         senseflow_large)
             suite="${SCRIPT_DIR}/hpsv2_sd35_sid_ddp_suite.sh"; suite_kind="sd35"
             export SD35_BACKEND=senseflow_large; export STEPS=4
-            export BASELINE_CFG=1.0; export CFG_SCALES="1.0"
+            export BASELINE_CFG=1.0; export CFG_SCALES="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
             unset FLUX_BACKEND || true ;;
         sd35_base)
             suite="${SCRIPT_DIR}/hpsv2_sd35_sid_ddp_suite.sh"; suite_kind="sd35"
@@ -137,10 +137,10 @@ _run_one_backend() {
             export FLUX_BACKEND=flux; export STEPS=4
             export MODEL_ID="${MODEL_ID:-black-forest-labs/FLUX.1-schnell}"
             # FLUX.1-schnell is CFG-distilled at 0; this off-distilled bank
-            # gives MCTS a real branching action space (5 values × 8 prescreen
-            # seeds) at the cost of mild quality degradation at higher CFG.
+            # gives MCTS a real branching action space at the cost of mild
+            # quality degradation at higher CFG.
             export BASELINE_GUIDANCE_SCALE=0.0; export BASELINE_CFG=0.0
-            export CFG_SCALES="1.0 1.25 1.5 1.75 2.0"
+            export CFG_SCALES="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
             unset SD35_BACKEND || true ;;
         *)
             echo "[composite] ERROR unknown backend '${backend}'" >&2; return 2 ;;

@@ -93,13 +93,13 @@ case "${BACKEND}" in
     sid|senseflow_large)
         export SD35_BACKEND="${BACKEND}"; unset FLUX_BACKEND || true
         export STEPS=4; export BASELINE_CFG=1.0
-        export CFG_SCALES="1.0 1.5 2.0 2.5"
+        export CFG_SCALES="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
         SUITE="${SCRIPT_DIR}/hpsv2_sd35_sid_ddp_suite.sh"
         ;;
     sd35_base)
         export SD35_BACKEND=sd35_base; unset FLUX_BACKEND || true
         export STEPS=28; export BASELINE_CFG=4.5
-        export CFG_SCALES="3.5 4.5 5.5 7.0"
+        export CFG_SCALES="3.5 4.0 4.5 5.0 5.5 6.0 7.0"
         SUITE="${SCRIPT_DIR}/hpsv2_sd35_sid_ddp_suite.sh"
         ;;
     *) echo "[action-axis] ERROR unsupported BACKEND='${BACKEND}'" >&2; exit 1 ;;

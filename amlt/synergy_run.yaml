@@ -1,23 +1,23 @@
-description: all-method-ablations
+description: synergy-run
 
-# Method-axis ablation in ONE suite invocation.
-# (2x2 synergy cells live in synergy_run.yaml; submit that for the 1+1>2 plot.)
+# Synergy-only AMLT job: 2x2 factorial of dynamic-CFG × dynamic-prompt,
+# plus baseline. Produces the 1+1>2 figure as a visual illustration.
 #
-# Methods (6):
+# Methods (5):
 #   baseline                  : no-search reference
-#   greedy_prompt             : step-by-step argmax over rewrites              — #8
-#   bon_mcts                  : current ActDiff (Ours) — anchor
-#   bon_mcts_neg              : negative-prompt branching (prescreen axis)
-#   bon_mcts_sigma            : sigma-schedule perturbation (prescreen axis)
-#   bon_mcts_axes             : neg + sigma merged
+#   bon_mcts_static_cfg       : CFG static, prompt static    (base)
+#   bon_mcts_adaptive_cfg     : CFG dynamic, prompt static   (+CFG)
+#   bon_mcts_rewrite_only     : CFG static, prompt dynamic   (+prompt)
+#   bon_mcts_full             : CFG dynamic, prompt dynamic  (both)
 #
-# Key comparisons:
-#   - greedy_prompt vs (rewrite-using cell in synergy run) → does MCTS-over-prompt help?
-#   - bon_mcts vs bon_mcts_{neg,sigma,axes} → do the new action axes help?
+# Auto-emits synergy_eval_ir.png at the end of the run via plot_synergy_2x2.py.
 #
-# Output: /mnt/data/v-yigu/all_method_ablations/{run_tag}/run_*/
-#   {baseline, greedy_prompt, bon_mcts, bon_mcts_static_cfg, ... bon_mcts_axes}/...
+# Output: /mnt/data/v-yigu/synergy/{run_tag}/run_*/
+#   {baseline,bon_mcts_static_cfg,bon_mcts_adaptive_cfg,bon_mcts_rewrite_only,bon_mcts_full}/
 #   summary.tsv
+#   synergy_eval_ir.png
+#
+# Wallclock (sid, 50 prompts, 7 sampling GPUs): ~1.5 h.
 
 target:
   service: sing
@@ -49,7 +49,7 @@ storage:
 
 search:
   job_template:
-    name: allmeth-{backend}-{run_tag}
+    name: synergy-{backend}-{run_tag}
     sku: ${NODES}x${MEM}G${GPUS}-IB
     sla_tier: Standard
     process_count_per_node: 1
@@ -98,13 +98,13 @@ search:
       - $$REWARD_PY -m pip install --no-cache-dir --no-deps "datasets" "wandb" || true
       - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; fi'
       - $$REWARD_PY -c "import ImageReward; print('[verify] ImageReward', ImageReward.__file__)"
-      # ── Reward server (ImageReward only — light search reward) ────────────
+      # ── Reward server (ImageReward only) ───────────────────────────────────
       - export REWARD_BACKENDS_SERVER='imagereward'
       - export STAGE_REWARD_WEIGHTS_LOCAL=1
       - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
       - REWARD_BACKENDS="$$REWARD_BACKENDS_SERVER" $$REWARD_PY preload_reward_models.py
       - 'if [ -f "$$REWARD_LOCAL_HF_CACHE/.stage_done" ]; then export REWARD_HF_HOME="$$REWARD_LOCAL_HF_CACHE"; else export REWARD_HF_HOME="$$HF_HOME"; fi'
-      - export RUN_ROOT=/mnt/data/v-yigu/all_method_ablations/{run_tag}
+      - export RUN_ROOT=/mnt/data/v-yigu/synergy/{run_tag}
       - mkdir -p "$$RUN_ROOT"
       - export REWARD_SERVER_PORT={reward_server_port}
       - export REWARD_SERVER_URL=http://localhost:$$REWARD_SERVER_PORT
@@ -117,18 +117,14 @@ search:
       - if [ "$$HEALTH_OK" != "1" ]; then echo "Reward server failed to become healthy"; tail -n 400 "$$REWARD_SERVER_LOG"; exit 1; fi
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir matplotlib || true
       # ── Sampling restricted to GPUs 1..N-1 (server owns GPU 0) ────────────
       - export SAMPLING_GPUS=$$((${GPUS} - 1))
       - export CUDA_VISIBLE_DEVICES_SAMPLE=$$(seq -s, 1 $$SAMPLING_GPUS)
       - export NUM_GPUS=$$SAMPLING_GPUS
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
-      # ── Bank overrides ────────────────────────────────────────────────────
-      - export BON_MCTS_NEG_BANK_NEG="{neg_bank}"
-      - export BON_MCTS_SIGMA_BANK_SIGMA="{sigma_bank}"
-      - export BON_MCTS_NEG_BANK_AXES="{neg_bank}"
-      - export BON_MCTS_SIGMA_BANK_AXES="{sigma_bank}"
-      # ── Run the single-pass ablation ──────────────────────────────────────
+      # ── Run the 5-method synergy ablation in ONE suite invocation ─────────
       - export BACKEND={backend}
       - export N_PROMPTS={n_prompts}
       - export SEED={seed}
@@ -137,8 +133,8 @@ search:
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
       - bash run_all_method_ablations.sh
       # ── Auto-emit synergy plot ────────────────────────────────────────────
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir matplotlib || true
-      - /opt/conda/envs/ptca/bin/python plot_synergy_2x2.py --summary "$$RUN_ROOT"/run_*/summary.tsv --metric eval_ir || /opt/conda/envs/ptca/bin/python plot_synergy_2x2.py --summary "$$RUN_ROOT"/summary.tsv --metric eval_ir || true
+      - /opt/conda/envs/ptca/bin/python plot_synergy_2x2.py --summary "$$RUN_ROOT"/summary.tsv --metric eval_ir || true
+      - /opt/conda/envs/ptca/bin/python plot_synergy_2x2.py --summary "$$RUN_ROOT"/summary.tsv --metric eval_hpsv3 || true
 
     submit_args:
       env:
@@ -149,25 +145,18 @@ search:
   type: grid
   params:
     - name: run_tag
-      values: [ "all-method" ]
+      values: [ "synergy" ]
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: backend
       values: [ "sid" ]
     - name: n_prompts
-      values: [ 100 ]
+      values: [ 50 ]
     - name: seed
       values: [ 42 ]
     - name: search_reward
       values: [ "imagereward" ]
     - name: methods
-      # Default: baseline + anchor + greedy comparator + 3 action-axis variants.
-      # The 2x2 synergy cells (static_cfg / adaptive_cfg / rewrite_only / full)
-      # live in synergy_run.yaml — submit that separately for the 1+1>2 figure.
-      values: [ "baseline greedy_prompt bon_mcts bon_mcts_neg bon_mcts_sigma bon_mcts_axes" ]
-    - name: neg_bank
-      values: [ "||low quality, blurry, lowres, jpeg artifacts||bad anatomy, deformed, mutated, extra limbs||watermark, signature, text, frame, cropped" ]
-    - name: sigma_bank
-      values: [ "-0.05 0.0 0.05" ]
+      values: [ "baseline bon_mcts_static_cfg bon_mcts_adaptive_cfg bon_mcts_rewrite_only bon_mcts_full" ]
     - name: reward_server_port
-      values: [ 5125 ]
+      values: [ 5126 ]

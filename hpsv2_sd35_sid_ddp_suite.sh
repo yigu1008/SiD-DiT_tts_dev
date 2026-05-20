@@ -1164,8 +1164,14 @@ run_method() {
       _sig_arr=(${BON_MCTS_SIGMA_PERTURB_BANK})
       extra+=( --bon_mcts_sigma_perturb_bank "${_sig_arr[@]}" )
     fi
+    # Only forward --lookahead_mode when non-empty.  Per-method overrides
+    # (e.g. bon_mcts_static_cfg) clear it to disable adaptive CFG, but the
+    # runner's argparse choices doesn't accept the empty string — so drop the
+    # flag entirely in that case and let argparse use its default.
+    if [[ -n "${LOOKAHEAD_METHOD_MODE}" ]]; then
+      extra+=( --lookahead_mode "${LOOKAHEAD_METHOD_MODE}" )
+    fi
     extra+=(
-      --lookahead_mode "${LOOKAHEAD_METHOD_MODE}"
       --lookahead_u_t_def "${LOOKAHEAD_U_T_DEF}"
       --lookahead_tau "${LOOKAHEAD_TAU}"
       --lookahead_c_puct "${LOOKAHEAD_C_PUCT}"

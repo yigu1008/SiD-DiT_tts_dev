@@ -34,24 +34,28 @@ N_SIMS="${N_SIMS:-30}"
 FAIL_FAST="${FAIL_FAST:-0}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
-# ── Memory budget for 80GB A100 ────────────────────────────────────────────
-# Defaults are 40GB-safe; on 80GB you have headroom but heavy methods
-# (sd35_base 28-step, FLUX, SMC with K particles) still benefit from these.
-# Reduce fragmentation across method switches (baseline → bon → smc → mcts …)
+# ── 80GB A100 speed/budget knobs ───────────────────────────────────────────
+# Keep fragmentation low when 9 methods cycle through different alloc patterns.
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
-# Move T5 / CLIP encoders to CPU after the prompt is encoded — frees ~10 GB
-# for the transformer's activation peak during sampling.  Essential for FLUX
-# + smc / fksteering combo.
-export OFFLOAD_TEXT_ENCODER_AFTER_ENCODE="${OFFLOAD_TEXT_ENCODER_AFTER_ENCODE:-1}"
-# 256 tokens is enough for HPSv2-style prompts; longer adds T5 activations
-# linearly.
+# Encoders STAY on GPU on 80GB — we have headroom and avoid re-load cost
+# per prompt. Override to 1 only if you OOM (mainly FLUX peaks).
+export OFFLOAD_TEXT_ENCODER_AFTER_ENCODE="${OFFLOAD_TEXT_ENCODER_AFTER_ENCODE:-0}"
+# 256 is enough for HPSv2-style prompts; longer adds T5 activations linearly.
 export MAX_SEQ_LEN="${MAX_SEQ_LEN:-256}"
-# CFG doubles the forward batch.  gen_batch_size=1 (CFG → 2) is bulletproof
-# on 80GB even for sd35_base.  Bump to 2 only if you've nvidia-smi'd the run.
-export GEN_BATCH_SIZE="${GEN_BATCH_SIZE:-1}"
-# SMC / FK-Steering particle count.  K=8 default fits comfortably on 80GB.
-# Lower if you run multiple methods + sd35_base simultaneously.
+# CFG doubles the forward batch. 80GB → GEN_BATCH_SIZE=2 is safe and ~1.5×
+# faster per prompt vs the 40GB-safe default of 1.
+export GEN_BATCH_SIZE="${GEN_BATCH_SIZE:-2}"
+# SMC / FK-Steering particle count.
 export SMC_K="${SMC_K:-8}"
+
+# ── sd35_base lightweight mode ─────────────────────────────────────────────
+# sd35_base is 28-step (vs 4-step for the other 3 backends) — it's the
+# wallclock long pole. With LIGHTWEIGHT_SD35_BASE=1 we run it with a reduced
+# method kit + halved N_SIMS so the full composite job finishes in ~half the
+# time. The other backends still get the full 9-method kit.
+LIGHTWEIGHT_SD35_BASE="${LIGHTWEIGHT_SD35_BASE:-1}"
+SD35_BASE_METHODS="${SD35_BASE_METHODS:-baseline bon bon_mcts}"
+SD35_BASE_N_SIMS="${SD35_BASE_N_SIMS:-15}"
 
 # ── Shared run knobs ────────────────────────────────────────────────────────
 # Full search-method kit: baseline (no search reference) + all baselines
@@ -136,6 +140,15 @@ _run_one_backend() {
             echo "[composite] ERROR unknown backend '${backend}'" >&2; return 2 ;;
     esac
 
+    # Per-backend method/n_sims override (sd35_base is the long pole).
+    local backend_methods="${METHODS}"
+    local backend_n_sims="${N_SIMS}"
+    if [[ "${backend}" == "sd35_base" && "${LIGHTWEIGHT_SD35_BASE}" == "1" ]]; then
+        backend_methods="${SD35_BASE_METHODS}"
+        backend_n_sims="${SD35_BASE_N_SIMS}"
+        echo "[composite] sd35_base lightweight: methods='${backend_methods}' n_sims=${backend_n_sims}"
+    fi
+
     local seed_failed=()
     for seed in ${SEEDS}; do
         local cell_root="${RUN_ROOT}/${backend}/seed${seed}"
@@ -144,10 +157,11 @@ _run_one_backend() {
         echo
         echo "================================================================"
         echo "[composite] backend=${backend}  seed=${seed}  reward=composite_hpsv3_ir"
-        echo "  N_SIMS=${N_SIMS} TOPK=${BON_MCTS_TOPK} N_SEEDS=${BON_MCTS_N_SEEDS}"
+        echo "  methods='${backend_methods}'"
+        echo "  N_SIMS=${backend_n_sims} TOPK=${BON_MCTS_TOPK} N_SEEDS=${BON_MCTS_N_SEEDS}"
         echo "  out=${cell_root}"
         echo "================================================================"
-        if SEED="${seed}" bash "${suite}"; then
+        if METHODS="${backend_methods}" N_SIMS="${backend_n_sims}" SEED="${seed}" bash "${suite}"; then
             echo "[composite] OK ${backend}/seed${seed}"
         else
             local rc=$?

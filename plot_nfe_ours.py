@@ -73,6 +73,8 @@ def main():
                    help="Rename pairs old:new (default: bon_mcts:ours_mcts).")
     p.add_argument("--ours_label", default="ours_mcts",
                    help="Renamed label to bold/highlight (default ours_mcts).")
+    p.add_argument("--ours_display", default=None,
+                   help="Legend label for the bolded ours curve (default: '<label> (ours)').")
     p.add_argument("--backends", nargs="*", default=None,
                    help="Filter to subset of backends; default = all in csv.")
     p.add_argument("--status", default="ok")
@@ -131,7 +133,7 @@ def main():
                 ms = 9
                 alpha = 1.0
                 zorder = 10
-                label = f"{method} (ours)"
+                label = args.ours_display or f"{method} (ours)"
             else:
                 color = _OTHER_COLORS[non_ours_idx % len(_OTHER_COLORS)]
                 marker = _OTHER_MARKERS[non_ours_idx % len(_OTHER_MARKERS)]

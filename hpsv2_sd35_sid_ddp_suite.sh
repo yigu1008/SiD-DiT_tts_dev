@@ -333,6 +333,8 @@ MCTS_FRESH_NOISE_STEPS="${MCTS_FRESH_NOISE_STEPS:-}"
 MCTS_FRESH_NOISE_SAMPLES="${MCTS_FRESH_NOISE_SAMPLES:-1}"
 MCTS_FRESH_NOISE_SCALE="${MCTS_FRESH_NOISE_SCALE:-1.0}"
 MCTS_FRESH_NOISE_KEY_STEPS="${MCTS_FRESH_NOISE_KEY_STEPS:-0}"
+MCTS_INTERP_FAMILY="${MCTS_INTERP_FAMILY:-none}"
+MCTS_N_INTERP="${MCTS_N_INTERP:-1}"
 
 _DEFAULT_CFG_SCALES_STR="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
 if [[ "${SD35_BACKEND}" == "senseflow_large" || "${SD35_BACKEND}" == "senseflow_medium" ]]; then
@@ -1228,6 +1230,8 @@ PY
     --mcts_fresh_noise_steps "${MCTS_FRESH_NOISE_STEPS}" \
     --mcts_fresh_noise_samples "${MCTS_FRESH_NOISE_SAMPLES}" \
     --mcts_fresh_noise_scale "${MCTS_FRESH_NOISE_SCALE}" \
+    --mcts_interp_family "${MCTS_INTERP_FAMILY}" \
+    --mcts_n_interp "${MCTS_N_INTERP}" \
     --noise_inject_mode "${NOISE_INJECT_MODE}" \
     --noise_inject_seed_budget "${NOISE_INJECT_SEED_BUDGET}" \
     --noise_inject_gamma_bank ${NOISE_INJECT_GAMMA_BANK} \

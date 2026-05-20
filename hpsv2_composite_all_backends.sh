@@ -34,6 +34,25 @@ N_SIMS="${N_SIMS:-30}"
 FAIL_FAST="${FAIL_FAST:-0}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
+# ── Memory budget for 80GB A100 ────────────────────────────────────────────
+# Defaults are 40GB-safe; on 80GB you have headroom but heavy methods
+# (sd35_base 28-step, FLUX, SMC with K particles) still benefit from these.
+# Reduce fragmentation across method switches (baseline → bon → smc → mcts …)
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+# Move T5 / CLIP encoders to CPU after the prompt is encoded — frees ~10 GB
+# for the transformer's activation peak during sampling.  Essential for FLUX
+# + smc / fksteering combo.
+export OFFLOAD_TEXT_ENCODER_AFTER_ENCODE="${OFFLOAD_TEXT_ENCODER_AFTER_ENCODE:-1}"
+# 256 tokens is enough for HPSv2-style prompts; longer adds T5 activations
+# linearly.
+export MAX_SEQ_LEN="${MAX_SEQ_LEN:-256}"
+# CFG doubles the forward batch.  gen_batch_size=1 (CFG → 2) is bulletproof
+# on 80GB even for sd35_base.  Bump to 2 only if you've nvidia-smi'd the run.
+export GEN_BATCH_SIZE="${GEN_BATCH_SIZE:-1}"
+# SMC / FK-Steering particle count.  K=8 default fits comfortably on 80GB.
+# Lower if you run multiple methods + sd35_base simultaneously.
+export SMC_K="${SMC_K:-8}"
+
 # ── Shared run knobs ────────────────────────────────────────────────────────
 # Full search-method kit: baseline (no search reference) + all baselines
 # (bon, beam, smc/DAS, FK-Steering, DTS, DTS*, SoP) + ours (bon_mcts).

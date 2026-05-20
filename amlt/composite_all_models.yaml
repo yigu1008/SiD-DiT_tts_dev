@@ -1,20 +1,21 @@
 description: composite-all-models
 
-# Single AMLT job: bon_mcts + baseline at composite_hpsv3_ir reward,
+# Single AMLT job: full search-method kit at composite_hpsv3_ir reward,
 # across all 4 backends (sid, senseflow_large, sd35_base, flux_schnell).
+#
+# Methods: baseline (no-search reference), bon (Best-of-N), beam (beam search),
+# smc (SMC/DAS), fksteering (FK-Steering), dts (Diffusion Tree Sampling),
+# dts_star (DTS*), sop (Search-over-Paths), bon_mcts (ActDiff — ours).
 #
 # Composite reward = 0.5·norm(hpsv3) + 0.5·norm(imagereward), normalized to
 # [0,1] using fixed empirical ranges (see reward_unified.py:_score_composite_hpsv3_ir).
 # Both component rewards are also evaluated via EVAL_BACKENDS=imagereward+hpsv3
 # so you can decompose the gain after the run.
 #
-# One env build, one reward server boot, one cluster instance. ~80 sequential
-# (backend × seed) cells. Wallclock estimate (defaults: 30 prompts, 2 seeds):
-#   sid          : ~20 min
-#   senseflow    : ~20 min
-#   sd35_base    : ~3 h     (28 steps; the long pole)
-#   flux_schnell : ~25 min
-#   total wallclock: ~4-4.5 h
+# One env build, one reward server boot, one cluster instance. The bash loops
+# sequentially over (backend × seed × method). Wallclock with 9 methods × 200
+# prompts × 1 seed is the long pole — expect ~12-18 h end-to-end (sd35_base
+# 28-step dominates). Override -p methods="..." or -p backends="..." to cut.
 
 target:
   service: sing
@@ -123,6 +124,7 @@ search:
       - export TRANSFORMERS_OFFLINE=1
       # ── Run all 4 backends in one bash ─────────────────────────────────────
       - export BACKENDS="{backends}"
+      - export METHODS="{methods}"
       - export N_PROMPTS={n_prompts}
       - export SEEDS="{seeds}"
       - export N_SIMS={n_sims}
@@ -143,6 +145,8 @@ search:
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: backends
       values: [ "sid senseflow_large sd35_base flux_schnell" ]
+    - name: methods
+      values: [ "baseline bon beam smc fksteering dts dts_star sop bon_mcts" ]
     - name: n_prompts
       values: [ 200 ]
     - name: seeds

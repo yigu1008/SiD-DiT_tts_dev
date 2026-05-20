@@ -11,8 +11,10 @@
 #
 # Optional:
 #   BACKENDS           (default: all 4)
-#   N_PROMPTS          (default 30 — keeps total wallclock reasonable)
-#   SEEDS              (default "42 43")
+#   METHODS            (default: full kit — baseline, bon, beam, smc, fksteering,
+#                       dts, dts_star, sop, bon_mcts)
+#   N_PROMPTS          (default 200)
+#   SEEDS              (default "42")
 #   N_SIMS             (default 30)
 #   FAIL_FAST          (default 0)
 
@@ -26,14 +28,16 @@ start_heartbeat "composite-all-backends"
 : "${REWARD_SERVER_URL:?REWARD_SERVER_URL must be set}"
 
 BACKENDS="${BACKENDS:-sid senseflow_large sd35_base flux_schnell}"
-N_PROMPTS="${N_PROMPTS:-30}"
-SEEDS="${SEEDS:-42 43}"
+N_PROMPTS="${N_PROMPTS:-200}"
+SEEDS="${SEEDS:-42}"
 N_SIMS="${N_SIMS:-30}"
 FAIL_FAST="${FAIL_FAST:-0}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 # ── Shared run knobs ────────────────────────────────────────────────────────
-export METHODS="baseline bon_mcts"
+# Full search-method kit: baseline (no search reference) + all baselines
+# (bon, beam, smc/DAS, FK-Steering, DTS, DTS*, SoP) + ours (bon_mcts).
+export METHODS="${METHODS:-baseline bon beam smc fksteering dts dts_star sop bon_mcts}"
 export START_INDEX=0
 export END_INDEX="${N_PROMPTS}"
 export N_VARIANTS=1

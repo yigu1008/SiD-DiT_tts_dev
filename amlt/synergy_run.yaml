@@ -17,7 +17,7 @@ description: synergy-run
 #   summary.tsv
 #   synergy_eval_ir.png
 #
-# Wallclock (sid, 50 prompts, 7 sampling GPUs): ~1.5 h.
+# Wallclock (sid, 200 prompts, 7 sampling GPUs): ~4 h.
 
 target:
   service: sing
@@ -151,7 +151,7 @@ search:
     - name: backend
       values: [ "sid" ]
     - name: n_prompts
-      values: [ 50 ]
+      values: [ 200 ]
     - name: seed
       values: [ 42 ]
     - name: search_reward

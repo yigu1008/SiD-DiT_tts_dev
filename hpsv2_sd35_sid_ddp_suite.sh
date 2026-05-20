@@ -1073,6 +1073,28 @@ run_method() {
       --bon_mcts_sim_alloc "${BON_MCTS_SIM_ALLOC}"
       --bon_mcts_min_sims "${BON_MCTS_MIN_SIMS}"
       --bon_mcts_refine_method "${BON_MCTS_REFINE_METHOD}"
+    )
+    if [[ -n "${BON_MCTS_NEG_BANK:-}" ]]; then
+      # BON_MCTS_NEG_BANK uses '||' as the entry separator so individual
+      # negative prompts can contain spaces / commas safely.
+      # Example: "||low quality, blurry, lowres||bad anatomy" → 3 entries.
+      _neg_arr=()
+      _rest="${BON_MCTS_NEG_BANK}"
+      while true; do
+        _head="${_rest%%||*}"
+        _neg_arr+=( "${_head}" )
+        if [[ "${_rest}" == "${_head}" ]]; then break; fi
+        _rest="${_rest#*||}"
+      done
+      extra+=( --bon_mcts_neg_bank "${_neg_arr[@]}" )
+    fi
+    if [[ -n "${BON_MCTS_SIGMA_PERTURB_BANK:-}" ]]; then
+      # Sigma bank is whitespace-split floats: "-0.05 0.0 0.05".
+      # shellcheck disable=SC2206
+      _sig_arr=(${BON_MCTS_SIGMA_PERTURB_BANK})
+      extra+=( --bon_mcts_sigma_perturb_bank "${_sig_arr[@]}" )
+    fi
+    extra+=(
       --lookahead_mode "${LOOKAHEAD_METHOD_MODE}"
       --lookahead_u_t_def "${LOOKAHEAD_U_T_DEF}"
       --lookahead_tau "${LOOKAHEAD_TAU}"

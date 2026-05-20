@@ -894,7 +894,7 @@ def _offload_text_encoders_to_cpu(ctx: PipelineContext) -> None:
         print(f"[offload] text encoders → CPU: {moved}")
 
 
-def encode_variants(ctx: PipelineContext, variants: list[str], max_sequence_length: int = 256) -> EmbeddingContext:
+def encode_variants(ctx: PipelineContext, variants: list[str], max_sequence_length: int = 256, negative_prompt: str = "") -> EmbeddingContext:
     # Memory-saving swap: during T5/CLIP encode, the transformer (~17 GB) can
     # be parked on CPU so encoders fit. After encode, encoders go back to CPU
     # and transformer comes back to GPU. Two env knobs:
@@ -935,10 +935,11 @@ def encode_variants(ctx: PipelineContext, variants: list[str], max_sequence_leng
         cond_text.append(pe.detach())
         cond_pooled.append(pp.detach())
 
+    neg = str(negative_prompt or "")
     enc_out = ctx.pipe.encode_prompt(
-        prompt="",
-        prompt_2="",
-        prompt_3="",
+        prompt=neg,
+        prompt_2=neg,
+        prompt_3=neg,
         device=ctx.device,
         num_images_per_prompt=1,
         max_sequence_length=max_sequence_length,

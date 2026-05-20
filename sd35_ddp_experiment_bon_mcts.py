@@ -8,7 +8,54 @@ from typing import Any
 import mcts_hybrid_ut_dt
 import mcts_improved
 import sd35_ddp_experiment as base
+from sampling_unified_sd35 import encode_variants as _encode_variants_with_neg
 from sampling_unified_sd35_lookahead_reweighting import run_mcts_lookahead
+
+
+def _build_neg_emb_bank(args: argparse.Namespace, ctx: Any, variants: list[str], default_emb: Any) -> list[Any]:
+    """Pre-encode one EmbeddingContext per negative prompt in the bank.
+
+    Slot 0 is always ``default_emb`` (the empty-negative encoding already done
+    by the outer pipeline) — saves one redundant encode pass when the bank
+    starts with the empty string.
+    """
+    raw_bank = getattr(args, "bon_mcts_neg_bank", None) or [""]
+    bank: list[Any] = []
+    max_seq = int(getattr(args, "max_sequence_length", 256) or 256)
+    for neg in raw_bank:
+        s = str(neg or "")
+        if s == "" and len(bank) == 0:
+            bank.append(default_emb)
+            continue
+        bank.append(_encode_variants_with_neg(ctx, variants, max_sequence_length=max_seq, negative_prompt=s))
+    return bank
+
+
+def _build_sigma_perturb_bank(args: argparse.Namespace) -> list[tuple[float, list[float] | None]]:
+    """Pre-build perturbed sigma schedules from --bon_mcts_sigma_perturb_bank.
+
+    Returns list of (delta, perturbed_sigmas). delta is for diagnostics.
+    perturbed_sigmas is None for delta==0.0 (means: use args.sigmas as-is).
+    """
+    raw = getattr(args, "bon_mcts_sigma_perturb_bank", None) or [0.0]
+    base_sigmas = getattr(args, "sigmas", None)
+    if base_sigmas is None:
+        # Linear schedule will be built at sampling time — perturbation only
+        # supported when explicit sigmas exist.
+        return [(0.0, None)]
+    sig = [float(s) for s in base_sigmas]
+    sigma_max = max(sig) if sig else 1.0
+    out: list[tuple[float, list[float] | None]] = []
+    for delta in raw:
+        d = float(delta)
+        if d == 0.0:
+            out.append((0.0, None))
+            continue
+        perturbed = [max(0.0, min(sigma_max, s + d * sigma_max)) for s in sig]
+        # Re-sort descending (sigma_next < sigma_current), in case perturbation flipped order.
+        perturbed = sorted(perturbed, reverse=True)
+        out.append((d, perturbed))
+    return out
 
 
 def _parse_bon_mcts_flags(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
@@ -64,6 +111,25 @@ def _parse_bon_mcts_flags(argv: list[str]) -> tuple[argparse.Namespace, list[str
              "mcts (vanilla UCB1) | "
              "mcts_improved (UCB1-Tuned + reward norm + x0-pred bootstrap) | "
              "hybrid_ut_dt (U_t/D_t latent priors + reward norm + x0-pred bootstrap).",
+    )
+    parser.add_argument(
+        "--bon_mcts_neg_bank",
+        nargs="+",
+        default=None,
+        help="Negative-prompt bank for the prescreen axis. Each entry produces "
+             "a distinct uncond-text encoding; the prescreen pool fans out over "
+             "(seed × neg_idx × sigma_perturb_idx). Default = single empty "
+             "negative (original behavior). Example: \"\" \"low quality, blurry\".",
+    )
+    parser.add_argument(
+        "--bon_mcts_sigma_perturb_bank",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Sigma-schedule perturbation bank (additive, in [-1,1] of sigma_max). "
+             "Each entry produces a perturbed copy of args.sigmas used for that "
+             "prescreen rollout: sigma_i ← clip(sigma_i + delta * sigma_max, 0, sigma_max). "
+             "Default = [0.0] (original schedule). Example: -0.05 0.0 0.05.",
     )
     # Surface flag groups for both improved variants.
     mcts_improved.add_mcts_improved_args(parser)
@@ -169,33 +235,71 @@ def _run_bon_mcts(
     refine_method = str(getattr(args, "bon_mcts_refine_method", "ours_tree")).strip().lower()
 
     seed_pool = [int(base_seed + offset + i * stride) for i in range(n_seeds)]
+
+    # Build prescreen axes for negative-prompt + sigma-perturb branching.
+    neg_emb_bank = _build_neg_emb_bank(args, ctx, variants, emb)
+    sigma_bank = _build_sigma_perturb_bank(args)
+    neg_active = len(neg_emb_bank) > 1
+    sigma_active = len(sigma_bank) > 1 and any(d != 0.0 for d, _ in sigma_bank)
+
+    # Cartesian fan-out: each prescreen item is (seed, neg_idx, sigma_idx).
+    # We do NOT multiply seeds × neg × sigma blindly — that would n×-balloon the
+    # prescreen.  Instead we keep total prescreens ≈ n_seeds by *cycling* seeds
+    # through the (neg × sigma) grid, mod n_seeds.  This holds wallclock fixed
+    # while spreading exploration across new axes.
+    n_negs = len(neg_emb_bank)
+    n_sigs = len(sigma_bank)
+    n_prescreens = max(n_seeds, n_negs * n_sigs)
+    prescreen_items: list[tuple[int, int, int]] = []
+    for k in range(n_prescreens):
+        seed_i = seed_pool[k % n_seeds]
+        neg_idx = k % n_negs
+        sig_idx = (k // n_negs) % n_sigs
+        prescreen_items.append((int(seed_i), int(neg_idx), int(sig_idx)))
+
     print(
         "  bon_mcts: "
-        f"prescreen_n={n_seeds} topk={topk} "
+        f"prescreen_n={n_prescreens} topk={topk} "
         f"prescreen_cfg={prescreen_cfg:.2f} sim_alloc={args.bon_mcts_sim_alloc} "
         f"refine={refine_method}"
+        + (f" neg_bank={n_negs}" if neg_active else "")
+        + (f" sigma_bank={n_sigs}" if sigma_active else "")
     )
 
-    prescreen_rows: list[dict[str, float | int]] = []
-    for i, seed_i in enumerate(seed_pool):
-        _img, score = base.run_baseline(
-            args,
-            ctx,
-            emb,
-            reward_model,
-            prompt,
-            int(seed_i),
-            cfg_scale=float(prescreen_cfg),
-        )
+    prescreen_rows: list[dict[str, Any]] = []
+    orig_sigmas = getattr(args, "sigmas", None)
+    for i, (seed_i, neg_idx, sig_idx) in enumerate(prescreen_items):
+        emb_use = neg_emb_bank[neg_idx]
+        sig_delta, sig_perturbed = sigma_bank[sig_idx]
+        # Temporarily swap args.sigmas if a perturbed schedule applies.
+        if sig_perturbed is not None:
+            args.sigmas = list(sig_perturbed)
+        else:
+            args.sigmas = orig_sigmas
+        try:
+            _img, score = base.run_baseline(
+                args,
+                ctx,
+                emb_use,
+                reward_model,
+                prompt,
+                int(seed_i),
+                cfg_scale=float(prescreen_cfg),
+            )
+        finally:
+            args.sigmas = orig_sigmas
         prescreen_rows.append(
             {
                 "seed": int(seed_i),
+                "neg_idx": int(neg_idx),
+                "sigma_idx": int(sig_idx),
+                "sigma_delta": float(sig_delta),
                 "prescreen_score": float(score),
             }
         )
-        if i == 0 or (i + 1) % 10 == 0 or (i + 1) == len(seed_pool):
+        if i == 0 or (i + 1) % 10 == 0 or (i + 1) == len(prescreen_items):
             best_so_far = max(float(r["prescreen_score"]) for r in prescreen_rows)
-            print(f"    prescreen {i + 1:3d}/{len(seed_pool)} best={best_so_far:.4f}")
+            print(f"    prescreen {i + 1:3d}/{len(prescreen_items)} best={best_so_far:.4f}")
 
     prescreen_rows.sort(key=lambda row: float(row["prescreen_score"]), reverse=True)
     selected = prescreen_rows[:topk]
@@ -204,6 +308,8 @@ def _run_bon_mcts(
 
     best_result = None
     best_seed = int(selected[0]["seed"])
+    best_neg_idx = int(selected[0]["neg_idx"])
+    best_sigma_idx = int(selected[0]["sigma_idx"])
     mcts_rows: list[dict[str, Any]] = []
     for idx, (row, budget) in enumerate(zip(selected, budgets)):
         run_args = argparse.Namespace(**vars(args))
@@ -211,18 +317,27 @@ def _run_bon_mcts(
         if hasattr(run_args, "mcts_n_seeds"):
             run_args.mcts_n_seeds = 1
         seed_i = int(row["seed"])
+        neg_idx_i = int(row["neg_idx"])
+        sig_idx_i = int(row["sigma_idx"])
+        emb_use = neg_emb_bank[neg_idx_i]
+        _, sig_perturbed = sigma_bank[sig_idx_i]
+        if sig_perturbed is not None:
+            run_args.sigmas = list(sig_perturbed)
         if refine_method == "mcts":
-            result = original_run_mcts(run_args, ctx, emb, reward_model, prompt, variants, seed_i)
+            result = original_run_mcts(run_args, ctx, emb_use, reward_model, prompt, variants, seed_i)
         elif refine_method == "mcts_improved":
-            result = improved_run_mcts(run_args, ctx, emb, reward_model, prompt, variants, seed_i)
+            result = improved_run_mcts(run_args, ctx, emb_use, reward_model, prompt, variants, seed_i)
         elif refine_method == "hybrid_ut_dt":
-            result = hybrid_run_mcts(run_args, ctx, emb, reward_model, prompt, variants, seed_i)
+            result = hybrid_run_mcts(run_args, ctx, emb_use, reward_model, prompt, variants, seed_i)
         else:  # ours_tree
-            result = lookahead_run_mcts(run_args, ctx, emb, reward_model, prompt, variants, seed_i)
+            result = lookahead_run_mcts(run_args, ctx, emb_use, reward_model, prompt, variants, seed_i)
         mcts_rows.append(
             {
                 "rank": int(idx + 1),
                 "seed": int(seed_i),
+                "neg_idx": int(neg_idx_i),
+                "sigma_idx": int(sig_idx_i),
+                "sigma_delta": float(row["sigma_delta"]),
                 "prescreen_score": float(row["prescreen_score"]),
                 "n_sims_used": int(run_args.n_sims),
                 "tree_search_score": float(result.score),
@@ -235,6 +350,8 @@ def _run_bon_mcts(
         if best_result is None or float(result.score) > float(best_result.score):
             best_result = result
             best_seed = int(seed_i)
+            best_neg_idx = int(neg_idx_i)
+            best_sigma_idx = int(sig_idx_i)
 
     if best_result is None:
         raise RuntimeError("BoN+MCTS produced no result.")
@@ -252,6 +369,10 @@ def _run_bon_mcts(
         "sim_alloc": str(getattr(args, "bon_mcts_sim_alloc", "split")),
         "sim_budgets": [int(x) for x in budgets],
         "winner_seed": int(best_seed),
+        "winner_neg_idx": int(best_neg_idx),
+        "winner_sigma_idx": int(best_sigma_idx),
+        "neg_bank": list(getattr(args, "bon_mcts_neg_bank", None) or [""]),
+        "sigma_perturb_bank": [float(d) for d, _ in sigma_bank],
         "prescreen_ranked": prescreen_rows,
         "tree_refine": mcts_rows,
     }

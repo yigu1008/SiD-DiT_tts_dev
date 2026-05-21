@@ -189,7 +189,7 @@ class UnifiedRewardScorer:
         max_new_tokens: int = 512,
         unifiedreward_prompt_mode: str = "standard",
     ) -> None:
-        valid = {"auto", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "all", "unified", "unifiedreward", "composite_hpsv3_ir"}
+        valid = {"auto", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "all", "unified", "unifiedreward", "composite_hpsv3_ir", "composite_all4"}
         if backend not in valid:
             raise ValueError(f"Unsupported backend: {backend}")
         if unifiedreward_prompt_mode not in {"standard", "strict"}:
@@ -297,10 +297,10 @@ class UnifiedRewardScorer:
     def _load_backends(self) -> None:
         target = "unifiedreward" if self.backend == "unified" else self.backend
         need_unifiedreward = target in {"unifiedreward", "auto"}
-        need_imagereward = target in {"imagereward", "blend", "auto", "all", "composite_hpsv3_ir"}
-        need_pickscore = target in {"pickscore", "auto", "all"}
-        need_hpsv3 = target in {"hpsv3", "blend", "auto", "all", "composite_hpsv3_ir"}
-        need_hpsv2 = target in {"hpsv2", "blend", "auto", "all"}
+        need_imagereward = target in {"imagereward", "blend", "auto", "all", "composite_hpsv3_ir", "composite_all4"}
+        need_pickscore = target in {"pickscore", "auto", "all", "composite_all4"}
+        need_hpsv3 = target in {"hpsv3", "blend", "auto", "all", "composite_hpsv3_ir", "composite_all4"}
+        need_hpsv2 = target in {"hpsv2", "blend", "auto", "all", "composite_all4"}
 
         # ── Reward server (separate conda env) ──────────────────────────
         self._reward_server_url = os.environ.get("REWARD_SERVER_URL", "").rstrip("/")
@@ -364,6 +364,13 @@ class UnifiedRewardScorer:
             if "imagereward" not in self.available or "hpsv3" not in self.available:
                 raise RuntimeError(
                     "Requested backend=composite_hpsv3_ir, but BOTH imagereward and hpsv3 must be available."
+                    f" Currently available: {self.available}"
+                )
+        if target == "composite_all4":
+            missing = [b for b in ("imagereward", "hpsv3", "hpsv2", "pickscore") if b not in self.available]
+            if missing:
+                raise RuntimeError(
+                    f"Requested backend=composite_all4 but missing: {missing}."
                     f" Currently available: {self.available}"
                 )
         if target == "auto" and not self.available:
@@ -1542,6 +1549,45 @@ class UnifiedRewardScorer:
         float(os.environ.get("COMPOSITE_IR_HI", "3.0")),
     )
 
+    # Empirical ranges for composite_all4 (4-reward equal-weight average).
+    # Override per env at instantiation time.  HPSv2 is a CLIP cosine
+    # (typical [0.20, 0.32]); PickScore raw logits ~ [17, 23].
+    _COMPOSITE_HPSV2_RANGE = (
+        float(os.environ.get("COMPOSITE_HPSV2_LO", "0.20")),
+        float(os.environ.get("COMPOSITE_HPSV2_HI", "0.32")),
+    )
+    _COMPOSITE_PICKSCORE_RANGE = (
+        float(os.environ.get("COMPOSITE_PICKSCORE_LO", "17.0")),
+        float(os.environ.get("COMPOSITE_PICKSCORE_HI", "23.0")),
+    )
+
+    def _norm(self, val: float, lo: float, hi: float) -> float:
+        span = max(1e-6, hi - lo)
+        return (float(val) - lo) / span
+
+    def _score_composite_all4(self, prompt: str, image: Image.Image) -> float:
+        """Equal-weight (0.25 each) average of all 4 rewards after min-max
+        normalization to [0,1].  Components:
+            imagereward, hpsv3, hpsv2, pickscore
+        Returns a [0,1]-ish score (slightly outside if a component falls
+        outside its empirical range — fine for MCTS ranking).
+        """
+        hpsv3_lo, hpsv3_hi = self._COMPOSITE_HPSV3_RANGE
+        ir_lo, ir_hi = self._COMPOSITE_IR_RANGE
+        hpsv2_lo, hpsv2_hi = self._COMPOSITE_HPSV2_RANGE
+        ps_lo, ps_hi = self._COMPOSITE_PICKSCORE_RANGE
+
+        ir   = float(self._score_imagereward(prompt, image))
+        h3   = float(self._score_hpsv3(prompt, image))
+        h2   = float(self._score_hpsv2(prompt, image))
+        ps   = float(self._score_pickscore(prompt, image))
+
+        ir_n = self._norm(ir, ir_lo, ir_hi)
+        h3_n = self._norm(h3, hpsv3_lo, hpsv3_hi)
+        h2_n = self._norm(h2, hpsv2_lo, hpsv2_hi)
+        ps_n = self._norm(ps, ps_lo, ps_hi)
+        return 0.25 * (ir_n + h3_n + h2_n + ps_n)
+
     def _score_composite_hpsv3_ir(self, prompt: str, image: Image.Image) -> float:
         """Half-half balanced composite of HPSv3 + ImageReward.
 
@@ -1602,6 +1648,8 @@ class UnifiedRewardScorer:
             return self._score_blend(prompt, image)
         if target == "composite_hpsv3_ir":
             return self._score_composite_hpsv3_ir(prompt, image)
+        if target == "composite_all4":
+            return self._score_composite_all4(prompt, image)
         if target == "all":
             return self._score_all(prompt, image)
         if target == "unifiedreward":

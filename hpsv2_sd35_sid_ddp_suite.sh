@@ -960,7 +960,7 @@ run_method() {
       N_VARIANTS="${SYNERGY_N_VARIANTS:-${N_VARIANTS}}"
       REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
       ;;
-    bon_mcts_static_cfg|bon_mcts_adaptive_cfg|bon_mcts_rewrite_only|bon_mcts_full|bon_mcts|bon_mcts_neg|bon_mcts_sigma|bon_mcts_axes)
+    bon_mcts_static_cfg|bon_mcts_adaptive_cfg|bon_mcts_rewrite_only|bon_mcts_full|bon_mcts|bon_mcts_neg|bon_mcts_sigma|bon_mcts_axes|bon_mcts_step_reward)
       # Action-axis variants share the bon_mcts runner; only differ in which
       # CLI banks (NEG / SIGMA_PERTURB) they pass.  Running them as four
       # methods inside the SAME suite invocation amortizes one pipeline load
@@ -1008,6 +1008,14 @@ run_method() {
         bon_mcts_neg)
           : "${BON_MCTS_NEG_BANK_NEG:=||low quality, blurry, lowres, jpeg artifacts||bad anatomy, deformed, mutated, extra limbs||watermark, signature, text, frame, cropped}"
           BON_MCTS_NEG_BANK="${BON_MCTS_NEG_BANK_NEG}"
+          BON_MCTS_SIGMA_PERTURB_BANK=""
+          ;;
+        bon_mcts_step_reward)
+          # SoP-style per-step reward backup on top of the bon_mcts anchor.
+          # 0.3 mix factor is the safer middle-ground (mostly terminal + some shaping).
+          : "${MCTS_STEP_REWARD_ALPHA:=0.3}"
+          : "${MCTS_STEP_REWARD_PROGRESS_WEIGHT:=1}"
+          BON_MCTS_NEG_BANK=""
           BON_MCTS_SIGMA_PERTURB_BANK=""
           ;;
         bon_mcts_sigma)
@@ -1163,6 +1171,12 @@ run_method() {
       # shellcheck disable=SC2206
       _sig_arr=(${BON_MCTS_SIGMA_PERTURB_BANK})
       extra+=( --bon_mcts_sigma_perturb_bank "${_sig_arr[@]}" )
+    fi
+    if [[ -n "${MCTS_STEP_REWARD_ALPHA:-}" ]]; then
+      extra+=( --mcts_step_reward_alpha "${MCTS_STEP_REWARD_ALPHA}" )
+    fi
+    if [[ -n "${MCTS_STEP_REWARD_PROGRESS_WEIGHT:-}" ]]; then
+      extra+=( --mcts_step_reward_progress_weight "${MCTS_STEP_REWARD_PROGRESS_WEIGHT}" )
     fi
     # Only forward --lookahead_mode when non-empty.  Per-method overrides
     # (e.g. bon_mcts_static_cfg) clear it to disable adaptive CFG, but the

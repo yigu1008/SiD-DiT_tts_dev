@@ -131,6 +131,24 @@ def _parse_bon_mcts_flags(argv: list[str]) -> tuple[argparse.Namespace, list[str
              "prescreen rollout: sigma_i ← clip(sigma_i + delta * sigma_max, 0, sigma_max). "
              "Default = [0.0] (original schedule). Example: -0.05 0.0 0.05.",
     )
+    parser.add_argument(
+        "--mcts_step_reward_alpha",
+        type=float,
+        default=0.0,
+        help="SoP-style per-step reward backup mix factor in [0,1]. "
+             "0=terminal-only (default), 1=per-step-only.  "
+             "Mixed backup: alpha·avg_step_reward + (1-alpha)·terminal_reward. "
+             "Per-step reward = decode x̂₀ + score at every MCTS key step "
+             "(adds ~1 reward call per key step per rollout).",
+    )
+    parser.add_argument(
+        "--mcts_step_reward_progress_weight",
+        type=int,
+        default=1,
+        choices=[0, 1],
+        help="1=weight step rewards by progress (later steps trusted more), "
+             "0=uniform.  Only used when mcts_step_reward_alpha > 0.",
+    )
     # Surface flag groups for both improved variants.
     mcts_improved.add_mcts_improved_args(parser)
     mcts_hybrid_ut_dt.add_mcts_hybrid_args(parser)

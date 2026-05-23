@@ -434,6 +434,15 @@ def run_mcts_lookahead(
     use_tree_prior = bool(flags["use_tree_prior"])
     adaptive_cfg_width = bool(flags["adaptive_cfg_width"])
 
+    # SoP-style per-step reward backup.  When alpha>0, the rollout decodes
+    # x̂₀ at every key-step (just like SoP does) and mixes the per-step
+    # average reward into the backup value:
+    #     backup = (1-α)·terminal + α·avg_step_reward
+    # `progress_weight=True` weights step rewards by progress (later steps
+    # carry more weight, since x̂₀ is more reliable at low noise).
+    _step_reward_alpha = float(getattr(args, "mcts_step_reward_alpha", 0.0))
+    _step_reward_progress_weight = bool(int(getattr(args, "mcts_step_reward_progress_weight", 1)))
+
     family = getattr(args, "mcts_interp_family", "none")
     n_interp = int(getattr(args, "mcts_n_interp", 1))
     if family != "none":
@@ -1070,6 +1079,7 @@ def run_mcts_lookahead(
         rollout_key_idx = node.step
         rollout_node = node
         rollout_actions: list[tuple] = []
+        _step_scores: list[tuple[float, float]] = []  # (score, progress_weight)
         while rollout_key_idx < n_key:
             r_meta, r_candidates = node_candidates(rollout_node)
             r_logits, r_prior, r_prior_debug = compute_action_prior(rollout_node, r_candidates)
@@ -1120,6 +1130,12 @@ def run_mcts_lookahead(
                 child_dx=rollout_dx,
             )
             child_d = float(seg_stats_r.get("cfg_delta_rms", 0.0))
+            # SoP-style per-step x̂₀ scoring (only when alpha>0).
+            if _step_reward_alpha > 0.0:
+                step_img = su.decode_to_pil(ctx, rollout_dx)
+                step_score_val = float(su.score_image(reward_model, prompt, step_img))
+                step_progress = float(rollout_key_idx + 1) / float(max(1, n_key))
+                _step_scores.append((step_score_val, step_progress))
             if np.isfinite(child_u) and child_u > 0.0:
                 u_ref_by_step[int(rollout_node.key_step_idx)].append(float(child_u))
             if np.isfinite(child_d) and child_d > 0.0:
@@ -1145,10 +1161,18 @@ def run_mcts_lookahead(
             best_global_dx = rollout_final.clone()
             best_global_path_internal = [a for _, a in path] + list(rollout_actions)
 
+        # SoP-style per-step reward backup (only if alpha>0).
+        backup_value = float(rollout_score)
+        if _step_reward_alpha > 0.0 and len(_step_scores) > 0:
+            weights = [w for _, w in _step_scores] if _step_reward_progress_weight else [1.0] * len(_step_scores)
+            wsum = float(sum(weights)) or 1.0
+            avg_step = float(sum(s * w for (s, _), w in zip(_step_scores, weights)) / wsum)
+            backup_value = (1.0 - _step_reward_alpha) * rollout_score + _step_reward_alpha * avg_step
+
         for pnode, paction in path:
             pnode.visits += 1
             pnode.action_visits[paction] = int(pnode.action_visits.get(paction, 0) + 1)
-            pnode.action_values[paction] = float(pnode.action_values.get(paction, 0.0) + float(rollout_score))
+            pnode.action_values[paction] = float(pnode.action_values.get(paction, 0.0) + float(backup_value))
 
         for row in sim_logs:
             row["final_reward"] = float(rollout_score)

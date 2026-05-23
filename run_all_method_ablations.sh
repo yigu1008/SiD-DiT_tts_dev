@@ -102,12 +102,14 @@ case "${BACKEND}" in
         export SD35_BACKEND="${BACKEND}"; unset FLUX_BACKEND || true
         export STEPS=4; export BASELINE_CFG=1.0
         export CFG_SCALES="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
+        : "${N_SIMS:=60}"; : "${BON_MCTS_N_SEEDS:=16}"; : "${BON_MCTS_TOPK:=4}"
         SUITE="${SCRIPT_DIR}/hpsv2_sd35_sid_ddp_suite.sh"
         ;;
     sd35_base)
         export SD35_BACKEND=sd35_base; unset FLUX_BACKEND || true
         export STEPS=28; export BASELINE_CFG=4.5
         export CFG_SCALES="3.5 4.0 4.5 5.0 5.5 6.0 7.0"
+        : "${N_SIMS:=120}"; : "${BON_MCTS_N_SEEDS:=16}"; : "${BON_MCTS_TOPK:=4}"
         SUITE="${SCRIPT_DIR}/hpsv2_sd35_sid_ddp_suite.sh"
         ;;
     *) echo "[all-method] ERROR unsupported BACKEND='${BACKEND}'" >&2; exit 1 ;;
@@ -119,9 +121,9 @@ export PROMPT_FILE
 export START_INDEX=0
 export END_INDEX="${N_PROMPTS}"
 export SEEDS="${SEED}"
-export N_SIMS=30
-export BON_MCTS_N_SEEDS=8
-export BON_MCTS_TOPK=2
+export N_SIMS="${N_SIMS:-60}"
+export BON_MCTS_N_SEEDS="${BON_MCTS_N_SEEDS:-16}"
+export BON_MCTS_TOPK="${BON_MCTS_TOPK:-4}"
 export BON_MCTS_MIN_SIMS=8
 export BON_MCTS_SIM_ALLOC=split
 # Outer defaults — per-method aliases override these in the suite case block.

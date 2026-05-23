@@ -144,9 +144,9 @@ export PROMPT_FILE
 export START_INDEX=0
 export END_INDEX="${N_PROMPTS}"
 export SEEDS="${SEED}"
-export N_SIMS=60
-export BON_MCTS_TOPK=2
-export BON_MCTS_N_SEEDS=8
+export N_SIMS="${N_SIMS:-60}"
+export BON_MCTS_TOPK="${BON_MCTS_TOPK:-4}"
+export BON_MCTS_N_SEEDS="${BON_MCTS_N_SEEDS:-16}"
 export BON_MCTS_SIM_ALLOC=split
 export BON_MCTS_MIN_SIMS=8
 export UCB_C=1.0

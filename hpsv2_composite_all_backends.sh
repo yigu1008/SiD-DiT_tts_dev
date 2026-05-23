@@ -30,7 +30,7 @@ start_heartbeat "composite-all-backends"
 BACKENDS="${BACKENDS:-sid senseflow_large sd35_base flux_schnell}"
 N_PROMPTS="${N_PROMPTS:-200}"
 SEEDS="${SEEDS:-42}"
-N_SIMS="${N_SIMS:-30}"
+N_SIMS="${N_SIMS:-60}"
 FAIL_FAST="${FAIL_FAST:-0}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
@@ -55,7 +55,7 @@ export SMC_K="${SMC_K:-8}"
 # time. The other backends still get the full 9-method kit.
 LIGHTWEIGHT_SD35_BASE="${LIGHTWEIGHT_SD35_BASE:-1}"
 SD35_BASE_METHODS="${SD35_BASE_METHODS:-baseline bon bon_mcts}"
-SD35_BASE_N_SIMS="${SD35_BASE_N_SIMS:-15}"
+SD35_BASE_N_SIMS="${SD35_BASE_N_SIMS:-120}"
 
 # ── Shared run knobs ────────────────────────────────────────────────────────
 # Full search-method kit: baseline (no search reference) + all baselines
@@ -90,8 +90,8 @@ export EVAL_BACKENDS="imagereward hpsv3"
 
 # ── Anchored bon_mcts knobs (matches default cell of mcts_param ablation) ───
 export N_SIMS UCB_C="${UCB_C:-1.0}"
-export BON_MCTS_N_SEEDS=8
-export BON_MCTS_TOPK=2
+export BON_MCTS_N_SEEDS="${BON_MCTS_N_SEEDS:-16}"
+export BON_MCTS_TOPK="${BON_MCTS_TOPK:-4}"
 export BON_MCTS_SIM_ALLOC=split
 export BON_MCTS_MIN_SIMS=8
 export BON_MCTS_REFINE_METHOD=mcts        # vanilla refine

@@ -136,11 +136,11 @@ _run_one_backend() {
             suite="${SCRIPT_DIR}/hpsv2_flux_schnell_ddp_suite.sh"; suite_kind="flux"
             export FLUX_BACKEND=flux; export STEPS=4
             export MODEL_ID="${MODEL_ID:-black-forest-labs/FLUX.1-schnell}"
-            # FLUX.1-schnell is CFG-distilled at 0; this off-distilled bank
-            # gives MCTS a real branching action space at the cost of mild
-            # quality degradation at higher CFG.
+            # FLUX.1-schnell is CFG-distilled at 0.  Pragmatic bank: include
+            # the canonical 0.0 so MCTS can fall back to the distilled
+            # setting, and drop the noisy 2.25/2.5 tail where quality degrades.
             export BASELINE_GUIDANCE_SCALE=0.0; export BASELINE_CFG=0.0
-            export CFG_SCALES="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
+            export CFG_SCALES="0.0 1.0 1.25 1.5 1.75 2.0"
             unset SD35_BACKEND || true ;;
         *)
             echo "[composite] ERROR unknown backend '${backend}'" >&2; return 2 ;;

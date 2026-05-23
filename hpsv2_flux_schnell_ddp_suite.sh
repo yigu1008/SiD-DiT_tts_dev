@@ -153,7 +153,7 @@ GA_INIT_MODE="${GA_INIT_MODE:-random}"
 GA_LOG_TOPK="${GA_LOG_TOPK:-3}"
 GA_GUIDANCE_SCALES="${GA_GUIDANCE_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5}"
 N_VARIANTS="${N_VARIANTS:-5}"
-CFG_SCALES="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5}"
+CFG_SCALES="${CFG_SCALES:-0.0 1.0 1.25 1.5 1.75 2.0}"
 N_SIMS="${N_SIMS:-50}"
 # 4-step distilled FLUX backends (flux_schnell, ≤8-step tdd_flux) don't need
 # 50 sims to converge — drop to 25 unless caller explicitly set it. Detect

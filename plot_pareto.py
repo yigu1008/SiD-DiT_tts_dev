@@ -41,6 +41,27 @@ _COLOR_CYCLE = [
 ]
 
 
+def _as_scalar(x) -> float | None:
+    """Best-effort scalar extraction from int / float / dict / list / nested.
+
+    Many eval JSONs store per-image scores as `{reward: {"score": 0.42}}` or
+    `{reward: {"value": 0.42, "raw": ...}}` rather than plain floats. We try
+    common scalar keys in order before giving up.
+    """
+    if isinstance(x, bool):
+        return float(x)
+    if isinstance(x, (int, float)):
+        return float(x)
+    if isinstance(x, dict):
+        for k in ("score", "value", "mean", "reward", "ir", "hps"):
+            if k in x:
+                return _as_scalar(x[k])
+        return None
+    if isinstance(x, list) and len(x) > 0:
+        return _as_scalar(x[0])
+    return None
+
+
 def _per_image_jsons(run_root: Path, method: str) -> list[Path]:
     out: list[Path] = []
     for pat in (f"**/{method}/**/best_images_multi_reward.json",
@@ -55,44 +76,64 @@ def _load_method_scores(run_root: Path, method: str) -> list[dict[str, float]]:
     for jp in _per_image_jsons(run_root, method):
         try:
             data = json.loads(jp.read_text())
-        except Exception:
+        except Exception as exc:
+            print(f"    skip {jp}: {type(exc).__name__}: {exc}")
             continue
-        # Case A: per-image array
+        # Case A: top-level per-image array.
         if isinstance(data, list):
             for item in data:
                 if not isinstance(item, dict):
                     continue
-                d = {}
+                d: dict[str, float] = {}
                 for r in REWARDS:
                     v = item.get(r)
                     if v is None and isinstance(item.get("scores"), dict):
                         v = item["scores"].get(r)
-                    if v is not None:
-                        d[r] = float(v)
+                    s = _as_scalar(v)
+                    if s is not None:
+                        d[r] = s
                 if len(d) >= 2:
                     rows.append(d)
-        # Case B: per-image dict keyed by image filename or index
-        elif isinstance(data, dict):
-            # Aggregate file format: {reward: {"mean": X, "values": [...]}}
-            values_lists = {}
+            continue
+        if not isinstance(data, dict):
+            continue
+        # Case B: aggregate file — {reward: {"mean": X, "values": [...]}}.
+        values_lists: dict[str, list[float]] = {}
+        for r in REWARDS:
+            rec = data.get(r)
+            arr = None
+            if isinstance(rec, dict) and isinstance(rec.get("values"), list):
+                arr = rec["values"]
+            elif isinstance(rec, list):
+                arr = rec
+            if arr is None:
+                continue
+            keep = []
+            for v in arr:
+                s = _as_scalar(v)
+                if s is not None:
+                    keep.append(s)
+            if keep:
+                values_lists[r] = keep
+        if values_lists:
+            n = min(len(v) for v in values_lists.values())
+            for i in range(n):
+                d = {r: values_lists[r][i] for r in values_lists}
+                rows.append(d)
+            continue
+        # Case C: per-image dict — {image_name: {reward: value_or_dict, ...}}.
+        for v in data.values():
+            if not isinstance(v, dict):
+                continue
+            d = {}
             for r in REWARDS:
-                rec = data.get(r)
-                if isinstance(rec, dict) and isinstance(rec.get("values"), list):
-                    values_lists[r] = [float(v) for v in rec["values"]]
-                elif isinstance(rec, list):
-                    values_lists[r] = [float(v) for v in rec]
-            if values_lists:
-                n = min(len(v) for v in values_lists.values())
-                for i in range(n):
-                    d = {r: values_lists[r][i] for r in values_lists}
-                    rows.append(d)
-            else:
-                # Per-image dict: {image_name: {reward: value, ...}}
-                for v in data.values():
-                    if isinstance(v, dict):
-                        d = {r: float(v[r]) for r in REWARDS if r in v}
-                        if len(d) >= 2:
-                            rows.append(d)
+                if r not in v:
+                    continue
+                s = _as_scalar(v[r])
+                if s is not None:
+                    d[r] = s
+            if len(d) >= 2:
+                rows.append(d)
     return rows
 
 
@@ -195,7 +236,7 @@ def main() -> None:
     for m, rows in method_data.items():
         avg = {}
         for r in REWARDS:
-            vals = [row[r] for row in rows if r in row]
+            vals = [row[r] for row in rows if r in row and row[r] is not None]
             avg[r] = sum(vals) / len(vals) if vals else float("nan")
         means[m] = avg
 

@@ -239,7 +239,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--reward_backend",
-        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "all", "composite_hpsv3_ir"],
+        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "all", "composite_hpsv3_ir", "composite_all4"],
         default="unifiedreward",
     )
     parser.add_argument(

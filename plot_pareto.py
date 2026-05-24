@@ -73,7 +73,16 @@ def _per_image_jsons(run_root: Path, method: str) -> list[Path]:
 def _load_method_scores(run_root: Path, method: str) -> list[dict[str, float]]:
     """Return list of {reward: value} dicts, one per image."""
     rows: list[dict[str, float]] = []
+    seen_paths: set[str] = set()
     for jp in _per_image_jsons(run_root, method):
+        # Prefer the per-image file over its aggregate sibling — if both
+        # exist in the same dir we don't want to double-count the aggregate's
+        # backend_stats means as "extra" data.
+        agg_sibling = jp.parent / "best_images_multi_reward_aggregate.json"
+        if jp == agg_sibling and str(jp.parent) in seen_paths:
+            continue
+        if jp.name == "best_images_multi_reward.json":
+            seen_paths.add(str(jp.parent))
         try:
             data = json.loads(jp.read_text())
         except Exception as exc:
@@ -97,7 +106,35 @@ def _load_method_scores(run_root: Path, method: str) -> list[dict[str, float]]:
             continue
         if not isinstance(data, dict):
             continue
-        # Case B: aggregate file — {reward: {"mean": X, "values": [...]}}.
+        # Case B0 (preferred): eval-script layout {"aggregate":…, "rows":[…]}.
+        if isinstance(data.get("rows"), list):
+            for item in data["rows"]:
+                if not isinstance(item, dict):
+                    continue
+                scores = item.get("scores") if isinstance(item.get("scores"), dict) else item
+                d = {}
+                for r in REWARDS:
+                    v = scores.get(r) if isinstance(scores, dict) else None
+                    s = _as_scalar(v)
+                    if s is not None:
+                        d[r] = s
+                if len(d) >= 2:
+                    rows.append(d)
+            continue
+        # Case B1: aggregate-only file — {"backend_stats": {reward: {mean,…}}}.
+        # No per-image values exist; fall back to 1 point per method using means.
+        if isinstance(data.get("backend_stats"), dict):
+            bs = data["backend_stats"]
+            d = {}
+            for r in REWARDS:
+                rec = bs.get(r)
+                s = _as_scalar(rec)  # picks up .mean via _as_scalar
+                if s is not None:
+                    d[r] = s
+            if len(d) >= 2:
+                rows.append(d)
+            continue
+        # Case B2: legacy {reward: {"mean": X, "values": [...]}} layout.
         values_lists: dict[str, list[float]] = {}
         for r in REWARDS:
             rec = data.get(r)
@@ -121,7 +158,7 @@ def _load_method_scores(run_root: Path, method: str) -> list[dict[str, float]]:
                 d = {r: values_lists[r][i] for r in values_lists}
                 rows.append(d)
             continue
-        # Case C: per-image dict — {image_name: {reward: value_or_dict, ...}}.
+        # Case C (last resort): per-image dict — {image_name: {reward: …}}.
         for v in data.values():
             if not isinstance(v, dict):
                 continue

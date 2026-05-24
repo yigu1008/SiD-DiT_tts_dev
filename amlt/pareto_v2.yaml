@@ -127,6 +127,15 @@ search:
       - export METHODS="{methods}"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
       - bash run_pareto_ablation.sh
+      # Archive plots + summary to a timestamped, never-overwritten location.
+      - export PLOT_STAMP="$$(date +%Y%m%d_%H%M%S)"
+      - export PLOT_ARCHIVE_DIR=/mnt/data/v-yigu/_plot_archive
+      - mkdir -p "$$PLOT_ARCHIVE_DIR"
+      - 'cp -f "$$RUN_ROOT/pareto.png"          "$$PLOT_ARCHIVE_DIR/pareto_{run_tag}_$$PLOT_STAMP"".png" 2>/dev/null || true'
+      - 'cp -f "$$RUN_ROOT/pareto_summary.csv"  "$$PLOT_ARCHIVE_DIR/pareto_{run_tag}_$$PLOT_STAMP""_summary.csv" 2>/dev/null || true'
+      - 'cp -f "$$RUN_ROOT/summary.tsv"         "$$PLOT_ARCHIVE_DIR/pareto_{run_tag}_$$PLOT_STAMP""_means.tsv" 2>/dev/null || true'
+      - echo "[pareto] plots archived to $$PLOT_ARCHIVE_DIR"
+      - ls -la "$$PLOT_ARCHIVE_DIR"/pareto_{run_tag}_$$PLOT_STAMP*.* 2>/dev/null || true
 
     submit_args:
       env:

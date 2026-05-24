@@ -138,7 +138,15 @@ search:
       - bash run_all_method_ablations.sh
       # ── Auto-emit synergy plot ────────────────────────────────────────────
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir matplotlib || true
-      - /opt/conda/envs/ptca/bin/python plot_synergy_2x2.py --summary "$$RUN_ROOT"/run_*/summary.tsv --metric eval_ir || /opt/conda/envs/ptca/bin/python plot_synergy_2x2.py --summary "$$RUN_ROOT"/summary.tsv --metric eval_ir || true
+      # Plots: write to RUN_ROOT and archive to a timestamped, never-overwritten
+      # location so successive runs don't clobber.
+      - export PLOT_STAMP="$$(date +%Y%m%d_%H%M%S)"
+      - export PLOT_ARCHIVE_DIR=/mnt/data/v-yigu/_plot_archive
+      - mkdir -p "$$PLOT_ARCHIVE_DIR"
+      - /opt/conda/envs/ptca/bin/python plot_synergy_2x2.py --summary "$$RUN_ROOT"/summary.tsv --metric eval_ir --out_png "$$RUN_ROOT/synergy_eval_ir.png" || true
+      - 'cp -f "$$RUN_ROOT/synergy_eval_ir.png"   "$$PLOT_ARCHIVE_DIR/all_method_{run_tag}_$$PLOT_STAMP""_eval_ir.png" 2>/dev/null || true'
+      - echo "[all-method] plots archived to $$PLOT_ARCHIVE_DIR"
+      - ls -la "$$PLOT_ARCHIVE_DIR"/all_method_{run_tag}_$$PLOT_STAMP*.png 2>/dev/null || true
 
     submit_args:
       env:

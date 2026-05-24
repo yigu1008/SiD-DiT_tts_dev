@@ -133,8 +133,18 @@ search:
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
       - bash run_all_method_ablations.sh
       # ── Auto-emit synergy plot ────────────────────────────────────────────
-      - /opt/conda/envs/ptca/bin/python plot_synergy_2x2.py --summary "$$RUN_ROOT"/summary.tsv --metric eval_ir || true
-      - /opt/conda/envs/ptca/bin/python plot_synergy_2x2.py --summary "$$RUN_ROOT"/summary.tsv --metric eval_hpsv3 || true
+      # Plots: write to RUN_ROOT (overwrites on re-run) AND archive to a
+      # timestamped, never-overwritten location.  Both paths echoed below
+      # for easy `amlt log` or Azure-blob lookup.
+      - export PLOT_STAMP="$$(date +%Y%m%d_%H%M%S)"
+      - export PLOT_ARCHIVE_DIR=/mnt/data/v-yigu/_plot_archive
+      - mkdir -p "$$PLOT_ARCHIVE_DIR"
+      - /opt/conda/envs/ptca/bin/python plot_synergy_2x2.py --summary "$$RUN_ROOT"/summary.tsv --metric eval_ir --out_png "$$RUN_ROOT/synergy_eval_ir.png" || true
+      - /opt/conda/envs/ptca/bin/python plot_synergy_2x2.py --summary "$$RUN_ROOT"/summary.tsv --metric eval_hpsv3 --out_png "$$RUN_ROOT/synergy_eval_hpsv3.png" || true
+      - 'cp -f "$$RUN_ROOT/synergy_eval_ir.png"   "$$PLOT_ARCHIVE_DIR/synergy_{run_tag}_$$PLOT_STAMP""_eval_ir.png" 2>/dev/null || true'
+      - 'cp -f "$$RUN_ROOT/synergy_eval_hpsv3.png" "$$PLOT_ARCHIVE_DIR/synergy_{run_tag}_$$PLOT_STAMP""_eval_hpsv3.png" 2>/dev/null || true'
+      - echo "[synergy] plots written to RUN_ROOT and archived to $$PLOT_ARCHIVE_DIR"
+      - ls -la "$$PLOT_ARCHIVE_DIR"/synergy_{run_tag}_$$PLOT_STAMP*.png 2>/dev/null || true
 
     submit_args:
       env:

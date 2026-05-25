@@ -149,7 +149,7 @@ search:
       # With sim_alloc=split, TOPK divides N_SIMS — it does NOT multiply NFE.
       # sid/senseflow/flux 4-step: 16 + 60 = 76 trajectory-equivalents.
       # sd35_base    28-step:      16 + 120 = 136 trajectory-equivalents.
-      - 'if [ "{backend}" = "sd35_base" ]; then export BON_N=${{BON_N:-136}}; else export BON_N=${{BON_N:-76}}; fi'
+      - 'if [ "{backend}" = "sd35_base" ]; then export BON_N={bon_n_long}; else export BON_N={bon_n_short}; fi'
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
       - bash run_all_method_ablations.sh
       # ── Auto-emit synergy plot ────────────────────────────────────────────
@@ -185,5 +185,9 @@ search:
       values: [ "||low quality, blurry, lowres, jpeg artifacts||bad anatomy, deformed, mutated, extra limbs||watermark, signature, text, frame, cropped" ]
     - name: sigma_bank
       values: [ "-0.05 0.0 0.05" ]
+    - name: bon_n_short
+      values: [ 76 ]   # matched NFE for 4-step backends (16 + 60 = 76)
+    - name: bon_n_long
+      values: [ 136 ]  # matched NFE for sd35_base 28-step (16 + 120 = 136)
     - name: reward_server_port
       values: [ 5125 ]

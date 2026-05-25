@@ -5,16 +5,12 @@ description: render-trees-multi
 # rank_*.jsonl and produces per-prompt PNGs showing CFG choices at every
 # denoising step (full 4-level tree).
 #
-# Output layout (each backend goes to its own subfolder):
+# Output layout:
 #   /mnt/data/v-yigu/_tree_archive/{out_dir_name}/
-#   ├── flux_schnell/
-#   ├── sid/
-#   ├── senseflow_large/
-#   └── sd35_base/
+#   {flux_schnell, sid, senseflow_large, sd35_base}/
 #
-# Each path is best-effort — if the run_root doesn't exist, that source is
-# skipped (logged) and the others continue.  Override individual paths via
-# -p flux_root=... etc.
+# Each path is best-effort -- if the run_root doesn't exist, that source is
+# skipped (logged) and the others continue.
 
 target:
   service: sing
@@ -62,18 +58,12 @@ search:
       - export HUGGING_FACE_HUB_TOKEN={hf_token}
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir matplotlib || true
       - export OUT_ROOT=/mnt/data/v-yigu/_tree_archive/{out_dir_name}
-      - mkdir -p "$$OUT_ROOT"
-      # ---- FLUX-schnell trees ----
-      - 'if [ -d "{flux_root}" ]; then echo "[trees] rendering FLUX from {flux_root}"; /opt/conda/envs/ptca/bin/python render_trees_batch.py --run_root "{flux_root}" --method bon_mcts --prompt_range "{prompt_range}" --out_dir "$$OUT_ROOT/flux_schnell" --title_prefix "ActDiff (FLUX-schnell)" || true; else echo "[trees] SKIP FLUX -- run_root not found: {flux_root}"; fi'
-      # ---- SiD trees ----
-      - 'if [ -d "{sid_root}" ]; then echo "[trees] rendering SiD from {sid_root}"; /opt/conda/envs/ptca/bin/python render_trees_batch.py --run_root "{sid_root}" --method bon_mcts --prompt_range "{prompt_range}" --out_dir "$$OUT_ROOT/sid" --title_prefix "ActDiff (SiD-DiT-SD3.5L)" || true; else echo "[trees] SKIP SiD -- run_root not found: {sid_root}"; fi'
-      # ---- SenseFlow trees ----
-      - 'if [ -d "{senseflow_root}" ]; then echo "[trees] rendering SenseFlow from {senseflow_root}"; /opt/conda/envs/ptca/bin/python render_trees_batch.py --run_root "{senseflow_root}" --method bon_mcts --prompt_range "{prompt_range}" --out_dir "$$OUT_ROOT/senseflow_large" --title_prefix "ActDiff (SenseFlow-large)" || true; else echo "[trees] SKIP SenseFlow -- run_root not found: {senseflow_root}"; fi'
-      # ---- SD3.5-base trees ----
-      - 'if [ -d "{sd35_base_root}" ]; then echo "[trees] rendering SD3.5-base from {sd35_base_root}"; /opt/conda/envs/ptca/bin/python render_trees_batch.py --run_root "{sd35_base_root}" --method bon_mcts --prompt_range "{prompt_range}" --out_dir "$$OUT_ROOT/sd35_base" --title_prefix "ActDiff (SD3.5-base 28-step)" || true; else echo "[trees] SKIP SD3.5-base -- run_root not found: {sd35_base_root}"; fi'
-      - echo "[trees] all sources done. Browse: $$OUT_ROOT"
-      - ls -la "$$OUT_ROOT" || true
-      - find "$$OUT_ROOT" -name '*.png' | head -20
+      - export PROMPT_RANGE={prompt_range}
+      - export FLUX_ROOT={flux_root}
+      - export SID_ROOT={sid_root}
+      - export SENSEFLOW_ROOT={senseflow_root}
+      - export SD35_BASE_ROOT={sd35_base_root}
+      - bash render_trees_multi.sh
 
     submit_args:
       env:
@@ -88,15 +78,11 @@ search:
       values: [ "multi_backend_trees" ]
     - name: prompt_range
       values: [ "0:20" ]
-    # ---- Per-backend run roots (override individually with -p flux_root=... etc.) ----
     - name: flux_root
       values: [ "/mnt/data/v-yigu/all_in_one/flux-newcfg/composite/flux_schnell/seed42" ]
     - name: sid_root
-      # The step-reward-test was a bon_mcts run on sid.
       values: [ "/mnt/data/v-yigu/all_method_ablations/step-reward-test" ]
     - name: senseflow_root
-      # If you have a senseflow_large run, point this at it.  Otherwise the
-      # source is silently skipped.
       values: [ "/mnt/data/v-yigu/composite_all/composite-all/senseflow_large" ]
     - name: sd35_base_root
       values: [ "/mnt/data/v-yigu/composite_all/composite-all/sd35_base" ]

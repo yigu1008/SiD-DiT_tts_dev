@@ -1,0 +1,79 @@
+description: render-trees
+
+# Lightweight no-GPU job: render a batch of ActDiff tree visualizations from
+# an existing bon_mcts run's per-prompt diagnostics.  No re-sampling.
+#
+# Reads `rank_*.jsonl` files under <run_root>/<method>/run_*/  and writes
+# one PNG + JSON pair per prompt to <out_dir>/.
+#
+# Override these at submit:
+#   -p run_root="/mnt/data/v-yigu/all_in_one/flux-newcfg/composite/flux_schnell/seed42"
+#   -p method=bon_mcts
+#   -p prompt_range="0:50"
+#   -p out_dir_name="flux_trees_v1"
+
+target:
+  service: sing
+  name: GenAI-Shared-UKSouth2
+  workspace_name: Singularity-GenAI-WS-UKSouth2
+  resource_group: singularity-genai-gpu-uksouth2
+
+env_defaults:
+  service: sing
+  PRIORITY: high
+  NODES: 1
+  GPUS: 1
+  MEM: 80
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - export PATH=/home/aiscuser/.local/bin:$$PATH
+
+code:
+  local_dir: ./
+
+storage:
+  output:
+    storage_account_name: vigstandard
+    container_name: data
+    mount_dir: /mnt/data
+
+search:
+  job_template:
+    name: trees-{out_dir_name}
+    sku: ${NODES}x${MEM}G${GPUS}-IB
+    sla_tier: Standard
+    process_count_per_node: 1
+    priority: high
+    mpi: false
+    command:
+      - set -x
+      - export PYTHONNOUSERSITE=1
+      - unset PYTHONPATH || true
+      - export PATH=/home/aiscuser/.local/bin:$$PATH
+      - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
+      - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir matplotlib || true
+      - export OUT_DIR=/mnt/data/v-yigu/_tree_archive/{out_dir_name}
+      - mkdir -p "$$OUT_DIR"
+      - /opt/conda/envs/ptca/bin/python render_trees_batch.py --run_root "{run_root}" --method {method} --prompt_range "{prompt_range}" --out_dir "$$OUT_DIR" --title_prefix "ActDiff trace ({method})"
+      - echo "[render-trees] done. PNGs at $$OUT_DIR"
+      - ls -la "$$OUT_DIR" | head -30
+
+    submit_args:
+      env:
+        DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: "true"
+
+  max_trials: 1
+  type: grid
+  params:
+    - name: out_dir_name
+      values: [ "flux_trees" ]
+    - name: run_root
+      # Default: the FLUX bon_mcts run that beat SoP.
+      values: [ "/mnt/data/v-yigu/all_in_one/flux-newcfg/composite/flux_schnell/seed42" ]
+    - name: method
+      values: [ "bon_mcts" ]
+    - name: prompt_range
+      values: [ "0:30" ]

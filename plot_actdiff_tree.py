@@ -244,6 +244,105 @@ def _draw_legend(ax: plt.Axes) -> None:
     ax.legend(handles=handles, loc="lower right", fontsize=9, frameon=False)
 
 
+def _build_tree_from_node_logs(node_logs: list[dict]) -> TreeNode:
+    """Build a per-step ActDiff decision tree from lookahead_node_logs.
+
+    Each log row records {sim, phase, step_idx, chosen_action} where
+    chosen_action is a dict with variant_idx / cfg / cs.  We aggregate sims:
+    each sim contributes a path through the tree (one edge per key-step).
+    Visit counts = how many sims chose each (step, action) pair.
+
+    Node colors are score-coded by mean preview_reward when available; the
+    most-visited path is marked as the best path (red edges).
+    """
+    # Group rows by sim_idx and sort by step_idx so we walk each sim's path.
+    sims: dict[int, list[dict]] = {}
+    for row in node_logs:
+        sim = int(row.get("sim", -1))
+        sims.setdefault(sim, []).append(row)
+    for sim in sims:
+        sims[sim].sort(key=lambda r: int(r.get("step_idx", 0)))
+
+    root = TreeNode(label="$z_0$\nnoise", color=C_NOISE)
+    # node_by_path: tuple-of-(step,action) -> TreeNode
+    node_by_path: dict[tuple, TreeNode] = {(): root}
+    # visit_counts: same key -> int
+    visit_counts: dict[tuple, int] = {(): 0}
+    reward_sum: dict[tuple, float] = {(): 0.0}
+    reward_n: dict[tuple, int] = {(): 0}
+
+    for sim_idx, rows in sims.items():
+        # Only keep one row per (sim, step_idx) — prefer 'expansion'/'rollout'
+        # phases over 'selection' so we capture the action actually applied.
+        by_step: dict[int, dict] = {}
+        for r in rows:
+            step = int(r.get("step_idx", 0))
+            phase = str(r.get("phase", ""))
+            if step not in by_step or phase in ("expansion", "rollout"):
+                by_step[step] = r
+        steps_sorted = sorted(by_step.keys())
+        path: list = []
+        for step in steps_sorted:
+            r = by_step[step]
+            act = r.get("chosen_action") or {}
+            v = int(act.get("variant_idx", 0))
+            cfg = float(act.get("cfg", 0.0))
+            cs = float(act.get("cs", 0.0))
+            edge = (step, (v, round(cfg, 4), round(cs, 4)))
+            new_path_key = tuple(path + [edge])
+            preview = r.get("preview_reward")
+            if new_path_key not in node_by_path:
+                parent = node_by_path[tuple(path)]
+                lab = f"cfg={cfg:.2f}"
+                if v > 0:
+                    lab += f"\nv={v}"
+                child = TreeNode(label=lab, color=C_REFINE_NODE,
+                                 edge_label=f"cfg={cfg:.2f}")
+                child.parent = parent
+                parent.children.append(child)
+                node_by_path[new_path_key] = child
+                visit_counts[new_path_key] = 0
+                reward_sum[new_path_key] = 0.0
+                reward_n[new_path_key] = 0
+            visit_counts[new_path_key] += 1
+            if preview is not None:
+                reward_sum[new_path_key] += float(preview)
+                reward_n[new_path_key] += 1
+            path = list(new_path_key)
+
+    # Annotate nodes with visit count + mean preview reward.
+    for key, node in node_by_path.items():
+        v = visit_counts.get(key, 0)
+        if v <= 0 or key == ():
+            continue
+        node.label += f"\nn={v}"
+        if reward_n.get(key, 0) > 0:
+            mean_r = reward_sum[key] / max(1, reward_n[key])
+            node.score = mean_r
+            node.label += f" $\\bar{{r}}$={mean_r:.2f}"
+
+    # Mark best path: at each level, pick the child with the highest visit
+    # count from the current best node.
+    cur = root
+    cur.on_best_path = True
+    while cur.children:
+        cur = max(cur.children,
+                  key=lambda c: visit_counts.get(_path_key_for(c, node_by_path), 0))
+        cur.on_best_path = True
+        cur.color = C_BEST_PATH
+        cur.size = 1.4
+
+    return root
+
+
+def _path_key_for(node: TreeNode, node_by_path: dict[tuple, TreeNode]) -> tuple:
+    """Reverse-lookup the path key for a TreeNode."""
+    for key, n in node_by_path.items():
+        if n is node:
+            return key
+    return ()
+
+
 def _load_real_data(run_root: Path, method: str, prompt_index: int) -> TreeNode | None:
     """Try to reconstruct a tree from per-run diagnostics. Returns None on failure.
 
@@ -316,7 +415,16 @@ def _load_real_data(run_root: Path, method: str, prompt_index: int) -> TreeNode 
               f"(searched rank_*.jsonl and legacy files); falling back to schematic.")
         return None
 
-    # Build a tree using diagnostics (best-effort — may be missing per-action data).
+    # ── PREFERRED: full per-step decision tree from lookahead_node_logs ──
+    # bon_mcts with refine_method=ours_tree (and other lookahead variants)
+    # serializes per-sim per-key-step decisions into this key.  Each sim's
+    # path through the (step × action) tree is rebuilt; visit counts and
+    # mean preview rewards annotate each node.
+    node_logs = diag.get("lookahead_node_logs") or diag.get("node_logs")
+    if isinstance(node_logs, list) and len(node_logs) > 0:
+        return _build_tree_from_node_logs(node_logs)
+
+    # ── FALLBACK: 2-level prescreen + refine tree (no per-step data) ──
     root = TreeNode(label="$z_0$\nnoise", color=C_NOISE)
     prescreen = diag.get("prescreen_ranked", [])
     # Keep an explicit seed→node map so we don't have to parse labels.

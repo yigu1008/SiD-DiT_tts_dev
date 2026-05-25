@@ -364,6 +364,8 @@ def main() -> None:
     p.add_argument("--rng_seed", type=int, default=42)
     p.add_argument("--title", default="ActDiff (bon_mcts) pipeline")
     p.add_argument("--no_edge_labels", action="store_true")
+    p.add_argument("--prompt", default=None,
+                   help="Optional prompt text to display as a subtitle / caption (useful for paper figures).")
     args = p.parse_args()
 
     root: TreeNode | None = None
@@ -400,7 +402,10 @@ def main() -> None:
     ax.set_xlim(-max_w / 2 - 0.8, max_w / 2 + 0.8)
     ax.set_ylim(-n_levels - 0.5, 0.8)
     ax.set_xticks([]); ax.set_yticks([])
-    ax.set_title(args.title, fontsize=13, fontweight="bold", pad=10)
+    title_str = args.title
+    if args.prompt:
+        title_str = f"{args.title}\nprompt: “{args.prompt}”"
+    ax.set_title(title_str, fontsize=13, fontweight="bold", pad=10)
 
     fig.tight_layout()
 

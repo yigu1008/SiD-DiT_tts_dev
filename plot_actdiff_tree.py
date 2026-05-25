@@ -353,8 +353,6 @@ def _load_real_data(run_root: Path, method: str, prompt_index: int) -> TreeNode 
             for ch in winner_node.children:
                 ch.on_best_path = True
                 ch.color = C_BEST_PATH
-                    ch.color = C_BEST_PATH
-                break
         root.on_best_path = True
     return root
 

@@ -149,7 +149,7 @@ search:
       - ls -la "$$PLOT_ARCHIVE_DIR"/all_method_{run_tag}_$$PLOT_STAMP*.png 2>/dev/null || true
       # Step-by-step ActDiff tree visualizations for 3 cherry-picked prompts.
       - export TREE_PROMPTS="{tree_prompts}"
-      - for pi in $$TREE_PROMPTS; do /opt/conda/envs/ptca/bin/python plot_actdiff_tree.py --mode real --run_root "$$RUN_ROOT" --method bon_mcts --prompt_index $$pi --out_dir "$$RUN_ROOT/trees" --title "ActDiff trace -- all-method / bon_mcts / prompt #$$pi" 2>/dev/null || true; done
+      - 'for pi in $$TREE_PROMPTS; do /opt/conda/envs/ptca/bin/python plot_actdiff_tree.py --mode real --run_root "$$RUN_ROOT" --method bon_mcts --prompt_index $$pi --out_dir "$$RUN_ROOT/trees" --title "ActDiff trace -- all-method / bon_mcts / prompt #$$pi" 2>/dev/null || true; done'
       - 'cp -f "$$RUN_ROOT"/trees/*.png "$$PLOT_ARCHIVE_DIR/" 2>/dev/null || true'
       - echo "[all-method] step-by-step trees -> $$RUN_ROOT/trees/"
 

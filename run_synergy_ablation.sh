@@ -142,7 +142,7 @@ echo "  REWRITES_FILE=${SYNERGY_REWRITES_FILE}"
 echo "  → ${RUN_ROOT}"
 echo "================================================================"
 
-bash "${SUITE}"
+bash "${SUITE}" || echo "[warn] suite exited with non-zero — continuing to summary stage"
 
 # ── 6. Summarize ───────────────────────────────────────────────────────────
 SUMMARY="${RUN_ROOT}/summary.tsv"

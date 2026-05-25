@@ -149,7 +149,7 @@ echo "  SIGMA bank (sigma/axes): ${BON_MCTS_SIGMA_BANK_SIGMA}"
 echo "  → ${RUN_ROOT}"
 echo "================================================================"
 
-bash "${SUITE}"
+bash "${SUITE}" || echo "[warn] suite exited with non-zero — continuing to summary stage"
 
 # ── 5. Summarize ───────────────────────────────────────────────────────────
 SUMMARY="${RUN_ROOT}/summary.tsv"

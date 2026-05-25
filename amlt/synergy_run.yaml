@@ -148,7 +148,7 @@ search:
       # Step-by-step ActDiff tree visualizations for 3 cherry-picked prompts.
       # Falls back to schematic if per-prompt diagnostics are unavailable.
       - export TREE_PROMPTS="{tree_prompts}"
-      - for pi in $$TREE_PROMPTS; do /opt/conda/envs/ptca/bin/python plot_actdiff_tree.py --mode real --run_root "$$RUN_ROOT" --method bon_mcts_full --prompt_index $$pi --out_dir "$$RUN_ROOT/trees" --title "ActDiff trace -- synergy / bon_mcts_full / prompt #$$pi" 2>/dev/null || true; done
+      - 'for pi in $$TREE_PROMPTS; do /opt/conda/envs/ptca/bin/python plot_actdiff_tree.py --mode real --run_root "$$RUN_ROOT" --method bon_mcts_full --prompt_index $$pi --out_dir "$$RUN_ROOT/trees" --title "ActDiff trace -- synergy / bon_mcts_full / prompt #$$pi" 2>/dev/null || true; done'
       - 'cp -f "$$RUN_ROOT"/trees/*.png "$$PLOT_ARCHIVE_DIR/" 2>/dev/null || true'
       - echo "[synergy] step-by-step trees -> $$RUN_ROOT/trees/"
       - ls -la "$$RUN_ROOT/trees" 2>/dev/null || true

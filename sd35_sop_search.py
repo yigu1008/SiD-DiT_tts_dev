@@ -39,6 +39,16 @@ def add_sop_args(parser: argparse.ArgumentParser) -> None:
                         help="x0_pred: decode + score x0_pred at every branch step. final: score only at end.")
     parser.add_argument("--sop_variant_idx", type=int, default=0,
                         help="Prompt variant index used for the entire search.")
+    # ── ActDiff augmentation: structured (cfg × variant) action axis ─────────
+    # When sop_action_diverse=1, the M children at each branching step draw
+    # distinct (cfg, variant) tuples from the cartesian product of the banks.
+    # Banks default to [cfg_scale] and [sop_variant_idx] (canonical SoP).
+    parser.add_argument("--sop_action_diverse", type=int, default=0, choices=[0, 1],
+                        help="1 = vary (cfg, variant) across the M children per branch.")
+    parser.add_argument("--sop_cfg_bank", type=float, nargs="+", default=None,
+                        help="CFG bank for action-diverse SoP.  Default = [cfg_scale].")
+    parser.add_argument("--sop_variant_bank", type=int, nargs="+", default=None,
+                        help="Variant-idx bank for action-diverse SoP.  Default = [sop_variant_idx].")
 
 
 # ── Path container ──────────────────────────────────────────────────────────
@@ -105,13 +115,28 @@ def run_sop_search(
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 
-    def _step_one(p: _Path, t_flat, t_4d, dt, step_idx: int) -> _Path:
+    # ── ActDiff axes ──────────────────────────────────────────────────────────
+    action_diverse = bool(int(getattr(args, "sop_action_diverse", 0) or 0))
+    if action_diverse:
+        cfg_bank = [float(x) for x in (getattr(args, "sop_cfg_bank", None) or [cfg_scale])]
+        var_bank_raw = list(getattr(args, "sop_variant_bank", None) or [variant_idx])
+        var_bank = [max(0, min(int(v), len(emb.cond_text) - 1)) for v in var_bank_raw]
+        action_bank = [(v, c) for v in var_bank for c in cfg_bank]
+        if not action_bank:
+            action_bank = [(variant_idx, float(cfg_scale))]
+    else:
+        action_bank = [(variant_idx, float(cfg_scale))]
+
+    def _step_one(p: _Path, t_flat, t_4d, dt, step_idx: int,
+                  vidx: int | None = None, cfg: float | None = None) -> _Path:
+        v_use = variant_idx if vidx is None else int(vidx)
+        c_use = float(cfg_scale) if cfg is None else float(cfg)
         if not use_euler:
             noise = p.latents if step_idx == 0 else torch.randn_like(p.latents)
             latents_in = (1.0 - t_4d) * p.dx + t_4d * noise
         else:
             latents_in = p.latents
-        flow = su.transformer_step(args, ctx, latents_in, emb, variant_idx, t_flat, float(cfg_scale))
+        flow = su.transformer_step(args, ctx, latents_in, emb, v_use, t_flat, c_use)
         new_latents, new_dx = su._apply_step(latents_in, flow, p.dx, t_4d, dt, use_euler, x0_sampler)
         return _Path(latents=new_latents, dx=new_dx, score=p.score)
 
@@ -155,8 +180,10 @@ def run_sop_search(
         children: list[_Path] = []
         for p in paths:
             for _m in range(branch_M):
+                v_act, c_act = action_bank[_m % len(action_bank)]
                 p_branched = _perturb(p, t_4d)
-                p_advanced = _step_one(p_branched, t_flat, t_4d, dt, step_idx)
+                p_advanced = _step_one(p_branched, t_flat, t_4d, dt, step_idx,
+                                       vidx=v_act, cfg=c_act)
                 if score_x0:
                     p_advanced.score = _decode_x0_score(p_advanced)
                 children.append(p_advanced)

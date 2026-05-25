@@ -956,6 +956,37 @@ run_method() {
       mode_arg="bon"
       BON_ACTION_DIVERSE=1
       ;;
+    bon_actdiff_cfg)
+      # Budget-friendly: CFG-only action axis (no prompt rewrites).
+      mode_arg="bon"
+      BON_ACTION_DIVERSE=1
+      N_VARIANTS=1
+      REWRITES_FILE=""
+      ;;
+    bon_actdiff_full)
+      # Compute-heavy: CFG + prompt-rewrite axes.  Requires SYNERGY_REWRITES_FILE.
+      mode_arg="bon"
+      BON_ACTION_DIVERSE=1
+      N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
+      REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
+      ;;
+    sop_actdiff_cfg)
+      # SoP with CFG axis added to branching (variant fixed).
+      mode_arg="sop"
+      SOP_ACTION_DIVERSE=1
+      SOP_CFG_BANK="${SOP_CFG_BANK:-${CFG_SCALES}}"
+      SOP_VARIANT_BANK="0"
+      ;;
+    sop_actdiff_full)
+      # SoP with CFG + prompt-rewrite axes added to branching.
+      mode_arg="sop"
+      SOP_ACTION_DIVERSE=1
+      SOP_CFG_BANK="${SOP_CFG_BANK:-${CFG_SCALES}}"
+      N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
+      REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
+      _sop_var_max="$((${N_VARIANTS} - 1))"
+      SOP_VARIANT_BANK="$(seq -s' ' 0 ${_sop_var_max})"
+      ;;
     greedy_prompt)
       # Greedy-over-prompts comparator for #8. Same step-by-step argmax as
       # `greedy` but restricted to the prompt-rewrite axis (CFG fixed at
@@ -1293,7 +1324,18 @@ run_method() {
       --sop_end_frac "${SOP_END_FRAC}"
       --sop_score_decode "${SOP_SCORE_DECODE}"
       --sop_variant_idx "${SOP_VARIANT_IDX}"
+      --sop_action_diverse "${SOP_ACTION_DIVERSE:-0}"
     )
+    if [[ -n "${SOP_CFG_BANK:-}" ]]; then
+      # shellcheck disable=SC2206
+      _sop_cfg_arr=(${SOP_CFG_BANK})
+      extra+=( --sop_cfg_bank "${_sop_cfg_arr[@]}" )
+    fi
+    if [[ -n "${SOP_VARIANT_BANK:-}" ]]; then
+      # shellcheck disable=SC2206
+      _sop_var_arr=(${SOP_VARIANT_BANK})
+      extra+=( --sop_variant_bank "${_sop_var_arr[@]}" )
+    fi
   fi
   if [[ "${SMC_VARIANT_EXPANSION:-0}" == "1" ]]; then
     extra+=(--smc_variant_expansion)

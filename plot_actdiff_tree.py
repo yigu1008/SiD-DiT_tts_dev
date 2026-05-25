@@ -23,6 +23,7 @@ Real-data mode reads `aggregate_ddp.json` and per-prompt MCTS traces.
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -321,10 +322,35 @@ def _load_real_data(run_root: Path, method: str, prompt_index: int) -> TreeNode 
     return root
 
 
+def _tree_to_dict(root: TreeNode) -> dict:
+    """Serialize a TreeNode tree as JSON-safe dict for re-rendering later."""
+    def walk(n: TreeNode) -> dict:
+        return {
+            "label": n.label,
+            "score": n.score,
+            "x": n.x,
+            "y": n.y,
+            "color": n.color,
+            "size": n.size,
+            "on_best_path": n.on_best_path,
+            "edge_label": n.edge_label,
+            "children": [walk(c) for c in n.children],
+        }
+    return walk(root)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--out", default="actdiff_pipeline.png", type=Path,
-                   help="Output PNG path.")
+    # Output: --out_dir wins when --out is not given.  Default is `figures/raw/`
+    # so every invocation drops a timestamped (png + json) pair alongside prior
+    # ones — no overwrites, easy to browse.
+    p.add_argument("--out", default=None, type=Path,
+                   help="Output PNG path (explicit).  If omitted, writes to "
+                        "<out_dir>/actdiff_<timestamp>_<mode>.png.")
+    p.add_argument("--out_dir", default=Path("figures/raw"), type=Path,
+                   help="Output folder when --out is not given.  Default: figures/raw/.")
+    p.add_argument("--save_json", action=argparse.BooleanOptionalAction, default=True,
+                   help="Save the tree structure as a sibling .json (for re-rendering).")
     p.add_argument("--mode", choices=["schematic", "real"], default="schematic")
     p.add_argument("--run_root", type=Path, default=None,
                    help="Required if --mode=real.  RUN_ROOT containing per-prompt diagnostics.")
@@ -377,8 +403,34 @@ def main() -> None:
     ax.set_title(args.title, fontsize=13, fontweight="bold", pad=10)
 
     fig.tight_layout()
-    fig.savefig(args.out, dpi=180, bbox_inches="tight")
-    print(f"[actdiff-tree] saved → {args.out}")
+
+    # Resolve output path: explicit --out wins; else <out_dir>/actdiff_<ts>_<mode>.png
+    if args.out is not None:
+        out_png = Path(args.out)
+    else:
+        ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        suffix = args.mode
+        if args.mode == "real":
+            suffix = f"real_p{args.prompt_index}_{args.method}"
+        out_png = args.out_dir / f"actdiff_{ts}_{suffix}.png"
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_png, dpi=180, bbox_inches="tight")
+    print(f"[actdiff-tree] saved → {out_png}")
+
+    if args.save_json:
+        out_json = out_png.with_suffix(".json")
+        out_json.write_text(json.dumps({
+            "mode": args.mode,
+            "title": args.title,
+            "config": {
+                "n_seeds": args.n_seeds, "topk": args.topk,
+                "key_steps": args.key_steps, "cfg_bank": args.cfg_bank,
+                "rng_seed": args.rng_seed, "method": args.method,
+                "prompt_index": args.prompt_index,
+            },
+            "tree": _tree_to_dict(root),
+        }, indent=2))
+        print(f"[actdiff-tree] tree json → {out_json}")
 
 
 if __name__ == "__main__":

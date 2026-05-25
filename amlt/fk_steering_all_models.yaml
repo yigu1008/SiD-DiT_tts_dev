@@ -59,7 +59,7 @@ search:
       - unset PYTHONPATH || true
       - export SID_FORCE_WANDB_STUB=1
       - export WANDB_DISABLED=true
-      # ── Paths & HF auth ────────────────────────────────────────────────────
+      # ?? Paths & HF auth ----
       - export PATH=/home/aiscuser/.local/bin:$$PATH
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
@@ -69,7 +69,7 @@ search:
       - export AZFUSE_USE_FUSE=0
       - export NCCL_ASYNC_ERROR_HANDLING=0
       - export NCCL_P2P_LEVEL=NVL
-      # ── Install deps (sampling env) ────────────────────────────────────────
+      # ?? Install deps (sampling env) ----
       - source /opt/conda/etc/profile.d/conda.sh
       - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
       - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
@@ -79,7 +79,7 @@ search:
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
-      # ── Cache dirs ─────────────────────────────────────────────────────────
+      # ?? Cache dirs ----
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
@@ -88,7 +88,7 @@ search:
       - mkdir -p /home/aiscuser/.cache
       - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
-      # ── Per-backend dispatch ───────────────────────────────────────────────
+      # ?? Per-backend dispatch ----
       - export TARGET_MODEL={target_model}
       - export AUTO_BACKEND_STEPS=0
       - export HF_HUB_ENABLE_HF_TRANSFER=0
@@ -99,10 +99,10 @@ search:
       - if [ "$$TARGET_MODEL" = "flux_tdd" ]; then export RUN_SD35=0; export RUN_FLUX=1; export FLUX_BACKEND=tdd_flux; export STEPS=8; export BASELINE_CFG=2.0; export BASELINE_GUIDANCE_SCALE=2.0; export CFG_SCALES='2.0'; export SMC_CFG_SCALE=2.0; export SMC_GUIDANCE_SCALE=2.0; export SMC_K=8; export REWARD_PREP_REPOS='black-forest-labs/FLUX.1-dev'; fi
       - 'if [ -z "$$TARGET_MODEL" ] || [ -z "$$SMC_K" ]; then echo "ERROR: unknown target_model=$$TARGET_MODEL"; exit 1; fi'
       - echo "[fk-steering] TARGET_MODEL=$$TARGET_MODEL STEPS=$$STEPS SMC_K=$$SMC_K NFE=$$((SMC_K * STEPS)) BASELINE_CFG=$$BASELINE_CFG search_reward={search_reward}"
-      # ── Preload model snapshots per backend ────────────────────────────────
+      # ?? Preload model snapshots per backend ----
       - for repo in $$REWARD_PREP_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo"; done
       - if [ "$$TARGET_MODEL" = "flux_tdd" ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import hf_hub_download; import os; p = hf_hub_download(repo_id='RED-AIGC/TDD', filename='FLUX.1-dev_tdd_adv_lora_weights.safetensors', token=os.environ.get('HF_TOKEN'), resume_download=True); print('TDD LoRA cache OK:', p)"; fi
-      # ── Build isolated reward env (HPSv3 + ImageReward) ────────────────────
+      # ?? Build isolated reward env (HPSv3 + ImageReward) ----
       - export REWARD_ENV_NAME=reward
       - export REWARD_ENV_SENTINEL_DIR=/tmp
       - CONDA_BASE=/opt/conda REWARD_ENV_NAME="$$REWARD_ENV_NAME" REWARD_ENV_SENTINEL_DIR="$$REWARD_ENV_SENTINEL_DIR" bash setup_reward_env.sh
@@ -111,12 +111,12 @@ search:
       - 'echo "Reward env prefix: $$REWARD_ENV_PREFIX"'
       - 'if [ ! -x "$$REWARD_PY" ]; then echo "Reward env python not found: $$REWARD_PY"; exit 1; fi'
       - $$REWARD_PY -c "import torch, transformers; print('reward env torch='+torch.__version__, 'transformers='+transformers.__version__)"
-      # ── Strict verify: ImageReward MUST be installed in reward env (the
+      # ?? Strict verify: ImageReward MUST be installed in reward env (the
       # default setup_reward_env.sh path only WARNs on failure, so a failed
       # install would otherwise silently leave the server hosting only hpsv3
       # and break the imagereward-guided run + the cross-run eval). Retry
-      # with the most permissive flags then fail fast if still missing. ──
-      # ── Fix-up envs built before the setuptools/fairscale fixes landed.
+      # with the most permissive flags then fail fast if still missing. ??
+      # ?? Fix-up envs built before the setuptools/fairscale fixes landed.
       - $$REWARD_PY -m pip install --no-cache-dir --upgrade "setuptools<80" "wheel" || true
       - $$REWARD_PY -m pip install --no-cache-dir "fairscale==0.4.4" || $$REWARD_PY -m pip install --no-cache-dir "fairscale" || true
       - $$REWARD_PY -m pip install --no-cache-dir --no-deps "diffusers>=0.27,<0.31" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "diffusers" || true
@@ -124,13 +124,13 @@ search:
       - $$REWARD_PY -c "import ImageReward; print('[verify] reward env ImageReward', ImageReward.__file__)" || $$REWARD_PY -m pip install --no-cache-dir --no-deps --no-build-isolation "git+https://github.com/THUDM/ImageReward.git" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "git+https://github.com/THUDM/ImageReward.git" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "image-reward==1.5" || true
       - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; echo "[patch] ImageReward __init__: $$IR_INIT"; else echo "[patch] WARN: ImageReward __init__ not found"; fi'
       - $$REWARD_PY -c "import ImageReward; print('[verify-final] reward env ImageReward', ImageReward.__file__)"
-      # ── Preload reward weights in reward env (BOTH hpsv3 and imagereward) ─
+      # ?? Preload reward weights in reward env (BOTH hpsv3 and imagereward) ?
       - export REWARD_BACKENDS='{reward_server_backends}'
       - export STAGE_REWARD_WEIGHTS_LOCAL=1
       - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
       - $$REWARD_PY preload_reward_models.py
       - 'if [ -f "$$REWARD_LOCAL_HF_CACHE/.stage_done" ]; then export REWARD_HF_HOME="$$REWARD_LOCAL_HF_CACHE"; echo "Reward server will use local HF cache: $$REWARD_HF_HOME"; else export REWARD_HF_HOME="$$HF_HOME"; echo "Local staging unavailable; reward server using HF_HOME=$$HF_HOME"; fi'
-      # ── Launch reward server on GPU 0 ──────────────────────────────────────
+      # ?? Launch reward server on GPU 0 ----
       - export OUT_ROOT=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}/{target_model}/{search_reward}
       - mkdir -p "$$OUT_ROOT"
       - export REWARD_SERVER_PORT={reward_server_port}
@@ -139,14 +139,14 @@ search:
       - env -u NCCL_P2P_LEVEL -u NCCL_ASYNC_ERROR_HANDLING -u TORCH_NCCL_ASYNC_ERROR_HANDLING CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false HF_HOME="$$REWARD_HF_HOME" "$$REWARD_PY" -u reward_server.py --port "$$REWARD_SERVER_PORT" --device cuda:0 --backends $$REWARD_BACKENDS --image_reward_model ImageReward-v1.0 --pickscore_model yuvalkirstain/PickScore_v1 > "$$REWARD_SERVER_LOG" 2>&1 &
       - export REWARD_SERVER_PID=$$!
       - trap 'kill $$REWARD_SERVER_PID >/dev/null 2>&1 || true' EXIT
-      # ── Wait for /health (up to 60 min) ────────────────────────────────────
+      # ?? Wait for /health (up to 60 min) ----
       - export HEALTH_OK=0
       - for i in $$(seq 1 1200); do if curl -s "$$REWARD_SERVER_URL/health" >/dev/null 2>&1; then export HEALTH_OK=1; break; fi; if ! kill -0 "$$REWARD_SERVER_PID" >/dev/null 2>&1; then echo "Reward server process exited before health check passed"; tail -n 200 "$$REWARD_SERVER_LOG" || true; exit 1; fi; if [ $$((i % 10)) -eq 0 ]; then echo "[health-wait] i=$$i server log tail:"; tail -n 20 "$$REWARD_SERVER_LOG" || true; fi; sleep 3; done
       - if [ "$$HEALTH_OK" != "1" ]; then echo "Reward server failed to become healthy"; tail -n 400 "$$REWARD_SERVER_LOG"; exit 1; fi
       - curl -s "$$REWARD_SERVER_URL/health" | tee "$$OUT_ROOT/reward_server_health.json"
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
-      # ── Prompt file & run knobs ────────────────────────────────────────────
+      # ?? Prompt file & run knobs ----
       - export PROMPT_FILE=./hpsv2_subset.txt
       - export START_INDEX=0
       - export END_INDEX={num_prompts}
@@ -165,7 +165,7 @@ search:
       - export EVAL_BEST_IMAGES=1
       - export EVAL_REWARD_DEVICE=cuda
       - export EVAL_ALLOW_MISSING_BACKENDS=0
-      # ── DAS/SMC knobs ──────────────────────────────────────────────────────
+      # ?? DAS/SMC knobs ----
       - export SMC_POTENTIAL=tempering
       - export SMC_LAMBDA={smc_lambda}
       - export SMC_GAMMA=0.10
@@ -181,19 +181,19 @@ search:
       - export SAVE_BEST_IMAGES=1
       - export SAVE_IMAGES=0
       - export SAVE_VARIANTS=0
-      # ── Final transformers/datasets pin (sampling env) ─────────────────────
+      # ?? Final transformers/datasets pin (sampling env) ----
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets, transformers; print('final pin ok', 'transformers='+md.version('transformers'), md.version('ftfy'), md.version('regex'), md.version('xxhash'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'))"
-      # ── Restrict sampling to GPUs 1..N-1 (server owns GPU 0) ───────────────
+      # ?? Restrict sampling to GPUs 1..N-1 (server owns GPU 0) ----
       - export SAMPLING_GPUS=$$((${GPUS} - 1))
       - export CUDA_VISIBLE_DEVICES=$$(seq -s, 1 $$SAMPLING_GPUS)
       - export NUM_GPUS=$$SAMPLING_GPUS
       - 'echo "Sampling on CUDA_VISIBLE_DEVICES=$$CUDA_VISIBLE_DEVICES NUM_GPUS=$$NUM_GPUS REWARD_SERVER_URL=$$REWARD_SERVER_URL search_reward={search_reward}"'
-      # ── Run (reward_unified routes hpsv3+imagereward via REWARD_SERVER_URL) ─
+      # ?? Run (reward_unified routes hpsv3+imagereward via REWARD_SERVER_URL) ?
       - bash hpsv2_sd35_flux_allalgos.sh
-      # ── Phase 2: tear down server, eval extra backends one-at-a-time ───────
+      # ?? Phase 2: tear down server, eval extra backends one-at-a-time ----
       - echo "[posthoc] killing reward server pid=$$REWARD_SERVER_PID before phase 2"
       - kill "$$REWARD_SERVER_PID" >/dev/null 2>&1 || true
       - for k in $$(seq 1 30); do if ! kill -0 "$$REWARD_SERVER_PID" >/dev/null 2>&1; then break; fi; sleep 1; done
@@ -214,7 +214,7 @@ search:
   params:
     - name: run_tag
       values: [ "fk_steering_all_models" ]
-    # ── Two separate runs: one search-time evaluator per run ────────────────
+    # ?? Two separate runs: one search-time evaluator per run ----
     - name: search_reward
       values: [ "hpsv3", "imagereward" ]
     - name: hf_token
@@ -236,7 +236,7 @@ search:
       values: [ "hpsv2 pickscore" ]
     - name: reward_server_port
       values: [ 5101 ]
-    # ── FK-steering hyperparams (shared across all backends) ────────────────
+    # ?? FK-steering hyperparams (shared across all backends) ----
     # smc_lambda is the FK inverse temperature; 10.0 is a moderate setting
     # that's been used in the FK-steering paper for reward-tempered SMC.
     - name: smc_lambda

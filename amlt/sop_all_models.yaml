@@ -6,7 +6,7 @@ description: sop-all-models
 # /mnt/data/v-yigu/sop_runs/{run_tag}/{backend}/{search_reward}/.
 #
 # Backends covered (sequential, single job):
-#   sd35_sid        (4 steps,  cfg≈1.0)   via hpsv2_sd35_sid_ddp_suite.sh
+#   sd35_sid        (4 steps,  cfg~=1.0)   via hpsv2_sd35_sid_ddp_suite.sh
 #   senseflow_large (4 steps,  cfg=0.0)   via hpsv2_sd35_sid_ddp_suite.sh
 #   sd35_base       (28 steps, cfg=4.5)   via hpsv2_sd35_sid_ddp_suite.sh
 #   flux_schnell    (4 steps,  guidance=0.0)  via hpsv2_flux_schnell_ddp_suite.sh
@@ -58,7 +58,7 @@ search:
       - unset PYTHONPATH || true
       - export SID_FORCE_WANDB_STUB=1
       - export WANDB_DISABLED=true
-      # ── Paths & HF auth ────────────────────────────────────────────────────
+      # ?? Paths & HF auth ----
       - export PATH=/home/aiscuser/.local/bin:$$PATH
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
@@ -68,7 +68,7 @@ search:
       - export AZFUSE_USE_FUSE=0
       - export NCCL_ASYNC_ERROR_HANDLING=0
       - export NCCL_P2P_LEVEL=NVL
-      # ── Install deps (sampling env) ────────────────────────────────────────
+      # ?? Install deps (sampling env) ----
       - source /opt/conda/etc/profile.d/conda.sh
       - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
       - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
@@ -78,7 +78,7 @@ search:
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
-      # ── Cache dirs ─────────────────────────────────────────────────────────
+      # ?? Cache dirs ----
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
@@ -87,10 +87,10 @@ search:
       - mkdir -p /home/aiscuser/.cache
       - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
-      # ── Preload all model snapshots up-front (covers all 4 backends) ───────
+      # ?? Preload all model snapshots up-front (covers all 4 backends) ----
       - export ALL_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large domiso/SenseFlow black-forest-labs/FLUX.1-schnell'
       - for repo in $$ALL_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo"; done
-      # ── Build isolated reward env (HPSv3 + ImageReward) ────────────────────
+      # ?? Build isolated reward env (HPSv3 + ImageReward) ----
       - export REWARD_ENV_NAME=reward
       - export REWARD_ENV_SENTINEL_DIR=/tmp
       - CONDA_BASE=/opt/conda REWARD_ENV_NAME="$$REWARD_ENV_NAME" REWARD_ENV_SENTINEL_DIR="$$REWARD_ENV_SENTINEL_DIR" bash setup_reward_env.sh
@@ -99,7 +99,7 @@ search:
       - 'echo "Reward env prefix: $$REWARD_ENV_PREFIX"'
       - 'if [ ! -x "$$REWARD_PY" ]; then echo "Reward env python not found: $$REWARD_PY"; exit 1; fi'
       - $$REWARD_PY -c "import torch, transformers; print('reward env torch='+torch.__version__, 'transformers='+transformers.__version__)"
-      # ── Fix-ups for older reward envs ──────────────────────────────────────
+      # ?? Fix-ups for older reward envs ----
       - $$REWARD_PY -m pip install --no-cache-dir --upgrade "setuptools<80" "wheel" || true
       - $$REWARD_PY -m pip install --no-cache-dir "fairscale==0.4.4" || $$REWARD_PY -m pip install --no-cache-dir "fairscale" || true
       - $$REWARD_PY -m pip install --no-cache-dir --no-deps "diffusers>=0.27,<0.31" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "diffusers" || true
@@ -107,13 +107,13 @@ search:
       - $$REWARD_PY -c "import ImageReward; print('[verify] reward env ImageReward', ImageReward.__file__)" || $$REWARD_PY -m pip install --no-cache-dir --no-deps --no-build-isolation "git+https://github.com/THUDM/ImageReward.git" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "git+https://github.com/THUDM/ImageReward.git" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "image-reward==1.5" || true
       - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; echo "[patch] ImageReward __init__: $$IR_INIT"; else echo "[patch] WARN: ImageReward __init__ not found"; fi'
       - $$REWARD_PY -c "import ImageReward; print('[verify-final] reward env ImageReward', ImageReward.__file__)"
-      # ── Preload reward weights ─────────────────────────────────────────────
+      # ?? Preload reward weights ----
       - export REWARD_BACKENDS='{reward_server_backends}'
       - export STAGE_REWARD_WEIGHTS_LOCAL=1
       - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
       - $$REWARD_PY preload_reward_models.py
       - 'if [ -f "$$REWARD_LOCAL_HF_CACHE/.stage_done" ]; then export REWARD_HF_HOME="$$REWARD_LOCAL_HF_CACHE"; echo "Reward server will use local HF cache: $$REWARD_HF_HOME"; else export REWARD_HF_HOME="$$HF_HOME"; echo "Local staging unavailable; reward server using HF_HOME=$$HF_HOME"; fi'
-      # ── Launch reward server ONCE on GPU 0 (shared across backends) ───────
+      # ?? Launch reward server ONCE on GPU 0 (shared across backends) ----
       - export RUN_ROOT=/mnt/data/v-yigu/sop_runs/{run_tag}/{search_reward}
       - mkdir -p "$$RUN_ROOT"
       - export REWARD_SERVER_PORT={reward_server_port}
@@ -128,11 +128,11 @@ search:
       - curl -s "$$REWARD_SERVER_URL/health" | tee "$$RUN_ROOT/reward_server_health.json"
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
-      # ── Final transformers/datasets pin (sampling env) ─────────────────────
+      # ?? Final transformers/datasets pin (sampling env) ----
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
-      # ── Shared run knobs ───────────────────────────────────────────────────
+      # ?? Shared run knobs ----
       - export PROMPT_FILE=./hpsv2_subset.txt
       - export START_INDEX=0
       - export END_INDEX={num_prompts}
@@ -160,16 +160,16 @@ search:
       - export SOP_END_FRAC={sop_end_frac}
       - export SOP_SCORE_DECODE={sop_score_decode}
       - export SOP_VARIANT_IDX={sop_variant_idx}
-      # ── Restrict sampling to GPUs 1..N-1 (server owns GPU 0) ───────────────
+      # ?? Restrict sampling to GPUs 1..N-1 (server owns GPU 0) ----
       - export SAMPLING_GPUS=$$((${GPUS} - 1))
       - export CUDA_VISIBLE_DEVICES=$$(seq -s, 1 $$SAMPLING_GPUS)
       - export NUM_GPUS=$$SAMPLING_GPUS
       - 'echo "Sampling on CUDA_VISIBLE_DEVICES=$$CUDA_VISIBLE_DEVICES NUM_GPUS=$$NUM_GPUS REWARD_SERVER_URL=$$REWARD_SERVER_URL search_reward={search_reward}"'
 
-      # ── Run all 4 backends in one script ──────────────────────────────────
+      # ?? Run all 4 backends in one script ----
       - bash hpsv2_sop_all_backends.sh
 
-      # ── Phase 2: posthoc eval per backend (hpsv2/pickscore) ───────────────
+      # ?? Phase 2: posthoc eval per backend (hpsv2/pickscore) ----
       - echo "[posthoc] killing reward server pid=$$REWARD_SERVER_PID before phase 2"
       - kill "$$REWARD_SERVER_PID" >/dev/null 2>&1 || true
       - for k in $$(seq 1 30); do if ! kill -0 "$$REWARD_SERVER_PID" >/dev/null 2>&1; then break; fi; sleep 1; done
@@ -203,10 +203,10 @@ search:
       values: [ "hpsv2 pickscore" ]
     - name: reward_server_port
       values: [ 5102 ]
-    # ── SoP hyperparams (shared across all backends) ────────────────────────
-    # NFE per prompt ≈ N·(start_steps) + K·M·(branch_steps) + K. With these
-    # defaults: 4-step backends ~8·2 + 16·2 + 4 = 52 evals; 28-step base
-    # ~8·7 + 16·21 + 4 = 396 evals. Tune K, M, branch_every to match
+    # ?? SoP hyperparams (shared across all backends) ----
+    # NFE per prompt ~= N*(start_steps) + K*M*(branch_steps) + K. With these
+    # defaults: 4-step backends ~8*2 + 16*2 + 4 = 52 evals; 28-step base
+    # ~8*7 + 16*21 + 4 = 396 evals. Tune K, M, branch_every to match
     # MCTS/SMC budget.
     - name: sop_init_paths
       values: [ 8 ]

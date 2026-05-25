@@ -1,15 +1,15 @@
 description: sd35-dynamic-cfg-x0-server
 
 # Per-step adaptive CFG via decoded-x0 reward scoring (dynamic_cfg_x0).
-# Pass 1 only — single method, no comparison against other algorithms.
+# Pass 1 only -- single method, no comparison against other algorithms.
 #
 # Reward server (HPSv3 + ImageReward) runs on GPU 0; sampling on GPUs 1..N-1.
 # Both x0 evaluators (ImageReward + HPSv3) are auto-routed to the server via
-# REWARD_SERVER_URL — no local reward weights needed in the sampling env.
+# REWARD_SERVER_URL -- no local reward weights needed in the sampling env.
 #
 # Two backends covered (parameterized by target_model):
-#   sid       — 4-step distilled, real-CFG ≈ 1.0  (cfg_grid stays in [1.0, 2.5])
-#   sd35_base — 28-step Euler,    real-CFG ≈ 4.5  (cfg_grid spans [2.0, 8.0])
+#   sid       -- 4-step distilled, real-CFG ~= 1.0  (cfg_grid stays in [1.0, 2.5])
+#   sd35_base -- 28-step Euler,    real-CFG ~= 4.5  (cfg_grid spans [2.0, 8.0])
 #
 # Phase 2: tear down server, evaluate saved best images with imagereward,
 # hpsv2, pickscore one backend at a time (avoids single-GPU OOM).
@@ -57,7 +57,7 @@ search:
       - unset PYTHONPATH || true
       - export SID_FORCE_WANDB_STUB=1
       - export WANDB_DISABLED=true
-      # ── Paths & HF auth ────────────────────────────────────────────────────
+      # ?? Paths & HF auth ----
       - export PATH=/home/aiscuser/.local/bin:$$PATH
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
@@ -67,7 +67,7 @@ search:
       - export AZFUSE_USE_FUSE=0
       - export NCCL_ASYNC_ERROR_HANDLING=0
       - export NCCL_P2P_LEVEL=NVL
-      # ── ptca deps (sampling) ──────────────────────────────────────────────
+      # ?? ptca deps (sampling) ----
       - source /opt/conda/etc/profile.d/conda.sh
       - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
       - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
@@ -78,25 +78,25 @@ search:
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
-      # ── Cache dirs ────────────────────────────────────────────────────────
+      # ?? Cache dirs ----
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
       - export CLIP_CACHE_DIR=/mnt/data/v-yigu/model_cache/clip
       - mkdir -p /home/aiscuser/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2 /mnt/data/v-yigu/model_cache/clip
       - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
-      # ── Preload SD3.5 base (VAE + text encoders) + SiD transformer + Qwen ──
+      # ?? Preload SD3.5 base (VAE + text encoders) + SiD transformer + Qwen ??
       - export HF_HUB_ENABLE_HF_TRANSFER=0
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('stabilityai/stable-diffusion-3.5-large', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('SD3.5-large cache OK')"
       - if [ "{target_model}" = "sid" ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('YGu1998/SiD-DiT-SD3.5-large', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('SD3.5-SID cache OK')"; fi
       - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('Qwen cache OK')"; fi
-      # ── Prompt file ───────────────────────────────────────────────────────
+      # ?? Prompt file ----
       - export HPSV2_PROMPT_DIR=/mnt/data/v-yigu/hpsv2_prompt_cache
       - export PROMPT_STYLE={prompt_style}
       - OUT_DIR="$$HPSV2_PROMPT_DIR" STYLE="$$PROMPT_STYLE" bash get_hpsv2_prompts.sh
       - if [ "$$PROMPT_STYLE" = "all" ]; then export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts.txt"; else export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts_$$PROMPT_STYLE.txt"; fi
       - if [ {use_subset} = 1 ]; then export PROMPT_FILE=./hpsv2_subset.txt; fi
-      # ── Build isolated reward env (HPSv3 + ImageReward + eval backends) ──
+      # ?? Build isolated reward env (HPSv3 + ImageReward + eval backends) ??
       - export REWARD_ENV_NAME=reward
       - export REWARD_ENV_SENTINEL_DIR=/tmp
       - CONDA_BASE=/opt/conda REWARD_ENV_NAME="$$REWARD_ENV_NAME" REWARD_ENV_SENTINEL_DIR="$$REWARD_ENV_SENTINEL_DIR" bash setup_reward_env.sh
@@ -105,7 +105,7 @@ search:
       - 'echo "Reward env prefix: $$REWARD_ENV_PREFIX"'
       - 'if [ ! -x "$$REWARD_PY" ]; then echo "Reward env python not found: $$REWARD_PY"; exit 1; fi'
       - $$REWARD_PY -c "import torch, transformers; print('reward env torch='+torch.__version__, 'transformers='+transformers.__version__)"
-      # ── Fix-up envs that were built before the setuptools/fairscale fixes
+      # ?? Fix-up envs that were built before the setuptools/fairscale fixes
       # landed. setuptools>=80 dropped pkg_resources from the default install
       # (breaking ImageReward's setup.py), and ImageReward's BLIP backbone
       # imports `fairscale.nn.checkpoint.checkpoint_activations` at module load.
@@ -116,24 +116,24 @@ search:
       # the pinned transformers==4.45.2.
       - $$REWARD_PY -m pip install --no-cache-dir --no-deps "diffusers>=0.27,<0.31" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "diffusers" || true
       - $$REWARD_PY -m pip install --no-cache-dir --no-deps "datasets" "wandb" || true
-      # ── Strict verify: ImageReward MUST be installed in reward env (the
+      # ?? Strict verify: ImageReward MUST be installed in reward env (the
       # default setup_reward_env.sh path only WARNs on failure, so a failed
       # install would otherwise silently leave the server hosting only hpsv3
       # and break the imagereward-guided run + the cross-run eval). Retry
-      # with the most permissive flags then fail fast if still missing. ──
+      # with the most permissive flags then fail fast if still missing. ??
       - $$REWARD_PY -c "import ImageReward; print('[verify] reward env ImageReward', ImageReward.__file__)" || $$REWARD_PY -m pip install --no-cache-dir --no-deps --no-build-isolation "git+https://github.com/THUDM/ImageReward.git" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "git+https://github.com/THUDM/ImageReward.git" || $$REWARD_PY -m pip install --no-cache-dir --no-deps "image-reward==1.5" || true
       # Belt and suspenders: comment out the ReFL import in __init__.py so
       # missing training-time deps can never break `import ImageReward`.
       # Idempotent. Runs AFTER any reinstall fallback so it survives.
       - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; echo "[patch] ImageReward __init__: $$IR_INIT"; else echo "[patch] WARN: ImageReward __init__ not found"; fi'
       - $$REWARD_PY -c "import ImageReward; print('[verify-final] reward env ImageReward', ImageReward.__file__)"
-      # ── Preload reward weights in reward env (BOTH hpsv3 and imagereward) ─
+      # ?? Preload reward weights in reward env (BOTH hpsv3 and imagereward) ?
       - export REWARD_BACKENDS='{reward_server_backends}'
       - export STAGE_REWARD_WEIGHTS_LOCAL=1
       - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
       - $$REWARD_PY preload_reward_models.py
       - 'if [ -f "$$REWARD_LOCAL_HF_CACHE/.stage_done" ]; then export REWARD_HF_HOME="$$REWARD_LOCAL_HF_CACHE"; echo "Reward server will use local HF cache: $$REWARD_HF_HOME"; else export REWARD_HF_HOME="$$HF_HOME"; echo "Local staging unavailable; reward server using HF_HOME=$$HF_HOME"; fi'
-      # ── Launch reward server on GPU 0 ────────────────────────────────────
+      # ?? Launch reward server on GPU 0 ----
       - export OUT_ROOT=/mnt/data/v-yigu/hpsv2_dyncfgx0_runs/{target_model}/{search_reward}/{run_tag}
       - mkdir -p "$$OUT_ROOT"
       - export REWARD_SERVER_PORT={reward_server_port}
@@ -142,12 +142,12 @@ search:
       - env -u NCCL_P2P_LEVEL -u NCCL_ASYNC_ERROR_HANDLING -u TORCH_NCCL_ASYNC_ERROR_HANDLING CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false HF_HOME="$$REWARD_HF_HOME" "$$REWARD_PY" -u reward_server.py --port "$$REWARD_SERVER_PORT" --device cuda:0 --backends $$REWARD_BACKENDS --image_reward_model ImageReward-v1.0 --pickscore_model yuvalkirstain/PickScore_v1 > "$$REWARD_SERVER_LOG" 2>&1 &
       - export REWARD_SERVER_PID=$$!
       - trap 'kill $$REWARD_SERVER_PID >/dev/null 2>&1 || true' EXIT
-      # ── Wait for /health (up to 60 min) ──────────────────────────────────
+      # ?? Wait for /health (up to 60 min) ----
       - export HEALTH_OK=0
       - for i in $$(seq 1 1200); do if curl -s "$$REWARD_SERVER_URL/health" >/dev/null 2>&1; then export HEALTH_OK=1; break; fi; if ! kill -0 "$$REWARD_SERVER_PID" >/dev/null 2>&1; then echo "Reward server process exited before health check passed"; tail -n 200 "$$REWARD_SERVER_LOG" || true; exit 1; fi; if [ $$((i % 10)) -eq 0 ]; then echo "[health-wait] i=$$i server log tail:"; tail -n 20 "$$REWARD_SERVER_LOG" || true; fi; sleep 3; done
       - if [ "$$HEALTH_OK" != "1" ]; then echo "Reward server failed to become healthy"; tail -n 400 "$$REWARD_SERVER_LOG"; exit 1; fi
       - curl -s "$$REWARD_SERVER_URL/health" | tee "$$OUT_ROOT/reward_server_health.json"
-      # ── Qwen rewrite cache ───────────────────────────────────────────────
+      # ?? Qwen rewrite cache ----
       - mkdir -p /mnt/data/v-yigu/hpsv2_rewrite_cache
       - export REWRITES_FILE=/mnt/data/v-yigu/hpsv2_rewrite_cache/{run_tag}_{target_model}_$$PROMPT_STYLE_{start_index}_{end_index}.json
       - export USE_QWEN={use_qwen}
@@ -157,7 +157,7 @@ search:
       - export QWEN_PRECOMPUTE_BATCH_SIZE={qwen_precompute_batch_size}
       - export QWEN_PRECOMPUTE_SAVE_EVERY={qwen_precompute_save_every}
       - export QWEN_PRECOMPUTE_CLEAR_CACHE={qwen_precompute_clear_cache}
-      # ── Sampling env vars ────────────────────────────────────────────────
+      # ?? Sampling env vars ----
       - export START_INDEX={start_index}
       - export END_INDEX={end_index}
       - export METHODS='dynamic_cfg_x0'
@@ -178,11 +178,11 @@ search:
       - export N_VARIANTS={n_variants}
       - export GEN_BATCH_SIZE=1
       - export SD35_BACKEND={target_model}
-      # ── Dynamic CFG x0 knobs ─────────────────────────────────────────────
+      # ?? Dynamic CFG x0 knobs ----
       - export DYNAMIC_CFG_X0_GRID="$$DYNAMIC_CFG_X0_GRID_AUTO"
       - export DYNAMIC_CFG_X0_SCORE_START_FRAC={dynamic_cfg_x0_score_start_frac}
       # Per-backend override: 4-step SiD has progress {0, 0.33, 0.67, 1.0}
-      # — score_start=0.5 skips first 2 steps, scores last 2. 28-step
+      # -- score_start=0.5 skips first 2 steps, scores last 2. 28-step
       # sd35_base keeps the grid value (0.25 = skip first ~7).
       - 'if [ "{target_model}" = "sid" ]; then export DYNAMIC_CFG_X0_SCORE_START_FRAC=0.5; fi'
       - export DYNAMIC_CFG_X0_SCORE_END_FRAC={dynamic_cfg_x0_score_end_frac}
@@ -197,7 +197,7 @@ search:
       - export DYNAMIC_CFG_X0_CFG_MIN="$$DYNAMIC_CFG_X0_CFG_MIN_AUTO"
       - export DYNAMIC_CFG_X0_CFG_MAX="$$DYNAMIC_CFG_X0_CFG_MAX_AUTO"
       - export DYNAMIC_CFG_X0_ADD_LOCAL_NEIGHBORHOOD={dynamic_cfg_x0_add_local_neighborhood}
-      # ── Misc ────────────────────────────────────────────────────────────
+      # ?? Misc ----
       - export SEED={seed}
       - export RUN_SANA=0
       - export RUN_SD35=1
@@ -206,14 +206,14 @@ search:
       - export SAVE_IMAGES=0
       - export SAVE_BEST_IMAGES=1
       - export SAVE_VARIANTS=0
-      # ── Restrict sampling to GPUs 1..N-1 (server owns GPU 0) ─────────────
+      # ?? Restrict sampling to GPUs 1..N-1 (server owns GPU 0) ----
       - export SAMPLING_GPUS=$$((${GPUS} - 1))
       - export CUDA_VISIBLE_DEVICES=$$(seq -s, 1 $$SAMPLING_GPUS)
       - export NUM_GPUS=$$SAMPLING_GPUS
       - 'echo "Sampling on CUDA_VISIBLE_DEVICES=$$CUDA_VISIBLE_DEVICES NUM_GPUS=$$NUM_GPUS REWARD_SERVER_URL=$$REWARD_SERVER_URL target_model=$$SD35_BACKEND"'
-      # ── Run (reward_unified routes hpsv3+imagereward via REWARD_SERVER_URL) ─
+      # ?? Run (reward_unified routes hpsv3+imagereward via REWARD_SERVER_URL) ?
       - bash hpsv2_sd35_flux_allalgos.sh
-      # ── Phase 2: tear down server, eval extra backends one-at-a-time ─────
+      # ?? Phase 2: tear down server, eval extra backends one-at-a-time ----
       - echo "[posthoc] killing reward server pid=$$REWARD_SERVER_PID before phase 2"
       - kill "$$REWARD_SERVER_PID" >/dev/null 2>&1 || true
       - for k in $$(seq 1 30); do if ! kill -0 "$$REWARD_SERVER_PID" >/dev/null 2>&1; then break; fi; sleep 1; done
@@ -234,7 +234,7 @@ search:
   params:
     - name: run_tag
       values: [ "sd35_dyncfgx0_server" ]
-    # ── Two separate runs: one search-time evaluator per run ─────────────
+    # ?? Two separate runs: one search-time evaluator per run ----
     - name: search_reward
       values: [ "hpsv3", "imagereward" ]
     - name: hf_token
@@ -247,7 +247,7 @@ search:
       values: [ -1 ]
     - name: use_subset
       values: [ 1 ]
-    # ── Both backends covered as a 2-row grid ────────────────────────────
+    # ?? Both backends covered as a 2-row grid ----
     - name: target_model
       values: [ "sid", "sd35_base" ]
     # Reward server hosts BOTH evaluators (so both runs share the same
@@ -263,8 +263,8 @@ search:
       values: [ 5101 ]
     - name: n_variants
       values: [ 1 ]
-    # ── Dynamic CFG x0 knobs (CFG bank + min/max/soft_max are set per
-    #    target_model in the command body — see STEPS/BASELINE_CFG line). ──
+    # ?? Dynamic CFG x0 knobs (CFG bank + min/max/soft_max are set per
+    #    target_model in the command body -- see STEPS/BASELINE_CFG line). ??
     - name: dynamic_cfg_x0_score_start_frac
       values: [ 0.25 ]
     - name: dynamic_cfg_x0_score_end_frac
@@ -283,7 +283,7 @@ search:
       values: [ 0.01 ]
     - name: dynamic_cfg_x0_add_local_neighborhood
       values: [ 0 ]
-    # ── Misc ──
+    # ?? Misc ??
     - name: seed
       values: [ 42 ]
     - name: use_qwen

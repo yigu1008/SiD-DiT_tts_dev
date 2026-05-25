@@ -4,27 +4,27 @@ description: actdiff-augment-grid
 #
 # Two compute tiers per existing method:
 #   _cfg   = budget-friendly: vary CFG bank only
-#   _full  = compute-heavy:   vary CFG bank × 3-level prompt rewrites
+#   _full  = compute-heavy:   vary CFG bank x 3-level prompt rewrites
 #
 # Methods (11), one suite invocation:
 #   baseline
-#   bon                (canonical, fixed cfg/variant)         ← reference
-#   bon_actdiff_cfg    (cfg axis only)                        ← budget BoN+ActDiff
-#   bon_actdiff_full   (cfg × prompt)                         ← full BoN+ActDiff
-#   sop                (canonical, fixed cfg/variant)         ← reference
-#   sop_actdiff_cfg    (cfg axis at branching)                ← budget SoP+ActDiff
-#   sop_actdiff_full   (cfg × prompt at branching)            ← full SoP+ActDiff
-#   smc                (canonical particles, fixed cfg)       ← reference
-#   smc_actdiff_cfg    (cfg axis at resample)                 ← budget SMC+ActDiff
-#   smc_actdiff_full   (cfg × prompt at resample)             ← full SMC+ActDiff
-#   bon_mcts           (full ActDiff = prescreen + MCTS refine)← upper-bound ref
+#   bon                (canonical, fixed cfg/variant)         <- reference
+#   bon_actdiff_cfg    (cfg axis only)                        <- budget BoN+ActDiff
+#   bon_actdiff_full   (cfg x prompt)                         <- full BoN+ActDiff
+#   sop                (canonical, fixed cfg/variant)         <- reference
+#   sop_actdiff_cfg    (cfg axis at branching)                <- budget SoP+ActDiff
+#   sop_actdiff_full   (cfg x prompt at branching)            <- full SoP+ActDiff
+#   smc                (canonical particles, fixed cfg)       <- reference
+#   smc_actdiff_cfg    (cfg axis at resample)                 <- budget SMC+ActDiff
+#   smc_actdiff_full   (cfg x prompt at resample)             <- full SMC+ActDiff
+#   bon_mcts           (full ActDiff = prescreen + MCTS refine)<- upper-bound ref
 #
 # Cross-product runs:
-#   backend  ∈ { sid, senseflow_large, sd35_base, flux_schnell-via-other-suite }
-#   reward   ∈ { composite_hpsv3_ir, composite_all4 }
+#   backend  in { sid, senseflow_large, sd35_base, flux_schnell-via-other-suite }
+#   reward   in { composite_hpsv3_ir, composite_all4 }
 #
-# Each (backend, reward) combination is a separate submit — override via
-# `-p backend=… -p search_reward=…`.  Defaults below are sid × composite_hpsv3_ir.
+# Each (backend, reward) combination is a separate submit -- override via
+# `-p backend=... -p search_reward=...`.  Defaults below are sid x composite_hpsv3_ir.
 #
 # Output: /mnt/data/v-yigu/all_method_ablations/{run_tag}/run_*/
 #   {baseline, bon, bon_actdiff_*, sop, sop_actdiff_*, bon_mcts}/...
@@ -80,14 +80,14 @@ search:
       - export HUGGING_FACE_HUB_TOKEN={hf_token}
       - export NCCL_ASYNC_ERROR_HANDLING=0
       - export NCCL_P2P_LEVEL=NVL
-      # ── Sampling env ───────────────────────────────────────────────────────
+      # ?? Sampling env ----
       - source /opt/conda/etc/profile.d/conda.sh
       - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
       - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "datasets>=2.19.0"
-      # ── Cache + preload weights ──────────────────────────────────────────
+      # ?? Cache + preload weights ----
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
@@ -97,7 +97,7 @@ search:
       - export ALL_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large domiso/SenseFlow'
       - for repo in $$ALL_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo" || ( echo "FATAL prefetch failed for $$repo"; exit 1 ); done
       - for repo in $$ALL_REPOS; do dir="$$HF_HOME/hub/models--$$(echo $$repo | sed 's|/|--|g')"; if ! ls $$dir/snapshots/*/* >/dev/null 2>&1; then echo "FATAL cache verify failed for $$repo (looked in $$dir)"; exit 1; fi; echo "verify_OK $$repo"; done
-      # ── Reward env + ImageReward fix-up ────────────────────────────────────
+      # ?? Reward env + ImageReward fix-up ----
       - export REWARD_ENV_NAME=reward
       - export REWARD_ENV_SENTINEL_DIR=/tmp
       - CONDA_BASE=/opt/conda REWARD_ENV_NAME="$$REWARD_ENV_NAME" REWARD_ENV_SENTINEL_DIR="$$REWARD_ENV_SENTINEL_DIR" bash setup_reward_env.sh
@@ -109,7 +109,7 @@ search:
       - $$REWARD_PY -m pip install --no-cache-dir --no-deps "datasets" "wandb" || true
       - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; fi'
       - $$REWARD_PY -c "import ImageReward; print('[verify] ImageReward', ImageReward.__file__)"
-      # ── Reward server (ImageReward only — light search reward) ────────────
+      # ?? Reward server (ImageReward only -- light search reward) ----
       - export REWARD_BACKENDS_SERVER='imagereward'
       - export STAGE_REWARD_WEIGHTS_LOCAL=1
       - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
@@ -128,31 +128,31 @@ search:
       - if [ "$$HEALTH_OK" != "1" ]; then echo "Reward server failed to become healthy"; tail -n 400 "$$REWARD_SERVER_LOG"; exit 1; fi
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
-      # ── Sampling restricted to GPUs 1..N-1 (server owns GPU 0) ────────────
+      # ?? Sampling restricted to GPUs 1..N-1 (server owns GPU 0) ----
       - export SAMPLING_GPUS=$$((${GPUS} - 1))
       - export CUDA_VISIBLE_DEVICES_SAMPLE=$$(seq -s, 1 $$SAMPLING_GPUS)
       - export NUM_GPUS=$$SAMPLING_GPUS
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
-      # ── Bank overrides ────────────────────────────────────────────────────
+      # ?? Bank overrides ----
       - export BON_MCTS_NEG_BANK_NEG="{neg_bank}"
       - export BON_MCTS_SIGMA_BANK_SIGMA="{sigma_bank}"
       - export BON_MCTS_NEG_BANK_AXES="{neg_bank}"
       - export BON_MCTS_SIGMA_BANK_AXES="{sigma_bank}"
-      # ── Run the single-pass ablation ──────────────────────────────────────
+      # ?? Run the single-pass ablation ----
       - export BACKEND={backend}
       - export N_PROMPTS={n_prompts}
       - export SEED={seed}
       - export SEARCH_REWARD={search_reward}
       - export METHODS="{methods}"
-      # Compute-matched BoN: NFE = (N_SEEDS + N_SIMS) × STEPS
-      # With sim_alloc=split, TOPK divides N_SIMS — it does NOT multiply NFE.
+      # Compute-matched BoN: NFE = (N_SEEDS + N_SIMS) x STEPS
+      # With sim_alloc=split, TOPK divides N_SIMS -- it does NOT multiply NFE.
       # sid/senseflow/flux 4-step: 16 + 60 = 76 trajectory-equivalents.
       # sd35_base    28-step:      16 + 120 = 136 trajectory-equivalents.
       - 'if [ "{backend}" = "sd35_base" ]; then export BON_N={bon_n_long}; else export BON_N={bon_n_short}; fi'
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
       - bash run_all_method_ablations.sh
-      # ── Auto-emit synergy plot ────────────────────────────────────────────
+      # ?? Auto-emit synergy plot ----
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir matplotlib || true
       - /opt/conda/envs/ptca/bin/python plot_synergy_2x2.py --summary "$$RUN_ROOT"/run_*/summary.tsv --metric eval_ir || /opt/conda/envs/ptca/bin/python plot_synergy_2x2.py --summary "$$RUN_ROOT"/summary.tsv --metric eval_ir || true
 

@@ -46,18 +46,18 @@ search:
       - export SID_FORCE_WANDB_STUB=1
       - export WANDB_DISABLED=true
       - export TOKENIZERS_PARALLELISM=false
-      # ── Paths & HF auth ────────────────────────────────────────────────────
+      # ?? Paths & HF auth ----
       - export PATH=/home/aiscuser/.local/bin:$$PATH
       - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
       - export HF_TOKEN={hf_token}
       - export HUGGING_FACE_HUB_TOKEN={hf_token}
       - unset HF_HUB_OFFLINE TRANSFORMERS_OFFLINE || true
-      # ── Build the isolated `reward` conda env (transformers==4.45.2) ───────
+      # ?? Build the isolated `reward` conda env (transformers==4.45.2) ----
       - source /opt/conda/etc/profile.d/conda.sh
       - CONDA_BASE=/opt/conda REWARD_ENV_NAME=reward bash setup_reward_env.sh
       - export REWARD_PY=/opt/conda/envs/reward/bin/python
       - $$REWARD_PY -c "import torch, transformers; print('reward env torch='+torch.__version__, 'transformers='+transformers.__version__); import hpsv3, hpsv2, ImageReward; print('reward env backends import OK')"
-      # ── Cache dirs & symlinks ──────────────────────────────────────────────
+      # ?? Cache dirs & symlinks ----
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
       - export CLIP_CACHE_DIR=/mnt/data/v-yigu/model_cache/clip
@@ -65,10 +65,10 @@ search:
       - mkdir -p /home/aiscuser/.cache
       - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
-      # ── Preload reward model weights (use reward env's python) ────────────
+      # ?? Preload reward model weights (use reward env's python) ----
       - export REWARD_BACKENDS='{eval_backends}'
       - $$REWARD_PY preload_reward_models.py
-      # ── Run eval, sharded (method × backend) across GPUs ─────────────────
+      # ?? Run eval, sharded (method x backend) across GPUs ----
       - export METHOD_PARENT={method_parent}
       - export EVAL_DEVICE={eval_device}
       - export EVAL_BACKENDS='{eval_backends}'

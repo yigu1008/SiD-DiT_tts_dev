@@ -1,7 +1,7 @@
 description: senseflow-smc-expansion-imagereward
 
 # Variant-expansion DAS-SMC evaluation for SenseFlow-large on ImageReward.
-# Enables K→K·M fan-out at resample points over a bank of variants (CFG is not
+# Enables K->K*M fan-out at resample points over a bank of variants (CFG is not
 # used by SenseFlow, so the expansion bank only varies variant index).
 
 target:
@@ -109,7 +109,7 @@ search:
       - export RESAMPLE_START_FRAC={resample_start_frac}
       - export SMC_CFG_SCALE={smc_cfg_scale}
       - export SMC_VARIANT_IDX={smc_variant_idx}
-      # ── SMC variant-expansion knobs ──────────────────────────────────────
+      # ?? SMC variant-expansion knobs ----
       - export SMC_VARIANT_EXPANSION={smc_variant_expansion}
       - export SMC_EXPANSION_VARIANTS='{smc_expansion_variants}'
       - export SMC_EXPANSION_CFGS='{smc_expansion_cfgs}'
@@ -192,8 +192,8 @@ search:
       values: [ 0.0 ]
     - name: smc_variant_idx
       values: [ 0 ]
-    # ── Variant-expansion SMC knobs ──
-    # SenseFlow does not use CFG — the expansion bank only varies variant index
+    # ?? Variant-expansion SMC knobs ??
+    # SenseFlow does not use CFG -- the expansion bank only varies variant index
     # (cfgs/cs columns are effectively unused, but we still pass a single value).
     - name: smc_variant_expansion
       values: [ 1 ]

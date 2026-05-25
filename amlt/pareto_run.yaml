@@ -13,8 +13,8 @@ description: pareto-run
 #
 # Output: /mnt/data/v-yigu/pareto/{run_tag}/
 #   <method>/...               (per-method outputs)
-#   summary.tsv                (per-method means × 4 rewards)
-#   pareto.png                 (2×3 grid of pairwise Pareto frontiers)
+#   summary.tsv                (per-method means x 4 rewards)
+#   pareto.png                 (2x3 grid of pairwise Pareto frontiers)
 #   pareto_summary.csv         (per-method means + 4-D hypervolume)
 
 target:
@@ -82,7 +82,7 @@ search:
       - export ALL_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large domiso/SenseFlow yuvalkirstain/PickScore_v1'
       - for repo in $$ALL_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo" || ( echo "FATAL prefetch failed for $$repo"; exit 1 ); done
       - for repo in $$ALL_REPOS; do dir="$$HF_HOME/hub/models--$$(echo $$repo | sed 's|/|--|g')"; if ! ls $$dir/snapshots/*/* >/dev/null 2>&1; then echo "FATAL cache verify failed for $$repo (looked in $$dir)"; exit 1; fi; echo "verify_OK $$repo"; done
-      # ── Reward env + ImageReward fix-up ────────────────────────────────────
+      # ?? Reward env + ImageReward fix-up ----
       - export REWARD_ENV_NAME=reward
       - export REWARD_ENV_SENTINEL_DIR=/tmp
       - CONDA_BASE=/opt/conda REWARD_ENV_NAME="$$REWARD_ENV_NAME" REWARD_ENV_SENTINEL_DIR="$$REWARD_ENV_SENTINEL_DIR" bash setup_reward_env.sh
@@ -94,7 +94,7 @@ search:
       - $$REWARD_PY -m pip install --no-cache-dir --no-deps "datasets" "wandb" || true
       - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; fi'
       - $$REWARD_PY -c "import ImageReward; print('[verify] ImageReward', ImageReward.__file__)"
-      # ── Reward server with all 4 backends ──────────────────────────────────
+      # ?? Reward server with all 4 backends ----
       - export REWARD_BACKENDS_SERVER='imagereward hpsv3 hpsv2 pickscore'
       - export STAGE_REWARD_WEIGHTS_LOCAL=1
       - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local

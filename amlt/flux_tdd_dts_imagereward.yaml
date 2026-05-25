@@ -1,9 +1,9 @@
 description: flux-tdd-dts-imagereward
 
 # Standard DTS / DTS* on TDD-distilled FLUX.1-dev (RED-AIGC TDD LoRA).
-# Recipe: load FLUX.1-dev → load FLUX.1-dev_tdd_adv_lora_weights.safetensors
-# → fuse_lora(scale=0.125). 8 inference steps, real CFG (~2.0),
-# max_sequence_length=256. M=32 → 256 tree-NFE/prompt (matches schnell M=64×4).
+# Recipe: load FLUX.1-dev -> load FLUX.1-dev_tdd_adv_lora_weights.safetensors
+# -> fuse_lora(scale=0.125). 8 inference steps, real CFG (~2.0),
+# max_sequence_length=256. M=32 -> 256 tree-NFE/prompt (matches schnell M=64x4).
 
 target:
   service: sing
@@ -49,7 +49,7 @@ search:
       - unset PYTHONPATH || true
       - export SID_FORCE_WANDB_STUB=1
       - export WANDB_DISABLED=true
-      # ── Paths ──────────────────────────────────────────────────────────────
+      # ?? Paths ----
       - export PATH=/home/aiscuser/.local/bin:$$PATH
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
@@ -60,7 +60,7 @@ search:
       - export AZFUSE_USE_FUSE=0
       - export NCCL_ASYNC_ERROR_HANDLING=0
       - export NCCL_P2P_LEVEL=NVL
-      # ── Install deps ───────────────────────────────────────────────────────
+      # ?? Install deps ----
       - source /opt/conda/etc/profile.d/conda.sh
       - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
       - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
@@ -71,7 +71,7 @@ search:
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
-      # ── Cache dirs & symlinks ──────────────────────────────────────────────
+      # ?? Cache dirs & symlinks ----
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
@@ -79,14 +79,14 @@ search:
       - mkdir -p /home/aiscuser/.cache
       - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
-      # ── Preload reward + FLUX.1-dev base + RED-AIGC/TDD LoRA ──────────────
+      # ?? Preload reward + FLUX.1-dev base + RED-AIGC/TDD LoRA ----
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
       - export HF_HUB_ENABLE_HF_TRANSFER=0
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-dev', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('FLUX.1-dev cache OK')"
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import hf_hub_download; import os; p = hf_hub_download(repo_id='RED-AIGC/TDD', filename='FLUX.1-dev_tdd_adv_lora_weights.safetensors', token=os.environ.get('HF_TOKEN'), resume_download=True); print('TDD LoRA cache OK:', p)"
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
-      # ── Run knobs ──────────────────────────────────────────────────────────
+      # ?? Run knobs ----
       - export OUT_ROOT=/mnt/data/v-yigu/hpsv2_all_models_runs/{run_tag}
       - export PROMPT_FILE=./hpsv2_subset.txt
       - export START_INDEX=0
@@ -97,17 +97,17 @@ search:
       - export N_VARIANTS={n_variants}
       - export CFG_SCALES='{cfg_scales}'
       - export METHODS='{methods}'
-      # ── Per-method knobs ──────────────────────────────────────────────────
-      # Targeting ≈256 NFE/prompt at STEPS=8 to roughly match DTS (M=32×8).
+      # ?? Per-method knobs ----
+      # Targeting ~=256 NFE/prompt at STEPS=8 to roughly match DTS (M=32x8).
       # NFE accounting:
       #   baseline    : STEPS                                      = 8
-      #   bon         : BON_N × STEPS                              = 32×8  = 256
-      #   beam        : BEAM_WIDTH × |cfgs| × N_VARIANTS × STEPS   = 1×1×32×8 = 256
-      #   greedy      : N_VARIANTS × STEPS                         = 32×8 = 256
-      #   mcts        : N_SIMS × STEPS                             = 32×8 = 256
-      #   smc         : SMC_K × STEPS                              = 32×8 = 256
-      #   bon_mcts    : (N_SEEDS+N_SIMS) × STEPS  (topk=1,full)    ≈ (16+16)×8 = 256
-      #   dts/dts*    : DTS_M_ITER × STEPS                         = 32×8 = 256
+      #   bon         : BON_N x STEPS                              = 32x8  = 256
+      #   beam        : BEAM_WIDTH x |cfgs| x N_VARIANTS x STEPS   = 1x1x32x8 = 256
+      #   greedy      : N_VARIANTS x STEPS                         = 32x8 = 256
+      #   mcts        : N_SIMS x STEPS                             = 32x8 = 256
+      #   smc         : SMC_K x STEPS                              = 32x8 = 256
+      #   bon_mcts    : (N_SEEDS+N_SIMS) x STEPS  (topk=1,full)    ~= (16+16)x8 = 256
+      #   dts/dts*    : DTS_M_ITER x STEPS                         = 32x8 = 256
       - export BON_N={bon_n}
       - export BEAM_WIDTH={beam_width}
       - export N_SIMS={n_sims}
@@ -125,25 +125,25 @@ search:
       - export PRECOMPUTE_REWRITES=0
       - export SAVE_BEST_IMAGES=1
       - export SAVE_IMAGES=0
-      # ── DTS knobs ──────────────────────────────────────────────────────────
-      # M=32 × STEPS=8 = 256 tree-NFE/prompt (matches schnell at M=64×4).
+      # ?? DTS knobs ----
+      # M=32 x STEPS=8 = 256 tree-NFE/prompt (matches schnell at M=64x4).
       - export DTS_M_ITER={dts_m_iter}
       - export DTS_LAMBDA={dts_lambda}
       - export DTS_PW_C={dts_pw_c}
       - export DTS_PW_ALPHA={dts_pw_alpha}
       - export DTS_C_UCT={dts_c_uct}
       # Same flow-matching path as schnell (no euler_sampler / x0_sampler set
-      # in the tdd_flux backend cfg) → re-noising provides natural per-step
+      # in the tdd_flux backend cfg) -> re-noising provides natural per-step
       # stochasticity, so DTS branches without extra SDE noise. Override to
       # >0 if branch diversity collapses in your run.
       - export DTS_SDE_NOISE_SCALE={dts_sde_noise_scale}
       - export DTS_CFG_BANK=''
-      # ── Final pin ──────────────────────────────────────────────────────────
+      # ?? Final pin ----
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets, transformers; print('final pin ok', 'transformers='+md.version('transformers'), md.version('ftfy'), md.version('regex'), md.version('xxhash'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'))"
-      # ── Run ────────────────────────────────────────────────────────────────
+      # ?? Run ----
       - bash hpsv2_flux_schnell_ddp_suite.sh
 
     submit_args:
@@ -168,13 +168,13 @@ search:
       values: [ "imagereward hpsv2 pickscore" ]
     - name: eval_backends
       values: [ "imagereward hpsv2 pickscore" ]
-    # Shared knobs (greedy uses N_VARIANTS; beam multiplies by N_VARIANTS × |cfgs|).
+    # Shared knobs (greedy uses N_VARIANTS; beam multiplies by N_VARIANTS x |cfgs|).
     # N_VARIANTS=32 makes greedy hit 256 NFE; BEAM_WIDTH=1 then keeps beam at 256.
     - name: n_variants
       values: [ 32 ]
     - name: cfg_scales
       values: [ "2.0" ]
-    # Per-method NFE knobs — targeted at ~256 NFE/prompt (matches DTS M=32×8).
+    # Per-method NFE knobs -- targeted at ~256 NFE/prompt (matches DTS M=32x8).
     - name: bon_n
       values: [ 32 ]
     - name: beam_width

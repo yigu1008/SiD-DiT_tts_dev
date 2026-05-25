@@ -1,8 +1,8 @@
 description: all-mcts-ablations
 
 # Single AMLT job that runs ALL MCTS-related ablations sequentially:
-#   1. MCTS hyperparam ablation  (N_SIMS, TOPK, UCB_C × 2 backends × 4 seeds)
-#   2. Qwen rewrite ablation     (Qwen3-4B vs Qwen3-8B × 2 backends × 4 seeds)
+#   1. MCTS hyperparam ablation  (N_SIMS, TOPK, UCB_C x 2 backends x 4 seeds)
+#   2. Qwen rewrite ablation     (Qwen3-4B vs Qwen3-8B x 2 backends x 4 seeds)
 #
 # One env build, one reward server boot, one cluster instance.
 # Total ~80 sequential cells. Estimated wallclock: ~13 h.
@@ -61,14 +61,14 @@ search:
       - export HUGGING_FACE_HUB_TOKEN={hf_token}
       - export NCCL_ASYNC_ERROR_HANDLING=0
       - export NCCL_P2P_LEVEL=NVL
-      # ── Sampling env ───────────────────────────────────────────────────────
+      # ?? Sampling env ----
       - source /opt/conda/etc/profile.d/conda.sh
       - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
       - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "datasets>=2.19.0"
-      # ── Cache + preload (SD3.5 + senseflow + BOTH Qwen models) ────────────
+      # ?? Cache + preload (SD3.5 + senseflow + BOTH Qwen models) ----
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
@@ -77,11 +77,11 @@ search:
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
       # Qwen3-7B doesn't exist on HF; the lineup is 0.6/1.7/4/8/14/32B. Use 8B.
       - export ALL_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large domiso/SenseFlow Qwen/Qwen3-4B Qwen/Qwen3-8B'
-      # No cache_dir kwarg → HF uses HF_HOME natively (writes to $HF_HOME/hub/),
+      # No cache_dir kwarg -> HF uses HF_HOME natively (writes to $HF_HOME/hub/),
       # which is the path transformers/diffusers read under HF_HUB_OFFLINE=1.
       - for repo in $$ALL_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo" || ( echo "FATAL prefetch failed for $$repo"; exit 1 ); done
       - for repo in $$ALL_REPOS; do dir="$$HF_HOME/hub/models--$$(echo $$repo | sed 's|/|--|g')"; if ! ls $$dir/snapshots/*/* >/dev/null 2>&1; then echo "FATAL cache verify failed for $$repo (looked in $$dir)"; exit 1; fi; echo "verify_OK $$repo"; done
-      # ── Reward env + ImageReward fix-up cascade ────────────────────────────
+      # ?? Reward env + ImageReward fix-up cascade ----
       - export REWARD_ENV_NAME=reward
       - export REWARD_ENV_SENTINEL_DIR=/tmp
       - CONDA_BASE=/opt/conda REWARD_ENV_NAME="$$REWARD_ENV_NAME" REWARD_ENV_SENTINEL_DIR="$$REWARD_ENV_SENTINEL_DIR" bash setup_reward_env.sh
@@ -93,7 +93,7 @@ search:
       - $$REWARD_PY -m pip install --no-cache-dir --no-deps "datasets" "wandb" || true
       - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; fi'
       - $$REWARD_PY -c "import ImageReward; print('[verify] ImageReward', ImageReward.__file__)"
-      # ── Reward server (HPSv3 + ImageReward) ────────────────────────────────
+      # ?? Reward server (HPSv3 + ImageReward) ----
       - export REWARD_BACKENDS_SERVER='hpsv3 imagereward'
       - export STAGE_REWARD_WEIGHTS_LOCAL=1
       - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
@@ -117,7 +117,7 @@ search:
       - export NUM_GPUS=$$SAMPLING_GPUS
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
-      # ── Run BOTH ablations in one bash ─────────────────────────────────────
+      # ?? Run BOTH ablations in one bash ----
       - export ABLATIONS="{ablations}"
       - export BACKENDS="{backends}"
       - export N_PROMPTS={n_prompts}

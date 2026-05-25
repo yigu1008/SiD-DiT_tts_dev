@@ -1,7 +1,7 @@
 description: flux-schnell-smc-expansion-imagereward
 
 # Variant-expansion DAS-SMC evaluation for FLUX.1-schnell on ImageReward.
-# Enables K→K·M fan-out at resample points over a bank of (variant, guidance).
+# Enables K->K*M fan-out at resample points over a bank of (variant, guidance).
 
 target:
   service: sing
@@ -101,7 +101,7 @@ search:
       - export SMC_GAMMA={smc_gamma}
       - export SMC_GUIDANCE_SCALE={smc_guidance_scale}
       - export SMC_CHUNK={smc_chunk}
-      # ── SMC variant-expansion knobs ──────────────────────────────────────
+      # ?? SMC variant-expansion knobs ----
       - export SMC_VARIANT_EXPANSION={smc_variant_expansion}
       - export SMC_EXPANSION_VARIANTS='{smc_expansion_variants}'
       - export SMC_EXPANSION_GUIDANCES='{smc_expansion_guidances}'
@@ -172,7 +172,7 @@ search:
       values: [ 0.0 ]
     - name: smc_chunk
       values: [ 4 ]
-    # ── Variant-expansion SMC knobs ──
+    # ?? Variant-expansion SMC knobs ??
     # FLUX-schnell runs with guidance_scale near 0 (distilled); exposing a few
     # values still exercises the action bank while keeping sampling stable.
     - name: smc_variant_expansion

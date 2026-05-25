@@ -1,7 +1,7 @@
 description: sd35-base-smc-expansion-imagereward
 
 # Variant-expansion DAS-SMC evaluation for SD3.5-large base on ImageReward.
-# Enables K→K·M fan-out at resample points over a bank of (variant, cfg).
+# Enables K->K*M fan-out at resample points over a bank of (variant, cfg).
 
 target:
   service: sing
@@ -109,7 +109,7 @@ search:
       - export RESAMPLE_START_FRAC={resample_start_frac}
       - export SMC_CFG_SCALE={smc_cfg_scale}
       - export SMC_VARIANT_IDX={smc_variant_idx}
-      # ── SMC variant-expansion knobs ──────────────────────────────────────
+      # ?? SMC variant-expansion knobs ----
       - export SMC_VARIANT_EXPANSION={smc_variant_expansion}
       - export SMC_EXPANSION_VARIANTS='{smc_expansion_variants}'
       - export SMC_EXPANSION_CFGS='{smc_expansion_cfgs}'
@@ -192,7 +192,7 @@ search:
       values: [ 4.5 ]
     - name: smc_variant_idx
       values: [ 0 ]
-    # ── Variant-expansion SMC knobs ──
+    # ?? Variant-expansion SMC knobs ??
     - name: smc_variant_expansion
       values: [ 1 ]
     - name: smc_expansion_variants

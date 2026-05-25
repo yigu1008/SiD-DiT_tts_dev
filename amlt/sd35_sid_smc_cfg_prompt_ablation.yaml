@@ -3,7 +3,7 @@ description: sd35-sid-smc-cfg-prompt-ablation
 # 2x2 ablation on SD3.5-SID + SMC:
 #   axis 1: cfg search bank ("1.0" = OFF, "1.5 2.0 2.5" = ON)
 #   axis 2: prompt rewrite (USE_QWEN=0 = OFF, =1 = ON)
-# Cartesian product → 4 trials. ImageReward primary; HPSv2/PickScore as eval.
+# Cartesian product -> 4 trials. ImageReward primary; HPSv2/PickScore as eval.
 
 target:
   service: sing
@@ -49,7 +49,7 @@ search:
       - unset PYTHONPATH || true
       - export SID_FORCE_WANDB_STUB=1
       - export WANDB_DISABLED=true
-      # ── Paths ──────────────────────────────────────────────────────────────
+      # ?? Paths ----
       - export PATH=/home/aiscuser/.local/bin:$$PATH
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
@@ -60,7 +60,7 @@ search:
       - export AZFUSE_USE_FUSE=0
       - export NCCL_ASYNC_ERROR_HANDLING=0
       - export NCCL_P2P_LEVEL=NVL
-      # ── Install deps ───────────────────────────────────────────────────────
+      # ?? Install deps ----
       - source /opt/conda/etc/profile.d/conda.sh
       - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
       - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
@@ -71,7 +71,7 @@ search:
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, xxhash, clip, ftfy, regex, pandas, pyarrow, datasets; from timm.data import ImageNetInfo; print('reward deps ok', md.version('xxhash'), md.version('ftfy'), md.version('regex'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'), getattr(clip, '__file__', 'ok'), ImageNetInfo.__name__)"
-      # ── Cache dirs & symlinks ──────────────────────────────────────────────
+      # ?? Cache dirs & symlinks ----
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
@@ -79,15 +79,15 @@ search:
       - mkdir -p /home/aiscuser/.cache
       - ln -sfn /mnt/data/v-yigu/model_cache/clip /home/aiscuser/.cache/clip || true
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
-      # ── Preload reward + SD3.5-SID weights ────────────────────────────────
+      # ?? Preload reward + SD3.5-SID weights ----
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('YGu1998/SiD-DiT-SD3.5-large', token=os.environ.get('HF_TOKEN')); print('SD3.5-SID cache OK')"
       - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', token=os.environ.get('HF_TOKEN')); print('Qwen cache OK')"; fi
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
-      # ── Resolve CFG bank from cfg_on flag ──────────────────────────────────
+      # ?? Resolve CFG bank from cfg_on flag ----
       - if [ {cfg_on} = 1 ]; then export CFG_SCALES='1.5 2.0 2.5'; else export CFG_SCALES='1.0'; fi
-      # ── Run knobs ──────────────────────────────────────────────────────────
+      # ?? Run knobs ----
       - export OUT_ROOT=/mnt/data/v-yigu/hpsv2_all_models_runs/sd35_sid_smc_cfgprompt_ablation/cfg{cfg_on}_prompt{use_qwen}
       - export PROMPT_FILE=./hpsv2_subset.txt
       - export START_INDEX=0
@@ -121,12 +121,12 @@ search:
       - export REWRITES_FILE=/mnt/data/v-yigu/hpsv2_rewrite_cache/sd35_sid_smc_cfgprompt_ablation_subset.json
       - export SAVE_BEST_IMAGES=1
       - export SAVE_IMAGES=0
-      # ── Final pin ──────────────────────────────────────────────────────────
+      # ?? Final pin ----
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
       - /opt/conda/envs/ptca/bin/python -c "import importlib.metadata as md, ftfy, regex, xxhash, pandas, pyarrow, datasets, transformers; print('final pin ok', 'transformers='+md.version('transformers'), md.version('ftfy'), md.version('regex'), md.version('xxhash'), md.version('pandas'), md.version('pyarrow'), md.version('datasets'))"
-      # ── Run ────────────────────────────────────────────────────────────────
+      # ?? Run ----
       - bash hpsv2_sd35_sid_ddp_suite.sh
 
     submit_args:
@@ -147,7 +147,7 @@ search:
       values: [ "imagereward hpsv2 pickscore" ]
     - name: eval_backends
       values: [ "imagereward hpsv2 pickscore" ]
-    # ── Ablation axes (2x2 = 4 trials) ──
+    # ?? Ablation axes (2x2 = 4 trials) ??
     - name: cfg_on
       values: [ 0, 1 ]
     - name: use_qwen

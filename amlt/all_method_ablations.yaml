@@ -5,15 +5,15 @@ description: all-method-ablations
 #
 # Methods (6):
 #   baseline                  : no-search reference
-#   greedy_prompt             : step-by-step argmax over rewrites              — #8
-#   bon_mcts                  : current ActDiff (Ours) — anchor
+#   greedy_prompt             : step-by-step argmax over rewrites              -- #8
+#   bon_mcts                  : current ActDiff (Ours) -- anchor
 #   bon_mcts_neg              : negative-prompt branching (prescreen axis)
 #   bon_mcts_sigma            : sigma-schedule perturbation (prescreen axis)
 #   bon_mcts_axes             : neg + sigma merged
 #
 # Key comparisons:
-#   - greedy_prompt vs (rewrite-using cell in synergy run) → does MCTS-over-prompt help?
-#   - bon_mcts vs bon_mcts_{neg,sigma,axes} → do the new action axes help?
+#   - greedy_prompt vs (rewrite-using cell in synergy run) -> does MCTS-over-prompt help?
+#   - bon_mcts vs bon_mcts_{neg,sigma,axes} -> do the new action axes help?
 #
 # Output: /mnt/data/v-yigu/all_method_ablations/{run_tag}/run_*/
 #   {baseline, greedy_prompt, bon_mcts, bon_mcts_static_cfg, ... bon_mcts_axes}/...
@@ -69,14 +69,14 @@ search:
       - export HUGGING_FACE_HUB_TOKEN={hf_token}
       - export NCCL_ASYNC_ERROR_HANDLING=0
       - export NCCL_P2P_LEVEL=NVL
-      # ── Sampling env ───────────────────────────────────────────────────────
+      # ?? Sampling env ----
       - source /opt/conda/etc/profile.d/conda.sh
       - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
       - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "datasets>=2.19.0"
-      # ── Cache + preload weights ──────────────────────────────────────────
+      # ?? Cache + preload weights ----
       - export NUM_GPUS=${GPUS}
       - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
       - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
@@ -86,7 +86,7 @@ search:
       - export ALL_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large domiso/SenseFlow'
       - for repo in $$ALL_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo" || ( echo "FATAL prefetch failed for $$repo"; exit 1 ); done
       - for repo in $$ALL_REPOS; do dir="$$HF_HOME/hub/models--$$(echo $$repo | sed 's|/|--|g')"; if ! ls $$dir/snapshots/*/* >/dev/null 2>&1; then echo "FATAL cache verify failed for $$repo (looked in $$dir)"; exit 1; fi; echo "verify_OK $$repo"; done
-      # ── Reward env + ImageReward fix-up ────────────────────────────────────
+      # ?? Reward env + ImageReward fix-up ----
       - export REWARD_ENV_NAME=reward
       - export REWARD_ENV_SENTINEL_DIR=/tmp
       - CONDA_BASE=/opt/conda REWARD_ENV_NAME="$$REWARD_ENV_NAME" REWARD_ENV_SENTINEL_DIR="$$REWARD_ENV_SENTINEL_DIR" bash setup_reward_env.sh
@@ -98,7 +98,7 @@ search:
       - $$REWARD_PY -m pip install --no-cache-dir --no-deps "datasets" "wandb" || true
       - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; fi'
       - $$REWARD_PY -c "import ImageReward; print('[verify] ImageReward', ImageReward.__file__)"
-      # ── Reward server (ImageReward only — light search reward) ────────────
+      # ?? Reward server (ImageReward only -- light search reward) ----
       - export REWARD_BACKENDS_SERVER='imagereward'
       - export STAGE_REWARD_WEIGHTS_LOCAL=1
       - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
@@ -117,18 +117,18 @@ search:
       - if [ "$$HEALTH_OK" != "1" ]; then echo "Reward server failed to become healthy"; tail -n 400 "$$REWARD_SERVER_LOG"; exit 1; fi
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
-      # ── Sampling restricted to GPUs 1..N-1 (server owns GPU 0) ────────────
+      # ?? Sampling restricted to GPUs 1..N-1 (server owns GPU 0) ----
       - export SAMPLING_GPUS=$$((${GPUS} - 1))
       - export CUDA_VISIBLE_DEVICES_SAMPLE=$$(seq -s, 1 $$SAMPLING_GPUS)
       - export NUM_GPUS=$$SAMPLING_GPUS
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
-      # ── Bank overrides ────────────────────────────────────────────────────
+      # ?? Bank overrides ----
       - export BON_MCTS_NEG_BANK_NEG="{neg_bank}"
       - export BON_MCTS_SIGMA_BANK_SIGMA="{sigma_bank}"
       - export BON_MCTS_NEG_BANK_AXES="{neg_bank}"
       - export BON_MCTS_SIGMA_BANK_AXES="{sigma_bank}"
-      # ── Run the single-pass ablation ──────────────────────────────────────
+      # ?? Run the single-pass ablation ----
       - export BACKEND={backend}
       - export N_PROMPTS={n_prompts}
       - export SEED={seed}
@@ -136,7 +136,7 @@ search:
       - export METHODS="{methods}"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
       - bash run_all_method_ablations.sh
-      # ── Auto-emit synergy plot ────────────────────────────────────────────
+      # ?? Auto-emit synergy plot ----
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir matplotlib || true
       # Plots: write to RUN_ROOT and archive to a timestamped, never-overwritten
       # location so successive runs don't clobber.
@@ -149,9 +149,9 @@ search:
       - ls -la "$$PLOT_ARCHIVE_DIR"/all_method_{run_tag}_$$PLOT_STAMP*.png 2>/dev/null || true
       # Step-by-step ActDiff tree visualizations for 3 cherry-picked prompts.
       - export TREE_PROMPTS="{tree_prompts}"
-      - for pi in $$TREE_PROMPTS; do /opt/conda/envs/ptca/bin/python plot_actdiff_tree.py --mode real --run_root "$$RUN_ROOT" --method bon_mcts --prompt_index $$pi --out_dir "$$RUN_ROOT/trees" --title "ActDiff trace — all-method / bon_mcts / prompt #$$pi" 2>/dev/null || true; done
+      - for pi in $$TREE_PROMPTS; do /opt/conda/envs/ptca/bin/python plot_actdiff_tree.py --mode real --run_root "$$RUN_ROOT" --method bon_mcts --prompt_index $$pi --out_dir "$$RUN_ROOT/trees" --title "ActDiff trace -- all-method / bon_mcts / prompt #$$pi" 2>/dev/null || true; done
       - 'cp -f "$$RUN_ROOT"/trees/*.png "$$PLOT_ARCHIVE_DIR/" 2>/dev/null || true'
-      - echo "[all-method] step-by-step trees → $$RUN_ROOT/trees/"
+      - echo "[all-method] step-by-step trees -> $$RUN_ROOT/trees/"
 
     submit_args:
       env:
@@ -176,7 +176,7 @@ search:
     - name: methods
       # Default: baseline + anchor + greedy comparator + 3 action-axis variants.
       # The 2x2 synergy cells (static_cfg / adaptive_cfg / rewrite_only / full)
-      # live in synergy_run.yaml — submit that separately for the 1+1>2 figure.
+      # live in synergy_run.yaml -- submit that separately for the 1+1>2 figure.
       values: [ "baseline greedy_prompt bon_mcts bon_mcts_neg bon_mcts_sigma bon_mcts_axes" ]
     - name: neg_bank
       values: [ "||low quality, blurry, lowres, jpeg artifacts||bad anatomy, deformed, mutated, extra limbs||watermark, signature, text, frame, cropped" ]

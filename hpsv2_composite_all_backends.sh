@@ -121,16 +121,19 @@ _run_one_backend() {
             suite="${SCRIPT_DIR}/hpsv2_sd35_sid_ddp_suite.sh"; suite_kind="sd35"
             export SD35_BACKEND=sid; export STEPS=4
             export BASELINE_CFG=1.0; export CFG_SCALES="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
+            export MCTS_KEY_STEP_COUNT="${MCTS_KEY_STEP_COUNT:-4}"
             unset FLUX_BACKEND || true ;;
         senseflow_large)
             suite="${SCRIPT_DIR}/hpsv2_sd35_sid_ddp_suite.sh"; suite_kind="sd35"
             export SD35_BACKEND=senseflow_large; export STEPS=4
             export BASELINE_CFG=1.0; export CFG_SCALES="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
+            export MCTS_KEY_STEP_COUNT="${MCTS_KEY_STEP_COUNT:-4}"
             unset FLUX_BACKEND || true ;;
         sd35_base)
             suite="${SCRIPT_DIR}/hpsv2_sd35_sid_ddp_suite.sh"; suite_kind="sd35"
             export SD35_BACKEND=sd35_base; export STEPS=28
             export BASELINE_CFG=4.5; export CFG_SCALES="3.5 4.0 4.5 5.0 5.5 6.0 7.0"
+            export MCTS_KEY_STEP_COUNT="${MCTS_KEY_STEP_COUNT:-8}"
             unset FLUX_BACKEND || true ;;
         flux_schnell)
             suite="${SCRIPT_DIR}/hpsv2_flux_schnell_ddp_suite.sh"; suite_kind="flux"
@@ -141,6 +144,7 @@ _run_one_backend() {
             # setting, and drop the noisy 2.25/2.5 tail where quality degrades.
             export BASELINE_GUIDANCE_SCALE=0.0; export BASELINE_CFG=0.0
             export CFG_SCALES="0.0 1.0 1.25 1.5 1.75 2.0"
+            export MCTS_KEY_STEP_COUNT="${MCTS_KEY_STEP_COUNT:-4}"
             unset SD35_BACKEND || true ;;
         *)
             echo "[composite] ERROR unknown backend '${backend}'" >&2; return 2 ;;

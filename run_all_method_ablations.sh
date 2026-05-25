@@ -103,6 +103,7 @@ case "${BACKEND}" in
         export STEPS=4; export BASELINE_CFG=1.0
         export CFG_SCALES="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
         : "${N_SIMS:=60}"; : "${BON_MCTS_N_SEEDS:=16}"; : "${BON_MCTS_TOPK:=4}"
+        : "${MCTS_KEY_STEP_COUNT:=4}"
         SUITE="${SCRIPT_DIR}/hpsv2_sd35_sid_ddp_suite.sh"
         ;;
     sd35_base)
@@ -110,6 +111,7 @@ case "${BACKEND}" in
         export STEPS=28; export BASELINE_CFG=4.5
         export CFG_SCALES="3.5 4.0 4.5 5.0 5.5 6.0 7.0"
         : "${N_SIMS:=120}"; : "${BON_MCTS_N_SEEDS:=16}"; : "${BON_MCTS_TOPK:=4}"
+        : "${MCTS_KEY_STEP_COUNT:=8}"
         SUITE="${SCRIPT_DIR}/hpsv2_sd35_sid_ddp_suite.sh"
         ;;
     *) echo "[all-method] ERROR unsupported BACKEND='${BACKEND}'" >&2; exit 1 ;;
@@ -145,7 +147,7 @@ export EVAL_ALLOW_MISSING_BACKENDS=1
 export EVAL_REWARD_DEVICE=cuda
 export REWARD_SERVER_URL
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_SAMPLE}"
-export MCTS_KEY_STEP_COUNT=2
+export MCTS_KEY_STEP_COUNT="${MCTS_KEY_STEP_COUNT:-2}"
 export OUT_ROOT="${RUN_ROOT}"
 
 echo

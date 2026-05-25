@@ -114,12 +114,14 @@ case "${BACKEND}" in
         export SD35_BACKEND="${BACKEND}"; unset FLUX_BACKEND || true
         export STEPS=4; export BASELINE_CFG=1.0
         export CFG_SCALES="1.0 1.5 2.0 2.5"     # ← 4-value bank
+        : "${MCTS_KEY_STEP_COUNT:=4}"
         SUITE="${SCRIPT_DIR}/hpsv2_sd35_sid_ddp_suite.sh"
         ;;
     sd35_base)
         export SD35_BACKEND=sd35_base; unset FLUX_BACKEND || true
         export STEPS=28; export BASELINE_CFG=4.5
         export CFG_SCALES="3.5 4.5 5.5 7.0"     # ← 4-value bank
+        : "${MCTS_KEY_STEP_COUNT:=8}"
         SUITE="${SCRIPT_DIR}/hpsv2_sd35_sid_ddp_suite.sh"
         echo "[smartprompt] WARN sd35_base is 28-step; each cell ~5-15× longer than sid"
         ;;
@@ -167,7 +169,7 @@ export REWARD_SERVER_URL
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_SAMPLE}"
 export MCTS_INTERP_FAMILY=none
 export MCTS_N_INTERP=0
-export MCTS_KEY_STEP_COUNT=2
+export MCTS_KEY_STEP_COUNT="${MCTS_KEY_STEP_COUNT:-2}"
 
 SUMMARY="${RUN_ROOT}/summary.tsv"
 printf "cell\trefine\tlookahead_mode\tn_variants\tuse_qwen\tqwen_id\tstage_mode\tmean_search\teval_ir\n" > "${SUMMARY}"

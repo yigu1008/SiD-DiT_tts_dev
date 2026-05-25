@@ -245,77 +245,114 @@ def _draw_legend(ax: plt.Axes) -> None:
 
 
 def _load_real_data(run_root: Path, method: str, prompt_index: int) -> TreeNode | None:
-    """Try to reconstruct a tree from per-run diagnostics. Returns None on failure."""
-    # Search candidates for per-prompt MCTS diagnostics.  Different runners
-    # name the file slightly differently; try a few.
-    candidates: list[Path] = []
-    for pat in (
-        f"**/{method}/**/diagnostics_prompt_{prompt_index:04d}.json",
-        f"**/{method}/**/diagnostics_prompt_{prompt_index:05d}.json",
-        f"**/{method}/**/diagnostics_{prompt_index}.json",
-        f"**/{method}/**/per_prompt_diagnostics.json",
-        f"**/{method}/**/aggregate_ddp.json",
-    ):
-        candidates.extend(sorted(run_root.glob(pat)))
-    diag = None
-    for path in candidates:
+    """Try to reconstruct a tree from per-run diagnostics. Returns None on failure.
+
+    Reads the per-prompt jsonl logs the SD3.5 / FLUX DDP experiments write:
+    `<method>/run_*/rank_*.jsonl` — one row per (rank, prompt_index) with
+    diagnostics under row["diagnostics"]["bon_mcts"] (or just row["diagnostics"]).
+    """
+    diag: dict | None = None
+
+    # 1) Per-prompt jsonl (preferred — has full diagnostics dict).
+    jsonl_paths = sorted(run_root.glob(f"**/{method}/**/rank_*.jsonl"))
+    for jp in jsonl_paths:
         try:
-            data = json.loads(path.read_text())
+            with open(jp) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    pi = row.get("prompt_index")
+                    if pi is None:
+                        continue
+                    if int(pi) != int(prompt_index):
+                        continue
+                    d = row.get("diagnostics") or row.get("diag")
+                    if isinstance(d, dict):
+                        if "bon_mcts" in d and isinstance(d["bon_mcts"], dict):
+                            diag = d["bon_mcts"]
+                        elif "prescreen_ranked" in d:
+                            diag = d
+                    break
+            if diag is not None:
+                break
         except Exception:
             continue
-        # Pull the per-prompt entry if this is an aggregate
-        if isinstance(data, dict) and "per_prompt" in data:
-            entries = data["per_prompt"]
-            if isinstance(entries, list) and prompt_index < len(entries):
-                diag = entries[prompt_index]
-                break
-        elif isinstance(data, dict) and "bon_mcts" in data:
-            diag = data["bon_mcts"]
-            break
-        elif isinstance(data, dict) and "prescreen_ranked" in data:
-            diag = data
-            break
+
+    # 2) Legacy filename patterns.
     if diag is None:
-        print(f"[actdiff-tree] no per-prompt diagnostics found for prompt {prompt_index}; "
-              f"falling back to schematic.")
+        candidates: list[Path] = []
+        for pat in (
+            f"**/{method}/**/diagnostics_prompt_{prompt_index:04d}.json",
+            f"**/{method}/**/diagnostics_prompt_{prompt_index:05d}.json",
+            f"**/{method}/**/diagnostics_{prompt_index}.json",
+            f"**/{method}/**/per_prompt_diagnostics.json",
+            f"**/{method}/**/aggregate_ddp.json",
+        ):
+            candidates.extend(sorted(run_root.glob(pat)))
+        for path in candidates:
+            try:
+                data = json.loads(path.read_text())
+            except Exception:
+                continue
+            if isinstance(data, dict) and "per_prompt" in data:
+                entries = data["per_prompt"]
+                if isinstance(entries, list) and prompt_index < len(entries):
+                    diag = entries[prompt_index]
+                    break
+            elif isinstance(data, dict) and "bon_mcts" in data:
+                diag = data["bon_mcts"]
+                break
+            elif isinstance(data, dict) and "prescreen_ranked" in data:
+                diag = data
+                break
+
+    if diag is None:
+        print(f"[actdiff-tree] no per-prompt diagnostics found for prompt {prompt_index} "
+              f"(searched rank_*.jsonl and legacy files); falling back to schematic.")
         return None
 
     # Build a tree using diagnostics (best-effort — may be missing per-action data).
     root = TreeNode(label="$z_0$\nnoise", color=C_NOISE)
     prescreen = diag.get("prescreen_ranked", [])
+    # Keep an explicit seed→node map so we don't have to parse labels.
+    seed_to_node: dict[int, TreeNode] = {}
     for i, row in enumerate(prescreen):
         s = float(row.get("prescreen_score", 0.0))
-        n = TreeNode(label=f"seed {row.get('seed', i)}\n$r$={s:.2f}",
+        sd = int(row.get("seed", i))
+        n = TreeNode(label=f"seed {sd}\n$r$={s:.2f}",
                      score=s, color=C_PRESCREEN,
                      edge_label="" if i > 0 else "prescreen")
         n.parent = root
         root.children.append(n)
+        seed_to_node[sd] = n
     refine = diag.get("tree_refine", [])
     top_seeds = {int(row.get("seed", -1)): row for row in refine}
-    for n in root.children:
-        sd_str = n.label.split(" ")[1].split("\n")[0]
-        try:
-            sd = int(sd_str)
-        except ValueError:
+    for sd, refine_row in top_seeds.items():
+        n = seed_to_node.get(sd)
+        if n is None:
             continue
-        if sd in top_seeds:
-            n.color = C_TOPK
-            n.size = 1.5
-            refine_row = top_seeds[sd]
-            r_score = float(refine_row.get("tree_search_score", 0.0))
-            leaf = TreeNode(label=f"refined\n$r$={r_score:.2f}",
-                            score=r_score, color=C_REFINE_NODE,
-                            edge_label=f"{int(refine_row.get('n_sims_used', 0))} sims")
-            leaf.parent = n
-            n.children.append(leaf)
+        n.color = C_TOPK
+        n.size = 1.5
+        r_score = float(refine_row.get("tree_search_score", 0.0))
+        leaf = TreeNode(label=f"refined\n$r$={r_score:.2f}",
+                        score=r_score, color=C_REFINE_NODE,
+                        edge_label=f"{int(refine_row.get('n_sims_used', 0))} sims")
+        leaf.parent = n
+        n.children.append(leaf)
     # Mark best path
     winner_seed = diag.get("winner_seed", None)
     if winner_seed is not None:
-        for n in root.children:
-            if f"seed {winner_seed}" in n.label:
-                n.on_best_path = True
-                for ch in n.children:
-                    ch.on_best_path = True
+        winner_node = seed_to_node.get(int(winner_seed))
+        if winner_node is not None:
+            winner_node.on_best_path = True
+            for ch in winner_node.children:
+                ch.on_best_path = True
+                ch.color = C_BEST_PATH
                     ch.color = C_BEST_PATH
                 break
         root.on_best_path = True

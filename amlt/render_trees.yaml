@@ -1,16 +1,20 @@
-description: render-trees
+description: render-trees-multi
 
-# Lightweight no-GPU job: render a batch of ActDiff tree visualizations from
-# an existing bon_mcts run's per-prompt diagnostics.  No re-sampling.
+# Lightweight no-GPU job: render ActDiff trees from EXISTING bon_mcts runs
+# across multiple backends.  Reads lookahead_node_logs from each run's
+# rank_*.jsonl and produces per-prompt PNGs showing CFG choices at every
+# denoising step (full 4-level tree).
 #
-# Reads `rank_*.jsonl` files under <run_root>/<method>/run_*/  and writes
-# one PNG + JSON pair per prompt to <out_dir>/.
+# Output layout (each backend goes to its own subfolder):
+#   /mnt/data/v-yigu/_tree_archive/{out_dir_name}/
+#   ├── flux_schnell/
+#   ├── sid/
+#   ├── senseflow_large/
+#   └── sd35_base/
 #
-# Override these at submit:
-#   -p run_root="/mnt/data/v-yigu/all_in_one/flux-newcfg/composite/flux_schnell/seed42"
-#   -p method=bon_mcts
-#   -p prompt_range="0:50"
-#   -p out_dir_name="flux_trees_v1"
+# Each path is best-effort — if the run_root doesn't exist, that source is
+# skipped (logged) and the others continue.  Override individual paths via
+# -p flux_root=... etc.
 
 target:
   service: sing
@@ -41,7 +45,7 @@ storage:
 
 search:
   job_template:
-    name: trees-{out_dir_name}
+    name: trees-multi-{out_dir_name}
     sku: ${NODES}x${MEM}G${GPUS}-IB
     sla_tier: Standard
     process_count_per_node: 1
@@ -55,11 +59,19 @@ search:
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir matplotlib || true
-      - export OUT_DIR=/mnt/data/v-yigu/_tree_archive/{out_dir_name}
-      - mkdir -p "$$OUT_DIR"
-      - /opt/conda/envs/ptca/bin/python render_trees_batch.py --run_root "{run_root}" --method {method} --prompt_range "{prompt_range}" --out_dir "$$OUT_DIR" --title_prefix "ActDiff trace ({method})"
-      - echo "[render-trees] done. PNGs at $$OUT_DIR"
-      - ls -la "$$OUT_DIR" | head -30
+      - export OUT_ROOT=/mnt/data/v-yigu/_tree_archive/{out_dir_name}
+      - mkdir -p "$$OUT_ROOT"
+      # ---- FLUX-schnell trees ----
+      - 'if [ -d "{flux_root}" ]; then echo "[trees] rendering FLUX from {flux_root}"; /opt/conda/envs/ptca/bin/python render_trees_batch.py --run_root "{flux_root}" --method bon_mcts --prompt_range "{prompt_range}" --out_dir "$$OUT_ROOT/flux_schnell" --title_prefix "ActDiff (FLUX-schnell)" || true; else echo "[trees] SKIP FLUX -- run_root not found: {flux_root}"; fi'
+      # ---- SiD trees ----
+      - 'if [ -d "{sid_root}" ]; then echo "[trees] rendering SiD from {sid_root}"; /opt/conda/envs/ptca/bin/python render_trees_batch.py --run_root "{sid_root}" --method bon_mcts --prompt_range "{prompt_range}" --out_dir "$$OUT_ROOT/sid" --title_prefix "ActDiff (SiD-DiT-SD3.5L)" || true; else echo "[trees] SKIP SiD -- run_root not found: {sid_root}"; fi'
+      # ---- SenseFlow trees ----
+      - 'if [ -d "{senseflow_root}" ]; then echo "[trees] rendering SenseFlow from {senseflow_root}"; /opt/conda/envs/ptca/bin/python render_trees_batch.py --run_root "{senseflow_root}" --method bon_mcts --prompt_range "{prompt_range}" --out_dir "$$OUT_ROOT/senseflow_large" --title_prefix "ActDiff (SenseFlow-large)" || true; else echo "[trees] SKIP SenseFlow -- run_root not found: {senseflow_root}"; fi'
+      # ---- SD3.5-base trees ----
+      - 'if [ -d "{sd35_base_root}" ]; then echo "[trees] rendering SD3.5-base from {sd35_base_root}"; /opt/conda/envs/ptca/bin/python render_trees_batch.py --run_root "{sd35_base_root}" --method bon_mcts --prompt_range "{prompt_range}" --out_dir "$$OUT_ROOT/sd35_base" --title_prefix "ActDiff (SD3.5-base 28-step)" || true; else echo "[trees] SKIP SD3.5-base -- run_root not found: {sd35_base_root}"; fi'
+      - echo "[trees] all sources done. Browse: $$OUT_ROOT"
+      - ls -la "$$OUT_ROOT" || true
+      - find "$$OUT_ROOT" -name '*.png' | head -20
 
     submit_args:
       env:
@@ -69,11 +81,18 @@ search:
   type: grid
   params:
     - name: out_dir_name
-      values: [ "flux_trees" ]
-    - name: run_root
-      # Default: the FLUX bon_mcts run that beat SoP.
-      values: [ "/mnt/data/v-yigu/all_in_one/flux-newcfg/composite/flux_schnell/seed42" ]
-    - name: method
-      values: [ "bon_mcts" ]
+      values: [ "multi_backend_trees" ]
     - name: prompt_range
-      values: [ "0:30" ]
+      values: [ "0:20" ]
+    # ---- Per-backend run roots (override individually with -p flux_root=... etc.) ----
+    - name: flux_root
+      values: [ "/mnt/data/v-yigu/all_in_one/flux-newcfg/composite/flux_schnell/seed42" ]
+    - name: sid_root
+      # The step-reward-test was a bon_mcts run on sid.
+      values: [ "/mnt/data/v-yigu/all_method_ablations/step-reward-test" ]
+    - name: senseflow_root
+      # If you have a senseflow_large run, point this at it.  Otherwise the
+      # source is silently skipped.
+      values: [ "/mnt/data/v-yigu/composite_all/composite-all/senseflow_large" ]
+    - name: sd35_base_root
+      values: [ "/mnt/data/v-yigu/composite_all/composite-all/sd35_base" ]

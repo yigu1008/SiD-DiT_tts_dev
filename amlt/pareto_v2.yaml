@@ -92,6 +92,15 @@ search:
       - $$REWARD_PY -m pip install --no-cache-dir "fairscale==0.4.4" || true
       - $$REWARD_PY -m pip install --no-cache-dir --no-deps "diffusers>=0.27,<0.31" || true
       - $$REWARD_PY -m pip install --no-cache-dir --no-deps "datasets" "wandb" || true
+      # Install HPSv2 + open_clip_torch INTO THE REWARD ENV (not the main one).
+      # Without this, _try_load_hpsv2 silently fails on the reward server and
+      # composite_all4 degrades to a 3-reward composite (no hpsv2 column).
+      - $$REWARD_PY -m pip install --no-cache-dir "open_clip_torch>=2.20" "hpsv2" "ftfy" "regex" || true
+      - $$REWARD_PY -c "import hpsv2; import open_clip; print('[verify] hpsv2', hpsv2.__file__); print('[verify] open_clip', open_clip.__version__)" || echo "[verify] HPSv2 still broken — investigate"
+      # Pre-fetch the HPSv2 checkpoint if missing (auto-downloads on first
+      # score(), but doing it here surfaces network errors at setup, not
+      # during sampling).
+      - $$REWARD_PY -c "import os, hpsv2; os.environ.setdefault('HPS_ROOT', '/mnt/data/v-yigu/model_cache/hpsv2'); import hpsv2.img_score as _s; print('[verify] hpsv2.img_score importable')" || echo "[verify] HPSv2 img_score import failed"
       - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; fi'
       - $$REWARD_PY -c "import ImageReward; print('[verify] ImageReward', ImageReward.__file__)"
       # ── Reward server with all 4 backends ──────────────────────────────────

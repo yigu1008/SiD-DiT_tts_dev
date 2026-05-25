@@ -168,6 +168,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=False,
         help="Also apply fresh-noise exploration at resolved MCTS key steps.",
     )
+    parser.add_argument("--bon_action_diverse", type=int, default=0, choices=[0, 1],
+                        help="bon_actdiff mode: sample over the ActDiff action bank "
+                             "(variant × cfg × correction) instead of fixed baseline.")
     parser.add_argument("--bon_n", type=int, default=16,
                         help="Number of independent samples for best-of-N search.")
     parser.add_argument(
@@ -1498,6 +1501,32 @@ def run_greedy_batch(
 
 
 @torch.no_grad()
+def _bon_action_tuples(args: argparse.Namespace, n: int) -> list[tuple[int, float, float]]:
+    """For bon_actdiff: build N (variant_idx, cfg, correction_strength) tuples
+    sampled from the structured ActDiff action bank.
+
+    When --bon_action_diverse is enabled, each of the N samples uses a
+    distinct combination of (variant, cfg, cs) from the cartesian product
+    of the configured banks.  When N exceeds |bank|, tuples cycle.
+
+    When the flag is OFF (default), all N samples share (0, baseline_cfg, 0.0)
+    — matches the canonical BoN paper.
+    """
+    n_var = max(1, getattr(args, "n_variants", 1) or 1)
+    cfgs = [float(c) for c in (getattr(args, "cfg_scales", None) or [float(args.baseline_cfg)])]
+    cs_bank = [float(c) for c in (getattr(args, "correction_strengths", None) or [0.0])]
+    if not bool(int(getattr(args, "bon_action_diverse", 0) or 0)):
+        cfg = float(args.baseline_cfg)
+        return [(0, cfg, 0.0)] * n
+    # Cartesian product; cycle if N > |bank|
+    bank: list[tuple[int, float, float]] = [
+        (v, c, cs) for v in range(n_var) for c in cfgs for cs in cs_bank
+    ]
+    if not bank:
+        bank = [(0, float(args.baseline_cfg), 0.0)]
+    return [bank[i % len(bank)] for i in range(n)]
+
+
 def run_bon(
     args: argparse.Namespace,
     ctx: PipelineContext,
@@ -1506,26 +1535,49 @@ def run_bon(
     prompt: str,
     seed: int,
 ) -> SearchResult:
-    """Best of N: generate N independent samples with baseline config, return highest-scoring."""
+    """Best of N: generate N independent samples, return highest-scoring.
+
+    When --bon_action_diverse=1, each sample uses a distinct action tuple
+    from the structured ActDiff bank (variant × cfg × correction_strength).
+    Otherwise reverts to canonical BoN: all N samples share baseline config.
+    """
     n = max(1, int(args.bon_n))
-    cfg = float(args.baseline_cfg)
-    variant_idx = min(0, len(emb.cond_text) - 1)
-    fixed_actions: list[tuple[int, float, float]] = [(variant_idx, cfg, 0.0)] * args.steps
+    action_diverse = bool(int(getattr(args, "bon_action_diverse", 0) or 0))
+    action_tuples = _bon_action_tuples(args, n)
+    if action_diverse:
+        # Variant indices may exceed available embeds — clamp.
+        action_tuples = [
+            (min(int(v), max(0, len(emb.cond_text) - 1)), float(c), float(cs))
+            for v, c, cs in action_tuples
+        ]
+        # For diagnostics: record the action sequence as the "fixed_actions".
+        # All steps use the same action — bon_actdiff varies across samples,
+        # not across steps within a sample.
+        fixed_actions = [action_tuples[0]] * args.steps
+    else:
+        cfg = float(args.baseline_cfg)
+        variant_idx = min(0, len(emb.cond_text) - 1)
+        fixed_actions = [(variant_idx, cfg, 0.0)] * args.steps
 
     best_score = -float("inf")
     best_img: Image.Image | None = None
 
     use_euler = getattr(args, "euler_sampler", False)
-    print(f"  bon: n={n} cfg={cfg:.2f} variant={variant_idx} euler={use_euler}")
+    if action_diverse:
+        print(f"  bon_actdiff: n={n} diverse over action bank (|bank|≈{len(action_tuples)}) euler={use_euler}")
+    else:
+        print(f"  bon: n={n} cfg={float(args.baseline_cfg):.2f} variant=0 euler={use_euler}")
+    best_action_tuple = action_tuples[0]
     for i in range(n):
         s = seed + i
+        sample_variant_idx, sample_cfg, _sample_cs = action_tuples[i]
         latents = make_latents(ctx, s, args.height, args.width, emb.cond_text[0].dtype)
         dx = torch.zeros_like(latents)
         sched = step_schedule(ctx.device, latents.dtype, args.steps,
                               getattr(args, "sigmas", None), euler=use_euler)
         for j, (t_flat, t_4d, step_dt) in enumerate(sched):
             latents = _prepare_latents(latents, dx, torch.randn_like(latents), t_4d, j, use_euler)
-            flow = transformer_step(args, ctx, latents, emb, variant_idx, t_flat, cfg)
+            flow = transformer_step(args, ctx, latents, emb, sample_variant_idx, t_flat, sample_cfg)
             latents, dx = _apply_step(latents, flow, dx, t_4d, step_dt, use_euler, args.x0_sampler)
         img = decode_to_pil(ctx, _final_decode_tensor(latents, dx, use_euler))
         score = score_image(reward_model, prompt, img)
@@ -1533,15 +1585,23 @@ def run_bon(
         if score > best_score:
             best_score = score
             best_img = img
+            best_action_tuple = (sample_variant_idx, sample_cfg, _sample_cs)
             mark = " <- best"
-        print(f"    sample {i + 1}/{n} seed={s} score={score:.4f}{mark}")
+        print(f"    sample {i + 1}/{n} seed={s} v={sample_variant_idx} cfg={sample_cfg:.2f} score={score:.4f}{mark}")
+    if action_diverse:
+        # Reflect the winning action in `fixed_actions` for diagnostics.
+        fixed_actions = [best_action_tuple] * args.steps
 
     assert best_img is not None
     return SearchResult(
         image=best_img,
         score=best_score,
         actions=fixed_actions,
-        diagnostics={"bon_n": n, "cfg": cfg},
+        diagnostics={
+            "bon_n": n,
+            "action_diverse": int(action_diverse),
+            "n_unique_actions": len(set(action_tuples)) if action_diverse else 1,
+        },
     )
 
 

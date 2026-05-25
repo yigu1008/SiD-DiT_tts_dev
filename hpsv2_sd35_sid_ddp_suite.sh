@@ -950,6 +950,12 @@ run_method() {
       SMC_LAMBDA="${FKSTEERING_LAMBDA:-${SMC_LAMBDA:-10.0}}"
       ;;
     bon) mode_arg="bon" ;;
+    bon_actdiff)
+      # Best-of-N over the structured ActDiff action bank
+      # (variant × cfg × correction).  Same N, richer candidate diversity.
+      mode_arg="bon"
+      BON_ACTION_DIVERSE=1
+      ;;
     greedy_prompt)
       # Greedy-over-prompts comparator for #8. Same step-by-step argmax as
       # `greedy` but restricted to the prompt-rewrite axis (CFG fixed at
@@ -1405,6 +1411,7 @@ PY
     --ga_log_topk "${GA_LOG_TOPK}" \
     --ga_eval_batch "${GA_EVAL_BATCH}" \
     --bon_n "${BON_N}" \
+    --bon_action_diverse "${BON_ACTION_DIVERSE:-0}" \
     --beam_width "${BEAM_WIDTH}" \
     --correction_strengths ${CORRECTION_STRENGTHS} \
     --max_sequence_length "${MAX_SEQ_LEN:-256}" \

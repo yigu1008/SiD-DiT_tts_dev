@@ -166,6 +166,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--smc_expansion_tau", type=float, default=1.0)
     parser.add_argument("--smc_expansion_lookahead", action="store_true", default=False)
     parser.add_argument("--bon_n", type=int, default=16, help="Number of candidates for Best-of-N search.")
+    parser.add_argument("--bon_action_diverse", type=int, default=0, choices=[0, 1],
+                        help="bon_actdiff mode: vary (variant, cfg, cs) across the N samples.")
     parser.add_argument("--beam_width", type=int, default=4, help="Number of beams to keep per step in beam search.")
     parser.add_argument(
         "--noise_inject_mode",

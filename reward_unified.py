@@ -368,10 +368,16 @@ class UnifiedRewardScorer:
                 )
         if target == "composite_all4":
             missing = [b for b in ("imagereward", "hpsv3", "hpsv2", "pickscore") if b not in self.available]
-            if missing:
+            if not self.available:
                 raise RuntimeError(
-                    f"Requested backend=composite_all4 but missing: {missing}."
-                    f" Currently available: {self.available}"
+                    "Requested backend=composite_all4 but NO rewards are available.")
+            if missing:
+                # Degrade gracefully — composite is now the equal-weight mean
+                # over whatever subset IS available.  Only a hard error when
+                # zero rewards are loaded.
+                print(
+                    f"[Reward] composite_all4: missing {missing}; "
+                    f"falling back to {len(self.available)}-reward composite over {self.available}"
                 )
         if target == "auto" and not self.available:
             raise RuntimeError(
@@ -1566,27 +1572,30 @@ class UnifiedRewardScorer:
         return (float(val) - lo) / span
 
     def _score_composite_all4(self, prompt: str, image: Image.Image) -> float:
-        """Equal-weight (0.25 each) average of all 4 rewards after min-max
-        normalization to [0,1].  Components:
-            imagereward, hpsv3, hpsv2, pickscore
-        Returns a [0,1]-ish score (slightly outside if a component falls
-        outside its empirical range — fine for MCTS ranking).
+        """Equal-weight average of {imagereward, hpsv3, hpsv2, pickscore}
+        after min-max normalization to [0,1].
+
+        Robust to missing backends: skips any not in self.available and
+        re-normalizes weights over the remaining set.  So if HPSv2 fails to
+        load on the reward server, the composite gracefully degrades to a
+        3-reward composite (instead of crashing the whole search).
         """
-        hpsv3_lo, hpsv3_hi = self._COMPOSITE_HPSV3_RANGE
-        ir_lo, ir_hi = self._COMPOSITE_IR_RANGE
-        hpsv2_lo, hpsv2_hi = self._COMPOSITE_HPSV2_RANGE
-        ps_lo, ps_hi = self._COMPOSITE_PICKSCORE_RANGE
-
-        ir   = float(self._score_imagereward(prompt, image))
-        h3   = float(self._score_hpsv3(prompt, image))
-        h2   = float(self._score_hpsv2(prompt, image))
-        ps   = float(self._score_pickscore(prompt, image))
-
-        ir_n = self._norm(ir, ir_lo, ir_hi)
-        h3_n = self._norm(h3, hpsv3_lo, hpsv3_hi)
-        h2_n = self._norm(h2, hpsv2_lo, hpsv2_hi)
-        ps_n = self._norm(ps, ps_lo, ps_hi)
-        return 0.25 * (ir_n + h3_n + h2_n + ps_n)
+        components: list[float] = []
+        if "imagereward" in self.available:
+            lo, hi = self._COMPOSITE_IR_RANGE
+            components.append(self._norm(float(self._score_imagereward(prompt, image)), lo, hi))
+        if "hpsv3" in self.available:
+            lo, hi = self._COMPOSITE_HPSV3_RANGE
+            components.append(self._norm(float(self._score_hpsv3(prompt, image)), lo, hi))
+        if "hpsv2" in self.available:
+            lo, hi = self._COMPOSITE_HPSV2_RANGE
+            components.append(self._norm(float(self._score_hpsv2(prompt, image)), lo, hi))
+        if "pickscore" in self.available:
+            lo, hi = self._COMPOSITE_PICKSCORE_RANGE
+            components.append(self._norm(float(self._score_pickscore(prompt, image)), lo, hi))
+        if not components:
+            raise RuntimeError("composite_all4: no rewards available.")
+        return float(sum(components) / float(len(components)))
 
     def _score_composite_hpsv3_ir(self, prompt: str, image: Image.Image) -> float:
         """Half-half balanced composite of HPSv3 + ImageReward.

@@ -307,8 +307,30 @@ def main() -> None:
     pairs = [("imagereward", "hpsv3"), ("imagereward", "hpsv2"),
              ("imagereward", "pickscore"), ("hpsv3", "hpsv2"),
              ("hpsv3", "pickscore"), ("hpsv2", "pickscore")]
+    # Pre-flight: which rewards have ANY data across methods?
+    reward_has_data = {r: False for r in REWARDS}
+    for m in methods:
+        if m not in method_data:
+            continue
+        for row in method_data[m]:
+            for r in REWARDS:
+                if r in row and row[r] is not None:
+                    reward_has_data[r] = True
+    missing_rewards = [r for r, has in reward_has_data.items() if not has]
+    if missing_rewards:
+        print(f"\n  ⚠ no data for rewards: {missing_rewards} — panels involving them will be annotated.")
+
     fig, axes = plt.subplots(2, 3, figsize=(15, 9))
     for ax, (ra, rb) in zip(axes.flat, pairs):
+        if not reward_has_data[ra] or not reward_has_data[rb]:
+            ax.text(0.5, 0.5,
+                    f"no data\n({ra if not reward_has_data[ra] else rb} missing)",
+                    ha="center", va="center", transform=ax.transAxes,
+                    fontsize=11, color="#888888", style="italic")
+            ax.set_xlabel(ra); ax.set_ylabel(rb)
+            ax.set_title(f"{ra} × {rb}")
+            ax.set_xticks([]); ax.set_yticks([])
+            continue
         for i, m in enumerate(methods):
             if m not in method_data:
                 continue

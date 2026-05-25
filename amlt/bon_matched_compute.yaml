@@ -2,14 +2,18 @@ description: bon-matched-compute
 
 # Compute-matched BoN baseline ablation (must-have #2).
 #
-# Methods (3), matched compute = 256 rollouts/prompt (sid 4-step):
-#   baseline                  : no-search reference
-#   bon                       : Best-of-256 sampling (BON_N=256, no MCTS refine)
-#   bon_mcts                  : current ActDiff (Ours) — 16 + 4·60 = 256 rollouts
+# Matched NFE formula (with sim_alloc=split):
+#   bon_mcts NFE  ≈ (N_SEEDS + N_SIMS) × STEPS = (16 + 60) × 4 = 304 forwards
+#   bon NFE       =  BON_N × STEPS
+# → BON_N = N_SEEDS + N_SIMS = 76 (sid 4-step) or 136 (sd35_base 28-step).
 #
-# Both `bon` and `bon_mcts` see the SAME number of forward passes per prompt.
-# Reviewer-resistant comparison: if bon_mcts > bon at matched NFE, the gain
-# comes from MCTS structure, not just more samples.
+# Methods (3), matched-NFE on sid:
+#   baseline                  : no-search reference
+#   bon                       : Best-of-76 sampling
+#   bon_mcts                  : current ActDiff (Ours) — 16 prescreen + 60 sims
+#
+# Reviewer-resistant: same forward-pass budget per prompt → if bon_mcts > bon,
+# gain comes from MCTS structure, not more samples.
 #
 # Output: /mnt/data/v-yigu/all_method_ablations/{run_tag}/run_*/
 #   {baseline, bon, bon_mcts}/...
@@ -130,9 +134,11 @@ search:
       - export SEED={seed}
       - export SEARCH_REWARD={search_reward}
       - export METHODS="{methods}"
-      # Compute-matched BoN: N samples must equal bon_mcts's total rollouts.
-      # sid/senseflow/flux 4-step → 16 + 4·60 = 256.  sd35_base 28-step → 16 + 4·120 = 496.
-      - 'if [ "{backend}" = "sd35_base" ]; then export BON_N=${{BON_N:-496}}; else export BON_N=${{BON_N:-256}}; fi'
+      # Compute-matched BoN: NFE = (N_SEEDS + N_SIMS) × STEPS
+      # With sim_alloc=split, TOPK divides N_SIMS — it does NOT multiply NFE.
+      # sid/senseflow/flux 4-step: 16 + 60 = 76 trajectory-equivalents.
+      # sd35_base    28-step:      16 + 120 = 136 trajectory-equivalents.
+      - 'if [ "{backend}" = "sd35_base" ]; then export BON_N=${{BON_N:-136}}; else export BON_N=${{BON_N:-76}}; fi'
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
       - bash run_all_method_ablations.sh
       # ── Auto-emit synergy plot ────────────────────────────────────────────

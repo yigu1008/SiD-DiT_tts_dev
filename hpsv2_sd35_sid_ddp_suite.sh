@@ -960,7 +960,7 @@ run_method() {
       N_VARIANTS="${SYNERGY_N_VARIANTS:-${N_VARIANTS}}"
       REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
       ;;
-    bon_mcts_static_cfg|bon_mcts_adaptive_cfg|bon_mcts_rewrite_only|bon_mcts_full|bon_mcts|bon_mcts_neg|bon_mcts_sigma|bon_mcts_axes|bon_mcts_step_reward)
+    bon_mcts_static_cfg|bon_mcts_adaptive_cfg|bon_mcts_rewrite_only|bon_mcts_full|bon_mcts|bon_mcts_neg|bon_mcts_sigma|bon_mcts_axes|bon_mcts_step_reward|bon_mcts_multiseed|bon_mcts_singleseed)
       # Action-axis variants share the bon_mcts runner; only differ in which
       # CLI banks (NEG / SIGMA_PERTURB) they pass.  Running them as four
       # methods inside the SAME suite invocation amortizes one pipeline load
@@ -1015,6 +1015,30 @@ run_method() {
           # 0.3 mix factor is the safer middle-ground (mostly terminal + some shaping).
           : "${MCTS_STEP_REWARD_ALPHA:=0.3}"
           : "${MCTS_STEP_REWARD_PROGRESS_WEIGHT:=1}"
+          BON_MCTS_NEG_BANK=""
+          BON_MCTS_SIGMA_PERTURB_BANK=""
+          ;;
+        bon_mcts_multiseed)
+          # Explicit anchor (N_SEEDS=16, TOPK=4, N_SIMS at backend default).
+          # Pairs with bon_mcts_singleseed at matched-compute for the
+          # "seed-diversity vs single-seed" ablation (must-have #3).
+          BON_MCTS_N_SEEDS=16
+          BON_MCTS_TOPK=4
+          BON_MCTS_NEG_BANK=""
+          BON_MCTS_SIGMA_PERTURB_BANK=""
+          ;;
+        bon_mcts_singleseed)
+          # Single-seed prescreen with all compute redirected to refine.
+          # Matched-compute: 1 + 1·N_SIMS = N_SEEDS_default + TOPK_default·N_SIMS_default.
+          # Auto-pick from the per-backend defaults so multiseed and singleseed
+          # both hit ~the same rollout count.  Override via MCTS_SINGLESEED_N_SIMS.
+          BON_MCTS_N_SEEDS=1
+          BON_MCTS_TOPK=1
+          if [[ "${SD35_BACKEND}" == "sd35_base" ]]; then
+            N_SIMS="${MCTS_SINGLESEED_N_SIMS:-495}"   # 16 + 4·120 - 1
+          else
+            N_SIMS="${MCTS_SINGLESEED_N_SIMS:-255}"   # 16 + 4·60 - 1
+          fi
           BON_MCTS_NEG_BANK=""
           BON_MCTS_SIGMA_PERTURB_BANK=""
           ;;

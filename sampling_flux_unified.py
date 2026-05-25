@@ -350,6 +350,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=1.0,
         help="Scale for additive latent perturbation used by fresh-noise exploration.",
     )
+    p.add_argument("--bon_action_diverse", type=int, default=0, choices=[0, 1],
+                   help="bon_actdiff mode: vary (variant, guidance) across the N samples.")
     p.add_argument("--bon_n", type=int, default=16,
                    help="Number of independent samples for best-of-N search.")
     p.add_argument(
@@ -1407,20 +1409,40 @@ def run_bon(
     embeds: list[PromptEmbed],
     seed: int,
 ) -> SearchResult:
-    """Best of N: generate N independent samples with baseline guidance, return highest-scoring."""
+    """Best of N: generate N independent samples, return highest-scoring.
+
+    When --bon_action_diverse=1, each sample uses a distinct action tuple
+    (variant, guidance) drawn from the ActDiff action bank instead of the
+    canonical fixed (variant=0, guidance=baseline).
+    """
     n = max(1, int(args.bon_n))
     use_euler = getattr(args, "euler_sampler", False)
-    guidance = float(args.baseline_guidance_scale)
-    variant_idx = 0
-    fixed_actions: list[tuple[int, float]] = [(variant_idx, guidance)] * int(args.steps)
+    baseline_guidance = float(args.baseline_guidance_scale)
+    action_diverse = bool(int(getattr(args, "bon_action_diverse", 0) or 0))
+
+    n_var = max(1, len(embeds))
+    cfgs = [float(c) for c in (getattr(args, "cfg_scales", None) or [baseline_guidance])]
+    if action_diverse:
+        bank = [(v, c) for v in range(n_var) for c in cfgs]
+        if not bank:
+            bank = [(0, baseline_guidance)]
+        action_tuples = [bank[i % len(bank)] for i in range(n)]
+        print(f"  bon_actdiff[flux]: n={n} diverse over |bank|={len(bank)} euler={use_euler}")
+    else:
+        action_tuples = [(0, baseline_guidance)] * n
+        print(f"  bon: n={n} guidance={baseline_guidance:.2f} variant=0 euler={use_euler}")
+
+    fixed_actions: list[tuple[int, float]] = [action_tuples[0]] * int(args.steps)
     t_values = build_t_schedule(int(args.steps), getattr(args, "sigmas", None))
 
     best_score = -float("inf")
     best_img: Image.Image | None = None
+    best_action: tuple[int, float] = action_tuples[0]
 
-    print(f"  bon: n={n} guidance={guidance:.2f} variant={variant_idx} euler={use_euler}")
     for i in range(n):
         s = seed + i
+        sample_variant_idx, sample_guidance = action_tuples[i]
+        sample_variant_idx = max(0, min(sample_variant_idx, len(embeds) - 1))
         init_latents = make_initial_latents(ctx, s, args.height, args.width, batch_size=1)
         dx = torch.zeros_like(init_latents)
         latents = init_latents.clone()
@@ -1435,7 +1457,7 @@ def run_bon(
                         init_latents.shape, device=ctx.device, dtype=init_latents.dtype, generator=rng
                     )
                 latents = (1.0 - t_4d) * dx + t_4d * noise
-            flow = flux_transformer_step(ctx, latents, embeds[variant_idx], float(t_val), guidance)
+            flow = flux_transformer_step(ctx, latents, embeds[sample_variant_idx], float(t_val), float(sample_guidance))
             dx = _pred_x0(latents, t_4d, flow, args.x0_sampler)
             if use_euler:
                 dt = _compute_dt(t_values, step_idx)
@@ -1446,15 +1468,23 @@ def run_bon(
         if score > best_score:
             best_score = float(score)
             best_img = img
+            best_action = (sample_variant_idx, float(sample_guidance))
             mark = " <- best"
-        print(f"    sample {i + 1}/{n} seed={s} score={score:.4f}{mark}")
+        print(f"    sample {i + 1}/{n} seed={s} v={sample_variant_idx} g={sample_guidance:.2f} score={score:.4f}{mark}")
+    if action_diverse:
+        fixed_actions = [best_action] * int(args.steps)
 
     assert best_img is not None
     return SearchResult(
         image=best_img,
         score=best_score,
         actions=fixed_actions,
-        diagnostics={"bon_n": n, "guidance": guidance},
+        diagnostics={
+            "bon_n": n,
+            "guidance": baseline_guidance,
+            "action_diverse": int(action_diverse),
+            "n_unique_actions": len(set(action_tuples)) if action_diverse else 1,
+        },
     )
 
 

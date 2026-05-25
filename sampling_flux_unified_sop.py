@@ -33,6 +33,13 @@ def add_sop_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sop_end_frac", type=float, default=1.0)
     parser.add_argument("--sop_score_decode", choices=["x0_pred", "final"], default="x0_pred")
     parser.add_argument("--sop_variant_idx", type=int, default=0)
+    # ActDiff augmentation
+    parser.add_argument("--sop_action_diverse", type=int, default=0, choices=[0, 1],
+                        help="1 = vary (cfg, variant) across the M children per branch.")
+    parser.add_argument("--sop_cfg_bank", type=float, nargs="+", default=None,
+                        help="CFG/guidance bank for action-diverse SoP.")
+    parser.add_argument("--sop_variant_bank", type=int, nargs="+", default=None,
+                        help="Variant-idx bank for action-diverse SoP.")
 
 
 # ── Path container ──────────────────────────────────────────────────────────
@@ -95,7 +102,22 @@ def _run_sop_search_flux(
     def _t4d(t_val: float) -> torch.Tensor:
         return torch.tensor(float(t_val), device=ctx.device, dtype=init_latents.dtype).view(1, 1, 1, 1)
 
-    def _step_one(p: _Path, step_idx: int, t_val: float, t_4d: torch.Tensor) -> _Path:
+    # ActDiff axes (optional)
+    action_diverse = bool(int(getattr(args, "sop_action_diverse", 0) or 0))
+    if action_diverse:
+        cfg_bank = [float(x) for x in (getattr(args, "sop_cfg_bank", None) or [guidance_scale])]
+        var_bank_raw = list(getattr(args, "sop_variant_bank", None) or [variant_idx])
+        var_bank = [max(0, min(int(v), len(embeds) - 1)) for v in var_bank_raw]
+        action_bank = [(v, c) for v in var_bank for c in cfg_bank]
+        if not action_bank:
+            action_bank = [(variant_idx, float(guidance_scale))]
+    else:
+        action_bank = [(variant_idx, float(guidance_scale))]
+
+    def _step_one(p: _Path, step_idx: int, t_val: float, t_4d: torch.Tensor,
+                  vidx: int | None = None, cfg: float | None = None) -> _Path:
+        v_use = variant_idx if vidx is None else int(vidx)
+        c_use = float(guidance_scale) if cfg is None else float(cfg)
         if not use_euler:
             if step_idx == 0:
                 noise = p.latents
@@ -107,7 +129,7 @@ def _run_sop_search_flux(
             latents_in = (1.0 - t_4d) * p.dx + t_4d * noise
         else:
             latents_in = p.latents
-        flow_pred = base.flux_transformer_step(ctx, latents_in, embed_for_step, float(t_val), guidance_scale)
+        flow_pred = base.flux_transformer_step(ctx, latents_in, embeds[v_use], float(t_val), c_use)
         new_dx = base._pred_x0(latents_in, t_4d, flow_pred, x0_sampler)
         if use_euler:
             dt = base._compute_dt(t_values, step_idx)
@@ -153,8 +175,10 @@ def _run_sop_search_flux(
         children: list[_Path] = []
         for p in paths:
             for _m in range(branch_M):
+                v_act, c_act = action_bank[_m % len(action_bank)]
                 p_branched = _perturb(p, t_4d)
-                p_advanced = _step_one(p_branched, step_idx, t_val, t_4d)
+                p_advanced = _step_one(p_branched, step_idx, t_val, t_4d,
+                                       vidx=v_act, cfg=c_act)
                 if score_x0:
                     p_advanced.score = _decode_x0_score(p_advanced)
                 children.append(p_advanced)

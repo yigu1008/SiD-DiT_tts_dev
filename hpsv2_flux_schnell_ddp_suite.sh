@@ -905,7 +905,25 @@ for method in ${METHODS}; do
       ;;
     bon)
       run_flux_sharded "bon" "bon" \
-        --bon_n "${BON_N}"
+        --bon_n "${BON_N}" \
+        --bon_action_diverse "${BON_ACTION_DIVERSE:-0}"
+      ;;
+    bon_actdiff_cfg)
+      # FLUX BoN over CFG action bank (no rewrites).
+      run_flux_sharded "bon_actdiff_cfg" "bon" \
+        --bon_n "${BON_N}" \
+        --bon_action_diverse 1 \
+        --cfg_scales ${CFG_SCALES} \
+        --n_variants 1
+      ;;
+    bon_actdiff_full)
+      # FLUX BoN over CFG × prompt-rewrite bank.
+      run_flux_sharded "bon_actdiff_full" "bon" \
+        --bon_n "${BON_N}" \
+        --bon_action_diverse 1 \
+        --cfg_scales ${CFG_SCALES} \
+        --n_variants "${SYNERGY_N_VARIANTS:-3}" \
+        --rewrites_file "${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
       ;;
     bon_mcts)
       run_flux_sharded "bon_mcts" "mcts" \
@@ -964,10 +982,34 @@ for method in ${METHODS}; do
       fi
       run_flux_sharded "dynamic_cfg_x0" "ga" "${dyncfg_args[@]}"
       ;;
-    sop)
+    sop|sop_actdiff_cfg|sop_actdiff_full)
+      # ActDiff variants set SOP_ACTION_DIVERSE + CFG/variant banks.
+      _sop_n_variants=1
+      _sop_rewrites=""
+      _sop_action_diverse=0
+      _sop_cfg_bank_arg=()
+      _sop_var_bank_arg=()
+      if [[ "${method}" == "sop_actdiff_cfg" ]]; then
+        _sop_action_diverse=1
+        # shellcheck disable=SC2206
+        _sop_cfg_arr=(${SOP_CFG_BANK:-${CFG_SCALES}})
+        _sop_cfg_bank_arg=( --sop_cfg_bank "${_sop_cfg_arr[@]}" )
+        _sop_var_bank_arg=( --sop_variant_bank 0 )
+      elif [[ "${method}" == "sop_actdiff_full" ]]; then
+        _sop_action_diverse=1
+        _sop_n_variants="${SYNERGY_N_VARIANTS:-3}"
+        _sop_rewrites="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
+        # shellcheck disable=SC2206
+        _sop_cfg_arr=(${SOP_CFG_BANK:-${CFG_SCALES}})
+        _sop_cfg_bank_arg=( --sop_cfg_bank "${_sop_cfg_arr[@]}" )
+        _sop_var_max="$((_sop_n_variants - 1))"
+        _sop_var_arr=()
+        for _i in $(seq 0 ${_sop_var_max}); do _sop_var_arr+=( "${_i}" ); done
+        _sop_var_bank_arg=( --sop_variant_bank "${_sop_var_arr[@]}" )
+      fi
       sop_args=(
         --runner_script "${SCRIPT_DIR}/sampling_flux_unified_sop.py"
-        --n_variants 1
+        --n_variants "${_sop_n_variants}"
         --cfg_scales ${CFG_SCALES}
         --sop_init_paths "${SOP_INIT_PATHS:-8}"
         --sop_branch_factor "${SOP_BRANCH_FACTOR:-4}"
@@ -977,8 +1019,14 @@ for method in ${METHODS}; do
         --sop_end_frac "${SOP_END_FRAC:-1.0}"
         --sop_score_decode "${SOP_SCORE_DECODE:-x0_pred}"
         --sop_variant_idx "${SOP_VARIANT_IDX:-0}"
+        --sop_action_diverse "${_sop_action_diverse}"
+        "${_sop_cfg_bank_arg[@]}"
+        "${_sop_var_bank_arg[@]}"
       )
-      run_flux_sharded "sop" "ga" "${sop_args[@]}"
+      if [[ -n "${_sop_rewrites}" ]]; then
+        sop_args+=( --rewrites_file "${_sop_rewrites}" )
+      fi
+      run_flux_sharded "${method}" "ga" "${sop_args[@]}"
       ;;
     *)
       echo "Error: unsupported method '${method}' for FLUX suite." >&2

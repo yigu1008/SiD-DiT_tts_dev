@@ -987,6 +987,26 @@ run_method() {
       _sop_var_max="$((${N_VARIANTS} - 1))"
       SOP_VARIANT_BANK="$(seq -s' ' 0 ${_sop_var_max})"
       ;;
+    smc_actdiff_cfg)
+      # SMC with CFG axis at resample (variant fixed).  Uses existing
+      # smc_variant_expansion infrastructure.
+      mode_arg="smc"
+      SMC_VARIANT_EXPANSION=1
+      SMC_EXPANSION_CFGS="${SMC_EXPANSION_CFGS:-${CFG_SCALES}}"
+      SMC_EXPANSION_VARIANTS="0"
+      SMC_EXPANSION_CS="${SMC_EXPANSION_CS:-0.0}"
+      ;;
+    smc_actdiff_full)
+      # SMC with CFG + prompt-rewrite axes at resample.
+      mode_arg="smc"
+      SMC_VARIANT_EXPANSION=1
+      SMC_EXPANSION_CFGS="${SMC_EXPANSION_CFGS:-${CFG_SCALES}}"
+      N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
+      REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
+      _smc_var_max="$((${N_VARIANTS} - 1))"
+      SMC_EXPANSION_VARIANTS="$(seq -s' ' 0 ${_smc_var_max})"
+      SMC_EXPANSION_CS="${SMC_EXPANSION_CS:-0.0}"
+      ;;
     greedy_prompt)
       # Greedy-over-prompts comparator for #8. Same step-by-step argmax as
       # `greedy` but restricted to the prompt-rewrite axis (CFG fixed at

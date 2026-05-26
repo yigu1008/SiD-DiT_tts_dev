@@ -22,7 +22,7 @@ env_defaults:
   service: sing
   PRIORITY: high
   NODES: 1
-  GPUS: 1
+  GPUS: 8     # request full node so AMLT doesn't preempt for low utilization
   MEM: 80
 
 environment:

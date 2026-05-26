@@ -23,8 +23,10 @@ Output: PNG + JSON pair per prompt in --out_dir.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 
@@ -59,6 +61,8 @@ def main() -> None:
                    help="Prepended to per-prompt titles.")
     p.add_argument("--script", default="plot_actdiff_tree.py",
                    help="Path to the per-prompt renderer.")
+    p.add_argument("--workers", type=int, default=int(os.environ.get("TREE_WORKERS", "8")),
+                   help="Parallel workers (each spawns its own renderer subprocess).")
     args = p.parse_args()
 
     if not args.prompt_range and not args.prompts:
@@ -73,9 +77,7 @@ def main() -> None:
     print(f"# method = {args.method}")
     print(f"# out_dir = {args.out_dir}\n")
 
-    n_ok = 0
-    n_skip = 0
-    for pi in prompts:
+    def _render_one(pi: int) -> str:
         title = f"{args.title_prefix} -- {args.method} -- prompt #{pi}"
         cmd = [
             sys.executable, args.script,
@@ -87,29 +89,30 @@ def main() -> None:
             "--title", title,
         ]
         try:
-            # Per-prompt timeout: matplotlib + giant node_logs JSON can hang on
-            # the rare prompt with thousands of sim entries.  Skip after 90s.
-            try:
-                res = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=90)
-            except subprocess.TimeoutExpired:
-                print(f"  prompt {pi:4d}  [TIMEOUT after 90s — skipping]", flush=True)
-                n_skip += 1
-                continue
+            res = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=90)
+        except subprocess.TimeoutExpired:
+            return f"  prompt {pi:4d}  [TIMEOUT after 90s — skipping]"
         except Exception as exc:
-            print(f"  prompt {pi:4d}  [error invoking]: {exc}")
-            n_skip += 1
-            continue
+            return f"  prompt {pi:4d}  [error invoking]: {exc}"
         if res.returncode != 0:
-            print(f"  prompt {pi:4d}  [rc={res.returncode}]  {res.stderr.strip()[:100]}")
-            n_skip += 1
-            continue
-        # Heuristic: detect fallback-to-schematic from stdout.
+            return f"  prompt {pi:4d}  [rc={res.returncode}]  {res.stderr.strip()[:100]}"
         if "falling back to schematic" in (res.stdout + res.stderr):
-            print(f"  prompt {pi:4d}  [no diagnostics — schematic fallback]")
-            n_skip += 1
-        else:
-            n_ok += 1
-            print(f"  prompt {pi:4d}  OK", flush=True)
+            return f"  prompt {pi:4d}  [no diagnostics — schematic fallback]"
+        return f"  prompt {pi:4d}  OK"
+
+    n_ok = 0
+    n_skip = 0
+    workers = max(1, int(args.workers))
+    print(f"# parallel workers: {workers}\n", flush=True)
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(_render_one, pi): pi for pi in prompts}
+        for fut in as_completed(futures):
+            msg = fut.result()
+            print(msg, flush=True)
+            if "OK" in msg:
+                n_ok += 1
+            else:
+                n_skip += 1
     print(f"\n# rendered {n_ok} / {len(prompts)} ({n_skip} skipped/fallback)")
     print(f"# browse: {args.out_dir}")
 

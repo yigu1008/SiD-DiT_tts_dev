@@ -18,6 +18,16 @@ PROMPT_RANGE="${PROMPT_RANGE:-0:20}"
 : "${OUT_ROOT:?OUT_ROOT must be set}"
 mkdir -p "${OUT_ROOT}"
 
+# Keep AMLT/Singularity from killing the job for inactivity (the render
+# loop can have multi-minute silences between prints when scanning large
+# rank_*.jsonl files).
+if [[ -f "${SCRIPT_DIR}/_heartbeat.sh" ]]; then
+    source "${SCRIPT_DIR}/_heartbeat.sh"
+    start_heartbeat "render-trees-multi"
+fi
+# Force unbuffered Python so each prompt's progress line flushes immediately.
+export PYTHONUNBUFFERED=1
+
 _render() {
     local label="$1" path="$2" title_label="$3"
     if [[ -z "${path}" || ! -d "${path}" ]]; then

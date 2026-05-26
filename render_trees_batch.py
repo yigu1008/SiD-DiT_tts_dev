@@ -102,8 +102,7 @@ def main() -> None:
             n_skip += 1
         else:
             n_ok += 1
-            if n_ok % 5 == 0 or n_ok == 1:
-                print(f"  prompt {pi:4d}  OK")
+            print(f"  prompt {pi:4d}  OK", flush=True)
     print(f"\n# rendered {n_ok} / {len(prompts)} ({n_skip} skipped/fallback)")
     print(f"# browse: {args.out_dir}")
 

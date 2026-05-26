@@ -1865,6 +1865,24 @@ def run_mcts(
         return best_dx, best_latents
 
     print(f"  mcts: sims={args.n_sims} actions={n_actions} steps={args.steps} c={args.ucb_c}")
+    # Per-sim per-step decision log — same shape as SD3.5's `lookahead_node_logs`
+    # so plot_actdiff_tree.py can render a true 4-level decision tree for FLUX.
+    flux_node_logs: list[dict[str, Any]] = []
+
+    def _log_action(sim_idx: int, phase: str, step_idx: int, action: tuple[int, float]) -> None:
+        v, g = action
+        flux_node_logs.append({
+            "sim": int(sim_idx),
+            "phase": str(phase),
+            "step_idx": int(step_idx),
+            "chosen_action": {
+                "variant_idx": int(v),
+                "cfg": float(g),  # FLUX guidance ~= CFG; mapped for plot compatibility
+                "cs": 0.0,
+            },
+            "preview_reward": None,
+        })
+
     for sim in range(int(args.n_sims)):
         node = root
         tree_path: list[tuple[MCTSNode, tuple[int, float]]] = []
@@ -1875,6 +1893,7 @@ def run_mcts(
                 action = untried[int(np_rng.integers(0, len(untried)))]
                 break
             action = node.best_ucb(actions, float(args.ucb_c))
+            _log_action(sim, "selection", int(node.step), action)
             tree_path.append((node, action))
             node = node.children[action]
 
@@ -1882,6 +1901,7 @@ def run_mcts(
             if action not in node.children:
                 child_dx, child_latents = _step_forward(node.latents, node.step, action)
                 node.children[action] = MCTSNode(step=node.step + 1, dx=child_dx, latents=child_latents)
+            _log_action(sim, "expansion", int(node.step), action)
             tree_path.append((node, action))
             node = node.children[action]
 
@@ -1891,6 +1911,7 @@ def run_mcts(
         rollout_actions = [a for _, a in tree_path]
         while rollout_step < int(args.steps):
             rollout_action = actions[int(np_rng.integers(0, n_actions))]
+            _log_action(sim, "rollout", rollout_step, rollout_action)
             rollout_actions.append(rollout_action)
             rollout_dx, rollout_latents = _step_forward(rollout_latents, rollout_step, rollout_action)
             rollout_step += 1
@@ -1903,6 +1924,12 @@ def run_mcts(
             best_global_image = rollout_img
         else:
             del rollout_img
+
+        # Stamp this sim's terminal reward onto every entry (preview_reward).
+        # Plot builder averages these per node to color-code by reward.
+        for log_row in flux_node_logs:
+            if int(log_row["sim"]) == int(sim) and log_row["preview_reward"] is None:
+                log_row["preview_reward"] = float(rollout_score)
 
         for pnode, paction in tree_path:
             pnode.visits += 1
@@ -1944,6 +1971,7 @@ def run_mcts(
             "n_sims": int(args.n_sims),
             "n_actions": int(n_actions),
             "best_source": "simulation",
+            "lookahead_node_logs": flux_node_logs,
         }
         return SearchResult(
             image=best_global_image,
@@ -1957,6 +1985,7 @@ def run_mcts(
         "n_sims": int(args.n_sims),
         "n_actions": int(n_actions),
         "best_source": "exploit",
+        "lookahead_node_logs": flux_node_logs,
     }
     exploit_result.diagnostics = diagnostics
     return exploit_result

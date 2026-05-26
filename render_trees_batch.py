@@ -87,7 +87,14 @@ def main() -> None:
             "--title", title,
         ]
         try:
-            res = subprocess.run(cmd, check=False, capture_output=True, text=True)
+            # Per-prompt timeout: matplotlib + giant node_logs JSON can hang on
+            # the rare prompt with thousands of sim entries.  Skip after 90s.
+            try:
+                res = subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=90)
+            except subprocess.TimeoutExpired:
+                print(f"  prompt {pi:4d}  [TIMEOUT after 90s — skipping]", flush=True)
+                n_skip += 1
+                continue
         except Exception as exc:
             print(f"  prompt {pi:4d}  [error invoking]: {exc}")
             n_skip += 1

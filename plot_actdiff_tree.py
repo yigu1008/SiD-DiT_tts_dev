@@ -244,7 +244,7 @@ def _draw_legend(ax: plt.Axes) -> None:
     ax.legend(handles=handles, loc="lower right", fontsize=9, frameon=False)
 
 
-def _build_tree_from_node_logs(node_logs: list[dict]) -> TreeNode:
+def _build_tree_from_node_logs(node_logs: list[dict], max_sims: int = 30) -> TreeNode:
     """Build a per-step ActDiff decision tree from lookahead_node_logs.
 
     Each log row records {sim, phase, step_idx, chosen_action} where
@@ -254,7 +254,12 @@ def _build_tree_from_node_logs(node_logs: list[dict]) -> TreeNode:
 
     Node colors are score-coded by mean preview_reward when available; the
     most-visited path is marked as the best path (red edges).
+
+    For prompts with very many sims (>max_sims), we subsample to keep
+    rendering tractable — paper-grade figure needs N=20-30 not N=200.
     """
+    import sys as _sys
+    print(f"  [tree] loaded {len(node_logs)} log rows", flush=True, file=_sys.stderr)
     # Group rows by sim_idx and sort by step_idx so we walk each sim's path.
     sims: dict[int, list[dict]] = {}
     for row in node_logs:
@@ -262,6 +267,12 @@ def _build_tree_from_node_logs(node_logs: list[dict]) -> TreeNode:
         sims.setdefault(sim, []).append(row)
     for sim in sims:
         sims[sim].sort(key=lambda r: int(r.get("step_idx", 0)))
+    # Subsample sims if too many — keeps tree visually manageable AND fast.
+    if len(sims) > max_sims:
+        keep_keys = sorted(sims.keys())[:max_sims]
+        sims = {k: sims[k] for k in keep_keys}
+        print(f"  [tree] subsampled to {max_sims} sims (was {len(node_logs)//4} or so)",
+              flush=True, file=_sys.stderr)
 
     root = TreeNode(label="$z_0$\nnoise", color=C_NOISE)
     # node_by_path: tuple-of-(step,action) -> TreeNode

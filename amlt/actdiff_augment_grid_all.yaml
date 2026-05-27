@@ -123,7 +123,7 @@ search:
       # ---- Stage 1: SD3.5-family grid ----
       - 'if [ "{run_sd35}" = "1" ]; then echo "[grid-all] Stage 1: SD3.5 grid (backend={sd35_backend})"; export RUN_ROOT=$$RUN_ROOT_BASE/sd35_{sd35_backend}; mkdir -p "$$RUN_ROOT"; BACKEND={sd35_backend} N_PROMPTS={n_prompts} SEED={seed} SEARCH_REWARD={search_reward} METHODS="{sd35_methods}" PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash run_all_method_ablations.sh || ( echo "[grid-all] SD3.5 stage FAILED"; if [ "{fail_fast}" = "1" ]; then exit 1; fi ); fi'
       # ---- Stage 2: FLUX-schnell grid (via composite_all_backends.sh) ----
-      - 'if [ "{run_flux}" = "1" ]; then echo "[grid-all] Stage 2: FLUX grid"; export RUN_ROOT=$$RUN_ROOT_BASE/flux_schnell; mkdir -p "$$RUN_ROOT"; BACKENDS=flux_schnell METHODS="{flux_methods}" N_PROMPTS={n_prompts} SEEDS="{seed}" N_SIMS=60 PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash hpsv2_composite_all_backends.sh || ( echo "[grid-all] FLUX stage FAILED"; exit 1 ); fi'
+      - 'if [ "{run_flux}" = "1" ]; then echo "[grid-all] Stage 2: FLUX grid"; export RUN_ROOT=$$RUN_ROOT_BASE/flux_schnell; mkdir -p "$$RUN_ROOT"; BACKENDS=flux_schnell METHODS="{flux_methods}" N_PROMPTS={n_prompts} SEEDS="{seed}" N_SIMS=60 SEARCH_REWARD="composite_hpsv3_ir" REWARD_BACKEND="composite_hpsv3_ir" REWARD_TYPE="composite_hpsv3_ir" REWARD_BACKENDS="composite_hpsv3_ir" PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash hpsv2_composite_all_backends.sh || ( echo "[grid-all] FLUX stage FAILED"; exit 1 ); fi'
       - echo "[grid-all] all stages done. RUN_ROOT_BASE=$$RUN_ROOT_BASE"
       - find "$$RUN_ROOT_BASE" -maxdepth 3 -name 'summary.tsv' || true
 

@@ -130,7 +130,7 @@ search:
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
       # ?? Stage 1: composite_all_backends ----
-      - 'if [ "{run_composite}" = "1" ]; then echo "[aio] Stage 1: composite_all_backends"; export RUN_ROOT=$$RUN_ROOT_BASE/composite; mkdir -p "$$RUN_ROOT"; BACKENDS="{composite_backends}" METHODS="{composite_methods}" N_PROMPTS={composite_n_prompts} SEEDS="{composite_seeds}" N_SIMS={composite_n_sims} PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash hpsv2_composite_all_backends.sh || ( echo "[aio] composite FAILED"; if [ "{fail_fast}" = "1" ]; then exit 1; fi ); fi'
+      - 'if [ "{run_composite}" = "1" ]; then echo "[aio] Stage 1: composite_all_backends"; export RUN_ROOT=$$RUN_ROOT_BASE/composite; mkdir -p "$$RUN_ROOT"; BACKENDS="{composite_backends}" METHODS="{composite_methods}" N_PROMPTS={composite_n_prompts} SEEDS="{composite_seeds}" N_SIMS={composite_n_sims} SEARCH_REWARD="imagereward" REWARD_BACKEND="imagereward" REWARD_TYPE="imagereward" REWARD_BACKENDS="imagereward" PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash hpsv2_composite_all_backends.sh || ( echo "[aio] composite FAILED"; if [ "{fail_fast}" = "1" ]; then exit 1; fi ); fi'
       # ?? Stage 2: smartprompt ablation ----
       - 'if [ "{run_smartprompt}" = "1" ]; then echo "[aio] Stage 2: smartprompt ablation"; export RUN_ROOT=$$RUN_ROOT_BASE/smartprompt; mkdir -p "$$RUN_ROOT"; BACKEND={smartprompt_backend} N_PROMPTS={smartprompt_n_prompts} SEED={smartprompt_seed} SEARCH_REWARD={smartprompt_search_reward} CELLS="{smartprompt_cells}" PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash run_mcts_smartprompt_ablation.sh || ( echo "[aio] smartprompt FAILED"; exit 1 ); fi'
 

@@ -82,9 +82,11 @@ export EVAL_REWARD_DEVICE=cuda
 export EVAL_ALLOW_MISSING_BACKENDS=0
 
 # ── Composite reward (the half-half normalized hpsv3+imagereward) ────────────
-export REWARD_BACKEND="composite_hpsv3_ir"
-export REWARD_TYPE="composite_hpsv3_ir"
-export REWARD_BACKENDS="composite_hpsv3_ir"
+# Default to composite_hpsv3_ir for backwards compat, but honor any caller
+# override (e.g. actdiff_grid_*_ir.yaml passes SEARCH_REWARD=imagereward).
+export REWARD_BACKEND="${REWARD_BACKEND:-${SEARCH_REWARD:-composite_hpsv3_ir}}"
+export REWARD_TYPE="${REWARD_TYPE:-${REWARD_BACKEND}}"
+export REWARD_BACKENDS="${REWARD_BACKENDS:-${REWARD_BACKEND}}"
 # Eval covers both raw rewards so we can decompose the composite gain.
 export EVAL_BACKENDS="imagereward hpsv3"
 

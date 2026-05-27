@@ -154,7 +154,7 @@ search:
       - bash run_all_method_ablations.sh
       # ?? Auto-emit synergy plot ----
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir matplotlib || true
-      - /opt/conda/envs/ptca/bin/python plot_synergy_2x2.py --summary "$$RUN_ROOT"/run_*/summary.tsv --metric eval_ir || /opt/conda/envs/ptca/bin/python plot_synergy_2x2.py --summary "$$RUN_ROOT"/summary.tsv --metric eval_ir || true
+      # (synergy plot omitted -- actdiff_grid does not include 2x2 corner cells)
 
     submit_args:
       env:

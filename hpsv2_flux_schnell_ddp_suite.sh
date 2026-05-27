@@ -917,13 +917,13 @@ for method in ${METHODS}; do
         --n_variants 1
       ;;
     bon_actdiff_full)
-      # FLUX BoN over CFG × prompt-rewrite bank.
+      # FLUX BoN over CFG x prompt-rewrite bank.
       run_flux_sharded "bon_actdiff_full" "bon" \
         --bon_n "${BON_N}" \
         --bon_action_diverse 1 \
         --cfg_scales ${CFG_SCALES} \
         --n_variants "${SYNERGY_N_VARIANTS:-3}" \
-        --rewrites_file "${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
+        --rewrites_file "${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
       ;;
     bon_mcts)
       run_flux_sharded "bon_mcts" "mcts" \
@@ -998,7 +998,7 @@ for method in ${METHODS}; do
       elif [[ "${method}" == "sop_actdiff_full" ]]; then
         _sop_action_diverse=1
         _sop_n_variants="${SYNERGY_N_VARIANTS:-3}"
-        _sop_rewrites="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
+        _sop_rewrites="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
         # shellcheck disable=SC2206
         _sop_cfg_arr=(${SOP_CFG_BANK:-${CFG_SCALES}})
         _sop_cfg_bank_arg=( --sop_cfg_bank "${_sop_cfg_arr[@]}" )

@@ -968,7 +968,7 @@ run_method() {
       mode_arg="bon"
       BON_ACTION_DIVERSE=1
       N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
-      REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
+      REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
       ;;
     sop_actdiff_cfg)
       # SoP with CFG axis added to branching (variant fixed).
@@ -983,7 +983,7 @@ run_method() {
       SOP_ACTION_DIVERSE=1
       SOP_CFG_BANK="${SOP_CFG_BANK:-${CFG_SCALES}}"
       N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
-      REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
+      REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
       _sop_var_max="$((${N_VARIANTS} - 1))"
       SOP_VARIANT_BANK="$(seq -s' ' 0 ${_sop_var_max})"
       ;;
@@ -1002,7 +1002,7 @@ run_method() {
       SMC_VARIANT_EXPANSION=1
       SMC_EXPANSION_CFGS="${SMC_EXPANSION_CFGS:-${CFG_SCALES}}"
       N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
-      REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
+      REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
       _smc_var_max="$((${N_VARIANTS} - 1))"
       SMC_EXPANSION_VARIANTS="$(seq -s' ' 0 ${_smc_var_max})"
       SMC_EXPANSION_CS="${SMC_EXPANSION_CS:-0.0}"
@@ -1015,7 +1015,7 @@ run_method() {
       CFG_SCALES="${BASELINE_CFG}"
       CORRECTION_STRENGTHS="0.0"
       N_VARIANTS="${SYNERGY_N_VARIANTS:-${N_VARIANTS}}"
-      REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
+      REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
       ;;
     bon_mcts_static_cfg|bon_mcts_adaptive_cfg|bon_mcts_rewrite_only|bon_mcts_full|bon_mcts|bon_mcts_neg|bon_mcts_sigma|bon_mcts_axes|bon_mcts_step_reward|bon_mcts_multiseed|bon_mcts_singleseed)
       # Action-axis variants share the bon_mcts runner; only differ in which
@@ -1050,7 +1050,7 @@ run_method() {
           BON_MCTS_REFINE_METHOD="mcts"
           LOOKAHEAD_METHOD_MODE=""
           N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
-          REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
+          REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
           BON_MCTS_NEG_BANK=""
           BON_MCTS_SIGMA_PERTURB_BANK=""
           ;;
@@ -1058,7 +1058,7 @@ run_method() {
           BON_MCTS_REFINE_METHOD="ours_tree"
           LOOKAHEAD_METHOD_MODE="rollout_tree_prior_adaptive_cfg"
           N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
-          REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE}}"
+          REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
           BON_MCTS_NEG_BANK=""
           BON_MCTS_SIGMA_PERTURB_BANK=""
           ;;

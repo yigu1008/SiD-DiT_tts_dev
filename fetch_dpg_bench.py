@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Iterable
 
 # HF dataset candidates (try in order).  None of these are official ELLA — the
-# DPG-Bench data has been redistributed by the community.
+# DPG-Bench data has been redistributed by the community.  Most do not exist;
+# we keep them as low-priority fallbacks after the GitHub raw fetch.
 _HF_CANDIDATES = [
     ("Geonmo/DPG-Bench", None),
     ("xhinker/DPG-Bench", None),
@@ -30,10 +31,15 @@ _HF_CANDIDATES = [
     ("openMUSE/dpg-bench", None),
 ]
 
-# Direct raw URLs (GitHub mirrors of the ELLA repo).
+# Direct raw URLs.  The canonical source is the ELLA repo's dpg_bench/ folder:
+#   github.com/TencentQQGYLab/ELLA/tree/main/dpg_bench
+# The file is `dpg_bench.csv` (header: `item_id,text`).
 _RAW_URL_CANDIDATES = [
-    "https://raw.githubusercontent.com/TencentQQGYLab/ELLA/main/dpg_bench/prompts.csv",
-    "https://raw.githubusercontent.com/TencentQQGYLab/ELLA/main/dpg_bench/dpg_bench.json",
+    "https://raw.githubusercontent.com/TencentQQGYLab/ELLA/main/dpg_bench/dpg_bench.csv",
+    # jsDelivr CDN mirror (works behind some firewalls where raw.githubusercontent blocks):
+    "https://cdn.jsdelivr.net/gh/TencentQQGYLab/ELLA@main/dpg_bench/dpg_bench.csv",
+    # Statically.io mirror (another GitHub CDN):
+    "https://cdn.statically.io/gh/TencentQQGYLab/ELLA/main/dpg_bench/dpg_bench.csv",
 ]
 
 
@@ -132,14 +138,37 @@ def main() -> None:
     p.add_argument("--shuffle", action="store_true",
                    help="Shuffle before truncation.")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--csv_url", default=None,
+                   help="Override: fetch this URL instead of the built-in list.")
+    p.add_argument("--local_csv", default=None, type=Path,
+                   help="Override: parse this already-downloaded CSV/JSON file.")
     args = p.parse_args()
 
-    prompts = _try_hf()
-    if not prompts:
+    prompts: list[str] = []
+    if args.local_csv and args.local_csv.exists():
+        print(f"  [local] reading {args.local_csv}")
+        body = args.local_csv.read_text(encoding="utf-8", errors="ignore")
+        import csv
+        from io import StringIO
+        reader = csv.DictReader(StringIO(body))
+        if reader.fieldnames:
+            col = next((c for c in ("prompt", "Prompt", "text", "caption")
+                        if c in reader.fieldnames), reader.fieldnames[-1])
+            prompts = [str(row.get(col, "")).strip() for row in reader if row.get(col)]
+    if not prompts and args.csv_url:
+        global _RAW_URL_CANDIDATES
+        _RAW_URL_CANDIDATES = [args.csv_url]
         prompts = _try_github_raw()
     if not prompts:
+        # GitHub raw first (canonical, dependency-free); HF as fallback.
+        prompts = _try_github_raw()
+    if not prompts:
+        prompts = _try_hf()
+    if not prompts:
         print("[FATAL] could not fetch DPG-Bench from any known source.")
-        print("        Try manually: pip install datasets; then huggingface-cli login")
+        print("        Manual fallback:")
+        print("          wget https://raw.githubusercontent.com/TencentQQGYLab/ELLA/main/dpg_bench/dpg_bench.csv")
+        print("          python fetch_dpg_bench.py --local_csv dpg_bench.csv --out_file dpg_bench_prompts.txt")
         sys.exit(1)
 
     # De-dup while keeping order.

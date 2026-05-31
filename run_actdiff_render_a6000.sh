@@ -72,18 +72,32 @@ fi
 export REWARD_SERVER_URL
 
 # ── Sample prompts ─────────────────────────────────────────────────────────
+# If caller set PROMPT_FILE in the env (e.g. pointing at dpg_bench_prompts.txt),
+# honor it; otherwise auto-generate via cherry_pick_prompts.py.
+PROMPT_FILE_OVERRIDE="${PROMPT_FILE:-}"
 PROMPTS_DIR="${RUN_ROOT}/_prompts"
 mkdir -p "${PROMPTS_DIR}"
-PROMPT_FILE="${PROMPTS_DIR}/backend_${BACKEND}.txt"
-if [[ ! -f "${PROMPT_FILE}" ]]; then
-    "${PYTHON_BIN}" "${SCRIPT_DIR}/cherry_pick_prompts.py" \
-        --n_prompts "${N_PROMPTS}" --out_dir "${PROMPTS_DIR}" \
-        --backends "${BACKEND}" || \
-    {  # local fallback if HF unreachable
-        cp "${SCRIPT_DIR}/hpsv2_subset.txt" "${PROMPT_FILE}" 2>/dev/null || \
-            { echo "[FATAL] no prompts available"; exit 1; }
-        head -n "${N_PROMPTS}" "${PROMPT_FILE}" > "${PROMPT_FILE}.tmp" && mv "${PROMPT_FILE}.tmp" "${PROMPT_FILE}"
-    }
+if [[ -n "${PROMPT_FILE_OVERRIDE}" && -f "${PROMPT_FILE_OVERRIDE}" ]]; then
+    PROMPT_FILE="${PROMPT_FILE_OVERRIDE}"
+    echo "[a6000] using user-provided PROMPT_FILE=${PROMPT_FILE}"
+    if [[ "${N_PROMPTS}" -gt 0 ]]; then
+        TRUNC="${PROMPTS_DIR}/backend_${BACKEND}.txt"
+        head -n "${N_PROMPTS}" "${PROMPT_FILE}" > "${TRUNC}"
+        PROMPT_FILE="${TRUNC}"
+        echo "[a6000] truncated to first ${N_PROMPTS} prompts -> ${PROMPT_FILE}"
+    fi
+else
+    PROMPT_FILE="${PROMPTS_DIR}/backend_${BACKEND}.txt"
+    if [[ ! -f "${PROMPT_FILE}" ]]; then
+        "${PYTHON_BIN}" "${SCRIPT_DIR}/cherry_pick_prompts.py" \
+            --n_prompts "${N_PROMPTS}" --out_dir "${PROMPTS_DIR}" \
+            --backends "${BACKEND}" || \
+        {  # local fallback if HF unreachable
+            cp "${SCRIPT_DIR}/hpsv2_subset.txt" "${PROMPT_FILE}" 2>/dev/null || \
+                { echo "[FATAL] no prompts available"; exit 1; }
+            head -n "${N_PROMPTS}" "${PROMPT_FILE}" > "${PROMPT_FILE}.tmp" && mv "${PROMPT_FILE}.tmp" "${PROMPT_FILE}"
+        }
+    fi
 fi
 
 # ── Stage A: bon_mcts on the chosen backend ────────────────────────────────

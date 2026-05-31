@@ -87,6 +87,9 @@ if [[ -n "${PROMPT_FILE_OVERRIDE}" && -f "${PROMPT_FILE_OVERRIDE}" ]]; then
         echo "[a6000] truncated to first ${N_PROMPTS} prompts -> ${PROMPT_FILE}"
     fi
 else
+    if [[ -n "${PROMPT_FILE_OVERRIDE}" ]]; then
+        echo "[a6000] WARNING: PROMPT_FILE=${PROMPT_FILE_OVERRIDE} does NOT exist on disk -- ignoring and falling back to cherry_pick_prompts.py."
+    fi
     PROMPT_FILE="${PROMPTS_DIR}/backend_${BACKEND}.txt"
     if [[ ! -f "${PROMPT_FILE}" ]]; then
         "${PYTHON_BIN}" "${SCRIPT_DIR}/cherry_pick_prompts.py" \

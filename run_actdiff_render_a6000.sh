@@ -169,12 +169,25 @@ export PROMPT_RANGE="0:${N_PROMPTS}"
     --title_prefix "ActDiff (${BACKEND})" \
     --workers 4 || true
 
-# Stage B.2: per-step x_0 images
+# Stage B.2: per-step x_0 images.
+# Free GPU 0 first -- the reward server still pins ~10GB; SD3.5L + T5XXL +
+# replay needs the whole 48GB on A6000.
+if [[ -n "${SERVER_PID:-}" ]]; then
+    echo "[a6000] killing reward server (PID=${SERVER_PID}) before Stage B.2 to free GPU"
+    kill "${SERVER_PID}" 2>/dev/null || true
+    wait "${SERVER_PID}" 2>/dev/null || true
+    trap - EXIT
+    sleep 5    # let CUDA context release
+fi
+# Make sure we use the same memory knobs the run_render_trees_a6000 path uses.
+PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}" \
+OFFLOAD_TEXT_ENCODER_AFTER_ENCODE="${OFFLOAD_TEXT_ENCODER_AFTER_ENCODE:-1}" \
+MAX_SEQ_LEN="${MAX_SEQ_LEN:-128}" \
 "${PYTHON_BIN}" "${SCRIPT_DIR}/replay_winner_step_images.py" \
     --run_root "${RUN_ROOT}" --method bon_mcts --backend "${BACKEND}" \
     --prompt_range "${PROMPT_RANGE}" \
     --out_dir "${OUT_ROOT}/${BACKEND}_step_images" \
-    --height 1024 --width 1024 || true
+    --height 1024 --width 1024 || echo "[a6000] WARN Stage B.2 (step images) failed -- see stderr above"
 
 # Stage B.3: text logs
 "${PYTHON_BIN}" "${SCRIPT_DIR}/dump_winner_log.py" \

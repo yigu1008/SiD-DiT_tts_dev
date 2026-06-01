@@ -136,9 +136,10 @@ export BON_MCTS_MIN_SIMS=8
 export BON_MCTS_SIM_ALLOC=split
 export BON_MCTS_REFINE_METHOD=ours_tree
 export LOOKAHEAD_METHOD_MODE=rollout_tree_prior_adaptive_cfg
-export N_VARIANTS=1
-export USE_QWEN=0
-export PRECOMPUTE_REWRITES=0
+: "${N_VARIANTS:=1}"
+: "${USE_QWEN:=0}"
+: "${PRECOMPUTE_REWRITES:=0}"
+export N_VARIANTS USE_QWEN PRECOMPUTE_REWRITES
 export CORRECTION_STRENGTHS="0.0"
 export UCB_C=1.0
 export SAVE_BEST_IMAGES=1

@@ -37,7 +37,7 @@ REWARD_SERVER_URL="${REWARD_SERVER_URL:-http://localhost:${REWARD_SERVER_PORT}}"
 # A6000 memory knobs
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export OFFLOAD_TEXT_ENCODER_AFTER_ENCODE="${OFFLOAD_TEXT_ENCODER_AFTER_ENCODE:-1}"
-export MAX_SEQ_LEN="${MAX_SEQ_LEN:-128}"
+export MAX_SEQ_LEN="${MAX_SEQ_LEN:-256}"
 
 echo "================================================================"
 echo "actdiff-render-a6000"
@@ -190,7 +190,7 @@ fi
 # Make sure we use the same memory knobs the run_render_trees_a6000 path uses.
 PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}" \
 OFFLOAD_TEXT_ENCODER_AFTER_ENCODE="${OFFLOAD_TEXT_ENCODER_AFTER_ENCODE:-1}" \
-MAX_SEQ_LEN="${MAX_SEQ_LEN:-128}" \
+MAX_SEQ_LEN="${MAX_SEQ_LEN:-256}" \
 "${PYTHON_BIN}" "${SCRIPT_DIR}/replay_winner_step_images.py" \
     --run_root "${RUN_ROOT}" --method bon_mcts --backend "${BACKEND}" \
     --prompt_range "${PROMPT_RANGE}" \

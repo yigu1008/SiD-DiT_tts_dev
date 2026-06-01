@@ -122,17 +122,64 @@ def main() -> None:
                  f"  winner seed: {winner_seed}",
                  ""]
         if not path:
-            lines.append("  [no per-step decisions logged — falling back to prescreen summary]")
+            lines.append("  [no per-step decisions logged -- falling back to prescreen summary]")
             for row in (winners or [])[:5]:
                 lines.append(f"    seed={row.get('seed')}  prescreen_score={row.get('prescreen_score'):.4f}")
         else:
             lines.append("  per-step MCTS decisions (most-visited action per step):")
             for r in path:
-                mr = f"  r̄={r['mean_reward']:.3f}" if r["mean_reward"] is not None else ""
+                mr = f"  r_bar={r['mean_reward']:.3f}" if r["mean_reward"] is not None else ""
                 lines.append(
                     f"    step {r['step']}:  cfg={r['cfg']:<5.2f}  variant_idx={r['variant_idx']}  "
                     f"visits={r['visits']:3d}  n_alternatives={r['n_alternatives']:2d}{mr}"
                 )
+
+            # === Full per-step rollup of EVERY action MCTS evaluated ===
+            logs = diag.get("lookahead_node_logs") or diag.get("node_logs") or []
+            if logs:
+                per_step: dict[int, list[dict]] = {}
+                for r in logs:
+                    step = int(r.get("step_idx", -1))
+                    if step < 0:
+                        continue
+                    act = r.get("chosen_action") or {}
+                    key = (int(act.get("variant_idx", 0)),
+                           round(float(act.get("cfg", 0.0)), 4),
+                           round(float(act.get("cs", 0.0)), 4))
+                    bucket = per_step.setdefault(step, [])
+                    entry = next((b for b in bucket if b["_key"] == key), None)
+                    if entry is None:
+                        entry = {"_key": key, "variant_idx": key[0], "cfg": key[1],
+                                 "cs": key[2], "visits": 0, "preview_rewards": [],
+                                 "phases": []}
+                        bucket.append(entry)
+                    entry["visits"] += 1
+                    pr = r.get("preview_reward")
+                    if pr is not None:
+                        entry["preview_rewards"].append(float(pr))
+                    ph = r.get("phase") or r.get("kind")
+                    if ph and ph not in entry["phases"]:
+                        entry["phases"].append(str(ph))
+
+                lines.append("")
+                lines.append("  ALL actions evaluated by MCTS, per step:")
+                for step in sorted(per_step.keys()):
+                    rows_step = sorted(per_step[step],
+                                       key=lambda b: b["visits"], reverse=True)
+                    lines.append(f"    --- step {step} ({len(rows_step)} unique actions) ---")
+                    for b in rows_step:
+                        rs = b["preview_rewards"]
+                        rmean = sum(rs) / len(rs) if rs else None
+                        rmax = max(rs) if rs else None
+                        rmin = min(rs) if rs else None
+                        phase = ",".join(b["phases"]) if b["phases"] else "-"
+                        r_str = (f"  r_mean={rmean:+.4f}  r_min={rmin:+.4f}  r_max={rmax:+.4f}"
+                                 if rmean is not None else "  r=<no preview>")
+                        lines.append(
+                            f"      v={b['variant_idx']}  cfg={b['cfg']:<5.2f}  "
+                            f"cs={b['cs']:<5.2f}  visits={b['visits']:3d}  "
+                            f"phase={phase}{r_str}"
+                        )
         lines.append("")  # blank line
 
         out_txt = args.out_dir / f"prompt_{pi:04d}.txt"

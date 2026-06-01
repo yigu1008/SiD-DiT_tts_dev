@@ -152,8 +152,13 @@ export CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}"
 export OUT_ROOT="${RUN_ROOT}"
 export NUM_GPUS=1
 
+# Save x_0 after every step of the chosen MCTS trajectory, inline during
+# Stage A.  Pipeline is already loaded -- adds ~1 forward pass per prompt.
+export SAVE_BEST_STEP_IMAGES_DIR="${SAVE_BEST_STEP_IMAGES_DIR:-${RUN_ROOT}/step_images_inline}"
+mkdir -p "${SAVE_BEST_STEP_IMAGES_DIR}"
 echo
 echo "[a6000] STAGE A: running bon_mcts (backend=${BACKEND}, N=${N_PROMPTS})"
+echo "[a6000]   step images will land in: ${SAVE_BEST_STEP_IMAGES_DIR}"
 bash "${SUITE}" || echo "[a6000] WARN suite exited non-zero; continuing to viz"
 
 # ── Stage B: visualize ──────────────────────────────────────────────────────

@@ -680,6 +680,34 @@ def main() -> None:
                 if "mcts" in args.modes:
                     ctx.nfe = 0
                     mcts = run_mcts(args, ctx, emb, reward_model, prompt, variants, seed)
+                    # Optional: dump x_0 after each step of the winning trajectory.
+                    # Set SAVE_BEST_STEP_IMAGES_DIR=<absolute path> to enable.
+                    _step_dir_env = os.environ.get("SAVE_BEST_STEP_IMAGES_DIR")
+                    if _step_dir_env and mcts.actions:
+                        try:
+                            from sampling_unified_sd35 import (
+                                make_latents, step_schedule, _prepare_latents,
+                                transformer_step, _apply_step, _final_decode_tensor,
+                                decode_to_pil,
+                            )
+                            _pd = Path(_step_dir_env) / f"prompt_{int(prompt_index):04d}"
+                            _pd.mkdir(parents=True, exist_ok=True)
+                            _use_euler = bool(getattr(args, "euler_sampler", False))
+                            _x0_sampler = bool(getattr(args, "x0_sampler", False))
+                            _lat = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
+                            _dx = torch.zeros_like(_lat)
+                            _sched = step_schedule(ctx.device, _lat.dtype, args.steps, args.sigmas, euler=_use_euler)
+                            for _j, (_tf, _t4d, _sdt) in enumerate(_sched):
+                                _v, _cfg, _cs = mcts.actions[min(_j, len(mcts.actions) - 1)]
+                                _lat = _prepare_latents(_lat, _dx, torch.randn_like(_lat), _t4d, _j, _use_euler)
+                                _flow = transformer_step(args, ctx, _lat, emb, int(_v), _tf, float(_cfg))
+                                _lat, _dx = _apply_step(_lat, _flow, _dx, _t4d, _sdt, _use_euler, _x0_sampler)
+                                _img = decode_to_pil(ctx, _dx)
+                                _img.save(_pd / f"step_{_j}_cfg{float(_cfg):.2f}_v{int(_v)}.png")
+                            decode_to_pil(ctx, _final_decode_tensor(_lat, _dx, _use_euler)).save(_pd / "final.png")
+                            print(f"  [step-images] saved trajectory for prompt {prompt_index} -> {_pd}", flush=True)
+                        except Exception as _exc:
+                            print(f"  [step-images] WARN failed for prompt {prompt_index}: {type(_exc).__name__}: {_exc}", flush=True)
                     if args.save_images or args.save_best_images:
                         mcts.image.save(os.path.join(img_dir, f"{slug}_mcts.png"))
                     if args.save_images:

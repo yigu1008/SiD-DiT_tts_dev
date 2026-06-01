@@ -72,9 +72,11 @@ fi
 export REWARD_SERVER_URL
 
 # ── Sample prompts ─────────────────────────────────────────────────────────
-# If caller set PROMPT_FILE in the env (e.g. pointing at dpg_bench_prompts.txt),
-# honor it; otherwise auto-generate via cherry_pick_prompts.py.
-PROMPT_FILE_OVERRIDE="${PROMPT_FILE:-}"
+# Default prompt source: DPG-Bench (1065 dense compositional prompts).  Caller
+# can still override by exporting PROMPT_FILE to any plain-text file (one prompt
+# per line).  If the file doesn't exist on disk, we fall back to
+# cherry_pick_prompts.py (HPSv2+DrawBench).
+PROMPT_FILE_OVERRIDE="${PROMPT_FILE:-/data/ygu/dpg_bench_prompts.txt}"
 PROMPTS_DIR="${RUN_ROOT}/_prompts"
 mkdir -p "${PROMPTS_DIR}"
 if [[ -n "${PROMPT_FILE_OVERRIDE}" && -f "${PROMPT_FILE_OVERRIDE}" ]]; then

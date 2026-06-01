@@ -682,13 +682,16 @@ def main() -> None:
                     mcts = run_mcts(args, ctx, emb, reward_model, prompt, variants, seed)
                     # Optional: dump x_0 after each step of the winning trajectory.
                     # Set SAVE_BEST_STEP_IMAGES_DIR=<absolute path> to enable.
+                    # Uses the SAME deterministic noise cache that MCTS used
+                    # internally (_build_step_noise_cache(latents, n_steps, seed)),
+                    # so the replay reproduces the exact selected trajectory.
                     _step_dir_env = os.environ.get("SAVE_BEST_STEP_IMAGES_DIR")
                     if _step_dir_env and mcts.actions:
                         try:
                             from sampling_unified_sd35 import (
                                 make_latents, step_schedule, _prepare_latents,
                                 transformer_step, _apply_step, _final_decode_tensor,
-                                decode_to_pil,
+                                decode_to_pil, _build_step_noise_cache,
                             )
                             _pd = Path(_step_dir_env) / f"prompt_{int(prompt_index):04d}"
                             _pd.mkdir(parents=True, exist_ok=True)
@@ -697,9 +700,11 @@ def main() -> None:
                             _lat = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
                             _dx = torch.zeros_like(_lat)
                             _sched = step_schedule(ctx.device, _lat.dtype, args.steps, args.sigmas, euler=_use_euler)
+                            _noise_cache = _build_step_noise_cache(_lat, int(args.steps), int(seed))
                             for _j, (_tf, _t4d, _sdt) in enumerate(_sched):
                                 _v, _cfg, _cs = mcts.actions[min(_j, len(mcts.actions) - 1)]
-                                _lat = _prepare_latents(_lat, _dx, torch.randn_like(_lat), _t4d, _j, _use_euler)
+                                _base_noise = _noise_cache[_j] if _j < len(_noise_cache) else _noise_cache[-1]
+                                _lat = _prepare_latents(_lat, _dx, _base_noise, _t4d, _j, _use_euler)
                                 _flow = transformer_step(args, ctx, _lat, emb, int(_v), _tf, float(_cfg))
                                 _lat, _dx = _apply_step(_lat, _flow, _dx, _t4d, _sdt, _use_euler, _x0_sampler)
                                 _img = decode_to_pil(ctx, _dx)

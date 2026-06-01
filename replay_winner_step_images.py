@@ -34,9 +34,30 @@ from pathlib import Path
 from typing import Any
 
 
-def _load_diag(run_root: Path, method: str, prompt_idx: int) -> tuple[dict | None, str | None]:
-    """Return (bon_mcts_diag, prompt_text) for the given prompt."""
-    for jp in sorted(run_root.glob(f"**/{method}/**/rank_*.jsonl")):
+def _load_row(run_root: Path, method: str, prompt_idx: int) -> dict | None:
+    """Locate the JSONL row for (method, prompt_idx).
+
+    Tries multiple glob patterns to handle different on-disk layouts:
+      A) <root>/<method>/<run_ts>/rank_*.jsonl          (cluster default)
+      B) <root>/run_<ts>/<method>/logs/rank_*.jsonl     (a6000 wrapper)
+      C) <root>/**/rank_*.jsonl                         (catch-all)
+    """
+    globs = [
+        f"**/{method}/**/rank_*.jsonl",
+        f"**/rank_*.jsonl",
+    ]
+    seen: set = set()
+    candidates: list[Path] = []
+    for g in globs:
+        for jp in run_root.glob(g):
+            if jp in seen:
+                continue
+            seen.add(jp)
+            candidates.append(jp)
+    if not candidates:
+        print(f"    [debug] no rank_*.jsonl under {run_root} (tried {globs})")
+        return None
+    for jp in candidates:
         try:
             with open(jp) as f:
                 for line in f:
@@ -49,41 +70,74 @@ def _load_diag(run_root: Path, method: str, prompt_idx: int) -> tuple[dict | Non
                         continue
                     if int(row.get("prompt_index", -1)) != int(prompt_idx):
                         continue
-                    d = row.get("diagnostics") or {}
-                    if isinstance(d.get("bon_mcts"), dict):
-                        return d["bon_mcts"], row.get("prompt", "")
-                    return d, row.get("prompt", "")
+                    if row.get("mode") and row["mode"] != method:
+                        continue
+                    return row
         except Exception:
             continue
-    return None, None
+    return None
+
+
+def _load_diag(run_root: Path, method: str, prompt_idx: int) -> tuple[dict | None, str | None]:
+    """Return (diag-like-dict, prompt_text) for the given prompt.
+
+    The dict is augmented with a synthetic 'actions' field (list of [v, cfg, cs])
+    so callers can fall back to the chosen action sequence even when the run
+    didn't emit lookahead_node_logs (e.g. sd35_ddp_experiment.py path).
+    """
+    row = _load_row(run_root, method, prompt_idx)
+    if row is None:
+        return None, None
+    d = row.get("diagnostics") or {}
+    if isinstance(d.get("bon_mcts"), dict):
+        d = d["bon_mcts"]
+    # Always attach the per-step action sequence + winning seed if present.
+    if "actions" not in d and isinstance(row.get("actions"), list):
+        d = {**d, "actions": row["actions"]}
+    if "winner_seed" not in d and row.get("seed") is not None:
+        d = {**d, "winner_seed": int(row["seed"])}
+    return d, row.get("prompt", "")
 
 
 def _winning_action_sequence(diag: dict) -> list[tuple[int, float]]:
-    """For each step, return the (variant_idx, cfg) that MCTS most often picked.
+    """For each step, return the (variant_idx, cfg) MCTS picked.
 
-    Reads lookahead_node_logs (per-sim per-step decisions).  Returns
-    [(v_step0, cfg_step0), (v_step1, cfg_step1), ...] of length n_steps.
+    Two sources, in priority order:
+      1. lookahead_node_logs (per-sim per-step decisions) -- best, but only
+         emitted by sampling_unified_sd35_lookahead_reweighting.run_mcts_lookahead.
+      2. SearchResult.actions [(v, cfg, cs), ...] -- emitted by ALL search
+         methods (greedy/mcts/sop/...), so this is the universal fallback.
     """
     logs = diag.get("lookahead_node_logs") or diag.get("node_logs") or []
-    if not logs:
-        return []
-    visit: Counter = Counter()
-    for r in logs:
-        act = r.get("chosen_action") or {}
-        step = int(r.get("step_idx", -1))
-        if step < 0:
+    if logs:
+        visit: Counter = Counter()
+        for r in logs:
+            act = r.get("chosen_action") or {}
+            step = int(r.get("step_idx", -1))
+            if step < 0:
+                continue
+            key = (step, int(act.get("variant_idx", 0)), round(float(act.get("cfg", 0.0)), 4))
+            visit[key] += 1
+        by_step: dict[int, list[tuple]] = {}
+        for (step, v, cfg), n in visit.items():
+            by_step.setdefault(step, []).append((n, v, cfg))
+        out: list[tuple[int, float]] = []
+        for step in sorted(by_step.keys()):
+            cands = sorted(by_step[step], key=lambda t: t[0], reverse=True)
+            n, v, cfg = cands[0]
+            out.append((int(v), float(cfg)))
+        if out:
+            return out
+    # Fallback: SearchResult.actions field.
+    actions = diag.get("actions") or []
+    out2: list[tuple[int, float]] = []
+    for a in actions:
+        try:
+            v, cfg = int(a[0]), float(a[1])
+            out2.append((v, cfg))
+        except Exception:
             continue
-        key = (step, int(act.get("variant_idx", 0)), round(float(act.get("cfg", 0.0)), 4))
-        visit[key] += 1
-    by_step: dict[int, list[tuple]] = {}
-    for (step, v, cfg), n in visit.items():
-        by_step.setdefault(step, []).append((n, v, cfg))
-    out: list[tuple[int, float]] = []
-    for step in sorted(by_step.keys()):
-        cands = sorted(by_step[step], key=lambda t: t[0], reverse=True)
-        n, v, cfg = cands[0]
-        out.append((int(v), float(cfg)))
-    return out
+    return out2
 
 
 # ---- Per-backend replay helpers ------------------------------------------

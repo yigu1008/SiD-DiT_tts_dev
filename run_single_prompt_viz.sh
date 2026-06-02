@@ -23,7 +23,14 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# ── Prompt input ──────────────────────────────────────────────────────────
+# ── Default prompt baked into the script ─────────────────────────────────
+# This is the canonical "raccoon oil-painting" illustration prompt.  Caller
+# can override via PROMPT="..." env, PROMPT_FILE=... env, or first positional
+# arg.  Baking it here prevents shell line-wrapping from truncating the
+# long compositional sentence when pasted into the terminal.
+DEFAULT_PROMPT='a detailed oil painting that captures the essence of an elderly raccoon adorned with a distinguished black top hat. The raccoon'\''s fur is depicted with textured, swirling strokes reminiscent of Van Gogh'\''s signature style, and it clutches a bright red apple in its paws. The background swirls with vibrant colors, giving the impression of movement around the still figure of the raccoon.'
+
+# ── Prompt input (priority: 1st arg > PROMPT env > PROMPT_FILE env > default) ─
 if [[ -n "${1:-}" ]]; then
     PROMPT="$1"
 fi
@@ -32,8 +39,8 @@ PROMPT_FILE="${PROMPT_FILE:-}"
 
 if [[ -z "${PROMPT_FILE}" ]]; then
     if [[ -z "${PROMPT}" ]]; then
-        echo "[FATAL] need PROMPT='...' env var, PROMPT_FILE=..., or 1st argument" >&2
-        exit 1
+        PROMPT="${DEFAULT_PROMPT}"
+        echo "[focus] using baked-in default prompt (raccoon oil-painting)"
     fi
     PROMPT_DIR="$(mktemp -d -t focus_prompt_XXXXXX)"
     PROMPT_FILE="${PROMPT_DIR}/prompt.txt"
@@ -54,10 +61,11 @@ RUN_ROOT="${RUN_ROOT:-${SCRIPT_DIR}/figures/focus_$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "${RUN_ROOT}"
 
 # Use 3 prompt variants by default so the action axis actually has
-# something to explore.  Set USE_QWEN=1 to do live rewrites; otherwise
-# we pass a tiny static rewrites file with one variant.
-USE_QWEN="${USE_QWEN:-0}"
-N_VARIANTS="${N_VARIANTS:-1}"
+# something to explore.  Qwen rewriting is ENABLED by default for this
+# illustration script -- override with USE_QWEN=0 N_VARIANTS=1 to test
+# the CFG axis alone.
+USE_QWEN="${USE_QWEN:-1}"
+N_VARIANTS="${N_VARIANTS:-3}"
 
 echo "================================================================"
 echo "FOCUSED single-prompt viz"

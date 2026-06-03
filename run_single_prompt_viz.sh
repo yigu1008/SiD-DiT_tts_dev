@@ -1,62 +1,70 @@
 #!/usr/bin/env bash
-# Single-file, self-contained illustration run for ONE prompt.
-# Combines: prompt baking, static rewrites (no Qwen on GPU), reward server,
-# bon_mcts via the suite, inline x_0 step images, full deliberation trace
-# (every MCTS-explored trajectory), decision tree render, per-prompt text log,
-# horizontal trajectory strip.
+# Single-prompt visualization, fully self-contained.
 #
-# Just run it -- no env vars required:
+# What it does (in order):
+#   1.  Bake the raccoon prompt to a file (overridable).
+#   2.  Run Qwen STANDALONE in a clean subprocess to write rewrites.json
+#       with strong-paraphrase styles (canonical + 3 rewrites).
+#   3.  Verify the rewrites cache has the expected shape.
+#   4.  Boot ImageReward server on its own port.
+#   5.  Run bon_mcts via the suite with rewriting + per-step CFG + inline
+#       step-image dump + all-rollout dump.
+#   6.  Kill reward server, render decision tree, dump action log, compose
+#       horizontal trajectory strip.
+#   7.  Final verification: was MCTS actually exposed to variants > 0, and
+#       did it ever pick one?
+#
+# Just run it:
 #   bash run_single_prompt_viz.sh
 #
-# Common overrides:
-#   PROMPT="..."          custom prompt (else uses baked raccoon)
+# Override (env vars or 1st positional arg for prompt):
+#   PROMPT="..." | PROMPT_FILE=/path | bash run_single_prompt_viz.sh "..."
 #   BACKEND=sid|senseflow_large|sd35_base
-#   N_SIMS=64             MCTS sim budget
-#   SEED=42
-#   RUN_ROOT=<path>       defaults to /data/ygu/runs/raccoon_full_trace_<ts>
-#   USE_QWEN=1            run Qwen at runtime (default 0: hand-crafted rewrites)
-#   N_VARIANTS=1          disable rewriting (CFG-only search)
+#   N_SIMS=64   SEED=42   N_VARIANTS=3   USE_QWEN=1
+#   RUN_ROOT=<path>
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 source "${SCRIPT_DIR}/_heartbeat.sh" 2>/dev/null || true
 type start_heartbeat >/dev/null 2>&1 && start_heartbeat "single-prompt-viz"
+
+# Prevent ~/.local site-packages (often a stale CPU-only torch) from
+# shadowing the conda env.  Critical for both Qwen and reward server.
 export PYTHONUNBUFFERED=1
-# Critical: prevent ~/.local/lib/python3.x torch from shadowing the conda env's
-# CUDA torch.  This bites Qwen precompute and the suite alike.
 export PYTHONNOUSERSITE=1
 
-# ── Configuration ─────────────────────────────────────────────────────────
+# ── Configuration (all env-overridable) ──────────────────────────────────
 PYTHON_BIN="${PYTHON_BIN:-python}"
 CUDA_DEVICE="${CUDA_VISIBLE_DEVICES:-0}"
 BACKEND="${BACKEND:-sid}"
 N_SIMS="${N_SIMS:-64}"
 SEED="${SEED:-42}"
 SEARCH_REWARD="${SEARCH_REWARD:-imagereward}"
-
 RUN_ROOT="${RUN_ROOT:-/data/ygu/runs/raccoon_full_trace_$(date +%Y%m%d_%H%M%S)}"
-OUT_ROOT="${OUT_ROOT:-${RUN_ROOT}}"
-mkdir -p "${RUN_ROOT}" "${OUT_ROOT}"
-REWARD_SERVER_PORT="${REWARD_SERVER_PORT:-5318}"
-REWARD_SERVER_URL="${REWARD_SERVER_URL:-http://localhost:${REWARD_SERVER_PORT}}"
+mkdir -p "${RUN_ROOT}"
 
-# A6000 memory knobs
-export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
-export OFFLOAD_TEXT_ENCODER_AFTER_ENCODE="${OFFLOAD_TEXT_ENCODER_AFTER_ENCODE:-1}"
-export MAX_SEQ_LEN="${MAX_SEQ_LEN:-256}"
-
-# Rewriting: REAL Qwen rewrites, run as a STANDALONE step BEFORE the reward
-# server boots, so Qwen has the full GPU.  After this step Qwen exits and
-# all CUDA memory is released; the suite is then told USE_QWEN=0 and points
-# at the cache.  No two heavy models on the GPU at the same time.
+# Rewriting + variant exploration.
 USE_QWEN="${USE_QWEN:-1}"
 N_VARIANTS="${N_VARIANTS:-3}"
 QWEN_ID="${QWEN_ID:-Qwen/Qwen2.5-3B-Instruct}"
 QWEN_DTYPE="${QWEN_DTYPE:-bfloat16}"
-export SAVE_ALL_ATTEMPTS="${SAVE_ALL_ATTEMPTS:-1}"
+QWEN_TEMP="${QWEN_TEMP:-1.0}"
+QWEN_TOP_P="${QWEN_TOP_P:-0.95}"
+QWEN_MAX_NEW_TOKENS="${QWEN_MAX_NEW_TOKENS:-384}"
 
-# ── Default prompt baked into the script ─────────────────────────────────
+# Strong paraphrase instructions for the visualization run.
+export REWRITE_STYLES_OVERRIDE="${REWRITE_STYLES_OVERRIDE:-Paraphrase this prompt for an image generator using completely different sentence structure and synonyms while preserving every visual detail.||Rewrite this prompt as if describing the same scene to a different illustrator, freely rearranging clauses and substituting words.||Restate the prompt with rich, vivid wording: invert the order of elements, replace verbs and adjectives, and add atmospheric detail without inventing new objects.}"
+
+# A6000 memory knobs.
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export OFFLOAD_TEXT_ENCODER_AFTER_ENCODE="${OFFLOAD_TEXT_ENCODER_AFTER_ENCODE:-1}"
+export MAX_SEQ_LEN="${MAX_SEQ_LEN:-256}"
+
+REWARD_SERVER_PORT="${REWARD_SERVER_PORT:-5320}"
+REWARD_SERVER_URL="${REWARD_SERVER_URL:-http://localhost:${REWARD_SERVER_PORT}}"
+
+# ── Step 1: prompt input (priority: 1st arg > PROMPT env > PROMPT_FILE > default) ─
 DEFAULT_PROMPT='a detailed oil painting that captures the essence of an elderly raccoon adorned with a distinguished black top hat. The raccoon'\''s fur is depicted with textured, swirling strokes reminiscent of Van Gogh'\''s signature style, and it clutches a bright red apple in its paws. The background swirls with vibrant colors, giving the impression of movement around the still figure of the raccoon.'
 
 if [[ -n "${1:-}" ]]; then PROMPT="$1"; fi
@@ -67,151 +75,118 @@ if [[ -z "${PROMPT_FILE}" ]]; then
         PROMPT="${DEFAULT_PROMPT}"
         echo "[viz] using baked-in default prompt (raccoon oil-painting)"
     fi
-    PROMPT_DIR="${RUN_ROOT}/_baked_prompt"
-    mkdir -p "${PROMPT_DIR}"
-    PROMPT_FILE="${PROMPT_DIR}/prompt.txt"
+    mkdir -p "${RUN_ROOT}/_baked_prompt"
+    PROMPT_FILE="${RUN_ROOT}/_baked_prompt/prompt.txt"
     printf '%s\n' "${PROMPT}" > "${PROMPT_FILE}"
 fi
-if [[ ! -s "${PROMPT_FILE}" ]]; then
-    echo "[FATAL] PROMPT_FILE empty or missing: ${PROMPT_FILE}" >&2; exit 1
-fi
+[[ -s "${PROMPT_FILE}" ]] || { echo "[FATAL] PROMPT_FILE empty: ${PROMPT_FILE}" >&2; exit 1; }
 PROMPT_TEXT="$(head -n1 "${PROMPT_FILE}")"
 
-# ── Rewrites cache ───────────────────────────────────────────────────────
-# Two paths:
-#   (A) USE_QWEN=1 (default): run Qwen STANDALONE here, before anything else
-#       touches the GPU.  Qwen exits cleanly; CUDA memory fully released.
-#   (B) USE_QWEN=0: fall back to a tiny hand-crafted JSON (raccoon-aware).
-REWRITES_FILE="${REWRITES_FILE:-${RUN_ROOT}/rewrites.json}"
+echo "================================================================"
+echo "SINGLE-PROMPT VIZ"
+echo "  BACKEND     = ${BACKEND}    N_SIMS = ${N_SIMS}    SEED = ${SEED}"
+echo "  N_VARIANTS  = ${N_VARIANTS}    USE_QWEN = ${USE_QWEN}    QWEN_ID = ${QWEN_ID}"
+echo "  PROMPT_FILE = ${PROMPT_FILE}"
+echo "  RUN_ROOT    = ${RUN_ROOT}"
+echo "  CUDA_DEVICE = ${CUDA_DEVICE}"
+echo "  PROMPT      = ${PROMPT_TEXT:0:120}..."
+echo "================================================================"
 
-if [[ ! -s "${REWRITES_FILE}" && "${N_VARIANTS}" -gt 1 ]]; then
-    mkdir -p "$(dirname "${REWRITES_FILE}")"
+# ── Step 2: Qwen offline → rewrites.json ─────────────────────────────────
+REWRITES_FILE="${REWRITES_FILE:-${RUN_ROOT}/rewrites.json}"
+if [[ ! -s "${REWRITES_FILE}" && "${N_VARIANTS}" -gt 0 ]]; then
     if [[ "${USE_QWEN}" == "1" ]]; then
-        echo "[rewrites] running Qwen STANDALONE (id=${QWEN_ID}) on GPU ${CUDA_DEVICE}"
-        # CODEBASE SEMANTIC: --n_variants = number of REWRITES (canonical NOT
-        # included).  precompute writes cache = [canonical, r1, r2, ..., r_N]
-        # = 1 + N_VARIANTS entries.  Runner's _legacy_target_size = N_VARIANTS+1
-        # matches that exactly.  So pass N_VARIANTS straight through.
-        QWEN_N="${N_VARIANTS}"
-        # Diverse paraphrasing for visualization runs.  The default styles
-        # in precompute_sd35_rewrites.py ("adjust slightly") produce trivial
-        # edits; we want substantially different paraphrases here so the
-        # MCTS variant axis is actually meaningful.
-        QWEN_TEMP="${QWEN_TEMP:-1.0}"           # higher = more diverse
-        QWEN_TOP_P="${QWEN_TOP_P:-0.95}"
-        QWEN_MAX_NEW_TOKENS="${QWEN_MAX_NEW_TOKENS:-384}"
-        export REWRITE_STYLES_OVERRIDE="${REWRITE_STYLES_OVERRIDE:-Paraphrase this prompt for an image generator using completely different sentence structure and synonyms while preserving every visual detail.||Rewrite this prompt as if describing the same scene to a different illustrator, freely rearranging clauses and substituting words.||Restate the prompt with rich, vivid wording: invert the order of elements, replace verbs and adjectives, and add atmospheric detail without inventing new objects.||Express the same scene using a different opening, different verb tense if natural, and different adjective choices, keeping all key nouns intact.}"
-        # Critical: PYTHONNOUSERSITE=1 prevents ~/.local/lib torch (CPU-only)
-        # from shadowing the conda env's CUDA-enabled torch.
+        echo
+        echo "[step 2] Qwen STANDALONE (id=${QWEN_ID}) on GPU ${CUDA_DEVICE}"
         env -u RANK -u LOCAL_RANK -u WORLD_SIZE -u LOCAL_WORLD_SIZE -u NODE_RANK -u MASTER_ADDR -u MASTER_PORT \
         PYTHONNOUSERSITE=1 \
         CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" \
-        "${PYTHON_BIN}" -u "${SCRIPT_DIR}/precompute_sd35_rewrites.py" \
+          "${PYTHON_BIN}" -u "${SCRIPT_DIR}/precompute_sd35_rewrites.py" \
             --prompt_file "${PROMPT_FILE}" \
             --rewrites_file "${REWRITES_FILE}" \
             --start_index 0 --end_index 1 \
-            --n_variants "${QWEN_N}" \
+            --n_variants "${N_VARIANTS}" \
             --qwen_id "${QWEN_ID}" --qwen_dtype "${QWEN_DTYPE}" \
             --device cuda:0 --batch_size 1 \
             --save_every_batches 1 \
             --max_new_tokens "${QWEN_MAX_NEW_TOKENS}" \
             --temperature "${QWEN_TEMP}" --top_p "${QWEN_TOP_P}" \
             --no-clear_cache_each_batch \
-            || echo "[rewrites] WARN Qwen precompute failed; will fall back to hand-crafted"
-        # Make sure CUDA is fully released before reward server / SD3.5 loads.
+            || echo "[step 2] WARN Qwen precompute failed; will use hand-crafted fallback"
         sleep 5
         if command -v nvidia-smi >/dev/null 2>&1; then
-            echo "[rewrites] GPU state after Qwen exit:"
+            echo "[step 2] GPU after Qwen exit:"
             nvidia-smi --query-gpu=memory.used,memory.free --format=csv | head -2
         fi
     fi
-    # Hand-crafted fallback (also covers USE_QWEN=0 case).  Match the format
-    # produced by precompute_sd35_rewrites.py exactly: cache[prompt] starts
-    # with the canonical prompt itself as element 0, then paraphrases follow.
+    # Hand-crafted fallback if Qwen unavailable/failed.
     if [[ ! -s "${REWRITES_FILE}" ]]; then
+        echo "[step 2] writing hand-crafted rewrites fallback"
         python3 - "${PROMPT_TEXT}" "${REWRITES_FILE}" "${N_VARIANTS}" <<'PY'
 import json, sys
 prompt, out, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
 RACCOON_POOL = [
-    "An expressive impressionist oil painting of a dignified old raccoon wearing a tall black top hat. Its bushy fur is rendered in thick, swirling Van-Gogh-style brushstrokes, and a vivid red apple is held tightly in its tiny paws. Around the raccoon, the canvas swirls with luminous colors that radiate motion while the animal itself remains perfectly still.",
-    "A masterful Post-Impressionist portrait painted in oil: an elderly raccoon in a formal black top hat clasps a glossy crimson apple in its small hands. Every strand of its silvery, textured fur is laid down in churning Van Gogh brushwork, and the swirling, vividly hued background twists around the calm, stationary figure of the raccoon.",
-    "A textured Van-Gogh-style oil painting features a stately, elderly raccoon adorned with a tall, polished black top hat. The animal grasps a vivid scarlet apple in its slender paws, while heavy, rhythmic brushstrokes around it weave a swirling tapestry of brilliant color that seems to breathe motion around the perfectly still raccoon.",
-    "An ornate Post-Impressionist canvas depicting an aged raccoon dressed in a dignified black top hat, holding a luscious crimson apple firmly in its tiny hands. Each tuft of its rich silver-and-charcoal fur is laid down in churning, expressive brushwork, while around it a kaleidoscope of colors curls and eddies, the brushstrokes alive with motion that contrasts with the raccoon's serene composure.",
+  "An expressive impressionist oil painting of a dignified old raccoon wearing a tall black top hat, holding a vivid red apple. Heavy Van-Gogh brushwork swirls across textured fur while a kaleidoscope of color eddies around the still creature.",
+  "A masterful Post-Impressionist portrait of an elderly raccoon in formal black top hat clasping a glossy crimson apple. Every strand of its silvery fur is laid down in churning brushwork, the background a vivid whirl of motion around the calm animal.",
+  "Oil on canvas, Van-Gogh inspired: a stately senior raccoon crowned with a polished black top hat grasps a luscious scarlet apple. Rhythmic brushstrokes weave colorful curls of motion that orbit the perfectly still subject.",
+  "Ornate Post-Impressionist canvas: aged raccoon in dignified black top hat firmly holding a deep crimson apple. Tufts of rich silver-charcoal fur in expressive strokes; swirling kaleidoscope of color animates the scene around the serene composition.",
 ]
-def paraphrases(p, k):
+def variants(p, k):
     if "raccoon" in p.lower():
         pool = RACCOON_POOL
     else:
-        pool = [f"In a richly detailed scene: {p}",
-                f"A carefully composed image where {p[0].lower()}{p[1:]}",
-                f"An evocative rendering: {p}",
-                f"A masterful depiction. {p}"]
+        pool = [f"In a richly detailed scene: {p}", f"A carefully composed image where {p[0].lower()}{p[1:]}",
+                f"An evocative rendering: {p}", f"A masterful depiction. {p}"]
     while len(pool) < k:
         pool.append(p + " (variation " + str(len(pool)+1) + ")")
-    return pool[:k]
-variants = [prompt] + paraphrases(prompt, n)        # canonical FIRST + n paraphrases
-with open(out, "w", encoding="utf-8") as f:
-    json.dump({prompt: variants}, f, indent=2, ensure_ascii=False)
-print(f"[rewrites] (fallback) wrote {out}  total_entries={len(variants)}  rewrites={len(variants)-1}", flush=True)
+    return [prompt] + pool[:k]
+vs = variants(prompt, n)
+json.dump({prompt: vs}, open(out, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+print(f"[step 2] wrote {out}  entries={len(vs)} (1 canonical + {len(vs)-1} rewrites)", flush=True)
 PY
     fi
 fi
-# Inside the suite we DON'T want it to re-run Qwen -- we already have the cache.
 export REWRITES_FILE
-# These force the suite's runtime Qwen path off; suite will just read REWRITES_FILE.
-USE_QWEN=0
-export PRECOMPUTE_REWRITES=0
 
-# Dump rewrites cache structure so we can VERIFY before the long sampling step.
+# ── Step 3: verify rewrites cache before we sink hours into sampling ─────
+echo
+echo "[step 3] verifying rewrites cache"
 python3 - "${REWRITES_FILE}" "${PROMPT_TEXT}" "${N_VARIANTS}" <<'PY'
 import json, sys
-fp, prompt_text, n_variants_req = sys.argv[1], sys.argv[2], int(sys.argv[3])
+fp, key, n_req = sys.argv[1], sys.argv[2], int(sys.argv[3])
 try:
     d = json.load(open(fp, encoding="utf-8"))
 except Exception as exc:
-    print(f"[verify] FATAL: cannot load {fp}: {exc}"); sys.exit(1)
-print(f"[verify] rewrites cache: {fp}")
-print(f"[verify]   N_VARIANTS requested (rewrites count): {n_variants_req}")
-print(f"[verify]   total prompt keys: {len(d)}")
-if prompt_text not in d:
-    print(f"[verify]   !!! WARNING: prompt key NOT FOUND -- exact-match lookup will MISS !!!")
-    print(f"[verify]       expected: {prompt_text[:80]}...")
-    print(f"[verify]       got keys: {[k[:60] for k in list(d.keys())[:3]]}")
-else:
-    entries = d[prompt_text]
-    expected_total = 1 + n_variants_req
-    print(f"[verify]   cache entries for this prompt: {len(entries)}  (expected {expected_total} = 1 canonical + {n_variants_req} rewrites)")
-    if len(entries) != expected_total:
-        print(f"[verify]   !!! MISMATCH between cache and N_VARIANTS !!!")
-    print(f"[verify]   v0 (canonical) : {entries[0][:90]}...")
-    for i, v in enumerate(entries[1:], start=1):
-        marker = " <-- DUPLICATE OF v0!" if v.strip() == entries[0].strip() else ""
-        print(f"[verify]   v{i} (rewrite)  : {v[:90]}...{marker}")
+    print(f"[step 3] FATAL: cannot load {fp}: {exc}"); sys.exit(1)
+if key not in d:
+    print(f"[step 3] FATAL: prompt key MISSING from cache -- exact-match lookup will fail!")
+    print(f"        expected: {key[:80]}...")
+    print(f"        keys present: {[k[:60] for k in list(d.keys())[:3]]}")
+    sys.exit(1)
+entries = d[key]
+expected = 1 + n_req
+print(f"[step 3] cache file: {fp}")
+print(f"[step 3] entries: {len(entries)}  (expected {expected} = 1 canonical + {n_req} rewrites)")
+dupes = sum(1 for v in entries[1:] if v.strip() == entries[0].strip())
+print(f"[step 3] duplicates of canonical: {dupes}")
+for i, v in enumerate(entries):
+    label = "canonical" if i == 0 else "rewrite  "
+    print(f"        v{i} ({label}): {v[:100]}{'...' if len(v)>100 else ''}")
+if len(entries) < expected:
+    print(f"[step 3] WARN: fewer entries than requested.  MCTS will see {len(entries)} variants.")
+print("[step 3] PASS" if len(entries) >= 2 else "[step 3] FAIL -- no rewrites in cache")
 PY
-# Also tell the runner to dump its own variants file per prompt.
-export SAVE_VARIANTS=1
+[[ $? -eq 0 ]] || exit 1
 
-echo "================================================================"
-echo "FOCUSED single-prompt viz (all-in-one)"
-echo "  BACKEND       = ${BACKEND}"
-echo "  N_SIMS        = ${N_SIMS}"
-echo "  SEED          = ${SEED}"
-echo "  N_VARIANTS    = ${N_VARIANTS}     USE_QWEN=${USE_QWEN}"
-echo "  REWRITES_FILE = ${REWRITES_FILE}"
-echo "  PROMPT_FILE   = ${PROMPT_FILE}"
-echo "  RUN_ROOT      = ${RUN_ROOT}"
-echo "  PROMPT        = ${PROMPT_TEXT:0:120}..."
-echo "================================================================"
-
-# ── Reward server ────────────────────────────────────────────────────────
+# ── Step 4: boot reward server ───────────────────────────────────────────
+echo
+echo "[step 4] booting ImageReward server on GPU ${CUDA_DEVICE}, port ${REWARD_SERVER_PORT}"
 SERVER_LOG="${RUN_ROOT}/reward_server.log"
 SERVER_PID=""
 if curl -s --max-time 3 "${REWARD_SERVER_URL}/health" >/dev/null 2>&1; then
-    echo "[viz] reusing reward server at ${REWARD_SERVER_URL}"
+    echo "[step 4] reusing existing server at ${REWARD_SERVER_URL}"
 else
-    echo "[viz] booting ImageReward server on GPU ${CUDA_DEVICE}"
-    CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" \
-    PYTHONNOUSERSITE=1 \
+    CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" PYTHONNOUSERSITE=1 \
       "${PYTHON_BIN}" "${SCRIPT_DIR}/reward_server.py" \
         --port "${REWARD_SERVER_PORT}" --device cuda:0 \
         --backends imagereward --image_reward_model ImageReward-v1.0 \
@@ -222,9 +197,8 @@ else
         if curl -s --max-time 3 "${REWARD_SERVER_URL}/health" >/dev/null 2>&1; then break; fi
         if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
             echo "[FATAL] reward server died -- last 80 lines of ${SERVER_LOG}:"
-            echo "================================================================"
+            echo "----------------------------------------------------------------"
             tail -n 80 "${SERVER_LOG}"
-            echo "================================================================"
             exit 1
         fi
         sleep 3
@@ -232,7 +206,7 @@ else
 fi
 export REWARD_SERVER_URL
 
-# ── Backend-specific defaults ────────────────────────────────────────────
+# ── Step 5: backend defaults + bon_mcts run ──────────────────────────────
 case "${BACKEND}" in
     sid|senseflow_large)
         export SD35_BACKEND="${BACKEND}"; unset FLUX_BACKEND || true
@@ -251,8 +225,7 @@ case "${BACKEND}" in
     *) echo "[FATAL] unsupported BACKEND=${BACKEND}"; exit 1 ;;
 esac
 
-# ── bon_mcts env ─────────────────────────────────────────────────────────
-export METHODS="${METHODS:-bon_mcts}"
+export METHODS=bon_mcts
 export PROMPT_FILE
 export START_INDEX=0
 export END_INDEX=1
@@ -264,118 +237,123 @@ export BON_MCTS_MIN_SIMS="${BON_MCTS_MIN_SIMS:-8}"
 export BON_MCTS_SIM_ALLOC=split
 export BON_MCTS_REFINE_METHOD=ours_tree
 export LOOKAHEAD_METHOD_MODE=rollout_tree_prior_adaptive_cfg
-export N_VARIANTS USE_QWEN
+# Inside the suite: don't re-run Qwen, we already have the cache.
+export USE_QWEN=0
+export PRECOMPUTE_REWRITES=0
+export N_VARIANTS
 export CORRECTION_STRENGTHS="0.0"
 export UCB_C=1.0
 export SAVE_BEST_IMAGES=1 SAVE_IMAGES=1
-export EVAL_BACKENDS="imagereward"
+export SAVE_VARIANTS=1
 export REWARD_BACKEND="${SEARCH_REWARD}"
 export REWARD_TYPE="${SEARCH_REWARD}"
 export REWARD_BACKENDS="${SEARCH_REWARD}"
+export EVAL_BACKENDS="${SEARCH_REWARD}"
 export EVAL_BEST_IMAGES=1 EVAL_ALLOW_MISSING_BACKENDS=1 EVAL_REWARD_DEVICE=cuda
 export CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}"
 export OUT_ROOT="${RUN_ROOT}"
 export NUM_GPUS=1
-
-# Inline saves: chosen-trajectory x_0 (per-step) + every-rollout trace.
 export SAVE_BEST_STEP_IMAGES_DIR="${RUN_ROOT}/step_images_inline"
-mkdir -p "${SAVE_BEST_STEP_IMAGES_DIR}"
-if [[ "${SAVE_ALL_ATTEMPTS}" == "1" ]]; then
-    export SAVE_ALL_ATTEMPTS_DIR="${RUN_ROOT}/all_attempts"
-    mkdir -p "${SAVE_ALL_ATTEMPTS_DIR}"
-    echo "[viz] full deliberation trace -> ${SAVE_ALL_ATTEMPTS_DIR}"
+export SAVE_ALL_ATTEMPTS_DIR="${RUN_ROOT}/all_attempts"
+mkdir -p "${SAVE_BEST_STEP_IMAGES_DIR}" "${SAVE_ALL_ATTEMPTS_DIR}"
+
+echo
+echo "[step 5] STAGE A: bon_mcts on 1 prompt (N_SIMS=${N_SIMS})"
+bash "${SUITE}" 2>&1 | tee "${RUN_ROOT}/_run.log"
+
+# Free reward server before viz (frees GPU for any step that needs it).
+if [[ -n "${SERVER_PID}" ]]; then
+    kill "${SERVER_PID}" 2>/dev/null || true
+    wait "${SERVER_PID}" 2>/dev/null || true
+    trap - EXIT
+    sleep 5
 fi
 
-# ── Stage A: bon_mcts ────────────────────────────────────────────────────
+# ── Step 6: viz ──────────────────────────────────────────────────────────
 echo
-echo "[viz] STAGE A: bon_mcts (backend=${BACKEND}, 1 prompt, N_SIMS=${N_SIMS})"
-echo "[viz]   chosen trajectory x_0 -> ${SAVE_BEST_STEP_IMAGES_DIR}"
-bash "${SUITE}" 2>&1 | tee "${RUN_ROOT}/_run.log"
-SUITE_EC=${PIPESTATUS[0]}
-[[ "${SUITE_EC}" -ne 0 ]] && echo "[viz] WARN suite exited ${SUITE_EC}; continuing to viz"
-
-# ── Stage B: visualization ───────────────────────────────────────────────
-echo
-echo "[viz] STAGE B: decision tree + text log + strip"
-export PROMPT_RANGE="0:1"
-
-# Tree
+echo "[step 6] STAGE B: decision tree + action log + trajectory strip"
 "${PYTHON_BIN}" "${SCRIPT_DIR}/render_trees_batch.py" \
     --run_root "${RUN_ROOT}" --method bon_mcts \
-    --prompt_range "${PROMPT_RANGE}" \
-    --out_dir "${OUT_ROOT}/${BACKEND}" \
+    --prompt_range "0:1" \
+    --out_dir "${RUN_ROOT}/${BACKEND}" \
     --title_prefix "ActDiff (${BACKEND})" \
     --workers 1 || true
 
-# Text log
 "${PYTHON_BIN}" "${SCRIPT_DIR}/dump_winner_log.py" \
     --run_root "${RUN_ROOT}" --method bon_mcts \
-    --prompt_range "${PROMPT_RANGE}" \
-    --out_dir "${OUT_ROOT}/${BACKEND}_logs" \
-    --combined "${OUT_ROOT}/${BACKEND}_logs/_all.txt" || true
+    --prompt_range "0:1" \
+    --out_dir "${RUN_ROOT}/${BACKEND}_logs" \
+    --combined "${RUN_ROOT}/${BACKEND}_logs/_all.txt" || true
 
-# Horizontal trajectory strip
 "${PYTHON_BIN}" "${SCRIPT_DIR}/compose_trajectory_strips.py" \
-    --in_dir  "${SAVE_BEST_STEP_IMAGES_DIR}" \
-    --out_dir "${OUT_ROOT}/trajectory_strips" \
+    --in_dir "${SAVE_BEST_STEP_IMAGES_DIR}" \
+    --out_dir "${RUN_ROOT}/trajectory_strips" \
     --prompts_file "${PROMPT_FILE}" \
-    --panel_size 384 --build_grid || \
-  echo "[viz] WARN strip composition failed"
+    --panel_size 384 --build_grid || true
 
-# ── Post-run variant verification ────────────────────────────────────────
+# ── Step 7: final verification ───────────────────────────────────────────
 echo
-echo "[verify] checking that MCTS actually exercised the rewrite axis ..."
-python3 - "${RUN_ROOT}" "${BACKEND}" <<'PY'
-import glob, json, sys
-run_root, backend = sys.argv[1], sys.argv[2]
-# 1. Did the runner save the variants it built?
-var_files = glob.glob(f"{run_root}/run_*/bon_mcts/p*_variants.txt") + \
-            glob.glob(f"{run_root}/run_*/p*_variants.txt")
-if var_files:
-    with open(var_files[0]) as f:
-        lines = [l.strip() for l in f.read().splitlines() if l.strip()]
-    print(f"[verify] runner saw {len(lines)} variants in {var_files[0]}:")
-    for ln in lines:
-        print(f"[verify]   {ln[:100]}")
-else:
-    print(f"[verify] no *_variants.txt under {run_root} (SAVE_VARIANTS may not have plumbed through)")
+echo "[step 7] verifying MCTS actually explored variants"
+python3 - "${RUN_ROOT}" "${BACKEND}" "${N_VARIANTS}" <<'PY'
+import glob, json, sys, re
+run_root, backend, n_req = sys.argv[1], sys.argv[2], int(sys.argv[3])
+print(f"[step 7] run_root: {run_root}")
 
-# 2. Look at the actual chosen action sequence to see if v>0 was picked.
-rank_files = (glob.glob(f"{run_root}/run_*/bon_mcts/logs/rank_*.jsonl") +
-              glob.glob(f"{run_root}/run_*/rank_*.jsonl"))
-if not rank_files:
-    print("[verify] no rank file found -- cannot check chosen actions")
+# (a) runner saw variants?
+vfiles = glob.glob(f"{run_root}/run_*/bon_mcts/p*_variants.txt") + \
+         glob.glob(f"{run_root}/run_*/p*_variants.txt")
+if vfiles:
+    lines = [l.strip() for l in open(vfiles[0]).read().splitlines() if l.strip()]
+    print(f"[step 7] runner saw {len(lines)} variants (expected {n_req+1}):")
+    for ln in lines[:n_req+1]:
+        print(f"           {ln[:100]}")
 else:
-    for ln in open(rank_files[0]):
-        if not ln.strip(): continue
-        r = json.loads(ln)
-        if r.get("mode") not in ("mcts","bon_mcts"): continue
-        acts = r.get("actions", [])
-        chosen_vs = [int(a[0]) for a in acts]
-        print(f"[verify] chosen variant_idx per step: {chosen_vs}")
-        if any(v > 0 for v in chosen_vs):
-            print(f"[verify]   PASS: MCTS picked a rewrite at step(s) {[i for i,v in enumerate(chosen_vs) if v>0]}")
-        else:
-            print(f"[verify]   note: MCTS chose canonical (v=0) at every step")
-            print(f"[verify]         this can be legitimate (canonical scored best)")
-            print(f"[verify]         or rewrites were too similar / lost to the canonical")
-        break
+    print(f"[step 7] WARN no *_variants.txt found -- SAVE_VARIANTS may not have plumbed through")
+
+# (b) chosen variant per step
+ranks = (glob.glob(f"{run_root}/run_*/bon_mcts/logs/rank_*.jsonl") +
+         glob.glob(f"{run_root}/run_*/rank_*.jsonl"))
+if not ranks:
+    print(f"[step 7] FAIL no rank file -- bon_mcts didn't complete"); sys.exit(0)
+for ln in open(ranks[0]):
+    if not ln.strip(): continue
+    r = json.loads(ln)
+    if r.get("mode") not in ("mcts", "bon_mcts"): continue
+    acts = r.get("actions", [])
+    vs = [int(a[0]) for a in acts]
+    cfgs = [float(a[1]) for a in acts]
+    print(f"[step 7] CHOSEN variant_idx per step: {vs}")
+    print(f"[step 7] CHOSEN cfg          per step: {cfgs}")
+    nz = [i for i, v in enumerate(vs) if v > 0]
+    if nz:
+        print(f"[step 7] PASS: variants > 0 chosen at step(s) {nz}")
+    else:
+        print(f"[step 7] note: only v=0 was chosen (canonical won at every step)")
+    break
+
+# (c) how many of EACH variant did MCTS evaluate?
+attempts = glob.glob(f"{run_root}/all_attempts/prompt_0000/*.png")
+print(f"[step 7] all_attempts/ contains {len(attempts)} explored trajectories")
+if attempts:
+    counts = {}
+    for fp in attempts:
+        m = re.search(r"_v([0-9-]+)_", fp)
+        if m:
+            for tok in m.group(1).split("-"):
+                counts[tok] = counts.get(tok, 0) + 1
+    print(f"[step 7] variant-step-evaluation counts: {dict(sorted(counts.items()))}")
 PY
 
-# ── Summary ──────────────────────────────────────────────────────────────
+# ── Final summary ────────────────────────────────────────────────────────
 echo
 echo "================================================================"
 echo "DONE.  Artifacts under ${RUN_ROOT}/"
-echo "  - run_*/bon_mcts/images/*.png         final MCTS-chosen image"
-echo "  - run_*/bon_mcts/logs/rank_*.jsonl    raw MCTS rows + diagnostics"
-echo "  - step_images_inline/prompt_0000/     per-step x_0 of winning path"
-[[ "${SAVE_ALL_ATTEMPTS}" == "1" ]] && echo "  - all_attempts/prompt_0000/           every rollout's final image"
-echo "  - ${BACKEND}/actdiff_*_p0000_*.png    decision tree"
-echo "  - ${BACKEND}_logs/prompt_0000.txt     text trace of actions"
-echo "  - trajectory_strips/prompt_0000.png   horizontal film strip"
-echo "  - rewrites.json                       static prompt variants used"
+echo "  rewrites.json                   prompt + 3 paraphrases"
+echo "  run_*/bon_mcts/images/*.png     final MCTS-chosen image"
+echo "  run_*/bon_mcts/logs/rank_*.jsonl raw MCTS rows + diagnostics"
+echo "  step_images_inline/prompt_0000/ per-step x_0 of chosen path"
+echo "  all_attempts/prompt_0000/       every MCTS-explored trajectory"
+echo "  ${BACKEND}/actdiff_*_p0000_*.png decision tree"
+echo "  ${BACKEND}_logs/prompt_0000.txt full per-step action trace"
+echo "  trajectory_strips/prompt_0000.png horizontal film strip"
 echo "================================================================"
-ls -la "${RUN_ROOT}/run_"*/bon_mcts/logs/ 2>/dev/null | head
-ls -la "${RUN_ROOT}/${BACKEND}/" 2>/dev/null | head
-ls -la "${RUN_ROOT}/step_images_inline/prompt_0000/" 2>/dev/null | head
-ls -la "${RUN_ROOT}/trajectory_strips/" 2>/dev/null | head

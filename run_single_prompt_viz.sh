@@ -23,6 +23,24 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ── Configuration (baked-in defaults; all overridable via env) ───────────
+# Set BEFORE prompt-file assembly because we need RUN_ROOT to know where to
+# write the baked-prompt scratch file.
+BACKEND="${BACKEND:-sid}"
+N_SIMS="${N_SIMS:-64}"                                    # rich tree for figures
+SEED="${SEED:-42}"
+RUN_ROOT="${RUN_ROOT:-/data/ygu/runs/raccoon_full_trace_$(date +%Y%m%d_%H%M%S)}"
+mkdir -p "${RUN_ROOT}"
+
+# Prompt rewriting + multi-variant exploration ON by default for the
+# illustration run.  Override with USE_QWEN=0 N_VARIANTS=1 for CFG-only.
+USE_QWEN="${USE_QWEN:-1}"
+N_VARIANTS="${N_VARIANTS:-3}"
+
+# Save EVERY MCTS-explored trajectory's final image (sortable by score).
+# Toggle off for slim runs by exporting SAVE_ALL_ATTEMPTS=0 before launch.
+export SAVE_ALL_ATTEMPTS="${SAVE_ALL_ATTEMPTS:-1}"
+
 # ── Default prompt baked into the script ─────────────────────────────────
 # This is the canonical "raccoon oil-painting" illustration prompt.  Caller
 # can override via PROMPT="..." env, PROMPT_FILE=... env, or first positional
@@ -54,22 +72,6 @@ if [[ ! -s "${PROMPT_FILE}" ]]; then
     exit 1
 fi
 PROMPT_TEXT="$(head -n1 "${PROMPT_FILE}")"
-
-# ── Configuration (baked-in defaults; all overridable via env) ───────────
-BACKEND="${BACKEND:-sid}"
-N_SIMS="${N_SIMS:-64}"                                    # rich tree for figures
-SEED="${SEED:-42}"
-RUN_ROOT="${RUN_ROOT:-/data/ygu/runs/raccoon_full_trace_$(date +%Y%m%d_%H%M%S)}"
-mkdir -p "${RUN_ROOT}"
-
-# Prompt rewriting + multi-variant exploration ON by default for the
-# illustration run.  Override with USE_QWEN=0 N_VARIANTS=1 for CFG-only.
-USE_QWEN="${USE_QWEN:-1}"
-N_VARIANTS="${N_VARIANTS:-3}"
-
-# Save EVERY MCTS-explored trajectory's final image (sortable by score).
-# Toggle off for slim runs by exporting SAVE_ALL_ATTEMPTS=0 before launch.
-export SAVE_ALL_ATTEMPTS="${SAVE_ALL_ATTEMPTS:-1}"
 
 echo "================================================================"
 echo "FOCUSED single-prompt viz"

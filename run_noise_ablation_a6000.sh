@@ -111,7 +111,9 @@ esac
 _execute_condition() {
     local label="$1" fresh_rollout="$2"
     local run_root="${OUT_ROOT}/${label}"
-    local server_port=$((5318 + ${fresh_rollout}))
+    # Use a different port per condition AND inject the PID to avoid reusing
+    # any stale server from a previous run.
+    local server_port=$((5400 + ${fresh_rollout} * 10 + (RANDOM % 50)))
     local server_url="http://localhost:${server_port}"
     local server_log="${run_root}/reward_server.log"
     mkdir -p "${run_root}"
@@ -120,12 +122,15 @@ _execute_condition() {
     echo "================================================================"
     echo "[ablation] CONDITION = ${label}   MCTS_FRESH_ROLLOUT_NOISE=${fresh_rollout}"
     echo "  run_root      = ${run_root}"
-    echo "  reward_server = ${server_url}"
+    echo "  reward_server = ${server_url} (fresh, randomized port)"
     echo "================================================================"
 
-    # Boot reward server
-    if curl -s --max-time 3 "${server_url}/health" >/dev/null 2>&1; then
-        echo "[ablation] reusing reward server at ${server_url}"
+    # Nuke any zombie reward server bound to our chosen port -- never reuse.
+    pkill -9 -f "reward_server.py.*--port ${server_port}" 2>/dev/null || true
+    sleep 2
+    # Always boot a NEW reward server -- no health-check reuse.
+    if false; then
+        echo "[ablation] (skipping reuse check on purpose)"
         local server_pid=""
     else
         CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" PYTHONNOUSERSITE=1 \

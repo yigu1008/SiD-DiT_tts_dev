@@ -211,6 +211,7 @@ if curl -s --max-time 3 "${REWARD_SERVER_URL}/health" >/dev/null 2>&1; then
 else
     echo "[viz] booting ImageReward server on GPU ${CUDA_DEVICE}"
     CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" \
+    PYTHONNOUSERSITE=1 \
       "${PYTHON_BIN}" "${SCRIPT_DIR}/reward_server.py" \
         --port "${REWARD_SERVER_PORT}" --device cuda:0 \
         --backends imagereward --image_reward_model ImageReward-v1.0 \

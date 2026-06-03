@@ -2779,6 +2779,12 @@ def _run_segment(
         if abs(gamma) > 1e-12:
             noise_event = (gamma, eps_id)
 
+    # MCTS_FRESH_ROLLOUT_NOISE=1 -> inject fresh per-step torch.randn_like
+    # perturbation into latents BEFORE transformer_step.  Matches the noise
+    # variability that run_baseline/run_greedy/run_smc/etc. get for free.
+    _fresh_rollout = str(os.environ.get("MCTS_FRESH_ROLLOUT_NOISE", "0")).strip().lower() in ("1", "true", "yes")
+    _fresh_scale = float(os.environ.get("MCTS_FRESH_ROLLOUT_NOISE_SCALE", "1.0"))
+
     seg_cfg_deltas: list[float] = []
     for step_idx in range(start_step, end_step):
         t_flat, t_4d, dt = sched[step_idx]
@@ -2788,6 +2794,12 @@ def _run_segment(
             eps = eps_bank[int(eps_id) % len(eps_bank)]
             latents = latents + float(gamma) * t_4d * eps
         if explore_n <= 1:
+            # Fresh-noise injection (per-step, scaled by current sigma).  Skip
+            # at step_idx=0 because latents IS the initial noise sample there.
+            if _fresh_rollout and step_idx > int(start_step):
+                _amp = _fresh_scale * float(max(0.0, float(t_flat[0].item())))
+                if _amp > 0.0:
+                    latents = latents + _amp * torch.randn_like(latents)
             step_stats: dict | None = {} if stats_out is not None else None
             flow = transformer_step(args, ctx, latents, emb, variant_idx, t_flat, cfg, stats_out=step_stats)
             if step_stats is not None:

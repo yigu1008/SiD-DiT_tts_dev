@@ -73,14 +73,17 @@ if [[ ! -f "${PROMPT_FILE}" ]]; then
 fi
 
 _run_cond() {
-    local label="$1" mcts_fixed_noise="$2"
+    local label="$1" fresh_rollout="$2"
     local run_root="${OUT_ROOT}/${label}"
     mkdir -p "${run_root}"
     echo
     echo "================================================================"
-    echo "[ablation] CONDITION = ${label}   MCTS_FIXED_NOISE=${mcts_fixed_noise}"
+    echo "[ablation] CONDITION = ${label}   MCTS_FRESH_ROLLOUT_NOISE=${fresh_rollout}"
     echo "================================================================"
     # Disable prescreen entirely: 1 seed, top-K=1.
+    # MCTS_FRESH_ROLLOUT_NOISE controls per-step noise injection inside the
+    # actual MCTS rollout (_run_segment); MCTS_FIXED_NOISE is left at the
+    # default which only affects the small sparse_noise_refine post-pass.
     PROMPT_FILE="${PROMPT_FILE}" \
     BACKEND="${BACKEND}" \
     N_PROMPTS="${N_PROMPTS}" \
@@ -92,7 +95,7 @@ _run_cond() {
     BON_MCTS_SIM_ALLOC=split \
     USE_QWEN=0 N_VARIANTS=1 \
     SEARCH_REWARD=imagereward \
-    MCTS_FIXED_NOISE="${mcts_fixed_noise}" \
+    MCTS_FRESH_ROLLOUT_NOISE="${fresh_rollout}" \
     RUN_ROOT="${run_root}" \
       bash "${SCRIPT_DIR}/run_actdiff_render_a6000.sh" \
       > "${run_root}/_run.log" 2>&1
@@ -101,13 +104,16 @@ _run_cond() {
 
 # Run sequentially so the two conditions don't fight for GPU.  Reward server
 # is killed between conditions inside run_actdiff_render_a6000.sh (Stage B.2).
-_run_cond fixed 1
+# fixed = no per-step noise injection in _run_segment (current default).
+# fresh = inject torch.randn_like per step (scaled by sigma) inside the
+#         actual MCTS rollouts -- the REAL noise-axis ablation.
+_run_cond fixed 0   # MCTS_FRESH_ROLLOUT_NOISE=0 -> deterministic rollouts
 # Give CUDA a moment to release between runs.
 sleep 30
 pkill -f reward_server.py 2>/dev/null || true
 pkill -f sd35_ddp_experiment 2>/dev/null || true
 sleep 10
-_run_cond fresh 0
+_run_cond fresh 1   # MCTS_FRESH_ROLLOUT_NOISE=1 -> fresh per-step noise
 
 # ── Compose trajectory strips per condition ─────────────────────────────
 echo

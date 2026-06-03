@@ -582,6 +582,10 @@ def run_mcts_lookahead(
     best_global_score = -float("inf")
     best_global_dx = None
     best_global_path_internal: list[tuple] = []
+    # Captured during the actual winning rollout (NOT a post-hoc replay) so
+    # the per-step images are guaranteed to belong to the same trajectory as
+    # best_global_dx (i.e. the image you see in bon_mcts/images/*.png).
+    best_global_step_dx_history: list = []
     history: list[dict[str, Any]] = []
     node_logs: list[dict[str, Any]] = []
 
@@ -1080,6 +1084,18 @@ def run_mcts_lookahead(
         rollout_node = node
         rollout_actions: list[tuple] = []
         _step_scores: list[tuple[float, float]] = []  # (score, progress_weight)
+        # Per-step dx history of THIS rollout (path + random suffix), used to
+        # save the winning trajectory's true intermediate images.  Walk from
+        # root to the current node first to recover the path's dx at each step.
+        _rollout_dx_history: list = []
+        _walk = rollout_node
+        _walk_chain: list = []
+        while _walk is not None:
+            _walk_chain.append(_walk)
+            _walk = _walk.parent
+        for _w in reversed(_walk_chain):
+            if _w.dx is not None:
+                _rollout_dx_history.append(_w.dx.clone())
         while rollout_key_idx < n_key:
             r_meta, r_candidates = node_candidates(rollout_node)
             r_logits, r_prior, r_prior_debug = compute_action_prior(rollout_node, r_candidates)
@@ -1140,6 +1156,8 @@ def run_mcts_lookahead(
                 u_ref_by_step[int(rollout_node.key_step_idx)].append(float(child_u))
             if np.isfinite(child_d) and child_d > 0.0:
                 d_ref_by_step[int(rollout_node.key_step_idx)].append(float(child_d))
+            # Capture per-step dx for this rollout (after this segment).
+            _rollout_dx_history.append(rollout_dx.clone())
             rollout_key_idx += 1
             if rollout_key_idx < n_key:
                 rollout_node = LookaheadMCTSNode(
@@ -1182,6 +1200,10 @@ def run_mcts_lookahead(
             best_global_score = float(rollout_score)
             best_global_dx = rollout_final.clone()
             best_global_path_internal = [a for _, a in path] + list(rollout_actions)
+            # Snapshot this rollout's per-step dx history.  When this
+            # trajectory ends up being the final selection, we save these
+            # images instead of doing a (potentially divergent) replay.
+            best_global_step_dx_history = [t.clone() for t in _rollout_dx_history]
 
         # SoP-style per-step reward backup (only if alpha>0).
         backup_value = float(rollout_score)
@@ -1565,6 +1587,30 @@ def run_mcts_lookahead(
         "exploit_cfg_trajectory": [float(a[1]) for a in exploit_path_internal],
         "best_global_cfg_trajectory": [float(a[1]) for a in best_global_path_internal],
     }
+    # ── Save per-step images of the actual best_global trajectory ────────
+    # SAVE_BEST_STEP_IMAGES_DIR triggers this; the images come from the
+    # SAME rollout that produced selected_img (no replay → no divergence).
+    _step_dir = os.environ.get("SAVE_BEST_STEP_IMAGES_DIR")
+    if _step_dir and best_global_step_dx_history:
+        try:
+            from pathlib import Path as _P
+            _pi = int(os.environ.get("SAVE_BEST_PROMPT_INDEX", "0"))
+            _od = _P(_step_dir) / f"prompt_{_pi:04d}"
+            _od.mkdir(parents=True, exist_ok=True)
+            for _j, _dx in enumerate(best_global_step_dx_history):
+                _img = su.decode_to_pil(ctx, _dx)
+                if _j < len(best_global_path_internal):
+                    _v, _cfg, _ = best_global_path_internal[_j]
+                    _name = f"step_{_j}_cfg{float(_cfg):.2f}_v{int(_v)}.png"
+                else:
+                    _name = f"step_{_j}.png"
+                _img.save(_od / _name)
+            # Final image matches selected_img (the winner's terminal frame).
+            if best_global_dx is not None:
+                su.decode_to_pil(ctx, best_global_dx).save(_od / "final.png")
+            print(f"  [step-images] saved {len(best_global_step_dx_history)} step images for prompt {_pi} -> {_od}", flush=True)
+        except Exception as _exc:
+            print(f"  [step-images] WARN: {type(_exc).__name__}: {_exc}", flush=True)
     return su.SearchResult(
         image=selected_img,
         score=float(selected_score),

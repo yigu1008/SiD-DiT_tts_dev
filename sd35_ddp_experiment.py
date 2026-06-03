@@ -688,8 +688,17 @@ def main() -> None:
                     # Uses the SAME deterministic noise cache that MCTS used
                     # internally (_build_step_noise_cache(latents, n_steps, seed)),
                     # so the replay reproduces the exact selected trajectory.
+                    # Step-image saving moved into run_mcts_lookahead -- it
+                    # snapshots the actual winning rollout's dx history during
+                    # search, no replay needed.  Only fall back to the replay
+                    # below if the lookahead module's save didn't run.
                     _step_dir_env = os.environ.get("SAVE_BEST_STEP_IMAGES_DIR")
-                    if _step_dir_env and mcts.actions:
+                    _already_saved = False
+                    if _step_dir_env:
+                        _pd_chk = Path(_step_dir_env) / f"prompt_{int(prompt_index):04d}"
+                        if _pd_chk.is_dir() and any(_pd_chk.glob("step_*.png")):
+                            _already_saved = True
+                    if _step_dir_env and mcts.actions and not _already_saved:
                         try:
                             from sampling_unified_sd35 import (
                                 make_latents, step_schedule, _prepare_latents,

@@ -107,12 +107,14 @@ if [[ ! -s "${REWRITES_FILE}" && "${N_VARIANTS}" -gt 1 ]]; then
             nvidia-smi --query-gpu=memory.used,memory.free --format=csv | head -2
         fi
     fi
-    # Hand-crafted fallback (also covers USE_QWEN=0 case).
+    # Hand-crafted fallback (also covers USE_QWEN=0 case).  Match the format
+    # produced by precompute_sd35_rewrites.py exactly: cache[prompt] starts
+    # with the canonical prompt itself as element 0, then paraphrases follow.
     if [[ ! -s "${REWRITES_FILE}" ]]; then
         python3 - "${PROMPT_TEXT}" "${REWRITES_FILE}" <<'PY'
 import json, sys
 prompt, out = sys.argv[1], sys.argv[2]
-def derive(p):
+def paraphrases(p):
     if "raccoon" in p.lower():
         return [
             "An expressive impressionist oil painting of a dignified old raccoon wearing a tall black top hat. Its bushy fur is rendered in thick, swirling Van-Gogh-style brushstrokes, and a vivid red apple is held tightly in its tiny paws. Around the raccoon, the canvas swirls with luminous colors that radiate motion while the animal itself remains perfectly still.",
@@ -120,9 +122,10 @@ def derive(p):
         ]
     return [f"In a richly detailed scene: {p}",
             f"A carefully composed image where {p[0].lower()}{p[1:]}"]
+variants = [prompt] + paraphrases(prompt)        # <-- canonical FIRST (v=0)
 with open(out, "w", encoding="utf-8") as f:
-    json.dump({prompt: derive(prompt)}, f, indent=2, ensure_ascii=False)
-print(f"[rewrites] (fallback) wrote {out}  variants_total={1+len(derive(prompt))}", flush=True)
+    json.dump({prompt: variants}, f, indent=2, ensure_ascii=False)
+print(f"[rewrites] (fallback) wrote {out}  variants_total={len(variants)}", flush=True)
 PY
     fi
 fi

@@ -21,7 +21,9 @@ N_VARIANTS="${N_VARIANTS:-3}"
 USE_QWEN="${USE_QWEN:-1}"
 RUN_ROOT="${RUN_ROOT:-/data/ygu/runs/raccoon_full_trace_$(date +%Y%m%d_%H%M%S)}"
 export SEARCH_REWARD="${SEARCH_REWARD:-imagereward}"
-export REWRITE_STYLES_OVERRIDE="${REWRITE_STYLES_OVERRIDE:-Paraphrase this prompt for an image generator using completely different sentence structure and synonyms while preserving every visual detail.||Rewrite this prompt as if describing the same scene to a different illustrator, freely rearranging clauses and substituting words.||Restate the prompt with rich, vivid wording: invert the order of elements, replace verbs and adjectives, and add atmospheric detail without inventing new objects.}"
+# Use the cluster's default minimal-edit rewrite styles (precompute_sd35_rewrites.py
+# REWRITE_STYLES = adjust lighting / swap camera detail / change one mood word).
+# To override with stronger paraphrasing, set REWRITE_STYLES_OVERRIDE in env.
 mkdir -p "${RUN_ROOT}"
 
 echo "================================================================"

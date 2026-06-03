@@ -3222,6 +3222,9 @@ def run_mcts(
 
             noise_step_cache = _build_step_noise_cache(latents0, total_steps, int(seed))
             eps_bank = _build_eps_bank_like(latents0, eps_samples, seed=int(seed) + 900001)
+            # MCTS_FIXED_NOISE=0 -> fresh torch.randn per step (matches baselines).
+            # Default=1 -> deterministic cache (current behavior).
+            _fixed_noise = str(os.environ.get("MCTS_FIXED_NOISE", "1")).strip().lower() not in ("0", "false", "no")
 
             best_refine_score = float(selected_score)
             best_refine_img: Image.Image | None = None
@@ -3238,7 +3241,10 @@ def run_mcts(
                     latents = latents0.clone()
                     dx = torch.zeros_like(latents)
                     for step_idx, ((t_flat, t_4d, dt), (vi, cfg, cs)) in enumerate(zip(sched, step_actions)):
-                        base_noise = noise_step_cache[step_idx] if step_idx < len(noise_step_cache) else noise_step_cache[-1]
+                        if _fixed_noise:
+                            base_noise = noise_step_cache[step_idx] if step_idx < len(noise_step_cache) else noise_step_cache[-1]
+                        else:
+                            base_noise = torch.randn_like(latents)
                         latents = _prepare_latents(latents, dx, base_noise, t_4d, step_idx, use_euler)
                         if step_idx in inject_map:
                             gamma, eps_id = inject_map[step_idx]

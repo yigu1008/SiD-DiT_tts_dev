@@ -2779,11 +2779,11 @@ def _run_segment(
         if abs(gamma) > 1e-12:
             noise_event = (gamma, eps_id)
 
-    # MCTS_FRESH_ROLLOUT_NOISE=1 -> inject fresh per-step torch.randn_like
-    # perturbation into latents BEFORE transformer_step.  Matches the noise
-    # variability that run_baseline/run_greedy/run_smc/etc. get for free.
+    # MCTS_FRESH_ROLLOUT_NOISE=1 -> use the SAME re-noising step the baselines
+    # use: latents = (1-t)*dx + t*torch.randn_like(latents).  For non-Euler
+    # backends this matches run_baseline exactly; for Euler backends
+    # _prepare_latents is a no-op so this is a free no-op there.
     _fresh_rollout = str(os.environ.get("MCTS_FRESH_ROLLOUT_NOISE", "0")).strip().lower() in ("1", "true", "yes")
-    _fresh_scale = float(os.environ.get("MCTS_FRESH_ROLLOUT_NOISE_SCALE", "1.0"))
 
     seg_cfg_deltas: list[float] = []
     for step_idx in range(start_step, end_step):
@@ -2794,12 +2794,12 @@ def _run_segment(
             eps = eps_bank[int(eps_id) % len(eps_bank)]
             latents = latents + float(gamma) * t_4d * eps
         if explore_n <= 1:
-            # Fresh-noise injection (per-step, scaled by current sigma).  Skip
-            # at step_idx=0 because latents IS the initial noise sample there.
+            # Match run_baseline / run_greedy / run_smc: at every step (except
+            # the very first, where latents IS the initial noise), reconstruct
+            # noisy latents from current dx + fresh torch.randn_like.
             if _fresh_rollout and step_idx > int(start_step):
-                _amp = _fresh_scale * float(max(0.0, float(t_flat[0].item())))
-                if _amp > 0.0:
-                    latents = latents + _amp * torch.randn_like(latents)
+                latents = _prepare_latents(latents, dx, torch.randn_like(latents),
+                                           t_4d, step_idx, use_euler)
             step_stats: dict | None = {} if stats_out is not None else None
             flow = transformer_step(args, ctx, latents, emb, variant_idx, t_flat, cfg, stats_out=step_stats)
             if step_stats is not None:

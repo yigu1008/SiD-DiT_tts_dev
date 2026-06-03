@@ -809,7 +809,19 @@ def sanitize_rewrite_text(candidate: str, fallback: str) -> str:
     text = text.strip("`\"' ")
     if any(ord(ch) < 32 for ch in text):
         return fallback
-    if len(text) > 220:
+    # Length cap: 220 was sized for the suite's default "adjust slightly"
+    # mild edits; long compositional prompts (DPG-Bench style) plus genuine
+    # paraphrases routinely exceed that.  Scale the cap to the fallback's
+    # length so the limit matches the prompt's natural size.  Env override
+    # via SANITIZE_REWRITE_MAX_CHARS (set to a number or "off").
+    _env_cap = os.environ.get("SANITIZE_REWRITE_MAX_CHARS", "").strip().lower()
+    if _env_cap == "off":
+        _cap = 10**9
+    elif _env_cap.isdigit():
+        _cap = int(_env_cap)
+    else:
+        _cap = max(220, int(len(fallback) * 1.5) + 100)
+    if len(text) > _cap:
         return fallback
     lower = text.lower()
     if lower in _REWRITE_BAD_TOKENS:

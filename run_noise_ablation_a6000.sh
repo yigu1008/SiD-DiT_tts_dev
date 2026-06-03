@@ -110,7 +110,11 @@ esac
 # ── Per-condition execution (inline) ─────────────────────────────────────
 _execute_condition() {
     local label="$1" fresh_rollout="$2"
-    local run_root="${OUT_ROOT}/${label}"
+    # IMPORTANT: save the script-level OUT_ROOT before we export a new value
+    # below; otherwise the second call inherits the mutated value and nests
+    # ${OUT_ROOT}/fresh inside ${OUT_ROOT}/fixed/.
+    local _saved_out_root="${OUT_ROOT}"
+    local run_root="${_saved_out_root}/${label}"
     mkdir -p "${run_root}"
 
     echo
@@ -182,6 +186,9 @@ _execute_condition() {
         --panel_size 384 --build_grid || \
       echo "[ablation] WARN strip composition failed for ${label}"
 
+    # Restore parent-shell OUT_ROOT so the next condition (and the final
+    # SUMMARY block) see the script-level root, not this per-condition one.
+    export OUT_ROOT="${_saved_out_root}"
     echo "[ablation] condition ${label} DONE"
 }
 

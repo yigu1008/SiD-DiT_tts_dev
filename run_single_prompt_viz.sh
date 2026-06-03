@@ -33,9 +33,12 @@ RUN_ROOT="${RUN_ROOT:-/data/ygu/runs/raccoon_full_trace_$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "${RUN_ROOT}"
 
 # Prompt rewriting + multi-variant exploration ON by default for the
-# illustration run.  Override with USE_QWEN=0 N_VARIANTS=1 for CFG-only.
+# illustration run.  PRECOMPUTE_REWRITES=1 is REQUIRED -- otherwise Qwen
+# never runs and the MCTS action space has only v=0 (no rewrites).
+# Override with USE_QWEN=0 N_VARIANTS=1 for CFG-only.
 USE_QWEN="${USE_QWEN:-1}"
 N_VARIANTS="${N_VARIANTS:-3}"
+export PRECOMPUTE_REWRITES="${PRECOMPUTE_REWRITES:-1}"
 
 # Save EVERY MCTS-explored trajectory's final image (sortable by score).
 # Toggle off for slim runs by exporting SAVE_ALL_ATTEMPTS=0 before launch.
@@ -94,6 +97,7 @@ N_SIMS="${N_SIMS}" \
 SEED="${SEED}" \
 USE_QWEN="${USE_QWEN}" \
 N_VARIANTS="${N_VARIANTS}" \
+PRECOMPUTE_REWRITES="${PRECOMPUTE_REWRITES}" \
 RUN_ROOT="${RUN_ROOT}" \
   bash "${SCRIPT_DIR}/run_actdiff_render_a6000.sh" 2>&1 | tee "${RUN_ROOT}/_run.log"
 

@@ -700,10 +700,22 @@ def main() -> None:
                             _pd.mkdir(parents=True, exist_ok=True)
                             _use_euler = bool(getattr(args, "euler_sampler", False))
                             _x0_sampler = bool(getattr(args, "x0_sampler", False))
-                            _lat = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
+                            # bon_mcts tries multiple seed candidates and the winning
+                            # trajectory may come from a non-default seed.  Look up
+                            # the actual winner_seed from diagnostics if present.
+                            _replay_seed = int(seed)
+                            _diag = getattr(mcts, "diagnostics", None) or {}
+                            _bd = _diag.get("bon_mcts") if isinstance(_diag, dict) else None
+                            if isinstance(_bd, dict) and "winner_seed" in _bd:
+                                _replay_seed = int(_bd["winner_seed"])
+                            elif isinstance(_diag, dict) and "winner_seed" in _diag:
+                                _replay_seed = int(_diag["winner_seed"])
+                            elif isinstance(_diag, dict) and "chosen_seed" in _diag:
+                                _replay_seed = int(_diag["chosen_seed"])
+                            _lat = make_latents(ctx, _replay_seed, args.height, args.width, emb.cond_text[0].dtype)
                             _dx = torch.zeros_like(_lat)
                             _sched = step_schedule(ctx.device, _lat.dtype, args.steps, args.sigmas, euler=_use_euler)
-                            _noise_cache = _build_step_noise_cache(_lat, int(args.steps), int(seed))
+                            _noise_cache = _build_step_noise_cache(_lat, int(args.steps), int(_replay_seed))
                             for _j, (_tf, _t4d, _sdt) in enumerate(_sched):
                                 _v, _cfg, _cs = mcts.actions[min(_j, len(mcts.actions) - 1)]
                                 _base_noise = _noise_cache[_j] if _j < len(_noise_cache) else _noise_cache[-1]

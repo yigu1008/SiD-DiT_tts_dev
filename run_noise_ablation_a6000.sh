@@ -31,9 +31,30 @@ N_PROMPTS="${N_PROMPTS:-20}"
 N_SIMS="${N_SIMS:-30}"
 SEED="${SEED:-42}"
 BACKEND="${BACKEND:-sid}"
-PROMPT_FILE="${PROMPT_FILE:-/data/ygu/dpg_bench_prompts.txt}"
 OUT_ROOT="${OUT_ROOT:-/data/ygu/runs/noise_ablation_$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "${OUT_ROOT}"
+
+# Default prompts source: DPG-Bench (1065 dense compositional).  Override
+# via PROMPT_FILE=... env or the 1st positional arg to use anything else.
+DEFAULT_PROMPT_FILE="/data/ygu/dpg_bench_prompts.txt"
+if [[ -n "${1:-}" ]]; then
+    PROMPT_FILE="$1"
+fi
+PROMPT_FILE="${PROMPT_FILE:-${DEFAULT_PROMPT_FILE}}"
+
+# Optional: bake in a single illustration prompt if the user wants to focus
+# (PROMPT="..." or USE_BAKED_PROMPT=1 to use the raccoon).
+BAKED_RACCOON='a detailed oil painting that captures the essence of an elderly raccoon adorned with a distinguished black top hat. The raccoon'\''s fur is depicted with textured, swirling strokes reminiscent of Van Gogh'\''s signature style, and it clutches a bright red apple in its paws. The background swirls with vibrant colors, giving the impression of movement around the still figure of the raccoon.'
+
+PROMPT="${PROMPT:-}"
+if [[ -n "${PROMPT}" || "${USE_BAKED_PROMPT:-0}" == "1" ]]; then
+    if [[ -z "${PROMPT}" ]]; then PROMPT="${BAKED_RACCOON}"; fi
+    _BAKED_FILE="${OUT_ROOT}/_baked_prompt.txt"
+    printf '%s\n' "${PROMPT}" > "${_BAKED_FILE}"
+    PROMPT_FILE="${_BAKED_FILE}"
+    N_PROMPTS=1
+    echo "[ablation] focused mode -- using baked-in single prompt"
+fi
 
 echo "================================================================"
 echo "CONTROLLED NOISE ABLATION (bon_mcts, no prescreen, ImageReward)"
@@ -86,6 +107,70 @@ pkill -f reward_server.py 2>/dev/null || true
 pkill -f sd35_ddp_experiment 2>/dev/null || true
 sleep 10
 _run_cond fresh 0
+
+# ── Compose trajectory strips per condition ─────────────────────────────
+echo
+echo "[ablation] composing horizontal trajectory strips for each condition"
+for c in fixed fresh; do
+    INDIR="${OUT_ROOT}/${c}/step_images_inline"
+    OUTDIR="${OUT_ROOT}/${c}/trajectory_strips"
+    PFILE="${OUT_ROOT}/${c}/_prompts/backend_${BACKEND}.txt"
+    if [[ -d "${INDIR}" ]]; then
+        python "${SCRIPT_DIR}/compose_trajectory_strips.py" \
+            --in_dir  "${INDIR}" \
+            --out_dir "${OUTDIR}" \
+            --prompts_file "${PFILE}" \
+            --panel_size 384 --build_grid \
+            2>&1 | tail -10 || echo "[ablation] WARN strip composition failed for ${c}"
+    else
+        echo "[ablation] no step_images_inline for ${c}; skipping strips"
+    fi
+done
+
+# ── Side-by-side comparison (fixed on top row, fresh on bottom row) ────
+echo
+echo "[ablation] building per-prompt side-by-side comparison PNGs"
+python3 - "${OUT_ROOT}" "${BACKEND}" <<'PY'
+import sys, glob, os
+from pathlib import Path
+out_root = Path(sys.argv[1]); backend = sys.argv[2]
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except Exception as exc:
+    print(f"[ablation] PIL unavailable: {exc}"); sys.exit(0)
+fixed_dir = out_root / "fixed" / "trajectory_strips"
+fresh_dir = out_root / "fresh" / "trajectory_strips"
+cmp_dir   = out_root / "comparison"
+cmp_dir.mkdir(parents=True, exist_ok=True)
+if not (fixed_dir.is_dir() and fresh_dir.is_dir()):
+    print(f"[ablation] missing strip dirs ({fixed_dir.is_dir()}, {fresh_dir.is_dir()})"); sys.exit(0)
+font = None
+for cand in ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+             "/Library/Fonts/Arial.ttf"):
+    if os.path.isfile(cand):
+        try: font = ImageFont.truetype(cand, 18); break
+        except Exception: pass
+if font is None: font = ImageFont.load_default()
+prompt_files = sorted(fixed_dir.glob("prompt_*.png"))
+print(f"[ablation] {len(prompt_files)} prompts to compare")
+for fp in prompt_files:
+    name = fp.name
+    fr = fresh_dir / name
+    if not fr.exists(): continue
+    a = Image.open(fp).convert("RGB"); b = Image.open(fr).convert("RGB")
+    W = max(a.width, b.width); header_h = 28
+    out = Image.new("RGB", (W, a.height + b.height + 2*header_h + 8), (255,255,255))
+    d = ImageDraw.Draw(out)
+    d.rectangle([0, 0, W, header_h], fill=(60,60,60))
+    d.text((10, 5), f"FIXED noise  ({name.replace('.png','')})", font=font, fill=(255,255,255))
+    out.paste(a, ((W-a.width)//2, header_h))
+    y2 = a.height + header_h + 4
+    d.rectangle([0, y2, W, y2+header_h], fill=(20,90,140))
+    d.text((10, y2+5), f"FRESH noise", font=font, fill=(255,255,255))
+    out.paste(b, ((W-b.width)//2, y2+header_h))
+    out.save(cmp_dir / name)
+print(f"[ablation] comparison PNGs -> {cmp_dir}")
+PY
 
 # ── Summarize ─────────────────────────────────────────────────────────────
 SUMMARY="${OUT_ROOT}/SUMMARY.txt"

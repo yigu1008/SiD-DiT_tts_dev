@@ -32,15 +32,12 @@ SEED="${SEED:-42}"
 RUN_ROOT="${RUN_ROOT:-/data/ygu/runs/raccoon_full_trace_$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "${RUN_ROOT}"
 
-# Prompt rewriting + multi-variant exploration ON by default for the
-# illustration run.  PRECOMPUTE_REWRITES=1 is REQUIRED -- otherwise Qwen
-# never runs and the MCTS action space has only v=0 (no rewrites).
-# Override with USE_QWEN=0 N_VARIANTS=1 for CFG-only.
-USE_QWEN="${USE_QWEN:-1}"
+# Prompt rewriting: leverage the suite's existing REWRITES_FILE pattern --
+# use a pre-made cache so Qwen never has to share GPU with SD3.5L at runtime.
+# Set USE_QWEN=1 only if you actually need fresh paraphrases (and have HF env).
+USE_QWEN="${USE_QWEN:-0}"
 N_VARIANTS="${N_VARIANTS:-3}"
-export PRECOMPUTE_REWRITES="${PRECOMPUTE_REWRITES:-1}"
-# Default Qwen model: Qwen2.5-3B-Instruct works with transformers 4.45+.
-# Override with QWEN_ID=Qwen/Qwen3-4B if you have transformers >= 4.51.
+export PRECOMPUTE_REWRITES="${PRECOMPUTE_REWRITES:-0}"
 export QWEN_ID="${QWEN_ID:-Qwen/Qwen2.5-3B-Instruct}"
 
 # Save EVERY MCTS-explored trajectory's final image (sortable by score).
@@ -79,6 +76,38 @@ if [[ ! -s "${PROMPT_FILE}" ]]; then
 fi
 PROMPT_TEXT="$(head -n1 "${PROMPT_FILE}")"
 
+# ── Static rewrites cache (avoids running Qwen alongside SD3.5L) ─────────
+# The suite already consumes REWRITES_FILE in {prompt: [rewrite, ...]} JSON.
+# We write 2 hand-crafted paraphrases per prompt to give the MCTS action
+# space 3 variants without paying any GPU memory for Qwen at runtime.
+REWRITES_FILE="${REWRITES_FILE:-${RUN_ROOT}/rewrites.json}"
+if [[ ! -s "${REWRITES_FILE}" ]]; then
+    mkdir -p "$(dirname "${REWRITES_FILE}")"
+    python3 - "${PROMPT_TEXT}" "${REWRITES_FILE}" "${BACKEND:-sid}" <<'PY'
+import json, sys
+prompt, out, _backend = sys.argv[1], sys.argv[2], sys.argv[3]
+# Two hand-crafted compositional paraphrases.  Keep nouns/style words from
+# the source so semantic content survives -- only rephrase structure.
+def derive_rewrites(p: str) -> list[str]:
+    # Heuristic: if the prompt is the raccoon one, use richer paraphrases.
+    if "raccoon" in p.lower():
+        return [
+            "An expressive impressionist oil painting of a dignified old raccoon wearing a tall black top hat. Its bushy fur is rendered in thick, swirling Van-Gogh-style brushstrokes, and a vivid red apple is held tightly in its tiny paws. Around the raccoon, the canvas swirls with luminous colors that radiate motion while the animal itself remains perfectly still.",
+            "A masterful Post-Impressionist portrait painted in oil: an elderly raccoon in a formal black top hat clasps a glossy crimson apple in its small hands. Every strand of its silvery, textured fur is laid down in churning Van Gogh brushwork, and the swirling, vividly hued background twists around the calm, stationary figure of the raccoon.",
+        ]
+    # Generic fallback: two mild paraphrases.
+    return [
+        f"In a richly detailed scene: {p}",
+        f"A carefully composed image where {p[0].lower()}{p[1:]}",
+    ]
+cache = {prompt: derive_rewrites(prompt)}
+with open(out, "w", encoding="utf-8") as f:
+    json.dump(cache, f, indent=2, ensure_ascii=False)
+print(f"[rewrites] wrote {out}  variants={len(cache[prompt])+1}", flush=True)
+PY
+fi
+export REWRITES_FILE
+
 echo "================================================================"
 echo "FOCUSED single-prompt viz"
 echo "  BACKEND     = ${BACKEND}"
@@ -102,6 +131,7 @@ USE_QWEN="${USE_QWEN}" \
 N_VARIANTS="${N_VARIANTS}" \
 PRECOMPUTE_REWRITES="${PRECOMPUTE_REWRITES}" \
 QWEN_ID="${QWEN_ID}" \
+REWRITES_FILE="${REWRITES_FILE}" \
 RUN_ROOT="${RUN_ROOT}" \
   bash "${SCRIPT_DIR}/run_actdiff_render_a6000.sh" 2>&1 | tee "${RUN_ROOT}/_run.log"
 

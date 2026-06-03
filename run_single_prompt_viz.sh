@@ -88,8 +88,11 @@ if [[ ! -s "${REWRITES_FILE}" && "${N_VARIANTS}" -gt 1 ]]; then
     mkdir -p "$(dirname "${REWRITES_FILE}")"
     if [[ "${USE_QWEN}" == "1" ]]; then
         echo "[rewrites] running Qwen STANDALONE (id=${QWEN_ID}) on GPU ${CUDA_DEVICE}"
-        # n_variants is the TOTAL including canonical; Qwen needs to emit n-1 paraphrases.
-        QWEN_N=$(( N_VARIANTS - 1 ))
+        # CODEBASE SEMANTIC: --n_variants = number of REWRITES (canonical NOT
+        # included).  precompute writes cache = [canonical, r1, r2, ..., r_N]
+        # = 1 + N_VARIANTS entries.  Runner's _legacy_target_size = N_VARIANTS+1
+        # matches that exactly.  So pass N_VARIANTS straight through.
+        QWEN_N="${N_VARIANTS}"
         # Critical: PYTHONNOUSERSITE=1 prevents ~/.local/lib torch (CPU-only)
         # from shadowing the conda env's CUDA-enabled torch.
         env -u RANK -u LOCAL_RANK -u WORLD_SIZE -u LOCAL_WORLD_SIZE -u NODE_RANK -u MASTER_ADDR -u MASTER_PORT \
@@ -117,21 +120,30 @@ if [[ ! -s "${REWRITES_FILE}" && "${N_VARIANTS}" -gt 1 ]]; then
     # produced by precompute_sd35_rewrites.py exactly: cache[prompt] starts
     # with the canonical prompt itself as element 0, then paraphrases follow.
     if [[ ! -s "${REWRITES_FILE}" ]]; then
-        python3 - "${PROMPT_TEXT}" "${REWRITES_FILE}" <<'PY'
+        python3 - "${PROMPT_TEXT}" "${REWRITES_FILE}" "${N_VARIANTS}" <<'PY'
 import json, sys
-prompt, out = sys.argv[1], sys.argv[2]
-def paraphrases(p):
+prompt, out, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
+RACCOON_POOL = [
+    "An expressive impressionist oil painting of a dignified old raccoon wearing a tall black top hat. Its bushy fur is rendered in thick, swirling Van-Gogh-style brushstrokes, and a vivid red apple is held tightly in its tiny paws. Around the raccoon, the canvas swirls with luminous colors that radiate motion while the animal itself remains perfectly still.",
+    "A masterful Post-Impressionist portrait painted in oil: an elderly raccoon in a formal black top hat clasps a glossy crimson apple in its small hands. Every strand of its silvery, textured fur is laid down in churning Van Gogh brushwork, and the swirling, vividly hued background twists around the calm, stationary figure of the raccoon.",
+    "A textured Van-Gogh-style oil painting features a stately, elderly raccoon adorned with a tall, polished black top hat. The animal grasps a vivid scarlet apple in its slender paws, while heavy, rhythmic brushstrokes around it weave a swirling tapestry of brilliant color that seems to breathe motion around the perfectly still raccoon.",
+    "An ornate Post-Impressionist canvas depicting an aged raccoon dressed in a dignified black top hat, holding a luscious crimson apple firmly in its tiny hands. Each tuft of its rich silver-and-charcoal fur is laid down in churning, expressive brushwork, while around it a kaleidoscope of colors curls and eddies, the brushstrokes alive with motion that contrasts with the raccoon's serene composure.",
+]
+def paraphrases(p, k):
     if "raccoon" in p.lower():
-        return [
-            "An expressive impressionist oil painting of a dignified old raccoon wearing a tall black top hat. Its bushy fur is rendered in thick, swirling Van-Gogh-style brushstrokes, and a vivid red apple is held tightly in its tiny paws. Around the raccoon, the canvas swirls with luminous colors that radiate motion while the animal itself remains perfectly still.",
-            "A masterful Post-Impressionist portrait painted in oil: an elderly raccoon in a formal black top hat clasps a glossy crimson apple in its small hands. Every strand of its silvery, textured fur is laid down in churning Van Gogh brushwork, and the swirling, vividly hued background twists around the calm, stationary figure of the raccoon.",
-        ]
-    return [f"In a richly detailed scene: {p}",
-            f"A carefully composed image where {p[0].lower()}{p[1:]}"]
-variants = [prompt] + paraphrases(prompt)        # <-- canonical FIRST (v=0)
+        pool = RACCOON_POOL
+    else:
+        pool = [f"In a richly detailed scene: {p}",
+                f"A carefully composed image where {p[0].lower()}{p[1:]}",
+                f"An evocative rendering: {p}",
+                f"A masterful depiction. {p}"]
+    while len(pool) < k:
+        pool.append(p + " (variation " + str(len(pool)+1) + ")")
+    return pool[:k]
+variants = [prompt] + paraphrases(prompt, n)        # canonical FIRST + n paraphrases
 with open(out, "w", encoding="utf-8") as f:
     json.dump({prompt: variants}, f, indent=2, ensure_ascii=False)
-print(f"[rewrites] (fallback) wrote {out}  variants_total={len(variants)}", flush=True)
+print(f"[rewrites] (fallback) wrote {out}  total_entries={len(variants)}  rewrites={len(variants)-1}", flush=True)
 PY
     fi
 fi

@@ -153,6 +153,35 @@ export REWRITES_FILE
 USE_QWEN=0
 export PRECOMPUTE_REWRITES=0
 
+# Dump rewrites cache structure so we can VERIFY before the long sampling step.
+python3 - "${REWRITES_FILE}" "${PROMPT_TEXT}" "${N_VARIANTS}" <<'PY'
+import json, sys
+fp, prompt_text, n_variants_req = sys.argv[1], sys.argv[2], int(sys.argv[3])
+try:
+    d = json.load(open(fp, encoding="utf-8"))
+except Exception as exc:
+    print(f"[verify] FATAL: cannot load {fp}: {exc}"); sys.exit(1)
+print(f"[verify] rewrites cache: {fp}")
+print(f"[verify]   N_VARIANTS requested (rewrites count): {n_variants_req}")
+print(f"[verify]   total prompt keys: {len(d)}")
+if prompt_text not in d:
+    print(f"[verify]   !!! WARNING: prompt key NOT FOUND -- exact-match lookup will MISS !!!")
+    print(f"[verify]       expected: {prompt_text[:80]}...")
+    print(f"[verify]       got keys: {[k[:60] for k in list(d.keys())[:3]]}")
+else:
+    entries = d[prompt_text]
+    expected_total = 1 + n_variants_req
+    print(f"[verify]   cache entries for this prompt: {len(entries)}  (expected {expected_total} = 1 canonical + {n_variants_req} rewrites)")
+    if len(entries) != expected_total:
+        print(f"[verify]   !!! MISMATCH between cache and N_VARIANTS !!!")
+    print(f"[verify]   v0 (canonical) : {entries[0][:90]}...")
+    for i, v in enumerate(entries[1:], start=1):
+        marker = " <-- DUPLICATE OF v0!" if v.strip() == entries[0].strip() else ""
+        print(f"[verify]   v{i} (rewrite)  : {v[:90]}...{marker}")
+PY
+# Also tell the runner to dump its own variants file per prompt.
+export SAVE_VARIANTS=1
+
 echo "================================================================"
 echo "FOCUSED single-prompt viz (all-in-one)"
 echo "  BACKEND       = ${BACKEND}"
@@ -276,6 +305,46 @@ export PROMPT_RANGE="0:1"
     --prompts_file "${PROMPT_FILE}" \
     --panel_size 384 --build_grid || \
   echo "[viz] WARN strip composition failed"
+
+# ── Post-run variant verification ────────────────────────────────────────
+echo
+echo "[verify] checking that MCTS actually exercised the rewrite axis ..."
+python3 - "${RUN_ROOT}" "${BACKEND}" <<'PY'
+import glob, json, sys
+run_root, backend = sys.argv[1], sys.argv[2]
+# 1. Did the runner save the variants it built?
+var_files = glob.glob(f"{run_root}/run_*/bon_mcts/p*_variants.txt") + \
+            glob.glob(f"{run_root}/run_*/p*_variants.txt")
+if var_files:
+    with open(var_files[0]) as f:
+        lines = [l.strip() for l in f.read().splitlines() if l.strip()]
+    print(f"[verify] runner saw {len(lines)} variants in {var_files[0]}:")
+    for ln in lines:
+        print(f"[verify]   {ln[:100]}")
+else:
+    print(f"[verify] no *_variants.txt under {run_root} (SAVE_VARIANTS may not have plumbed through)")
+
+# 2. Look at the actual chosen action sequence to see if v>0 was picked.
+rank_files = (glob.glob(f"{run_root}/run_*/bon_mcts/logs/rank_*.jsonl") +
+              glob.glob(f"{run_root}/run_*/rank_*.jsonl"))
+if not rank_files:
+    print("[verify] no rank file found -- cannot check chosen actions")
+else:
+    for ln in open(rank_files[0]):
+        if not ln.strip(): continue
+        r = json.loads(ln)
+        if r.get("mode") not in ("mcts","bon_mcts"): continue
+        acts = r.get("actions", [])
+        chosen_vs = [int(a[0]) for a in acts]
+        print(f"[verify] chosen variant_idx per step: {chosen_vs}")
+        if any(v > 0 for v in chosen_vs):
+            print(f"[verify]   PASS: MCTS picked a rewrite at step(s) {[i for i,v in enumerate(chosen_vs) if v>0]}")
+        else:
+            print(f"[verify]   note: MCTS chose canonical (v=0) at every step")
+            print(f"[verify]         this can be legitimate (canonical scored best)")
+            print(f"[verify]         or rewrites were too similar / lost to the canonical")
+        break
+PY
 
 # ── Summary ──────────────────────────────────────────────────────────────
 echo

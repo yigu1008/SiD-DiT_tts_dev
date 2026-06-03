@@ -1156,6 +1156,28 @@ def run_mcts_lookahead(
         rollout_final = su._final_decode_tensor(rollout_latents, rollout_dx, use_euler)
         rollout_img = su.decode_to_pil(ctx, rollout_final)
         rollout_score = float(su.score_image(reward_model, prompt, rollout_img))
+        # SAVE_ALL_ATTEMPTS_DIR: dump every rollout's final image, named with
+        # its IR score and the full per-step (v, cfg) sequence -- gives the
+        # complete deliberation trace.
+        _all_dir = os.environ.get("SAVE_ALL_ATTEMPTS_DIR")
+        if _all_dir:
+            try:
+                from pathlib import Path as _P
+                _pi = int(os.environ.get("SAVE_BEST_PROMPT_INDEX", "0"))
+                _od = _P(_all_dir) / f"prompt_{_pi:04d}"
+                _od.mkdir(parents=True, exist_ok=True)
+                _full_path = [a for _, a in path] + list(rollout_actions)
+                _vs = "-".join(str(int(a[0])) for a in _full_path)
+                _cfgs = "-".join(f"{float(a[1]):.2f}" for a in _full_path)
+                if not hasattr(run_mcts_lookahead, "_all_attempts_counter"):
+                    run_mcts_lookahead._all_attempts_counter = 0
+                run_mcts_lookahead._all_attempts_counter += 1
+                _n = run_mcts_lookahead._all_attempts_counter
+                _name = (f"rollout{_n:04d}_score{rollout_score:+.4f}_"
+                         f"v{_vs}_cfg{_cfgs}.png")[:240]
+                rollout_img.save(_od / _name)
+            except Exception as _exc:
+                print(f"  [save-all-rollout] WARN: {type(_exc).__name__}: {_exc}", flush=True)
         if rollout_score > best_global_score:
             best_global_score = float(rollout_score)
             best_global_dx = rollout_final.clone()

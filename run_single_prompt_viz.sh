@@ -39,6 +39,9 @@ mkdir -p "${RUN_ROOT}"
 USE_QWEN="${USE_QWEN:-1}"
 N_VARIANTS="${N_VARIANTS:-3}"
 export PRECOMPUTE_REWRITES="${PRECOMPUTE_REWRITES:-1}"
+# Default Qwen model: Qwen2.5-3B-Instruct works with transformers 4.45+.
+# Override with QWEN_ID=Qwen/Qwen3-4B if you have transformers >= 4.51.
+export QWEN_ID="${QWEN_ID:-Qwen/Qwen2.5-3B-Instruct}"
 
 # Save EVERY MCTS-explored trajectory's final image (sortable by score).
 # Toggle off for slim runs by exporting SAVE_ALL_ATTEMPTS=0 before launch.
@@ -98,6 +101,7 @@ SEED="${SEED}" \
 USE_QWEN="${USE_QWEN}" \
 N_VARIANTS="${N_VARIANTS}" \
 PRECOMPUTE_REWRITES="${PRECOMPUTE_REWRITES}" \
+QWEN_ID="${QWEN_ID}" \
 RUN_ROOT="${RUN_ROOT}" \
   bash "${SCRIPT_DIR}/run_actdiff_render_a6000.sh" 2>&1 | tee "${RUN_ROOT}/_run.log"
 

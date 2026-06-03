@@ -61,8 +61,9 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 export OFFLOAD_TEXT_ENCODER_AFTER_ENCODE="${OFFLOAD_TEXT_ENCODER_AFTER_ENCODE:-1}"
 export MAX_SEQ_LEN="${MAX_SEQ_LEN:-256}"
 
-REWARD_SERVER_PORT="${REWARD_SERVER_PORT:-5320}"
-REWARD_SERVER_URL="${REWARD_SERVER_URL:-http://localhost:${REWARD_SERVER_PORT}}"
+# Reward server intentionally disabled -- use in-process ImageReward.
+# Keep these unset so the suite knows to load locally.
+unset REWARD_SERVER_URL REWARD_SERVER_PORT 2>/dev/null || true
 
 # ── Step 1: prompt input (priority: 1st arg > PROMPT env > PROMPT_FILE > default) ─
 DEFAULT_PROMPT='a detailed oil painting that captures the essence of an elderly raccoon adorned with a distinguished black top hat. The raccoon'\''s fur is depicted with textured, swirling strokes reminiscent of Van Gogh'\''s signature style, and it clutches a bright red apple in its paws. The background swirls with vibrant colors, giving the impression of movement around the still figure of the raccoon.'
@@ -178,33 +179,12 @@ print("[step 3] PASS" if len(entries) >= 2 else "[step 3] FAIL -- no rewrites in
 PY
 [[ $? -eq 0 ]] || exit 1
 
-# ── Step 4: boot reward server ───────────────────────────────────────────
+# ── Step 4: LOCAL reward model (no server, no port reuse, no broken pipes) ─
 echo
-echo "[step 4] booting ImageReward server on GPU ${CUDA_DEVICE}, port ${REWARD_SERVER_PORT}"
-SERVER_LOG="${RUN_ROOT}/reward_server.log"
+echo "[step 4] using in-process ImageReward (no server)"
+# Critical: clear REWARD_SERVER_URL so the suite loads ImageReward locally.
+unset REWARD_SERVER_URL
 SERVER_PID=""
-if curl -s --max-time 3 "${REWARD_SERVER_URL}/health" >/dev/null 2>&1; then
-    echo "[step 4] reusing existing server at ${REWARD_SERVER_URL}"
-else
-    CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" PYTHONNOUSERSITE=1 \
-      "${PYTHON_BIN}" "${SCRIPT_DIR}/reward_server.py" \
-        --port "${REWARD_SERVER_PORT}" --device cuda:0 \
-        --backends imagereward --image_reward_model ImageReward-v1.0 \
-        > "${SERVER_LOG}" 2>&1 &
-    SERVER_PID=$!
-    trap 'kill "${SERVER_PID}" >/dev/null 2>&1 || true' EXIT
-    for i in $(seq 1 60); do
-        if curl -s --max-time 3 "${REWARD_SERVER_URL}/health" >/dev/null 2>&1; then break; fi
-        if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
-            echo "[FATAL] reward server died -- last 80 lines of ${SERVER_LOG}:"
-            echo "----------------------------------------------------------------"
-            tail -n 80 "${SERVER_LOG}"
-            exit 1
-        fi
-        sleep 3
-    done
-fi
-export REWARD_SERVER_URL
 
 # ── Step 5: backend defaults + bon_mcts run ──────────────────────────────
 case "${BACKEND}" in
@@ -261,13 +241,7 @@ echo
 echo "[step 5] STAGE A: bon_mcts on 1 prompt (N_SIMS=${N_SIMS})"
 bash "${SUITE}" 2>&1 | tee "${RUN_ROOT}/_run.log"
 
-# Free reward server before viz (frees GPU for any step that needs it).
-if [[ -n "${SERVER_PID}" ]]; then
-    kill "${SERVER_PID}" 2>/dev/null || true
-    wait "${SERVER_PID}" 2>/dev/null || true
-    trap - EXIT
-    sleep 5
-fi
+# No reward server to kill — running in-process.
 
 # ── Step 6: viz ──────────────────────────────────────────────────────────
 echo

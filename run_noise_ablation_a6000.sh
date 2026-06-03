@@ -111,46 +111,21 @@ esac
 _execute_condition() {
     local label="$1" fresh_rollout="$2"
     local run_root="${OUT_ROOT}/${label}"
-    # Use a different port per condition AND inject the PID to avoid reusing
-    # any stale server from a previous run.
-    local server_port=$((5400 + ${fresh_rollout} * 10 + (RANDOM % 50)))
-    local server_url="http://localhost:${server_port}"
-    local server_log="${run_root}/reward_server.log"
     mkdir -p "${run_root}"
 
     echo
     echo "================================================================"
     echo "[ablation] CONDITION = ${label}   MCTS_FRESH_ROLLOUT_NOISE=${fresh_rollout}"
     echo "  run_root      = ${run_root}"
-    echo "  reward_server = ${server_url} (fresh, randomized port)"
+    echo "  reward        = in-process ImageReward (no server)"
     echo "================================================================"
 
-    # Nuke any zombie reward server bound to our chosen port -- never reuse.
-    pkill -9 -f "reward_server.py.*--port ${server_port}" 2>/dev/null || true
-    sleep 2
-    # Always boot a NEW reward server -- no health-check reuse.
-    if false; then
-        echo "[ablation] (skipping reuse check on purpose)"
-        local server_pid=""
-    else
-        CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" PYTHONNOUSERSITE=1 \
-          "${PYTHON_BIN}" "${SCRIPT_DIR}/reward_server.py" \
-            --port "${server_port}" --device cuda:0 \
-            --backends imagereward --image_reward_model ImageReward-v1.0 \
-            > "${server_log}" 2>&1 &
-        local server_pid=$!
-        for i in $(seq 1 60); do
-            if curl -s --max-time 3 "${server_url}/health" >/dev/null 2>&1; then break; fi
-            if ! kill -0 "${server_pid}" 2>/dev/null; then
-                echo "[FATAL] reward server died -- last 80 lines of ${server_log}:"
-                tail -n 80 "${server_log}"; return 1
-            fi
-            sleep 3
-        done
-    fi
+    # No reward server -- load ImageReward in-process to avoid stale-port /
+    # broken-pipe issues that killed previous ablation runs mid-way.
+    unset REWARD_SERVER_URL REWARD_SERVER_PORT
+    local server_pid=""
 
     # bon_mcts via the suite
-    export REWARD_SERVER_URL="${server_url}"
     export METHODS=bon_mcts
     export PROMPT_FILE
     export START_INDEX=0
@@ -185,13 +160,6 @@ _execute_condition() {
     bash "${SUITE}" > "${run_root}/_run.log" 2>&1 || \
       echo "[ablation] WARN suite exited non-zero (see ${run_root}/_run.log)"
 
-    # Kill reward server before viz (free GPU for replay)
-    if [[ -n "${server_pid}" ]]; then
-        kill "${server_pid}" 2>/dev/null || true
-        wait "${server_pid}" 2>/dev/null || true
-        sleep 5
-    fi
-
     echo "[ablation] STAGE B: viz (trees + step images + logs)"
     local prompt_range="0:${N_PROMPTS}"
     "${PYTHON_BIN}" "${SCRIPT_DIR}/render_trees_batch.py" \
@@ -220,8 +188,9 @@ _execute_condition() {
 # Run sequentially.  fresh = MCTS_FRESH_ROLLOUT_NOISE=1.
 _execute_condition fixed 0
 sleep 30
-pkill -f reward_server.py 2>/dev/null || true
+# Clean up any zombie sampling procs (no reward server to worry about).
 pkill -f sd35_ddp_experiment 2>/dev/null || true
+pkill -f torchrun 2>/dev/null || true
 sleep 10
 _execute_condition fresh 1
 

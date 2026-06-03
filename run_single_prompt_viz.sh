@@ -93,6 +93,14 @@ if [[ ! -s "${REWRITES_FILE}" && "${N_VARIANTS}" -gt 1 ]]; then
         # = 1 + N_VARIANTS entries.  Runner's _legacy_target_size = N_VARIANTS+1
         # matches that exactly.  So pass N_VARIANTS straight through.
         QWEN_N="${N_VARIANTS}"
+        # Diverse paraphrasing for visualization runs.  The default styles
+        # in precompute_sd35_rewrites.py ("adjust slightly") produce trivial
+        # edits; we want substantially different paraphrases here so the
+        # MCTS variant axis is actually meaningful.
+        QWEN_TEMP="${QWEN_TEMP:-1.0}"           # higher = more diverse
+        QWEN_TOP_P="${QWEN_TOP_P:-0.95}"
+        QWEN_MAX_NEW_TOKENS="${QWEN_MAX_NEW_TOKENS:-384}"
+        export REWRITE_STYLES_OVERRIDE="${REWRITE_STYLES_OVERRIDE:-Paraphrase this prompt for an image generator using completely different sentence structure and synonyms while preserving every visual detail.||Rewrite this prompt as if describing the same scene to a different illustrator, freely rearranging clauses and substituting words.||Restate the prompt with rich, vivid wording: invert the order of elements, replace verbs and adjectives, and add atmospheric detail without inventing new objects.||Express the same scene using a different opening, different verb tense if natural, and different adjective choices, keeping all key nouns intact.}"
         # Critical: PYTHONNOUSERSITE=1 prevents ~/.local/lib torch (CPU-only)
         # from shadowing the conda env's CUDA-enabled torch.
         env -u RANK -u LOCAL_RANK -u WORLD_SIZE -u LOCAL_WORLD_SIZE -u NODE_RANK -u MASTER_ADDR -u MASTER_PORT \
@@ -106,7 +114,8 @@ if [[ ! -s "${REWRITES_FILE}" && "${N_VARIANTS}" -gt 1 ]]; then
             --qwen_id "${QWEN_ID}" --qwen_dtype "${QWEN_DTYPE}" \
             --device cuda:0 --batch_size 1 \
             --save_every_batches 1 \
-            --max_new_tokens 256 --temperature 0.7 --top_p 0.9 \
+            --max_new_tokens "${QWEN_MAX_NEW_TOKENS}" \
+            --temperature "${QWEN_TEMP}" --top_p "${QWEN_TOP_P}" \
             --no-clear_cache_each_batch \
             || echo "[rewrites] WARN Qwen precompute failed; will fall back to hand-crafted"
         # Make sure CUDA is fully released before reward server / SD3.5 loads.
@@ -210,7 +219,13 @@ else
     trap 'kill "${SERVER_PID}" >/dev/null 2>&1 || true' EXIT
     for i in $(seq 1 60); do
         if curl -s --max-time 3 "${REWARD_SERVER_URL}/health" >/dev/null 2>&1; then break; fi
-        kill -0 "${SERVER_PID}" 2>/dev/null || { echo "[FATAL] reward server died"; tail -n 50 "${SERVER_LOG}"; exit 1; }
+        if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+            echo "[FATAL] reward server died -- last 80 lines of ${SERVER_LOG}:"
+            echo "================================================================"
+            tail -n 80 "${SERVER_LOG}"
+            echo "================================================================"
+            exit 1
+        fi
         sleep 3
     done
 fi

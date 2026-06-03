@@ -29,6 +29,14 @@ REWRITE_STYLES = [
     "Swap or add a camera/lens detail.",
     "Change one mood or atmosphere word.",
 ]
+# Env override -- pass a "||"-delimited list of stronger paraphrase
+# instructions when the default mild styles don't produce enough variety
+# (e.g. for visualization runs).  Example:
+#   export REWRITE_STYLES_OVERRIDE="Paraphrase using completely different structure...||Rewrite as if for a different artist..."
+_styles_env = os.environ.get("REWRITE_STYLES_OVERRIDE", "").strip()
+if _styles_env:
+    REWRITE_STYLES = [s.strip() for s in _styles_env.split("||") if s.strip()]
+    print(f"[rewrites] using REWRITE_STYLES_OVERRIDE ({len(REWRITE_STYLES)} styles)", flush=True)
 
 _REWRITE_PLACEHOLDER_RE = re.compile(r"^/?\s*<[^>]+>\s*$")
 _REWRITE_BAD_TOKENS = {

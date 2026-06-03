@@ -172,6 +172,55 @@ for fp in prompt_files:
 print(f"[ablation] comparison PNGs -> {cmp_dir}")
 PY
 
+# ── Side-by-side DECISION-TREE comparison (fixed vs fresh) ────────────
+echo
+echo "[ablation] building per-prompt decision-tree comparison PNGs"
+python3 - "${OUT_ROOT}" "${BACKEND}" <<'PY'
+import sys, glob, re
+from pathlib import Path
+out_root = Path(sys.argv[1]); backend = sys.argv[2]
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except Exception as exc:
+    print(f"[ablation] PIL unavailable for tree compare: {exc}"); sys.exit(0)
+fixed_dir = out_root / "fixed" / backend
+fresh_dir = out_root / "fresh" / backend
+cmp_dir   = out_root / "comparison_trees"
+cmp_dir.mkdir(parents=True, exist_ok=True)
+if not (fixed_dir.is_dir() and fresh_dir.is_dir()):
+    print("[ablation] no tree dirs to compare"); sys.exit(0)
+font = ImageFont.load_default()
+for cand in ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+             "/Library/Fonts/Arial.ttf"):
+    try: font = ImageFont.truetype(cand, 18); break
+    except Exception: pass
+# Pair by prompt index extracted from filename actdiff_*_p<N>_bon_mcts.png
+def by_idx(d):
+    out = {}
+    for fp in d.glob("actdiff_*_p*_bon_mcts.png"):
+        m = re.search(r"_p(\d+)_bon_mcts\.png$", fp.name)
+        if m: out[int(m.group(1))] = fp
+    return out
+fixed_map = by_idx(fixed_dir); fresh_map = by_idx(fresh_dir)
+common = sorted(set(fixed_map.keys()) & set(fresh_map.keys()))
+print(f"[ablation] {len(common)} prompt pairs to render")
+for pi in common:
+    a = Image.open(fixed_map[pi]).convert("RGB")
+    b = Image.open(fresh_map[pi]).convert("RGB")
+    H = max(a.height, b.height); pad = 12; header_h = 28
+    out = Image.new("RGB", (a.width + b.width + pad, H + header_h),
+                    (255, 255, 255))
+    d = ImageDraw.Draw(out)
+    d.rectangle([0, 0, a.width, header_h], fill=(60, 60, 60))
+    d.text((10, 5), f"FIXED noise (p={pi})", font=font, fill=(255,255,255))
+    d.rectangle([a.width + pad, 0, a.width + pad + b.width, header_h], fill=(20,90,140))
+    d.text((a.width + pad + 10, 5), "FRESH noise", font=font, fill=(255,255,255))
+    out.paste(a, (0, header_h))
+    out.paste(b, (a.width + pad, header_h))
+    out.save(cmp_dir / f"tree_p{pi:04d}.png")
+print(f"[ablation] tree comparisons -> {cmp_dir}")
+PY
+
 # ── Summarize ─────────────────────────────────────────────────────────────
 SUMMARY="${OUT_ROOT}/SUMMARY.txt"
 {

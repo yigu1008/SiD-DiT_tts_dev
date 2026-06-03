@@ -159,6 +159,13 @@ export NUM_GPUS=1
 # Stage A.  Pipeline is already loaded -- adds ~1 forward pass per prompt.
 export SAVE_BEST_STEP_IMAGES_DIR="${SAVE_BEST_STEP_IMAGES_DIR:-${RUN_ROOT}/step_images_inline}"
 mkdir -p "${SAVE_BEST_STEP_IMAGES_DIR}"
+# Optional: SAVE_ALL_ATTEMPTS=1 -> dump every MCTS-explored trajectory's final
+# image (named with score) for a full deliberation trace.  Off by default.
+if [[ "${SAVE_ALL_ATTEMPTS:-0}" == "1" ]]; then
+    export SAVE_ALL_ATTEMPTS_DIR="${SAVE_ALL_ATTEMPTS_DIR:-${RUN_ROOT}/all_attempts}"
+    mkdir -p "${SAVE_ALL_ATTEMPTS_DIR}"
+    echo "[a6000]   ALL attempted trajectories will land in: ${SAVE_ALL_ATTEMPTS_DIR}"
+fi
 echo
 echo "[a6000] STAGE A: running bon_mcts (backend=${BACKEND}, N=${N_PROMPTS})"
 echo "[a6000]   step images will land in: ${SAVE_BEST_STEP_IMAGES_DIR}"

@@ -3256,6 +3256,24 @@ def run_mcts(
                             dx = apply_reward_correction(ctx, dx, prompt, reward_model, float(cs), cfg=float(cfg))
                     img = decode_to_pil(ctx, _final_decode_tensor(latents, dx, use_euler))
                     score = float(score_image(reward_model, prompt, img))
+                    # Optional: SAVE_ALL_ATTEMPTS_DIR=<dir> -> dump every
+                    # explored trajectory's final image, named with score.
+                    _all_dir = os.environ.get("SAVE_ALL_ATTEMPTS_DIR")
+                    if _all_dir:
+                        try:
+                            from pathlib import Path as _P
+                            _pi = int(os.environ.get("SAVE_BEST_PROMPT_INDEX", "0"))
+                            _od = _P(_all_dir) / f"prompt_{_pi:04d}"
+                            _od.mkdir(parents=True, exist_ok=True)
+                            _cfgs = "-".join(f"{c:.2f}" for _, c, _ in step_actions)
+                            _vs = "-".join(str(int(v)) for v, _, _ in step_actions)
+                            _pol = "-".join(f"s{s}g{g:.2f}e{e}" for s, g, e in policy) or "no_inj"
+                            _name = (f"rollout{rollouts_refine:04d}_"
+                                     f"score{score:+.4f}_src-{source_name}_"
+                                     f"v{_vs}_cfg{_cfgs}_pol-{_pol}.png")[:240]
+                            img.save(_od / _name)
+                        except Exception as _exc:
+                            print(f"  [save-all] WARN: {type(_exc).__name__}: {_exc}", flush=True)
                     if score > best_refine_score:
                         best_refine_score = float(score)
                         best_refine_img = img

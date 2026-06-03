@@ -679,6 +679,9 @@ def main() -> None:
 
                 if "mcts" in args.modes:
                     ctx.nfe = 0
+                    # Make prompt_index visible to deep sampling helpers
+                    # (SAVE_BEST_STEP_IMAGES_DIR / SAVE_ALL_ATTEMPTS_DIR use it).
+                    os.environ["SAVE_BEST_PROMPT_INDEX"] = str(int(prompt_index))
                     mcts = run_mcts(args, ctx, emb, reward_model, prompt, variants, seed)
                     # Optional: dump x_0 after each step of the winning trajectory.
                     # Set SAVE_BEST_STEP_IMAGES_DIR=<absolute path> to enable.

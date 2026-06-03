@@ -2784,6 +2784,9 @@ def _run_segment(
     # backends this matches run_baseline exactly; for Euler backends
     # _prepare_latents is a no-op so this is a free no-op there.
     _fresh_rollout = str(os.environ.get("MCTS_FRESH_ROLLOUT_NOISE", "0")).strip().lower() in ("1", "true", "yes")
+    if _fresh_rollout and not getattr(_run_segment, "_announced_fresh", False):
+        print(f"  [fresh-noise] _run_segment will inject torch.randn_like at every step_idx > 0 (use_euler={use_euler})", flush=True)
+        _run_segment._announced_fresh = True
 
     seg_cfg_deltas: list[float] = []
     for step_idx in range(start_step, end_step):
@@ -2795,9 +2798,12 @@ def _run_segment(
             latents = latents + float(gamma) * t_4d * eps
         if explore_n <= 1:
             # Match run_baseline / run_greedy / run_smc: at every step (except
-            # the very first, where latents IS the initial noise), reconstruct
-            # noisy latents from current dx + fresh torch.randn_like.
-            if _fresh_rollout and step_idx > int(start_step):
+            # the very first GLOBAL step, where latents IS the initial noise),
+            # reconstruct noisy latents from current dx + fresh torch.randn_like.
+            # IMPORTANT: compare to 0 (global), NOT to start_step (segment-local).
+            # In MCTS, _run_segment is called per-step → step_idx==start_step
+            # almost always, so a `step_idx > start_step` guard would never fire.
+            if _fresh_rollout and step_idx > 0:
                 latents = _prepare_latents(latents, dx, torch.randn_like(latents),
                                            t_4d, step_idx, use_euler)
             step_stats: dict | None = {} if stats_out is not None else None

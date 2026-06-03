@@ -27,7 +27,8 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-N_PROMPTS="${N_PROMPTS:-20}"
+# Baked-in defaults (all overridable via env).  Small N for fast turnaround.
+N_PROMPTS="${N_PROMPTS:-4}"
 N_SIMS="${N_SIMS:-30}"
 SEED="${SEED:-42}"
 BACKEND="${BACKEND:-sid}"

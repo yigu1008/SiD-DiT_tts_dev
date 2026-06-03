@@ -38,11 +38,13 @@ PROMPT="${PROMPT:-}"
 PROMPT_FILE="${PROMPT_FILE:-}"
 
 if [[ -z "${PROMPT_FILE}" ]]; then
+    # If caller didn't pass PROMPT="..." or 1st arg, fall back to baked default.
     if [[ -z "${PROMPT}" ]]; then
         PROMPT="${DEFAULT_PROMPT}"
         echo "[focus] using baked-in default prompt (raccoon oil-painting)"
     fi
-    PROMPT_DIR="$(mktemp -d -t focus_prompt_XXXXXX)"
+    PROMPT_DIR="${RUN_ROOT}/_baked_prompt"
+    mkdir -p "${PROMPT_DIR}"
     PROMPT_FILE="${PROMPT_DIR}/prompt.txt"
     printf '%s\n' "${PROMPT}" > "${PROMPT_FILE}"
 fi
@@ -53,19 +55,21 @@ if [[ ! -s "${PROMPT_FILE}" ]]; then
 fi
 PROMPT_TEXT="$(head -n1 "${PROMPT_FILE}")"
 
-# ── Configuration ─────────────────────────────────────────────────────────
+# ── Configuration (baked-in defaults; all overridable via env) ───────────
 BACKEND="${BACKEND:-sid}"
-N_SIMS="${N_SIMS:-30}"
+N_SIMS="${N_SIMS:-64}"                                    # rich tree for figures
 SEED="${SEED:-42}"
-RUN_ROOT="${RUN_ROOT:-${SCRIPT_DIR}/figures/focus_$(date +%Y%m%d_%H%M%S)}"
+RUN_ROOT="${RUN_ROOT:-/data/ygu/runs/raccoon_full_trace_$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "${RUN_ROOT}"
 
-# Use 3 prompt variants by default so the action axis actually has
-# something to explore.  Qwen rewriting is ENABLED by default for this
-# illustration script -- override with USE_QWEN=0 N_VARIANTS=1 to test
-# the CFG axis alone.
+# Prompt rewriting + multi-variant exploration ON by default for the
+# illustration run.  Override with USE_QWEN=0 N_VARIANTS=1 for CFG-only.
 USE_QWEN="${USE_QWEN:-1}"
 N_VARIANTS="${N_VARIANTS:-3}"
+
+# Save EVERY MCTS-explored trajectory's final image (sortable by score).
+# Toggle off for slim runs by exporting SAVE_ALL_ATTEMPTS=0 before launch.
+export SAVE_ALL_ATTEMPTS="${SAVE_ALL_ATTEMPTS:-1}"
 
 echo "================================================================"
 echo "FOCUSED single-prompt viz"

@@ -43,10 +43,14 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 export OFFLOAD_TEXT_ENCODER_AFTER_ENCODE="${OFFLOAD_TEXT_ENCODER_AFTER_ENCODE:-1}"
 export MAX_SEQ_LEN="${MAX_SEQ_LEN:-256}"
 
-# Rewriting: skip Qwen at runtime (no GPU contention), use a static rewrites file.
-USE_QWEN="${USE_QWEN:-0}"
+# Rewriting: REAL Qwen rewrites, run as a STANDALONE step BEFORE the reward
+# server boots, so Qwen has the full GPU.  After this step Qwen exits and
+# all CUDA memory is released; the suite is then told USE_QWEN=0 and points
+# at the cache.  No two heavy models on the GPU at the same time.
+USE_QWEN="${USE_QWEN:-1}"
 N_VARIANTS="${N_VARIANTS:-3}"
-export PRECOMPUTE_REWRITES="${PRECOMPUTE_REWRITES:-0}"
+QWEN_ID="${QWEN_ID:-Qwen/Qwen2.5-3B-Instruct}"
+QWEN_DTYPE="${QWEN_DTYPE:-bfloat16}"
 export SAVE_ALL_ATTEMPTS="${SAVE_ALL_ATTEMPTS:-1}"
 
 # ── Default prompt baked into the script ─────────────────────────────────
@@ -70,11 +74,42 @@ if [[ ! -s "${PROMPT_FILE}" ]]; then
 fi
 PROMPT_TEXT="$(head -n1 "${PROMPT_FILE}")"
 
-# ── Static rewrites cache (skips Qwen entirely at runtime) ───────────────
+# ── Rewrites cache ───────────────────────────────────────────────────────
+# Two paths:
+#   (A) USE_QWEN=1 (default): run Qwen STANDALONE here, before anything else
+#       touches the GPU.  Qwen exits cleanly; CUDA memory fully released.
+#   (B) USE_QWEN=0: fall back to a tiny hand-crafted JSON (raccoon-aware).
 REWRITES_FILE="${REWRITES_FILE:-${RUN_ROOT}/rewrites.json}"
-if [[ ! -s "${REWRITES_FILE}" && "${N_VARIANTS}" -gt 1 && "${USE_QWEN}" != "1" ]]; then
+
+if [[ ! -s "${REWRITES_FILE}" && "${N_VARIANTS}" -gt 1 ]]; then
     mkdir -p "$(dirname "${REWRITES_FILE}")"
-    python3 - "${PROMPT_TEXT}" "${REWRITES_FILE}" <<'PY'
+    if [[ "${USE_QWEN}" == "1" ]]; then
+        echo "[rewrites] running Qwen STANDALONE (id=${QWEN_ID}) on GPU ${CUDA_DEVICE}"
+        # n_variants is the TOTAL including canonical; Qwen needs to emit n-1 paraphrases.
+        QWEN_N=$(( N_VARIANTS - 1 ))
+        env -u RANK -u LOCAL_RANK -u WORLD_SIZE -u LOCAL_WORLD_SIZE -u NODE_RANK -u MASTER_ADDR -u MASTER_PORT \
+        CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" \
+        "${PYTHON_BIN}" -u "${SCRIPT_DIR}/precompute_sd35_rewrites.py" \
+            --prompt_file "${PROMPT_FILE}" \
+            --rewrites_file "${REWRITES_FILE}" \
+            --start_index 0 --end_index 1 \
+            --n_variants "${QWEN_N}" \
+            --qwen_id "${QWEN_ID}" --qwen_dtype "${QWEN_DTYPE}" \
+            --device cuda:0 --batch_size 1 \
+            --save_every_batches 1 \
+            --max_new_tokens 256 --temperature 0.7 --top_p 0.9 \
+            --no-clear_cache_each_batch \
+            || echo "[rewrites] WARN Qwen precompute failed; will fall back to hand-crafted"
+        # Make sure CUDA is fully released before reward server / SD3.5 loads.
+        sleep 5
+        if command -v nvidia-smi >/dev/null 2>&1; then
+            echo "[rewrites] GPU state after Qwen exit:"
+            nvidia-smi --query-gpu=memory.used,memory.free --format=csv | head -2
+        fi
+    fi
+    # Hand-crafted fallback (also covers USE_QWEN=0 case).
+    if [[ ! -s "${REWRITES_FILE}" ]]; then
+        python3 - "${PROMPT_TEXT}" "${REWRITES_FILE}" <<'PY'
 import json, sys
 prompt, out = sys.argv[1], sys.argv[2]
 def derive(p):
@@ -87,10 +122,15 @@ def derive(p):
             f"A carefully composed image where {p[0].lower()}{p[1:]}"]
 with open(out, "w", encoding="utf-8") as f:
     json.dump({prompt: derive(prompt)}, f, indent=2, ensure_ascii=False)
-print(f"[rewrites] wrote {out}  variants_total={1+len(derive(prompt))}", flush=True)
+print(f"[rewrites] (fallback) wrote {out}  variants_total={1+len(derive(prompt))}", flush=True)
 PY
+    fi
 fi
+# Inside the suite we DON'T want it to re-run Qwen -- we already have the cache.
 export REWRITES_FILE
+# These force the suite's runtime Qwen path off; suite will just read REWRITES_FILE.
+USE_QWEN=0
+export PRECOMPUTE_REWRITES=0
 
 echo "================================================================"
 echo "FOCUSED single-prompt viz (all-in-one)"

@@ -23,6 +23,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/_heartbeat.sh" 2>/dev/null || true
 type start_heartbeat >/dev/null 2>&1 && start_heartbeat "single-prompt-viz"
 export PYTHONUNBUFFERED=1
+# Critical: prevent ~/.local/lib/python3.x torch from shadowing the conda env's
+# CUDA torch.  This bites Qwen precompute and the suite alike.
+export PYTHONNOUSERSITE=1
 
 # ── Configuration ─────────────────────────────────────────────────────────
 PYTHON_BIN="${PYTHON_BIN:-python}"
@@ -87,7 +90,10 @@ if [[ ! -s "${REWRITES_FILE}" && "${N_VARIANTS}" -gt 1 ]]; then
         echo "[rewrites] running Qwen STANDALONE (id=${QWEN_ID}) on GPU ${CUDA_DEVICE}"
         # n_variants is the TOTAL including canonical; Qwen needs to emit n-1 paraphrases.
         QWEN_N=$(( N_VARIANTS - 1 ))
+        # Critical: PYTHONNOUSERSITE=1 prevents ~/.local/lib torch (CPU-only)
+        # from shadowing the conda env's CUDA-enabled torch.
         env -u RANK -u LOCAL_RANK -u WORLD_SIZE -u LOCAL_WORLD_SIZE -u NODE_RANK -u MASTER_ADDR -u MASTER_PORT \
+        PYTHONNOUSERSITE=1 \
         CUDA_VISIBLE_DEVICES="${CUDA_DEVICE}" \
         "${PYTHON_BIN}" -u "${SCRIPT_DIR}/precompute_sd35_rewrites.py" \
             --prompt_file "${PROMPT_FILE}" \

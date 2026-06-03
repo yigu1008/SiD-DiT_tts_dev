@@ -242,14 +242,19 @@ fp = sys.argv[1]
 scores = []
 deltas = []
 nfes = []
+seen_modes = set()
+total_rows = 0
 for ln in open(fp):
     if not ln.strip(): continue
     try:
         r = json.loads(ln)
     except Exception:
         continue
-    if r.get("mode") not in ("mcts", "bon_mcts"):
-        continue
+    total_rows += 1
+    m = r.get("mode")
+    if m: seen_modes.add(m)
+    # Accept any row that has a score field; the search method's identity
+    # is enforced upstream (only bon_mcts ran), so don't gate on mode name.
     if r.get("score") is not None:
         scores.append(float(r["score"]))
     if r.get("delta_vs_base") is not None:
@@ -260,6 +265,7 @@ def stats(xs):
     if not xs: return "(empty)"
     return f"n={len(xs)} mean={sum(xs)/len(xs):+.4f} min={min(xs):+.4f} max={max(xs):+.4f}"
 print(f"  rank file: {fp}")
+print(f"  rows scanned: {total_rows}   modes seen: {sorted(seen_modes)}")
 print(f"  IR score:        {stats(scores)}")
 print(f"  IR delta vs base:{stats(deltas)}")
 print(f"  NFE per prompt:  {stats(nfes)}")

@@ -19,6 +19,9 @@ N_SIMS="${N_SIMS:-64}"
 SEED="${SEED:-42}"
 N_VARIANTS="${N_VARIANTS:-3}"
 USE_QWEN="${USE_QWEN:-1}"
+# Save per-step intermediate x_0 for EVERY rollout (= alternatives at each
+# decision point).  Default ON for the viz run since storage is per-prompt.
+export SAVE_ALL_STEPS="${SAVE_ALL_STEPS:-1}"
 RUN_ROOT="${RUN_ROOT:-/data/ygu/runs/raccoon_full_trace_$(date +%Y%m%d_%H%M%S)}"
 export SEARCH_REWARD="${SEARCH_REWARD:-imagereward}"
 # Use the cluster's default minimal-edit rewrite styles (precompute_sd35_rewrites.py

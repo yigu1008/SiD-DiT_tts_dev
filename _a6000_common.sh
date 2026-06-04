@@ -124,6 +124,12 @@ a6000_setup_bon_mcts_env() {
     export OUT_ROOT="${run_root}"
     export SAVE_BEST_STEP_IMAGES_DIR="${run_root}/step_images_inline"
     export SAVE_ALL_ATTEMPTS_DIR="${run_root}/all_attempts"
+    # Per-step intermediate images for EVERY rollout (alternatives at each
+    # decision point).  Disabled by default -- can balloon disk usage.
+    if [[ "${SAVE_ALL_STEPS:-0}" == "1" ]]; then
+        export SAVE_ALL_STEP_IMAGES_DIR="${run_root}/all_step_attempts"
+        mkdir -p "${SAVE_ALL_STEP_IMAGES_DIR}"
+    fi
     mkdir -p "${SAVE_BEST_STEP_IMAGES_DIR}" "${SAVE_ALL_ATTEMPTS_DIR}"
 }
 

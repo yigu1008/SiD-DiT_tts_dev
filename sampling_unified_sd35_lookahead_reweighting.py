@@ -1158,6 +1158,32 @@ def run_mcts_lookahead(
                 d_ref_by_step[int(rollout_node.key_step_idx)].append(float(child_d))
             # Capture per-step dx for this rollout (after this segment).
             _rollout_dx_history.append(rollout_dx.clone())
+            # Optional: dump THIS step's intermediate x_0 to disk so the user
+            # can see "what would have happened if we took this action".
+            # Saved across all rollouts -> the union covers every action the
+            # MCTS evaluated at every step ("alternatives at each decision").
+            _alt_dir = os.environ.get("SAVE_ALL_STEP_IMAGES_DIR")
+            if _alt_dir:
+                try:
+                    from pathlib import Path as _P
+                    _pi = int(os.environ.get("SAVE_BEST_PROMPT_INDEX", "0"))
+                    _od = _P(_alt_dir) / f"prompt_{_pi:04d}"
+                    _od.mkdir(parents=True, exist_ok=True)
+                    # path prefix + this step's action
+                    _path_actions = [a for _, a in path] + list(rollout_actions)
+                    _vs = "-".join(str(int(a[0])) for a in _path_actions)
+                    _cfgs = "-".join(f"{float(a[1]):.2f}" for a in _path_actions)
+                    if not hasattr(run_mcts_lookahead, "_alt_counter"):
+                        run_mcts_lookahead._alt_counter = 0
+                    run_mcts_lookahead._alt_counter += 1
+                    _n = run_mcts_lookahead._alt_counter
+                    _step_so_far = rollout_key_idx  # 0-based, current step just completed
+                    _img_alt = su.decode_to_pil(ctx, rollout_dx)
+                    _name = (f"sim{_n:05d}_step{_step_so_far}_"
+                             f"v{_vs}_cfg{_cfgs}.png")[:240]
+                    _img_alt.save(_od / _name)
+                except Exception as _exc:
+                    print(f"  [alt-step] WARN: {type(_exc).__name__}: {_exc}", flush=True)
             rollout_key_idx += 1
             if rollout_key_idx < n_key:
                 rollout_node = LookaheadMCTSNode(

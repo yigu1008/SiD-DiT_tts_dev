@@ -78,13 +78,22 @@ else
 fi
 
 # ── 2. Prompts ─────────────────────────────────────────────────────────────
+# Honor caller-provided PROMPT_FILE if it exists; otherwise auto-generate
+# via cherry_pick_prompts.py.  Critical for A6000 / cluster runs that want
+# a specific custom prompt set (e.g. DPG-Bench, paper-figure prompts).
 PROMPTS_DIR="${RUN_ROOT}/_prompts"
 mkdir -p "${PROMPTS_DIR}"
-PROMPT_FILE="${PROMPTS_DIR}/backend_${BACKEND}.txt"
-if [[ ! -f "${PROMPT_FILE}" ]]; then
-    env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE \
-        "${PYTHON_BIN}" "${SCRIPT_DIR}/cherry_pick_prompts.py" \
-        --n_prompts "${N_PROMPTS}" --out_dir "${PROMPTS_DIR}" --backends "${BACKEND}"
+if [[ -n "${PROMPT_FILE:-}" && -f "${PROMPT_FILE}" ]]; then
+    echo "[all-method] using caller-provided PROMPT_FILE=${PROMPT_FILE}"
+    _n_avail=$(grep -c . "${PROMPT_FILE}" 2>/dev/null || echo 0)
+    echo "[all-method]   contains ${_n_avail} non-empty lines; N_PROMPTS=${N_PROMPTS}"
+else
+    PROMPT_FILE="${PROMPTS_DIR}/backend_${BACKEND}.txt"
+    if [[ ! -f "${PROMPT_FILE}" ]]; then
+        env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE \
+            "${PYTHON_BIN}" "${SCRIPT_DIR}/cherry_pick_prompts.py" \
+            --n_prompts "${N_PROMPTS}" --out_dir "${PROMPTS_DIR}" --backends "${BACKEND}"
+    fi
 fi
 
 # ── 3. Stage rewrites (3-level — shared across rewrite-using methods) ──────

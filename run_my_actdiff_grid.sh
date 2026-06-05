@@ -10,7 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Pinned configuration (edit these if you need to change anything) ─────
 export N_PROMPTS=200
-export PROMPT_FILE=/home/ygu/project/SiD-DiT_tts_dev/prompts.txt
+# ./prompts.txt next to this script
+export PROMPT_FILE="${SCRIPT_DIR}/prompts.txt"
 export SEARCH_REWARD=imagereward
 export EVAL_BACKENDS=imagereward
 export BACKEND=sid

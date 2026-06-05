@@ -37,6 +37,7 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/_a6000_common.sh"
+source "${SCRIPT_DIR}/_a6000_common_multigpu.sh"
 source "${SCRIPT_DIR}/_heartbeat.sh" 2>/dev/null || true
 type start_heartbeat >/dev/null 2>&1 && start_heartbeat "actdiff-grid-sid"
 
@@ -59,16 +60,22 @@ export BON_MCTS_SIGMA_BANK_SIGMA="${BON_MCTS_SIGMA_BANK_SIGMA:--0.05 0.0 0.05}"
 export BON_MCTS_NEG_BANK_AXES="${BON_MCTS_NEG_BANK_AXES:-${BON_MCTS_NEG_BANK_NEG}}"
 export BON_MCTS_SIGMA_BANK_AXES="${BON_MCTS_SIGMA_BANK_AXES:-${BON_MCTS_SIGMA_BANK_SIGMA}}"
 
-# In-process reward, backend defaults.
-a6000_use_inprocess_reward
+# Multi-GPU: reward server on GPU 0, DDP sampling on GPUs 1..N-1.
+TOTAL_GPUS="${TOTAL_GPUS:-8}"
 a6000_setup_backend
+# For composite_hpsv3_ir we need BOTH backends in the server.
+case "${SEARCH_REWARD}" in
+    composite_hpsv3_ir|composite_all4) _server_backends="hpsv3 imagereward" ;;
+    *) _server_backends="${SEARCH_REWARD}" ;;
+esac
+mgpu_boot_reward_server "${RUN_ROOT}/reward_server.log" "${_server_backends}" || exit 1
+trap 'mgpu_kill_reward_server' EXIT
+mgpu_setup_sampling_gpus "${TOTAL_GPUS}"
 
 # Memory + execution knobs.
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export OFFLOAD_TEXT_ENCODER_AFTER_ENCODE="${OFFLOAD_TEXT_ENCODER_AFTER_ENCODE:-1}"
 export MAX_SEQ_LEN="${MAX_SEQ_LEN:-256}"
-export NUM_GPUS=1
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
 # Hand off to the same inner script the cluster uses.
 export BACKEND N_PROMPTS SEED SEARCH_REWARD METHODS BON_N RUN_ROOT

@@ -111,7 +111,14 @@ a6000_setup_bon_mcts_env() {
     export PRECOMPUTE_REWRITES=0
     export CORRECTION_STRENGTHS="0.0"
     export UCB_C=1.0
-    export SAVE_BEST_IMAGES=1 SAVE_IMAGES=1 SAVE_VARIANTS=1
+    # SLIM_MODE=1 disables ALL image dumps -- keep only rank_*.jsonl + summary.tsv.
+    # Useful for big multi-method / multi-prompt grids where image disk usage
+    # would balloon (200 prompts x 11 methods x 5 images each = 11000 files).
+    if [[ "${SLIM_MODE:-0}" == "1" ]]; then
+        export SAVE_BEST_IMAGES=0 SAVE_IMAGES=0 SAVE_VARIANTS=0
+    else
+        export SAVE_BEST_IMAGES=1 SAVE_IMAGES=1 SAVE_VARIANTS=1
+    fi
     export REWARD_BACKEND="${SEARCH_REWARD:-imagereward}"
     export REWARD_TYPE="${SEARCH_REWARD:-imagereward}"
     export REWARD_BACKENDS="${SEARCH_REWARD:-imagereward}"
@@ -122,15 +129,19 @@ a6000_setup_bon_mcts_env() {
     export OFFLOAD_TEXT_ENCODER_AFTER_ENCODE="${OFFLOAD_TEXT_ENCODER_AFTER_ENCODE:-1}"
     export MAX_SEQ_LEN="${MAX_SEQ_LEN:-256}"
     export OUT_ROOT="${run_root}"
-    export SAVE_BEST_STEP_IMAGES_DIR="${run_root}/step_images_inline"
-    export SAVE_ALL_ATTEMPTS_DIR="${run_root}/all_attempts"
-    # Per-step intermediate images for EVERY rollout (alternatives at each
-    # decision point).  Disabled by default -- can balloon disk usage.
-    if [[ "${SAVE_ALL_STEPS:-0}" == "1" ]]; then
-        export SAVE_ALL_STEP_IMAGES_DIR="${run_root}/all_step_attempts"
-        mkdir -p "${SAVE_ALL_STEP_IMAGES_DIR}"
+    # Step images / all-attempt dumps: gated on SLIM_MODE.  In slim mode we
+    # unset these so the lookahead module's save hooks silently skip.
+    if [[ "${SLIM_MODE:-0}" == "1" ]]; then
+        unset SAVE_BEST_STEP_IMAGES_DIR SAVE_ALL_ATTEMPTS_DIR SAVE_ALL_STEP_IMAGES_DIR
+    else
+        export SAVE_BEST_STEP_IMAGES_DIR="${run_root}/step_images_inline"
+        export SAVE_ALL_ATTEMPTS_DIR="${run_root}/all_attempts"
+        if [[ "${SAVE_ALL_STEPS:-0}" == "1" ]]; then
+            export SAVE_ALL_STEP_IMAGES_DIR="${run_root}/all_step_attempts"
+            mkdir -p "${SAVE_ALL_STEP_IMAGES_DIR}"
+        fi
+        mkdir -p "${SAVE_BEST_STEP_IMAGES_DIR}" "${SAVE_ALL_ATTEMPTS_DIR}"
     fi
-    mkdir -p "${SAVE_BEST_STEP_IMAGES_DIR}" "${SAVE_ALL_ATTEMPTS_DIR}"
 }
 
 # ── Run bon_mcts via the suite ───────────────────────────────────────────

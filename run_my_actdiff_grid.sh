@@ -17,6 +17,10 @@ export EVAL_BACKENDS=imagereward
 export BACKEND=sid
 export SEED=42
 export TOTAL_GPUS=8
+# Slim mode: don't write per-prompt images, variants files, step traces, etc.
+# Only the rank_*.jsonl scores + summary.tsv are kept.  Saves ~50 GB on a
+# 200-prompt x 11-method grid.
+export SLIM_MODE=1
 
 # Method list (full 11-method grid).  Subset by commenting out unwanted ones.
 export METHODS="baseline bon bon_actdiff_cfg bon_actdiff_full sop sop_actdiff_cfg sop_actdiff_full smc smc_actdiff_cfg smc_actdiff_full bon_mcts"

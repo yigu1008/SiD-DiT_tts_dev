@@ -153,11 +153,14 @@ def main():
         ax.set_title(f"{backend}: {args.y_col} vs {args.x_col}")
         ax.grid(True, alpha=0.3)
         ax.legend(loc="best", fontsize=9, framealpha=0.92)
-        out_path = out_dir / f"{backend}_{args.y_col}_vs_{args.x_col}.png"
+        stem = out_dir / f"{backend}_{args.y_col}_vs_{args.x_col}"
         fig.tight_layout()
-        fig.savefig(out_path, dpi=args.dpi)
+        # PNG (raster, for slides/preview)
+        fig.savefig(f"{stem}.png", dpi=args.dpi)
+        # PDF (vector, with selectable text -- for paper LaTeX includegraphics)
+        fig.savefig(f"{stem}.pdf", dpi=args.dpi, bbox_inches="tight")
         plt.close(fig)
-        print(f"[plot_nfe_ours] wrote {out_path}")
+        print(f"[plot_nfe_ours] wrote {stem}.png and {stem}.pdf")
 
 
 if __name__ == "__main__":

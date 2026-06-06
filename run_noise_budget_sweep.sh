@@ -41,7 +41,7 @@ SEARCH_REWARD="${SEARCH_REWARD:-imagereward}"
 PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/prompts.txt}"
 TOTAL_GPUS="${TOTAL_GPUS:-8}"
 BON_N_LIST="${BON_N_LIST:-4 8 16 32 76}"
-METHODS_BUDGET="${METHODS_BUDGET:-bon bon_actdiff_cfg bon_actdiff_full bon_mcts}"
+METHODS_BUDGET="${METHODS_BUDGET:-bon bon_actdiff_cfg bon_actdiff_full}"
 OUT_ROOT="${OUT_ROOT:-/data/ygu/runs/noise_budget_sweep_$(date +%Y%m%d_%H%M%S)}"
 export SLIM_MODE="${SLIM_MODE:-1}"      # no per-prompt images
 mkdir -p "${OUT_ROOT}"
@@ -86,18 +86,6 @@ for BON_N in ${BON_N_LIST}; do
             a6000_setup_bon_mcts_env "${rr}" "${N_PROMPTS}"
             export METHODS="${METHOD}"
             export BON_N="${BON_N}"
-            # Tighten bon_mcts to the same NFE: prescreen seeds + refine sims = BON_N.
-            # Standard split: 25% prescreen, 75% refine.
-            if [[ "${METHOD}" == "bon_mcts" ]]; then
-                _ns=$(( BON_N / 4 ))
-                _sims=$(( BON_N - _ns ))
-                [[ ${_ns}   -lt 1 ]] && _ns=1
-                [[ ${_sims} -lt 1 ]] && _sims=1
-                export BON_MCTS_N_SEEDS="${_ns}"
-                export N_SIMS="${_sims}"
-                export BON_MCTS_TOPK=1
-                export BON_MCTS_MIN_SIMS="${_sims}"
-            fi
             a6000_run_bon_mcts "${rr}"
         )
         # Free any per-method allocations between runs.
@@ -178,14 +166,14 @@ if not data:
     print("[plot] no rows; skipping"); sys.exit(0)
 fig, ax = plt.subplots(figsize=(7.5, 4.5))
 colors = {"bon": "#1f77b4", "bon_actdiff_cfg": "#2ca02c",
-          "bon_actdiff_full": "#ff7f0e", "bon_mcts": "#d62728"}
+          "bon_actdiff_full": "#d62728"}
 labels = {"bon": "BoN", "bon_actdiff_cfg": "BoN+ActDiff (CFG)",
-          "bon_actdiff_full": "BoN+ActDiff (CFG+Prompt)", "bon_mcts": "ours (MCTS)"}
-for m in ("bon", "bon_actdiff_cfg", "bon_actdiff_full", "bon_mcts"):
+          "bon_actdiff_full": "BoN+ActDiff (CFG+Prompt)"}
+for m in ("bon", "bon_actdiff_cfg", "bon_actdiff_full"):
     pts = sorted(data.get(m, []))
     if not pts: continue
     xs, ys = zip(*pts)
-    lw = 3.0 if m == "bon_mcts" else 1.8
+    lw = 3.0 if m == "bon_actdiff_full" else 1.8
     ax.plot(xs, ys, marker="o", color=colors.get(m, "#777"),
             label=labels.get(m, m), linewidth=lw, markersize=8)
 ax.set_xscale("log", base=2)

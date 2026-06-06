@@ -35,15 +35,32 @@ pkill -9 -f sd35_ddp_experiment 2>/dev/null || true
 pkill -9 -f torchrun        2>/dev/null || true
 sleep 5
 
-# ── Sanity check the prompt file ──────────────────────────────────────────
+# ── Auto-fetch HPSv2+DrawBench if prompt file missing or too short ───────
+# So this script is truly one-button: no manual prompt prep needed.
+_need_fetch=0
 if [[ ! -s "${PROMPT_FILE}" ]]; then
-    echo "[FATAL] PROMPT_FILE not found or empty: ${PROMPT_FILE}" >&2
-    exit 1
+    _need_fetch=1
+    echo "[fetch] PROMPT_FILE missing; will fetch HPSv2+DrawBench"
+else
+    _n_avail=$(grep -c . "${PROMPT_FILE}" 2>/dev/null || echo 0)
+    if [[ "${_n_avail}" -lt "${N_PROMPTS}" ]]; then
+        _need_fetch=1
+        echo "[fetch] PROMPT_FILE has ${_n_avail} < ${N_PROMPTS}; will re-fetch"
+    fi
 fi
-_n_avail=$(grep -c . "${PROMPT_FILE}" || true)
+
+if [[ "${_need_fetch}" == "1" ]]; then
+    PYTHONNOUSERSITE=1 python3 "${SCRIPT_DIR}/fetch_hpsv2.py" \
+        --out_file "${PROMPT_FILE}" \
+        --n_prompts "${N_PROMPTS}" \
+        --shuffle --seed "${SEED}" \
+        || { echo "[FATAL] HPSv2 fetch failed" >&2; exit 1; }
+fi
+
+_n_avail=$(grep -c . "${PROMPT_FILE}" 2>/dev/null || echo 0)
+echo "[fetch] ${PROMPT_FILE} has ${_n_avail} non-empty lines"
 if [[ "${_n_avail}" -lt "${N_PROMPTS}" ]]; then
-    echo "[WARN] PROMPT_FILE has ${_n_avail} non-empty lines; you asked for N_PROMPTS=${N_PROMPTS}." >&2
-    echo "       Will use the first ${_n_avail}." >&2
+    echo "[WARN] still short; will use the first ${_n_avail}" >&2
     export N_PROMPTS="${_n_avail}"
 fi
 

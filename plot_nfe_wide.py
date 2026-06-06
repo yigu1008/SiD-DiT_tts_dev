@@ -43,7 +43,26 @@ def main():
                    help="Column name to bold (case-insensitive match).")
     p.add_argument("--ours_display", default=None,
                    help="Legend label for the bolded ours curve (default: '<col> (ours)').")
-    p.add_argument("--rename", nargs="*", default=[],
+    # Paper-style default rename map (override with --rename).
+    _PAPER_RENAME = {
+        "bon": "BoN", "sop": "SoP", "smc": "SMC/DAS",
+        "bon_actdiff_cfg": "BoN+ActDiff (CFG)",
+        "bon_actdiff_full": "BoN+ActDiff (CFG+Prompt)",
+        "sop_actdiff_cfg": "SoP+ActDiff (CFG)",
+        "sop_actdiff_full": "SoP+ActDiff (CFG+Prompt)",
+        "smc_actdiff_cfg": "SMC+ActDiff (CFG)",
+        "smc_actdiff_full": "SMC+ActDiff (CFG+Prompt)",
+        "fksteering": "FK-Steering", "greedy_prompt": "Greedy (Prompt)",
+        "bon_mcts": "ours", "bon_mcts_full": "MCTS (full)",
+        "bon_mcts_static_cfg": "MCTS (static CFG)",
+        "bon_mcts_adaptive_cfg": "MCTS (adaptive CFG)",
+        "bon_mcts_rewrite_only": "MCTS (rewrite only)",
+        "bon_mcts_neg": "MCTS+NegBank",
+        "bon_mcts_sigma": "MCTS+Sigma",
+        "bon_mcts_axes": "MCTS+Axes",
+    }
+    p.add_argument("--rename", nargs="*",
+                   default=[f"{k}:{v}" for k, v in _PAPER_RENAME.items()],
                    help="Rename pairs old:new for legend labels (e.g. smc:DAS).")
     p.add_argument("--no_log2_x", action="store_true")
     p.add_argument("--dpi", type=int, default=180)

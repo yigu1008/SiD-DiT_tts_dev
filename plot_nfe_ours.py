@@ -29,7 +29,33 @@ import matplotlib.pyplot as plt
 
 
 DEFAULT_DROP = ["baseline", "dynamic_cfg_x0"]
-DEFAULT_RENAME = {"bon_mcts": "ours_mcts"}
+# Paper-style display names.  Override on the CLI with --rename old:new ....
+# "ours_mcts" stays magical: it triggers the bold/red highlight in this script.
+DEFAULT_RENAME = {
+    "bon":                    "BoN",
+    "bon_actdiff_cfg":        "BoN+ActDiff (CFG)",
+    "bon_actdiff_full":       "BoN+ActDiff (CFG+Prompt)",
+    "sop":                    "SoP",
+    "sop_actdiff_cfg":        "SoP+ActDiff (CFG)",
+    "sop_actdiff_full":       "SoP+ActDiff (CFG+Prompt)",
+    "smc":                    "SMC/DAS",
+    "smc_actdiff_cfg":        "SMC+ActDiff (CFG)",
+    "smc_actdiff_full":       "SMC+ActDiff (CFG+Prompt)",
+    "fksteering":             "FK-Steering",
+    "greedy":                 "Greedy",
+    "greedy_prompt":          "Greedy (Prompt)",
+    "ga":                     "GA",
+    "beam":                   "Beam",
+    "noise":                  "NoiseInject",
+    "bon_mcts":               "ours_mcts",   # MUST stay as ours_mcts -> gets bolded
+    "bon_mcts_static_cfg":    "MCTS (static CFG)",
+    "bon_mcts_adaptive_cfg":  "MCTS (adaptive CFG)",
+    "bon_mcts_rewrite_only":  "MCTS (rewrite only)",
+    "bon_mcts_full":          "MCTS (full)",
+    "bon_mcts_neg":           "MCTS+NegBank",
+    "bon_mcts_sigma":         "MCTS+Sigma",
+    "bon_mcts_axes":          "MCTS+Axes",
+}
 
 # Color palette — first slot reserved for ours_mcts.
 _OURS_COLOR = "#d62728"  # vivid red

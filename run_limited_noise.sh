@@ -30,7 +30,7 @@ SEARCH_REWARD="${SEARCH_REWARD:-imagereward}"
 PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/prompts.txt}"
 TOTAL_GPUS="${TOTAL_GPUS:-8}"
 BON_N="${BON_N:-8}"                     # ← noise seed budget (small on purpose)
-METHODS_LIMITED="${METHODS_LIMITED:-bon bon_actdiff_cfg bon_actdiff_full}"
+METHODS_LIMITED="${METHODS_LIMITED:-bon bon_actdiff_full}"
 OUT_ROOT="${OUT_ROOT:-/data/ygu/runs/limited_noise_N${BON_N}_$(date +%Y%m%d_%H%M%S)}"
 export SLIM_MODE="${SLIM_MODE:-1}"
 mkdir -p "${OUT_ROOT}"

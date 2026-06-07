@@ -17,6 +17,9 @@ export EVAL_BACKENDS=imagereward
 export BACKEND=sid
 export SEED=42
 export TOTAL_GPUS=8
+# N_SIMS: per-prompt MCTS refine budget.  Default 60 (sid/4-step); reduce to
+# 30 to ~halve total wallclock with marginal quality drop on most prompts.
+export N_SIMS=30
 # Slim mode: don't write per-prompt images, variants files, step traces, etc.
 # Only the rank_*.jsonl scores + summary.tsv are kept.  Saves ~50 GB on a
 # 200-prompt x 11-method grid.

@@ -47,9 +47,12 @@ if [[ ! -s "${PROMPT_FILE}" ]] || [[ $(grep -c . "${PROMPT_FILE}" 2>/dev/null ||
         --shuffle --seed "${SEED}"
 fi
 
+# Save the user-provided CFG bank BEFORE a6000_setup_backend (which overwrites)
+_USER_CFG_SCALES="${CFG_SCALES}"
 a6000_setup_backend
-# Override the backend-default CFG bank with our small bank
-export CFG_SCALES
+# Restore the user's CFG bank.
+export CFG_SCALES="${_USER_CFG_SCALES}"
+echo "[bon-sched] CFG bank (post-override): ${CFG_SCALES}"
 
 mgpu_boot_reward_server "${OUT_ROOT}/reward_server.log" "imagereward" || exit 1
 trap 'mgpu_kill_reward_server' EXIT

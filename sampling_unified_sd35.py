@@ -1580,16 +1580,40 @@ def run_bon(
     else:
         print(f"  bon: n={n} cfg={float(args.baseline_cfg):.2f} variant=0 euler={use_euler}")
     best_action_tuple = action_tuples[0]
+    # BON_CFG_SCHEDULE=1: each sample uses a fresh per-step CFG schedule
+    # randomly sampled from the CFG bank (and per-step variant if action_diverse).
+    # This is the "BoN over schedule space" baseline: each trajectory has T
+    # cfg slots, drawn iid from |bank|, giving |bank|^T possible schedules.
+    _dyn_cfg = bool(int(os.environ.get("BON_CFG_SCHEDULE", "0") or 0))
+    _dyn_rng = np.random.default_rng(int(seed) + 7777) if _dyn_cfg else None
+    _cfg_bank = [float(c) for c in (getattr(args, "cfg_scales", None) or [float(args.baseline_cfg)])]
+    _var_bank_size = max(1, len(emb.cond_text)) if action_diverse else 1
+
     for i in range(n):
         s = seed + i
-        sample_variant_idx, sample_cfg, _sample_cs = action_tuples[i]
+        if _dyn_cfg:
+            # Per-step CFG (and optionally per-step variant)
+            sample_cfgs = [float(_dyn_rng.choice(_cfg_bank)) for _ in range(int(args.steps))]
+            if action_diverse:
+                sample_vars = [int(_dyn_rng.integers(0, _var_bank_size)) for _ in range(int(args.steps))]
+            else:
+                sample_vars = [0] * int(args.steps)
+            sample_variant_idx = sample_vars[0]
+            sample_cfg = sample_cfgs[0]
+            _sample_cs = 0.0
+        else:
+            sample_variant_idx, sample_cfg, _sample_cs = action_tuples[i]
+            sample_cfgs = [sample_cfg] * int(args.steps)
+            sample_vars = [sample_variant_idx] * int(args.steps)
         latents = make_latents(ctx, s, args.height, args.width, emb.cond_text[0].dtype)
         dx = torch.zeros_like(latents)
         sched = step_schedule(ctx.device, latents.dtype, args.steps,
                               getattr(args, "sigmas", None), euler=use_euler)
         for j, (t_flat, t_4d, step_dt) in enumerate(sched):
+            step_v = int(sample_vars[min(j, len(sample_vars) - 1)])
+            step_c = float(sample_cfgs[min(j, len(sample_cfgs) - 1)])
             latents = _prepare_latents(latents, dx, torch.randn_like(latents), t_4d, j, use_euler)
-            flow = transformer_step(args, ctx, latents, emb, sample_variant_idx, t_flat, sample_cfg)
+            flow = transformer_step(args, ctx, latents, emb, step_v, t_flat, step_c)
             latents, dx = _apply_step(latents, flow, dx, t_4d, step_dt, use_euler, args.x0_sampler)
         img = decode_to_pil(ctx, _final_decode_tensor(latents, dx, use_euler))
         score = score_image(reward_model, prompt, img)
@@ -1599,7 +1623,9 @@ def run_bon(
             best_img = img
             best_action_tuple = (sample_variant_idx, sample_cfg, _sample_cs)
             mark = " <- best"
-        print(f"    sample {i + 1}/{n} seed={s} v={sample_variant_idx} cfg={sample_cfg:.2f} score={score:.4f}{mark}")
+        _label = (f"sched={list(zip(sample_vars, [round(c,2) for c in sample_cfgs]))}"
+                  if _dyn_cfg else f"v={sample_variant_idx} cfg={sample_cfg:.2f}")
+        print(f"    sample {i + 1}/{n} seed={s} {_label} score={score:.4f}{mark}")
     if action_diverse:
         # Reflect the winning action in `fixed_actions` for diagnostics.
         fixed_actions = [best_action_tuple] * args.steps

@@ -4,6 +4,12 @@
 
 export PYTHONNOUSERSITE=1
 export PYTHONUNBUFFERED=1
+# Force CUDA to enumerate GPUs by PCI bus id so cuda:N matches `nvidia-smi`'s
+# "GPU N".  Without this, CUDA uses FASTEST_FIRST which can permute the
+# mapping (e.g. cuda:0 != physical GPU 0).  Setting it BEFORE any CUDA env
+# is read ensures CUDA_VISIBLE_DEVICES=2,3,4,5,6,7 truly selects physical
+# GPUs 2-7 as reported by nvidia-smi.
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 # ── Boot reward server on GPU 0 ───────────────────────────────────────────
 # args:  $1 server_log_path   $2 (optional) reward_backends_server
@@ -70,4 +76,11 @@ mgpu_setup_sampling_gpus() {
     export CUDA_VISIBLE_DEVICES_SAMPLE="$(seq -s, 1 "${sampling}")"
     export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_SAMPLE}"
     echo "[mgpu] total=${total}  reward=GPU 0  sampling=GPUs ${CUDA_VISIBLE_DEVICES_SAMPLE}  NUM_GPUS=${NUM_GPUS}"
+    echo "[mgpu] CUDA_DEVICE_ORDER=${CUDA_DEVICE_ORDER:-(unset)}  (PCI_BUS_ID makes cuda:N == nvidia-smi GPU N)"
+    # Show which physical GPUs nvidia-smi will report as in-use.  Helpful when
+    # debugging "why is the process on GPU 0,1 when I set CUDA_VISIBLE_DEVICES=2-7".
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        echo "[mgpu] physical GPUs visible (after parent CUDA_VISIBLE_DEVICES filter):"
+        nvidia-smi --query-gpu=index,memory.used --format=csv,noheader | head -16 | sed 's/^/[mgpu]   /'
+    fi
 }

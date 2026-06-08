@@ -5,6 +5,9 @@
 # Prevent ~/.local/lib torch from shadowing conda env.
 export PYTHONNOUSERSITE=1
 export PYTHONUNBUFFERED=1
+# Make CUDA enumerate GPUs by PCI bus id so cuda:N == nvidia-smi GPU N.
+# Without this, FASTEST_FIRST ordering can permute the mapping.
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
 # ── In-process reward (no server) ────────────────────────────────────────
 a6000_use_inprocess_reward() {

@@ -11,9 +11,13 @@ export PYTHONUNBUFFERED=1
 # GPUs 2-7 as reported by nvidia-smi.
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
-# ── Boot reward server on GPU 0 ───────────────────────────────────────────
+# ── Boot reward server on the FIRST GPU of the parent's visible slice ────
 # args:  $1 server_log_path   $2 (optional) reward_backends_server
 # exports: REWARD_SERVER_URL, REWARD_SERVER_PID
+#
+# Picks the first physical GPU index from CUDA_VISIBLE_DEVICES.  E.g. with
+# parent CUDA_VISIBLE_DEVICES=2,3,4,5,6,7 the reward server lands on
+# physical GPU 2 (not GPU 0).
 mgpu_boot_reward_server() {
     local server_log="$1"
     local reward_backends="${2:-imagereward}"
@@ -28,9 +32,14 @@ mgpu_boot_reward_server() {
         return 0
     fi
 
-    echo "[mgpu] booting reward server on GPU 0, port ${port}, backends=${reward_backends}"
+    # First physical GPU index from the parent's visible list.
+    local visible="${CUDA_VISIBLE_DEVICES:-0}"
+    local reward_gpu="${visible%%,*}"   # e.g. "2,3,4,5,6,7" -> "2"
+
+    echo "[mgpu] booting reward server on physical GPU ${reward_gpu} (port ${port}), backends=${reward_backends}"
     mkdir -p "$(dirname "${server_log}")"
-    CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 \
+    CUDA_VISIBLE_DEVICES="${reward_gpu}" PYTHONNOUSERSITE=1 \
+    CUDA_DEVICE_ORDER=PCI_BUS_ID \
     TOKENIZERS_PARALLELISM=false \
       "${PYTHON_BIN:-python}" -u "${SCRIPT_DIR}/reward_server.py" \
         --port "${port}" --device cuda:0 \
@@ -72,10 +81,15 @@ mgpu_setup_sampling_gpus() {
     local sampling=$((total - 1))
     export TOTAL_GPUS="${total}"
     export NUM_GPUS="${sampling}"
-    # The suite reads CUDA_VISIBLE_DEVICES at torchrun time -- give it 1..N-1
-    export CUDA_VISIBLE_DEVICES_SAMPLE="$(seq -s, 1 "${sampling}")"
-    export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_SAMPLE}"
-    echo "[mgpu] total=${total}  reward=GPU 0  sampling=GPUs ${CUDA_VISIBLE_DEVICES_SAMPLE}  NUM_GPUS=${NUM_GPUS}"
+    # Parse the parent's CUDA_VISIBLE_DEVICES into a list, drop the first
+    # (which is owned by the reward server), assign the rest to sampling.
+    local visible="${CUDA_VISIBLE_DEVICES:-0}"
+    local sampling_list="${visible#*,}"     # everything after the first comma
+    [[ "${sampling_list}" == "${visible}" ]] && sampling_list="${visible}"  # single-GPU fallback
+    export CUDA_VISIBLE_DEVICES_SAMPLE="${sampling_list}"
+    export CUDA_VISIBLE_DEVICES="${sampling_list}"
+    local reward_gpu="${visible%%,*}"
+    echo "[mgpu] total=${total}  reward=GPU ${reward_gpu}  sampling=GPUs ${sampling_list}  NUM_GPUS=${NUM_GPUS}"
     echo "[mgpu] CUDA_DEVICE_ORDER=${CUDA_DEVICE_ORDER:-(unset)}  (PCI_BUS_ID makes cuda:N == nvidia-smi GPU N)"
     # Show which physical GPUs nvidia-smi will report as in-use.  Helpful when
     # debugging "why is the process on GPU 0,1 when I set CUDA_VISIBLE_DEVICES=2-7".

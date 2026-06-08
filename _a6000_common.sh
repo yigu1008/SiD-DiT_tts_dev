@@ -149,8 +149,16 @@ a6000_run_bon_mcts() {
     local run_root="$1"
     mkdir -p "${run_root}"
     echo "[a6000] running bon_mcts -> ${run_root}"
-    bash "${SUITE}" > "${run_root}/_run.log" 2>&1 || \
-      echo "[a6000] WARN suite exited non-zero (see ${run_root}/_run.log)"
+    # tee so suite progress streams to terminal AND the per-method log file.
+    # Set A6000_QUIET=1 to revert to file-only (silent on stdout).
+    if [[ "${A6000_QUIET:-0}" == "1" ]]; then
+        bash "${SUITE}" > "${run_root}/_run.log" 2>&1 || \
+          echo "[a6000] WARN suite exited non-zero (see ${run_root}/_run.log)"
+    else
+        bash "${SUITE}" 2>&1 | tee "${run_root}/_run.log"
+        local rc=${PIPESTATUS[0]}
+        [[ "${rc}" -ne 0 ]] && echo "[a6000] WARN suite exited non-zero (rc=${rc})"
+    fi
 }
 
 # ── Render decision trees + action logs + trajectory strips ─────────────

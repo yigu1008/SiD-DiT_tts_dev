@@ -1585,6 +1585,11 @@ def run_bon(
     # This is the "BoN over schedule space" baseline: each trajectory has T
     # cfg slots, drawn iid from |bank|, giving |bank|^T possible schedules.
     _dyn_cfg = bool(int(os.environ.get("BON_CFG_SCHEDULE", "0") or 0))
+    # BON_FIX_NOISE=1: all N samples share the SAME initial latent (seed),
+    # so the entire BoN compute budget is spent exploring action axes (cfg /
+    # variant / cs / schedule) rather than noise.  Used for qualitative
+    # "action-only test-time scaling" demonstrations.
+    _fix_noise = bool(int(os.environ.get("BON_FIX_NOISE", "0") or 0))
     # DAS (Diffusion Action Search): per-trajectory CONTINUOUS action sampling.
     # Each of the N samples draws (cfg, cs) ~ Uniform over a continuous range
     # — the continuous analogue of bon_actdiff's discrete CFG bank.  Variant
@@ -1602,7 +1607,7 @@ def run_bon(
         print(f"  das: n={n} continuous cfg~U[{_das_cfg_lo:.2f},{_das_cfg_hi:.2f}] cs~U[{_das_cs_lo:.3f},{_das_cs_hi:.3f}] var_K={_var_bank_size}")
 
     for i in range(n):
-        s = seed + i
+        s = seed if _fix_noise else seed + i
         if _dyn_cfg:
             # Per-step CFG (and optionally per-step variant)
             sample_cfgs = [float(_dyn_rng.choice(_cfg_bank)) for _ in range(int(args.steps))]

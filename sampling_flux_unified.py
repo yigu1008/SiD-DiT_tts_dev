@@ -1451,8 +1451,9 @@ def run_bon(
     best_img: Image.Image | None = None
     best_action: tuple[int, float] = action_tuples[0]
 
+    _fix_noise = bool(int(os.environ.get("BON_FIX_NOISE", "0") or 0))
     for i in range(n):
-        s = seed + i
+        s = seed if _fix_noise else seed + i
         sample_variant_idx, sample_guidance = action_tuples[i]
         sample_variant_idx = max(0, min(sample_variant_idx, len(embeds) - 1))
         init_latents = make_initial_latents(ctx, s, args.height, args.width, batch_size=1)

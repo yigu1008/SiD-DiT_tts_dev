@@ -3,7 +3,7 @@
 # seed (sid).
 #
 # Demonstrates that with the SAME base seed, growing the BoN-ActDiff budget
-# (N=1,2,4,8,16,32) progressively yields better images.  All budget cells
+# (N=1,2,4,8,16,32,64,128) progressively yields better images.  All budget cells
 # share base SEED so at N=k, samples use seeds {seed, seed+1, ..., seed+k-1}
 # — i.e. the high-N cell can only improve over the low-N cell (best-of-k ⊇
 # best-of-j for k≥j).  Method is bon_actdiff_cfg: each sample draws a distinct
@@ -42,7 +42,7 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 export SLIM_MODE=0
 export SAVE_BEST_IMAGES=1
 export SAVE_IMAGES=1
-BUDGETS="${BUDGETS:-1 2 4 8 16 32}"
+BUDGETS="${BUDGETS:-1 2 4 8 16 32 64 128}"
 
 OUT_ROOT="${OUT_ROOT:-/data/ygu/runs/qual_demo_exp1_$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "${OUT_ROOT}"

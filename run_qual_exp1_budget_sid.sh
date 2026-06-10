@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# Qualitative Exp 1: ActDiff test-time scaling via budget sweep (sid).
+# Qualitative Exp 1: bon_mcts_full test-time scaling via N_SIMS sweep (sid).
 #
-# Pure bon_actdiff_full as defined in the suite:
-#   - Per-TRAJECTORY action tuple (one (cfg, variant) held across all T steps)
-#   - Discrete action bank: |cfg_bank| × |variants| = 7 × 3 = 21 unique tuples
-#   - Fresh noise per sample (seed advances) — N > 21 cycles actions but with
-#     new noise, so every sample is a unique (action, noise) draw
-#   - Budget ladder N = 1, 2, 4, 8, 16, 32, 64, 128, 256
+# The "Ours" method as paper-defined:
+#   - Prescreen N_SEEDS=16 noise candidates
+#   - Keep TOPK=4 after prescreen
+#   - MCTS-refine each kept seed for N_SIMS rollouts with adaptive cfg
+#     + 3-level prompt rewrites (bon_mcts_full = ours_tree refine, full axes)
 #
-# Demonstrates the standard ActDiff scaling curve — the headline "more search
-# → better image" result for the method as paper-defined, no schedule trick.
+# Budget knob = N_SIMS.  Ladder N_SIMS ∈ {4, 8, 16, 32, 64, 128, 256}.
+# Total trajectory-equivalents per prompt = N_SEEDS + N_SIMS ∈ {20, 24, 32,
+# 48, 80, 144, 272} matching the BoN budget convention.
+#
+# Same base SEED across cells.  Demonstrates how the MCTS refinement quality
+# improves as the search depth grows.
 #
 # Output layout:
 #   /data/ygu/runs/qual_demo_exp1_<ts>/
@@ -44,7 +47,10 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 export SLIM_MODE=0
 export SAVE_BEST_IMAGES=1
 export SAVE_IMAGES=1
-BUDGETS="${BUDGETS:-1 2 4 8 16 32 64 128 256}"
+BUDGETS="${BUDGETS:-4 8 16 32 64 128 256}"
+# Fixed prescreen knobs (matches paper default ActDiff config)
+export BON_MCTS_N_SEEDS="${BON_MCTS_N_SEEDS:-16}"
+export BON_MCTS_TOPK="${BON_MCTS_TOPK:-4}"
 
 OUT_ROOT="${OUT_ROOT:-/data/ygu/runs/qual_demo_exp1_$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "${OUT_ROOT}"
@@ -73,27 +79,29 @@ trap 'mgpu_kill_reward_server' EXIT
 mgpu_setup_sampling_gpus "${TOTAL_GPUS}"
 
 echo "================================================================"
-echo "QUAL EXP 1 — ActDiff test-time scaling (bon_actdiff_full as defined)"
-echo "  BACKEND     = ${BACKEND}"
-echo "  METHOD      = bon_actdiff_full  (per-trajectory action, fresh noise per sample)"
-echo "  N_PROMPTS   = ${N_PROMPTS}    SEED = ${SEED}  (fixed across cells)"
-echo "  BUDGETS     = ${BUDGETS}"
-echo "  OUT_ROOT    = ${OUT_ROOT}"
+echo "QUAL EXP 1 — bon_mcts_full test-time scaling (N_SIMS sweep)"
+echo "  BACKEND          = ${BACKEND}"
+echo "  METHOD           = bon_mcts_full  (prescreen + MCTS refine + cfg + prompt)"
+echo "  N_SEEDS / TOPK   = ${BON_MCTS_N_SEEDS} / ${BON_MCTS_TOPK}  (fixed)"
+echo "  N_PROMPTS        = ${N_PROMPTS}    SEED = ${SEED}  (fixed across cells)"
+echo "  N_SIMS ladder    = ${BUDGETS}"
+echo "  OUT_ROOT         = ${OUT_ROOT}"
 echo "================================================================"
 
 for n in ${BUDGETS}; do
-    cell="actdiff_n${n}"
+    cell="mcts_sims${n}"
     rr="${OUT_ROOT}/${cell}"
     echo; echo "================================================================"
-    echo "[exp1] budget=${n}  cell=${cell}"
+    echo "[exp1] N_SIMS=${n}  cell=${cell}"
     echo "================================================================"
     (
         a6000_setup_bon_mcts_env "${rr}" "${N_PROMPTS}"
-        export METHODS=bon_actdiff_full
-        export BON_N="${n}"
-        export BON_ACTION_DIVERSE=1       # vary (cfg, variant) across samples
-        export BON_CFG_SCHEDULE=0         # per-trajectory, no schedule trick
-        export BON_FIX_NOISE=0            # fresh noise per sample (standard BoN)
+        export METHODS=bon_mcts_full
+        export N_SIMS="${n}"
+        # Ensure the BoN env knobs are off (irrelevant for MCTS but reset for hygiene)
+        export BON_ACTION_DIVERSE=0
+        export BON_CFG_SCHEDULE=0
+        export BON_FIX_NOISE=0
         export DAS_CONTINUOUS=0
         a6000_run_bon_mcts "${rr}"
     )
@@ -110,8 +118,8 @@ out_root, prompt_file, budgets = sys.argv[1], sys.argv[2], sys.argv[3].split()
 prompts = [ln.strip() for ln in open(prompt_file) if ln.strip()]
 def find_imgs(cell):
     pats = [
-        os.path.join(out_root, cell, "run_*", "bon_actdiff_full", "best_images", "*.png"),
-        os.path.join(out_root, cell, "run_*", "bon_actdiff_full", "best_images", "*", "*.png"),
+        os.path.join(out_root, cell, "run_*", "bon_mcts_full", "best_images", "*.png"),
+        os.path.join(out_root, cell, "run_*", "bon_mcts_full", "best_images", "*", "*.png"),
     ]
     found = []
     for p in pats:
@@ -125,14 +133,14 @@ print("img{max-width:180px;max-height:180px;display:block;}")
 print("th{background:#222;padding:8px;}")
 print(".prompt{max-width:200px;font-size:12px;text-align:left;}")
 print("</style></head><body>")
-print(f"<h2>Qual Exp 1: ActDiff TTS budget sweep (bon_actdiff_full, sid)</h2>")
+print(f"<h2>Qual Exp 1: bon_mcts_full TTS (N_SIMS sweep, sid)</h2>")
 print("<table><tr><th>prompt</th>")
-for n in budgets: print(f"<th>N={n}</th>")
+for n in budgets: print(f"<th>N_SIMS={n}</th>")
 print("</tr>")
 for i, prompt in enumerate(prompts):
     print(f"<tr><td class='prompt'>{html.escape(prompt[:120])}</td>")
     for n in budgets:
-        imgs = find_imgs(f"actdiff_n{n}")
+        imgs = find_imgs(f"mcts_sims{n}")
         # heuristic: pick the i-th image for the i-th prompt
         img = imgs[i] if i < len(imgs) else None
         if img:

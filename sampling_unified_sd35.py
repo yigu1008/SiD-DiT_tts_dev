@@ -1585,9 +1585,21 @@ def run_bon(
     # This is the "BoN over schedule space" baseline: each trajectory has T
     # cfg slots, drawn iid from |bank|, giving |bank|^T possible schedules.
     _dyn_cfg = bool(int(os.environ.get("BON_CFG_SCHEDULE", "0") or 0))
-    _dyn_rng = np.random.default_rng(int(seed) + 7777) if _dyn_cfg else None
+    # DAS (Diffusion Action Search): per-trajectory CONTINUOUS action sampling.
+    # Each of the N samples draws (cfg, cs) ~ Uniform over a continuous range
+    # — the continuous analogue of bon_actdiff's discrete CFG bank.  Variant
+    # stays discrete (categorical over prompt rewrites).  Same NFE as bon, just
+    # a richer (continuous) candidate distribution.
+    _das_cont = bool(int(os.environ.get("DAS_CONTINUOUS", "0") or 0))
+    _dyn_rng = np.random.default_rng(int(seed) + 7777) if (_dyn_cfg or _das_cont) else None
     _cfg_bank = [float(c) for c in (getattr(args, "cfg_scales", None) or [float(args.baseline_cfg)])]
     _var_bank_size = max(1, len(emb.cond_text)) if action_diverse else 1
+    if _das_cont:
+        _das_cfg_lo = float(os.environ.get("DAS_CFG_MIN", min(_cfg_bank)))
+        _das_cfg_hi = float(os.environ.get("DAS_CFG_MAX", max(_cfg_bank)))
+        _das_cs_lo  = float(os.environ.get("DAS_CS_MIN",  -0.05))
+        _das_cs_hi  = float(os.environ.get("DAS_CS_MAX",   0.05))
+        print(f"  das: n={n} continuous cfg~U[{_das_cfg_lo:.2f},{_das_cfg_hi:.2f}] cs~U[{_das_cs_lo:.3f},{_das_cs_hi:.3f}] var_K={_var_bank_size}")
 
     for i in range(n):
         s = seed + i
@@ -1601,6 +1613,14 @@ def run_bon(
             sample_variant_idx = sample_vars[0]
             sample_cfg = sample_cfgs[0]
             _sample_cs = 0.0
+        elif _das_cont:
+            # DAS: continuous per-trajectory action — one (cfg, cs) per sample,
+            # held constant across all T steps within that trajectory.
+            sample_cfg = float(_dyn_rng.uniform(_das_cfg_lo, _das_cfg_hi))
+            _sample_cs = float(_dyn_rng.uniform(_das_cs_lo, _das_cs_hi))
+            sample_variant_idx = int(_dyn_rng.integers(0, _var_bank_size))
+            sample_cfgs = [sample_cfg] * int(args.steps)
+            sample_vars = [sample_variant_idx] * int(args.steps)
         else:
             sample_variant_idx, sample_cfg, _sample_cs = action_tuples[i]
             sample_cfgs = [sample_cfg] * int(args.steps)

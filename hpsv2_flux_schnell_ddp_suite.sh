@@ -925,6 +925,17 @@ for method in ${METHODS}; do
         --n_variants "${SYNERGY_N_VARIANTS:-3}" \
         --rewrites_file "${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
       ;;
+    das)
+      # DAS (Diffusion Action Search) on FLUX: continuous per-trajectory
+      # guidance ~ U[g_min, g_max].  Continuous analogue of bon_actdiff_cfg.
+      # Range defaults to CFG_SCALES bank endpoints (override via
+      # DAS_CFG_MIN / DAS_CFG_MAX).  Variant stays discrete.
+      DAS_CONTINUOUS=1 run_flux_sharded "das" "bon" \
+        --bon_n "${BON_N}" \
+        --bon_action_diverse 1 \
+        --cfg_scales ${CFG_SCALES} \
+        --n_variants 1
+      ;;
     bon_mcts)
       run_flux_sharded "bon_mcts" "mcts" \
         --runner_script "${SCRIPT_DIR}/sampling_flux_bon_mcts.py" \

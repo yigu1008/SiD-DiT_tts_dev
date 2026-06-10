@@ -907,6 +907,9 @@ run_method() {
   local method="$1"
   local method_out="${RUN_DIR}/${method}"
   mkdir -p "${method_out}"
+  # Reset env-var toggles that persist across methods — each case sets fresh.
+  export DAS_CONTINUOUS=0
+  export BON_CFG_SCHEDULE=0
   chmod -R u+rwX "${method_out}" 2>/dev/null || true
   local mode_arg
   local runner_script="${SCRIPT_DIR}/sd35_ddp_experiment.py"
@@ -969,6 +972,19 @@ run_method() {
       BON_ACTION_DIVERSE=1
       N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
       REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
+      ;;
+    das)
+      # DAS (Diffusion Action Search): continuous per-trajectory action
+      # sampling.  Each of BON_N samples draws cfg ~ U[cfg_min, cfg_max] and
+      # cs ~ U[-0.05, 0.05] held constant across T steps.  Continuous analogue
+      # of bon_actdiff_cfg (which samples from a discrete CFG bank).
+      # Range defaults derive from CFG_SCALES bank endpoints; override via
+      # DAS_CFG_MIN / DAS_CFG_MAX / DAS_CS_MIN / DAS_CS_MAX.
+      mode_arg="bon"
+      BON_ACTION_DIVERSE=1
+      N_VARIANTS=1
+      REWRITES_FILE=""
+      export DAS_CONTINUOUS=1
       ;;
     sop_actdiff_cfg)
       # SoP with CFG axis added to branching (variant fixed).

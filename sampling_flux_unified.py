@@ -1422,7 +1422,19 @@ def run_bon(
 
     n_var = max(1, len(embeds))
     cfgs = [float(c) for c in (getattr(args, "cfg_scales", None) or [baseline_guidance])]
-    if action_diverse:
+    # DAS: per-trajectory continuous guidance ~ U[g_min, g_max].  Range
+    # defaults to the CFG_SCALES bank endpoints; override via DAS_CFG_MIN/MAX.
+    _das_cont = bool(int(os.environ.get("DAS_CONTINUOUS", "0") or 0))
+    if _das_cont:
+        g_lo = float(os.environ.get("DAS_CFG_MIN", min(cfgs)))
+        g_hi = float(os.environ.get("DAS_CFG_MAX", max(cfgs)))
+        _rng = np.random.default_rng(int(seed) + 7777)
+        action_tuples = [
+            (int(_rng.integers(0, n_var)), float(_rng.uniform(g_lo, g_hi)))
+            for _ in range(n)
+        ]
+        print(f"  das[flux]: n={n} continuous guidance~U[{g_lo:.2f},{g_hi:.2f}] var_K={n_var} euler={use_euler}")
+    elif action_diverse:
         bank = [(v, c) for v in range(n_var) for c in cfgs]
         if not bank:
             bank = [(0, baseline_guidance)]

@@ -36,6 +36,10 @@ export PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/prompts.txt}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 # Override the suite-default 7-cfg bank to a smaller, well-spaced 4-cfg pool.
 export CFG_SCALES="${CFG_SCALES:-1.0 1.5 2.0 2.5}"
+# Subset of methods to actually run, e.g. METHODS_RUN="baseline bon_schedule"
+# skips the bon and bon_actdiff_cfg cells.  Default = all 4.
+METHODS_RUN="${METHODS_RUN:-baseline bon bon_actdiff_cfg bon_schedule}"
+_in_methods() { [[ " ${METHODS_RUN} " == *" $1 "* ]]; }
 OUT_ROOT="${OUT_ROOT:-/data/ygu/runs/bon_schedule_$(date +%Y%m%d_%H%M%S)}"
 mkdir -p "${OUT_ROOT}"
 
@@ -85,18 +89,22 @@ _run() {
     sleep 5
 }
 
+echo "[bon-sched] METHODS_RUN = ${METHODS_RUN}"
+
 # 1) baseline reference (single sample)
-echo; echo "[run] baseline"
-(
-    a6000_setup_bon_mcts_env "${OUT_ROOT}/baseline" "${N_PROMPTS}"
-    export METHODS=baseline
-    a6000_run_bon_mcts "${OUT_ROOT}/baseline"
-)
+if _in_methods baseline; then
+    echo; echo "[run] baseline"
+    (
+        a6000_setup_bon_mcts_env "${OUT_ROOT}/baseline" "${N_PROMPTS}"
+        export METHODS=baseline
+        a6000_run_bon_mcts "${OUT_ROOT}/baseline"
+    )
+fi
 
 # 2) Three flavors of BoN at matched BON_N
-_run bon              0 0    # vanilla: noise only
-_run bon_actdiff_cfg  0 1    # per-trajectory cfg
-_run bon_schedule     1 1    # per-step cfg + variant schedule  ← NEW
+_in_methods bon              && _run bon              0 0   # vanilla: noise only
+_in_methods bon_actdiff_cfg  && _run bon_actdiff_cfg  0 1   # per-trajectory cfg
+_in_methods bon_schedule     && _run bon_schedule     1 1   # per-step cfg + variant
 
 # Summary
 SUMMARY="${OUT_ROOT}/summary.csv"

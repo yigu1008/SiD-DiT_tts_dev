@@ -1,18 +1,15 @@
 #!/usr/bin/env bash
-# Qualitative Exp 1: action-only test-time scaling via budget sweep (sid).
+# Qualitative Exp 1: ActDiff test-time scaling via budget sweep (sid).
 #
-# Pure action-axis TTS demonstration:
-#   - SAME initial noise latent across ALL N samples (BON_FIX_NOISE=1)
-#   - Per-STEP cfg + variant schedule drawn iid from the action bank
-#     (BON_CFG_SCHEDULE=1 + BON_ACTION_DIVERSE=1 on bon_actdiff_full)
+# Pure bon_actdiff_full as defined in the suite:
+#   - Per-TRAJECTORY action tuple (one (cfg, variant) held across all T steps)
+#   - Discrete action bank: |cfg_bank| × |variants| = 7 × 3 = 21 unique tuples
+#   - Fresh noise per sample (seed advances) — N > 21 cycles actions but with
+#     new noise, so every sample is a unique (action, noise) draw
 #   - Budget ladder N = 1, 2, 4, 8, 16, 32, 64, 128, 256
 #
-# Action space is |cfg_bank|^T × |variants|^T (= 7^4 × 3^4 = 194k schedules
-# for sid).  At N=256 every sample is a unique action probe — no compute
-# wasted on noise diversity or duplicate schedules.
-#
-# The fixed-noise design makes the "evolution trace" a pure best-of-k over
-# action space: every later cell is a strict superset of every earlier cell.
+# Demonstrates the standard ActDiff scaling curve — the headline "more search
+# → better image" result for the method as paper-defined, no schedule trick.
 #
 # Output layout:
 #   /data/ygu/runs/qual_demo_exp1_<ts>/
@@ -76,17 +73,16 @@ trap 'mgpu_kill_reward_server' EXIT
 mgpu_setup_sampling_gpus "${TOTAL_GPUS}"
 
 echo "================================================================"
-echo "QUAL EXP 1 — action-only TTS (fixed noise, per-step cfg+variant schedule)"
+echo "QUAL EXP 1 — ActDiff test-time scaling (bon_actdiff_full as defined)"
 echo "  BACKEND     = ${BACKEND}"
-echo "  METHOD      = bon_actdiff_full + BON_CFG_SCHEDULE + BON_FIX_NOISE"
-echo "                (same noise, per-step (cfg, variant) drawn iid)"
+echo "  METHOD      = bon_actdiff_full  (per-trajectory action, fresh noise per sample)"
 echo "  N_PROMPTS   = ${N_PROMPTS}    SEED = ${SEED}  (fixed across cells)"
 echo "  BUDGETS     = ${BUDGETS}"
 echo "  OUT_ROOT    = ${OUT_ROOT}"
 echo "================================================================"
 
 for n in ${BUDGETS}; do
-    cell="action_n${n}"
+    cell="actdiff_n${n}"
     rr="${OUT_ROOT}/${cell}"
     echo; echo "================================================================"
     echo "[exp1] budget=${n}  cell=${cell}"
@@ -96,8 +92,8 @@ for n in ${BUDGETS}; do
         export METHODS=bon_actdiff_full
         export BON_N="${n}"
         export BON_ACTION_DIVERSE=1       # vary (cfg, variant) across samples
-        export BON_CFG_SCHEDULE=1         # per-STEP (cfg, variant) schedule
-        export BON_FIX_NOISE=1            # same noise latent for all N samples
+        export BON_CFG_SCHEDULE=0         # per-trajectory, no schedule trick
+        export BON_FIX_NOISE=0            # fresh noise per sample (standard BoN)
         export DAS_CONTINUOUS=0
         a6000_run_bon_mcts "${rr}"
     )
@@ -129,14 +125,14 @@ print("img{max-width:180px;max-height:180px;display:block;}")
 print("th{background:#222;padding:8px;}")
 print(".prompt{max-width:200px;font-size:12px;text-align:left;}")
 print("</style></head><body>")
-print(f"<h2>Qual Exp 1: Action-only TTS (fixed noise, per-step cfg+variant, sid)</h2>")
+print(f"<h2>Qual Exp 1: ActDiff TTS budget sweep (bon_actdiff_full, sid)</h2>")
 print("<table><tr><th>prompt</th>")
 for n in budgets: print(f"<th>N={n}</th>")
 print("</tr>")
 for i, prompt in enumerate(prompts):
     print(f"<tr><td class='prompt'>{html.escape(prompt[:120])}</td>")
     for n in budgets:
-        imgs = find_imgs(f"action_n{n}")
+        imgs = find_imgs(f"actdiff_n{n}")
         # heuristic: pick the i-th image for the i-th prompt
         img = imgs[i] if i < len(imgs) else None
         if img:

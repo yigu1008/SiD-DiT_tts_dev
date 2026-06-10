@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Qualitative Exp 2: action-axis ablation (sid).
+# Qualitative Exp 2: action-axis ablation within ACTDIFF (sid).
 #
-# Compares 3 cells at MATCHED BoN budget — same N, same base seed — so the
-# only thing that differs is which action axes search varies over:
-#   bon              : noise only            (CFG fixed at baseline, no rewrites)
-#   bon_actdiff_cfg  : noise × CFG bank      (action diversity on CFG axis only)
-#   bon_actdiff_full : noise × CFG × prompt  (CFG axis + 3-level prompt rewrites)
+# Compares 2 actdiff cells at MATCHED BoN budget — same N, same base seed —
+# so the only thing that differs is whether the prompt-rewrite axis is added
+# on top of the CFG axis:
+#   bon_actdiff_cfg  : noise × CFG bank
+#   bon_actdiff_full : noise × CFG × prompt-rewrite bank
 #
-# Demonstrates: each added axis enriches the candidate distribution → better
-# best-of-N image.  Same N across cells = matched NFE.
+# Demonstrates: adding the prompt axis on top of CFG enriches the candidate
+# distribution further → better best-of-N image at the same total budget.
 #
 # Output layout:
 #   /data/ygu/runs/qual_demo_exp2_<ts>/
@@ -89,7 +89,6 @@ _run_cell() {
     sleep 3
 }
 
-_run_cell bon              0 0   # vanilla: noise only
 _run_cell bon_actdiff_cfg  1 0   # noise × CFG
 _run_cell bon_actdiff_full 1 1   # noise × CFG × prompt
 
@@ -100,9 +99,8 @@ import os, sys, glob, html
 out_root, prompt_file = sys.argv[1], sys.argv[2]
 prompts = [ln.strip() for ln in open(prompt_file) if ln.strip()]
 cells = [
-    ("bon",              "BoN (noise only)"),
-    ("bon_actdiff_cfg",  "+ CFG axis"),
-    ("bon_actdiff_full", "+ CFG + prompt"),
+    ("bon_actdiff_cfg",  "ActDiff (CFG axis)"),
+    ("bon_actdiff_full", "ActDiff (CFG + prompt)"),
 ]
 def find_imgs(cell):
     pats = [
@@ -121,7 +119,7 @@ print("img{max-width:220px;max-height:220px;display:block;}")
 print("th{background:#222;padding:8px;}")
 print(".prompt{max-width:240px;font-size:12px;text-align:left;}")
 print("</style></head><body>")
-print("<h2>Qual Exp 2: action-axis ablation (matched BoN, same seed, sid)</h2>")
+print("<h2>Qual Exp 2: ActDiff axis ablation (CFG vs CFG+prompt, matched BoN, sid)</h2>")
 print("<table><tr><th>prompt</th>")
 for _, label in cells: print(f"<th>{html.escape(label)}</th>")
 print("</tr>")

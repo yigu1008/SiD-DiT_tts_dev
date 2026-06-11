@@ -109,7 +109,7 @@ search:
       # hpsv2.score() also pulls the open_clip ViT-H-14 (laion) backbone on first
       # call; preload_hpsv2 only grabs the HPS checkpoint. Warm the backbone now
       # (network still on) so the offline eval doesn't choke. Non-fatal if absent.
-      - /opt/conda/envs/ptca/bin/python -c "import open_clip; open_clip.create_model_and_transforms('ViT-H-14', pretrained='laion2b_s32b_b79k')" || echo "[aio] WARN: open_clip ViT-H-14 warm-up failed; hpsv2 eval may be skipped"
+      - '/opt/conda/envs/ptca/bin/python -c "import open_clip; open_clip.create_model_and_transforms(''ViT-H-14'', pretrained=''laion2b_s32b_b79k'')" || echo "[aio] WARN open_clip ViT-H-14 warm-up failed; hpsv2 eval may be skipped"'
       - 'if [ -f "$$REWARD_LOCAL_HF_CACHE/.stage_done" ]; then export REWARD_HF_HOME="$$REWARD_LOCAL_HF_CACHE"; else export REWARD_HF_HOME="$$HF_HOME"; fi'
       - export RUN_ROOT_BASE=/mnt/data/v-yigu/all_in_one/{run_tag}
       - mkdir -p "$$RUN_ROOT_BASE"

@@ -79,7 +79,7 @@ export SAVE_IMAGES=0
 export SAVE_VARIANTS=0
 export EVAL_BEST_IMAGES=1
 export EVAL_REWARD_DEVICE=cuda
-export EVAL_ALLOW_MISSING_BACKENDS=0
+export EVAL_ALLOW_MISSING_BACKENDS="${EVAL_ALLOW_MISSING_BACKENDS:-0}"
 
 # ── Composite reward (the half-half normalized hpsv3+imagereward) ────────────
 # Default to composite_hpsv3_ir for backwards compat, but honor any caller
@@ -87,8 +87,9 @@ export EVAL_ALLOW_MISSING_BACKENDS=0
 export REWARD_BACKEND="${REWARD_BACKEND:-${SEARCH_REWARD:-composite_hpsv3_ir}}"
 export REWARD_TYPE="${REWARD_TYPE:-${REWARD_BACKEND}}"
 export REWARD_BACKENDS="${REWARD_BACKENDS:-${REWARD_BACKEND}}"
-# Eval covers both raw rewards so we can decompose the composite gain.
-export EVAL_BACKENDS="imagereward hpsv3"
+# Eval covers all four raw rewards so we can decompose the composite gain
+# (imagereward + hpsv3 drive the composite; pickscore + hpsv2 are extra refs).
+export EVAL_BACKENDS="${EVAL_BACKENDS:-imagereward hpsv3 pickscore hpsv2}"
 
 # ── Anchored bon_mcts knobs (matches default cell of mcts_param ablation) ───
 export N_SIMS UCB_C="${UCB_C:-1.0}"

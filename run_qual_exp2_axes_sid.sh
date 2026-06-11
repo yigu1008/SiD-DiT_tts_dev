@@ -34,7 +34,7 @@ type start_heartbeat >/dev/null 2>&1 && start_heartbeat "qual-exp2-axes"
 export BACKEND="${BACKEND:-sid}"
 export N_PROMPTS="${N_PROMPTS:-5}"
 export SEED="${SEED:-42}"
-export SEARCH_REWARD="${SEARCH_REWARD:-imagereward}"
+export SEARCH_REWARD="${SEARCH_REWARD:-pickscore}"
 export TOTAL_GPUS="${TOTAL_GPUS:-4}"
 export PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/prompts_qual_exp2.txt}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
@@ -55,7 +55,7 @@ if [[ ! -s "${PROMPT_FILE}" ]] || [[ $(grep -c . "${PROMPT_FILE}" 2>/dev/null ||
 fi
 
 a6000_setup_backend
-mgpu_boot_reward_server "${OUT_ROOT}/reward_server.log" "imagereward" || exit 1
+mgpu_boot_reward_server "${OUT_ROOT}/reward_server.log" "${SEARCH_REWARD}" || exit 1
 trap 'mgpu_kill_reward_server' EXIT
 mgpu_setup_sampling_gpus "${TOTAL_GPUS}"
 

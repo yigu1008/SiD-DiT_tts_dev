@@ -39,7 +39,11 @@ type start_heartbeat >/dev/null 2>&1 && start_heartbeat "qual-exp1-budget"
 export BACKEND="${BACKEND:-sid}"
 export N_PROMPTS="${N_PROMPTS:-5}"
 export SEED="${SEED:-42}"
-export SEARCH_REWARD="${SEARCH_REWARD:-imagereward}"
+# Default to pickscore — ImageReward is prone to reward hacking under deep
+# MCTS search (oversaturated textures, weird artifacts).  PickScore (a CLIP
+# preference classifier) is less hackable.  Override SEARCH_REWARD=imagereward
+# to return to the previous behavior.
+export SEARCH_REWARD="${SEARCH_REWARD:-pickscore}"
 export TOTAL_GPUS="${TOTAL_GPUS:-4}"
 export PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/prompts_qual_exp1.txt}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
@@ -74,7 +78,7 @@ export SYNERGY_REWRITES_FILE="${REWRITES_FILE}"
 export SYNERGY_N_VARIANTS=3
 
 a6000_setup_backend
-mgpu_boot_reward_server "${OUT_ROOT}/reward_server.log" "imagereward" || exit 1
+mgpu_boot_reward_server "${OUT_ROOT}/reward_server.log" "${SEARCH_REWARD}" || exit 1
 trap 'mgpu_kill_reward_server' EXIT
 mgpu_setup_sampling_gpus "${TOTAL_GPUS}"
 
@@ -83,6 +87,7 @@ echo "QUAL EXP 1 — bon_mcts_full test-time scaling (N_SIMS sweep)"
 echo "  BACKEND          = ${BACKEND}"
 echo "  METHOD           = bon_mcts_full  (prescreen + MCTS refine + cfg + prompt)"
 echo "  N_SEEDS / TOPK   = ${BON_MCTS_N_SEEDS} / ${BON_MCTS_TOPK}  (fixed)"
+echo "  SEARCH_REWARD    = ${SEARCH_REWARD}"
 echo "  N_PROMPTS        = ${N_PROMPTS}    SEED = ${SEED}  (fixed across cells)"
 echo "  N_SIMS ladder    = ${BUDGETS}"
 echo "  OUT_ROOT         = ${OUT_ROOT}"

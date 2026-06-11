@@ -903,6 +903,24 @@ for method in ${METHODS}; do
       )
       run_flux_sharded "fksteering" "smc" "${fksteering_args[@]}"
       ;;
+    fksteering_actdiff_full)
+      # FLUX FK-steering (SMC + diff potential) with guidance + prompt-rewrite
+      # axes at resample.  = fksteering but with smc_variant_expansion over the
+      # guidance bank and the prompt-rewrite bank.  Requires SYNERGY_REWRITES_FILE.
+      _fks_var_max="$(( ${SYNERGY_N_VARIANTS:-3} - 1 ))"
+      run_flux_sharded "fksteering_actdiff_full" "smc" \
+        --smc_k "${SMC_K}" \
+        --smc_gamma "${SMC_GAMMA}" \
+        --smc_potential "diff" \
+        --smc_lambda "${FKSTEERING_LAMBDA:-${SMC_LAMBDA:-10.0}}" \
+        --smc_guidance_scale "${SMC_GUIDANCE_SCALE}" \
+        --smc_chunk "${SMC_CHUNK}" \
+        --smc_variant_expansion \
+        --smc_expansion_variants $(seq -s' ' 0 ${_fks_var_max}) \
+        --smc_expansion_guidances ${CFG_SCALES} \
+        --n_variants "${SYNERGY_N_VARIANTS:-3}" \
+        --rewrites_file "${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
+      ;;
     bon)
       run_flux_sharded "bon" "bon" \
         --bon_n "${BON_N}" \
@@ -935,6 +953,17 @@ for method in ${METHODS}; do
         --bon_action_diverse 1 \
         --cfg_scales ${CFG_SCALES} \
         --n_variants 1
+      ;;
+    das_actdiff_full)
+      # FLUX DAS with the prompt-rewrite axis added on top of continuous
+      # guidance.  Each trajectory draws guidance ~ U[g_min,g_max] AND a
+      # categorical prompt-variant index.  Requires SYNERGY_REWRITES_FILE.
+      DAS_CONTINUOUS=1 run_flux_sharded "das_actdiff_full" "bon" \
+        --bon_n "${BON_N}" \
+        --bon_action_diverse 1 \
+        --cfg_scales ${CFG_SCALES} \
+        --n_variants "${SYNERGY_N_VARIANTS:-3}" \
+        --rewrites_file "${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
       ;;
     bon_mcts)
       run_flux_sharded "bon_mcts" "mcts" \

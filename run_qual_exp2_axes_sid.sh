@@ -34,10 +34,10 @@ type start_heartbeat >/dev/null 2>&1 && start_heartbeat "qual-exp2-axes"
 export BACKEND="${BACKEND:-sid}"
 export N_PROMPTS="${N_PROMPTS:-5}"
 export SEED="${SEED:-42}"
-export SEARCH_REWARD="${SEARCH_REWARD:-pickscore}"
-export TOTAL_GPUS="${TOTAL_GPUS:-4}"
+export SEARCH_REWARD="${SEARCH_REWARD:-composite_ir_ps}"
+export TOTAL_GPUS="${TOTAL_GPUS:-2}"
 export PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/prompts_qual_exp2.txt}"
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2,3}"
 export BON_N="${BON_N:-16}"
 export SLIM_MODE=0
 export SAVE_BEST_IMAGES=1
@@ -54,8 +54,16 @@ if [[ ! -s "${PROMPT_FILE}" ]] || [[ $(grep -c . "${PROMPT_FILE}" 2>/dev/null ||
         --shuffle --seed "${SEED}"
 fi
 
+# Composite rewards need their component models loaded on the reward server.
+case "${SEARCH_REWARD}" in
+    composite_ir_ps)    REWARD_SERVER_BACKENDS="imagereward pickscore" ;;
+    composite_hpsv3_ir) REWARD_SERVER_BACKENDS="imagereward hpsv3" ;;
+    composite_all4)     REWARD_SERVER_BACKENDS="imagereward pickscore hpsv2 hpsv3" ;;
+    *)                  REWARD_SERVER_BACKENDS="${SEARCH_REWARD}" ;;
+esac
+
 a6000_setup_backend
-mgpu_boot_reward_server "${OUT_ROOT}/reward_server.log" "${SEARCH_REWARD}" || exit 1
+mgpu_boot_reward_server "${OUT_ROOT}/reward_server.log" "${REWARD_SERVER_BACKENDS}" || exit 1
 trap 'mgpu_kill_reward_server' EXIT
 mgpu_setup_sampling_gpus "${TOTAL_GPUS}"
 
@@ -75,6 +83,9 @@ _run_cell() {
     echo "================================================================"
     (
         a6000_setup_bon_mcts_env "${rr}" "${N_PROMPTS}"
+        # Final output only: keep best_images, drop the step/attempt trace dumps.
+        export SAVE_BEST_IMAGES=1 SAVE_IMAGES=0 SAVE_VARIANTS=0
+        unset SAVE_BEST_STEP_IMAGES_DIR SAVE_ALL_ATTEMPTS_DIR SAVE_ALL_STEP_IMAGES_DIR
         export METHODS="${cell}"
         export BON_N
         export BON_ACTION_DIVERSE="${action_diverse}"

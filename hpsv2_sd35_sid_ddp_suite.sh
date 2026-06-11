@@ -986,6 +986,17 @@ run_method() {
       REWRITES_FILE=""
       export DAS_CONTINUOUS=1
       ;;
+    das_actdiff_full)
+      # DAS with the prompt-rewrite axis added on top of continuous cfg/cs.
+      # Each of BON_N trajectories draws cfg ~ U[cfg_min,cfg_max], cs ~ U[...],
+      # AND a categorical prompt-variant index over the rewrite bank.  Continuous
+      # analogue of bon_actdiff_full.  Requires SYNERGY_REWRITES_FILE.
+      mode_arg="bon"
+      BON_ACTION_DIVERSE=1
+      N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
+      REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
+      export DAS_CONTINUOUS=1
+      ;;
     sop_actdiff_cfg)
       # SoP with CFG axis added to branching (variant fixed).
       mode_arg="sop"
@@ -1015,6 +1026,21 @@ run_method() {
     smc_actdiff_full)
       # SMC with CFG + prompt-rewrite axes at resample.
       mode_arg="smc"
+      SMC_VARIANT_EXPANSION=1
+      SMC_EXPANSION_CFGS="${SMC_EXPANSION_CFGS:-${CFG_SCALES}}"
+      N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
+      REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
+      _smc_var_max="$((${N_VARIANTS} - 1))"
+      SMC_EXPANSION_VARIANTS="$(seq -s' ' 0 ${_smc_var_max})"
+      SMC_EXPANSION_CS="${SMC_EXPANSION_CS:-0.0}"
+      ;;
+    fksteering_actdiff_full)
+      # FK-steering (SMC + reward-gradient/diff potential) with CFG + prompt-
+      # rewrite axes at resample.  = smc_actdiff_full but with the FK potential
+      # and lambda.  Requires SYNERGY_REWRITES_FILE.
+      mode_arg="smc"
+      SMC_POTENTIAL="diff"
+      SMC_LAMBDA="${FKSTEERING_LAMBDA:-${SMC_LAMBDA:-10.0}}"
       SMC_VARIANT_EXPANSION=1
       SMC_EXPANSION_CFGS="${SMC_EXPANSION_CFGS:-${CFG_SCALES}}"
       N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"

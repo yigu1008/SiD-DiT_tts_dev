@@ -189,7 +189,7 @@ class UnifiedRewardScorer:
         max_new_tokens: int = 512,
         unifiedreward_prompt_mode: str = "standard",
     ) -> None:
-        valid = {"auto", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "all", "unified", "unifiedreward", "composite_hpsv3_ir", "composite_all4"}
+        valid = {"auto", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "all", "unified", "unifiedreward", "composite_hpsv3_ir", "composite_ir_ps", "composite_all4"}
         if backend not in valid:
             raise ValueError(f"Unsupported backend: {backend}")
         if unifiedreward_prompt_mode not in {"standard", "strict"}:
@@ -297,8 +297,8 @@ class UnifiedRewardScorer:
     def _load_backends(self) -> None:
         target = "unifiedreward" if self.backend == "unified" else self.backend
         need_unifiedreward = target in {"unifiedreward", "auto"}
-        need_imagereward = target in {"imagereward", "blend", "auto", "all", "composite_hpsv3_ir", "composite_all4"}
-        need_pickscore = target in {"pickscore", "auto", "all", "composite_all4"}
+        need_imagereward = target in {"imagereward", "blend", "auto", "all", "composite_hpsv3_ir", "composite_ir_ps", "composite_all4"}
+        need_pickscore = target in {"pickscore", "auto", "all", "composite_ir_ps", "composite_all4"}
         need_hpsv3 = target in {"hpsv3", "blend", "auto", "all", "composite_hpsv3_ir", "composite_all4"}
         need_hpsv2 = target in {"hpsv2", "blend", "auto", "all", "composite_all4"}
 
@@ -364,6 +364,12 @@ class UnifiedRewardScorer:
             if "imagereward" not in self.available or "hpsv3" not in self.available:
                 raise RuntimeError(
                     "Requested backend=composite_hpsv3_ir, but BOTH imagereward and hpsv3 must be available."
+                    f" Currently available: {self.available}"
+                )
+        if target == "composite_ir_ps":
+            if "imagereward" not in self.available or "pickscore" not in self.available:
+                raise RuntimeError(
+                    "Requested backend=composite_ir_ps, but BOTH imagereward and pickscore must be available."
                     f" Currently available: {self.available}"
                 )
         if target == "composite_all4":
@@ -1012,6 +1018,14 @@ class UnifiedRewardScorer:
                 f"hpsv3_range=[{h_lo},{h_hi}] ir_range=[{ir_lo},{ir_hi}] "
                 f"(half-half min-max normalized)"
             )
+        if target == "composite_ir_ps":
+            ir_lo, ir_hi = self._COMPOSITE_IR_RANGE
+            ps_lo, ps_hi = self._COMPOSITE_PICKSCORE_RANGE
+            return (
+                f"backend=composite_ir_ps available={self.available} "
+                f"ir_range=[{ir_lo},{ir_hi}] pickscore_range=[{ps_lo},{ps_hi}] "
+                f"(half-half min-max normalized)"
+            )
         if target == "pickscore":
             return f"backend=pickscore model={self.pickscore_model} available={self.available}"
         if target == "unifiedreward":
@@ -1619,6 +1633,22 @@ class UnifiedRewardScorer:
         ir_norm = (ir - ir_lo) / ir_span
         return 0.5 * h_norm + 0.5 * ir_norm
 
+    def _score_composite_ir_ps(self, prompt: str, image: Image.Image) -> float:
+        """Half-half balanced composite of ImageReward + PickScore.
+
+        Each component is min-max normalized to [0,1] using fixed empirical
+        ranges (see _COMPOSITE_*_RANGE) BEFORE averaging — without this the
+        raw PickScore magnitude (~[17,23]) would swamp ImageReward (~[-2,2])
+        and the "half-half" semantic would be a lie.
+        """
+        ir_lo, ir_hi = self._COMPOSITE_IR_RANGE
+        ps_lo, ps_hi = self._COMPOSITE_PICKSCORE_RANGE
+        ir = float(self._score_imagereward(prompt, image))
+        ps = float(self._score_pickscore(prompt, image))
+        ir_norm = self._norm(ir, ir_lo, ir_hi)
+        ps_norm = self._norm(ps, ps_lo, ps_hi)
+        return 0.5 * ir_norm + 0.5 * ps_norm
+
     def _score_blend(self, prompt: str, image: Image.Image) -> float:
         scored: Dict[str, float] = {}
         if "imagereward" in self.available:
@@ -1657,6 +1687,8 @@ class UnifiedRewardScorer:
             return self._score_blend(prompt, image)
         if target == "composite_hpsv3_ir":
             return self._score_composite_hpsv3_ir(prompt, image)
+        if target == "composite_ir_ps":
+            return self._score_composite_ir_ps(prompt, image)
         if target == "composite_all4":
             return self._score_composite_all4(prompt, image)
         if target == "all":

@@ -39,14 +39,16 @@ type start_heartbeat >/dev/null 2>&1 && start_heartbeat "qual-exp1-budget"
 export BACKEND="${BACKEND:-sid}"
 export N_PROMPTS="${N_PROMPTS:-5}"
 export SEED="${SEED:-42}"
-# Default to pickscore — ImageReward is prone to reward hacking under deep
-# MCTS search (oversaturated textures, weird artifacts).  PickScore (a CLIP
-# preference classifier) is less hackable.  Override SEARCH_REWARD=imagereward
-# to return to the previous behavior.
-export SEARCH_REWARD="${SEARCH_REWARD:-pickscore}"
-export TOTAL_GPUS="${TOTAL_GPUS:-4}"
+# Default to a half-half ImageReward+PickScore composite.  ImageReward alone is
+# prone to reward hacking under deep MCTS search (oversaturated textures, weird
+# artifacts); PickScore (a CLIP preference classifier) is less hackable but
+# blander.  The 50/50 composite (min-max normalized so neither swamps the other)
+# keeps IR's fidelity signal while PS damps the hacking.  Override
+# SEARCH_REWARD=pickscore|imagereward for a single backend.
+export SEARCH_REWARD="${SEARCH_REWARD:-composite_ir_ps}"
+export TOTAL_GPUS="${TOTAL_GPUS:-2}"
 export PROMPT_FILE="${PROMPT_FILE:-${SCRIPT_DIR}/prompts_qual_exp1.txt}"
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2,3}"
 # Qualitative demo: KEEP image dumps (no SLIM_MODE).
 export SLIM_MODE=0
 export SAVE_BEST_IMAGES=1
@@ -77,8 +79,16 @@ fi
 export SYNERGY_REWRITES_FILE="${REWRITES_FILE}"
 export SYNERGY_N_VARIANTS=3
 
+# Composite rewards need their component models loaded on the reward server.
+case "${SEARCH_REWARD}" in
+    composite_ir_ps)    REWARD_SERVER_BACKENDS="imagereward pickscore" ;;
+    composite_hpsv3_ir) REWARD_SERVER_BACKENDS="imagereward hpsv3" ;;
+    composite_all4)     REWARD_SERVER_BACKENDS="imagereward pickscore hpsv2 hpsv3" ;;
+    *)                  REWARD_SERVER_BACKENDS="${SEARCH_REWARD}" ;;
+esac
+
 a6000_setup_backend
-mgpu_boot_reward_server "${OUT_ROOT}/reward_server.log" "${SEARCH_REWARD}" || exit 1
+mgpu_boot_reward_server "${OUT_ROOT}/reward_server.log" "${REWARD_SERVER_BACKENDS}" || exit 1
 trap 'mgpu_kill_reward_server' EXIT
 mgpu_setup_sampling_gpus "${TOTAL_GPUS}"
 
@@ -101,6 +111,9 @@ for n in ${BUDGETS}; do
     echo "================================================================"
     (
         a6000_setup_bon_mcts_env "${rr}" "${N_PROMPTS}"
+        # Final output only: keep best_images, drop the step/attempt trace dumps.
+        export SAVE_BEST_IMAGES=1 SAVE_IMAGES=0 SAVE_VARIANTS=0
+        unset SAVE_BEST_STEP_IMAGES_DIR SAVE_ALL_ATTEMPTS_DIR SAVE_ALL_STEP_IMAGES_DIR
         export METHODS=bon_mcts_full
         export N_SIMS="${n}"
         # Ensure the BoN env knobs are off (irrelevant for MCTS but reset for hygiene)

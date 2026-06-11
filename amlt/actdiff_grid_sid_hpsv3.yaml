@@ -178,7 +178,7 @@ search:
       # Override with -p search_reward=composite_all4 for the 4-reward variant.
       values: [ "composite_hpsv3_ir" ]
     - name: methods
-      values: [ "baseline bon bon_actdiff_cfg bon_actdiff_full das sop sop_actdiff_cfg sop_actdiff_full smc smc_actdiff_cfg smc_actdiff_full bon_mcts" ]
+      values: [ "baseline bon bon_actdiff_cfg bon_actdiff_full das das_actdiff_full sop sop_actdiff_cfg sop_actdiff_full smc smc_actdiff_cfg smc_actdiff_full fksteering_actdiff_full bon_mcts" ]
     # BON_N defaults to matched-NFE (76 for 4-step, 136 for sd35_base).
     # bon_actdiff_* uses the same N but spreads across the action bank.
     - name: neg_bank

@@ -158,7 +158,7 @@ search:
     - name: composite_methods
       # FLUX has bon_actdiff_{cfg,full} and sop_actdiff_{cfg,full} aliases.
       # SMC ActDiff for FLUX is not yet wired (uses fixed CFG).
-      values: [ "baseline bon bon_actdiff_cfg bon_actdiff_full das sop sop_actdiff_cfg sop_actdiff_full bon_mcts" ]
+      values: [ "baseline bon bon_actdiff_cfg bon_actdiff_full das das_actdiff_full sop sop_actdiff_cfg sop_actdiff_full fksteering_actdiff_full bon_mcts" ]
     - name: composite_n_prompts
       values: [ 200 ]
     - name: composite_seeds

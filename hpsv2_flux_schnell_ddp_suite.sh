@@ -918,8 +918,7 @@ for method in ${METHODS}; do
         --smc_variant_expansion \
         --smc_expansion_variants $(seq -s' ' 0 ${_fks_var_max}) \
         --smc_expansion_guidances ${CFG_SCALES} \
-        --n_variants "${SYNERGY_N_VARIANTS:-3}" \
-        --rewrites_file "${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
+        --n_variants "${SYNERGY_N_VARIANTS:-3}"
       ;;
     bon)
       run_flux_sharded "bon" "bon" \
@@ -940,8 +939,7 @@ for method in ${METHODS}; do
         --bon_n "${BON_N}" \
         --bon_action_diverse 1 \
         --cfg_scales ${CFG_SCALES} \
-        --n_variants "${SYNERGY_N_VARIANTS:-3}" \
-        --rewrites_file "${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
+        --n_variants "${SYNERGY_N_VARIANTS:-3}"
       ;;
     das)
       # DAS (Diffusion Action Search) on FLUX: continuous per-trajectory
@@ -962,8 +960,7 @@ for method in ${METHODS}; do
         --bon_n "${BON_N}" \
         --bon_action_diverse 1 \
         --cfg_scales ${CFG_SCALES} \
-        --n_variants "${SYNERGY_N_VARIANTS:-3}" \
-        --rewrites_file "${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
+        --n_variants "${SYNERGY_N_VARIANTS:-3}"
       ;;
     bon_mcts)
       run_flux_sharded "bon_mcts" "mcts" \

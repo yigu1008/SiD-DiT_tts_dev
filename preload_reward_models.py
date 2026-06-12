@@ -30,6 +30,16 @@ WAIT_TIMEOUT = int(os.environ.get("PRELOAD_WAIT_TIMEOUT", "300"))
 _BACKENDS_ENV = os.environ.get("REWARD_BACKENDS", "imagereward pickscore hpsv2")
 BACKENDS = set(_BACKENDS_ENV.lower().split())
 
+# When set, also instantiate + run one real score so lazily-fetched extras
+# (hpsv2's open_clip backbone + BPE vocab, pickscore's processor) land in the
+# cache. Required before an offline eval (HF_HUB_OFFLINE=1) that uses them.
+PRELOAD_WARM = str(os.environ.get("PRELOAD_WARM", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _dummy_image():
+    from PIL import Image
+    return Image.new("RGB", (224, 224), (127, 127, 127))
+
 
 def _log(msg: str) -> None:
     print(f"[preload rank={LOCAL_RANK}] {msg}", flush=True)
@@ -183,23 +193,40 @@ def preload_pickscore() -> None:
     cache_dir = Path(hf_home) / "hub" / f"models--{model_id.replace('/', '--')}"
     sentinel = _sentinel_path("pickscore")
 
-    if cache_dir.exists() and any(cache_dir.iterdir()):
-        _log(f"PickScore already cached at {cache_dir}")
-        _mark_done("pickscore")
-        return
+    already_cached = cache_dir.exists() and any(cache_dir.iterdir())
 
     if LOCAL_RANK == 0:
-        _log(f"downloading PickScore ({model_id}) ...")
-        try:
-            from huggingface_hub import snapshot_download
-            snapshot_download(model_id)
-            _log(f"PickScore ready")
-            _mark_done("pickscore")
-        except Exception as exc:
-            _log(f"ERROR downloading PickScore: {exc}")
-            raise
+        if already_cached:
+            _log(f"PickScore already cached at {cache_dir}")
+        else:
+            _log(f"downloading PickScore ({model_id}) ...")
+            try:
+                from huggingface_hub import snapshot_download
+                snapshot_download(model_id)
+                _log("PickScore ready")
+            except Exception as exc:
+                _log(f"ERROR downloading PickScore: {exc}")
+                raise
+        if PRELOAD_WARM:
+            _warm_pickscore(model_id)
+        _mark_done("pickscore")
     else:
         _wait_for_sentinel(sentinel, "PickScore")
+
+
+def _warm_pickscore(model_id: str) -> None:
+    """Load model + processor and run one score so the processor/config files
+    are resolved and cached for an offline eval. Non-fatal."""
+    try:
+        from transformers import AutoModel, AutoProcessor
+        processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+        model = AutoModel.from_pretrained(model_id, trust_remote_code=True).eval()
+        inputs = processor(text=["a test prompt"], images=[_dummy_image()],
+                           padding=True, truncation=True, return_tensors="pt")
+        model.get_image_features(pixel_values=inputs["pixel_values"])
+        _log("PickScore warm-up OK (model + processor cached)")
+    except Exception as exc:
+        _log(f"WARNING: PickScore warm-up failed (eval may skip it): {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -211,22 +238,36 @@ def preload_hpsv2() -> None:
     checkpoint = Path(hps_root) / "HPS_v2_compressed.pt"
     sentinel = _sentinel_path("hpsv2")
 
-    if checkpoint.is_file() and checkpoint.stat().st_size > 0:
-        _log(f"HPSv2 checkpoint already cached at {hps_root}")
-        _mark_done("hpsv2")
-        return
+    have_ckpt = checkpoint.is_file() and checkpoint.stat().st_size > 0
 
     if LOCAL_RANK == 0:
-        _log("downloading HPSv2 checkpoint ...")
-        try:
-            _hf_download("xswu/HPSv2", "HPS_v2_compressed.pt", hps_root)
-            _log(f"HPSv2 checkpoint ready at {hps_root}")
-            _mark_done("hpsv2")
-        except Exception as exc:
-            _log(f"ERROR downloading HPSv2: {exc}")
-            raise
+        if have_ckpt:
+            _log(f"HPSv2 checkpoint already cached at {hps_root}")
+        else:
+            _log("downloading HPSv2 checkpoint ...")
+            try:
+                _hf_download("xswu/HPSv2", "HPS_v2_compressed.pt", hps_root)
+                _log(f"HPSv2 checkpoint ready at {hps_root}")
+            except Exception as exc:
+                _log(f"ERROR downloading HPSv2: {exc}")
+                raise
+        if PRELOAD_WARM:
+            _warm_hpsv2()
+        _mark_done("hpsv2")
     else:
         _wait_for_sentinel(sentinel, "HPSv2 checkpoint")
+
+
+def _warm_hpsv2() -> None:
+    """Run one real hpsv2.score() so the open_clip ViT-H-14 backbone and BPE
+    vocab — which hpsv2 lazily fetches on first call, NOT covered by the
+    checkpoint download — are cached for an offline eval. Non-fatal."""
+    try:
+        import hpsv2
+        hpsv2.score([_dummy_image()], "a test prompt", hps_version="v2.1")
+        _log("HPSv2 warm-up OK (open_clip backbone + BPE cached)")
+    except Exception as exc:
+        _log(f"WARNING: HPSv2 warm-up failed (eval may skip it): {exc}")
 
 
 # ---------------------------------------------------------------------------

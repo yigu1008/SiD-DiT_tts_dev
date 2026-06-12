@@ -87,9 +87,11 @@ export EVAL_ALLOW_MISSING_BACKENDS="${EVAL_ALLOW_MISSING_BACKENDS:-0}"
 export REWARD_BACKEND="${REWARD_BACKEND:-${SEARCH_REWARD:-composite_hpsv3_ir}}"
 export REWARD_TYPE="${REWARD_TYPE:-${REWARD_BACKEND}}"
 export REWARD_BACKENDS="${REWARD_BACKENDS:-${REWARD_BACKEND}}"
-# Eval covers all four raw rewards so we can decompose the composite gain
-# (imagereward + hpsv3 drive the composite; pickscore + hpsv2 are extra refs).
-export EVAL_BACKENDS="${EVAL_BACKENDS:-imagereward hpsv3 pickscore hpsv2}"
+# Eval covers the raw rewards so we can decompose the composite gain
+# (imagereward + hpsv3 drive the composite; pickscore is an extra ref).
+# hpsv2 is intentionally excluded: its open_clip ViT-H-14 backbone is
+# unreliable to cache for the offline eval and was crashing flux runs.
+export EVAL_BACKENDS="${EVAL_BACKENDS:-imagereward hpsv3 pickscore}"
 
 # ── Anchored bon_mcts knobs (matches default cell of mcts_param ablation) ───
 export N_SIMS UCB_C="${UCB_C:-1.0}"

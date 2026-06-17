@@ -98,39 +98,57 @@ search:
   max_trials: 1
   params:
     - name: mode
-      values: [ "full" ]   # "full" = root version; set "per_step" for per-step marginal MI
+      values:
+        - "full" # "full" = root version; set "per_step" for per-step marginal MI
     - name: run_tag
-      values: [ "sd35_reward_mi_diagnostic" ]
+      values:
+        - "sd35_reward_mi_diagnostic"
     - name: hf_token
-      values: [ "YOUR_HF_TOKEN_HERE" ]
+      values:
+        - "YOUR_HF_TOKEN_HERE"
     - name: n_prompts
-      values: [ 50 ]
+      values:
+        - 50
     - name: n_seeds
-      values: [ 16 ]
+      values:
+        - 16
     - name: n_rewrites
-      values: [ 3 ]
+      values:
+        - 3
     - name: cfg_scales
-      values: [ "1.0 3.0 5.0 7.0 9.0" ]
+      values:
+        - "1.0 3.0 5.0 7.0 9.0"
     - name: default_cfg
-      values: [ 5.0 ]
+      values:
+        - 5.0
     - name: sd35_backend
-      values: [ "sid" ]
+      values:
+        - "sid"
     - name: steps
-      values: [ 4 ]
+      values:
+        - 4
     - name: reward_backend
-      values: [ "imagereward" ]
+      values:
+        - "imagereward"
     - name: use_qwen
-      values: [ 1 ]
+      values:
+        - 1
     - name: mine_steps
-      values: [ 10000 ]
+      values:
+        - 10000
     - name: mine_batch_size
-      values: [ 1024 ]
+      values:
+        - 1024
     - name: mine_restarts
-      values: [ 3 ]
+      values:
+        - 3
     - name: mine_estimator
-      values: [ "smile" ]   # smile (tau-clipped DV, lower variance) or dv
+      values:
+        - "smile" # smile (tau-clipped DV, lower variance) or dv
     - name: mine_early_stop_patience
-      values: [ 8 ]
+      values:
+        - 8
     - name: per_step_baseline_variant
-      values: [ 0 ]
+      values:
+        - 0
 

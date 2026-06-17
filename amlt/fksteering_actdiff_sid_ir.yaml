@@ -168,29 +168,41 @@ search:
   type: grid
   params:
     - name: run_tag
-      values: [ "fksteering-actdiff-sid-ir" ]
+      values:
+        - "fksteering-actdiff-sid-ir"
     - name: hf_token
-      values: [ "YOUR_HF_TOKEN_HERE" ]
+      values:
+        - "YOUR_HF_TOKEN_HERE"
     - name: backend_list
-      values: [ "sid senseflow_large sd35_base" ]   # 3 SD-family models, one job
+      values:
+        - "sid senseflow_large sd35_base" # 3 SD-family models, one job
     - name: n_prompts
-      values: [ 100 ]
+      values:
+        - 100
     - name: seed
-      values: [ 42 ]
+      values:
+        - 42
     - name: search_reward
       # Override with -p search_reward=composite_all4 for the 4-reward variant.
-      values: [ "composite_hpsv3_ir" ]
+      values:
+        - "composite_hpsv3_ir"
     - name: methods
-      values: [ "fksteering_actdiff_cfg fksteering_actdiff_full" ]
+      values:
+        - "fksteering_actdiff_cfg fksteering_actdiff_full"
     # BON_N defaults to matched-NFE (76 for 4-step, 136 for sd35_base).
     # bon_actdiff_* uses the same N but spreads across the action bank.
     - name: neg_bank
-      values: [ "||low quality, blurry, lowres, jpeg artifacts||bad anatomy, deformed, mutated, extra limbs||watermark, signature, text, frame, cropped" ]
+      values:
+        - "||low quality, blurry, lowres, jpeg artifacts||bad anatomy, deformed, mutated, extra limbs||watermark, signature, text, frame, cropped"
     - name: sigma_bank
-      values: [ "-0.05 0.0 0.05" ]
+      values:
+        - "-0.05 0.0 0.05"
     - name: bon_n_short
-      values: [ 76 ]   # matched NFE for 4-step backends (16 + 60 = 76)
+      values:
+        - 76 # matched NFE for 4-step backends (16 + 60 = 76)
     - name: bon_n_long
-      values: [ 136 ]  # matched NFE for sd35_base 28-step (16 + 120 = 136)
+      values:
+        - 136 # matched NFE for sd35_base 28-step (16 + 120 = 136)
     - name: reward_server_port
-      values: [ 5125 ]
+      values:
+        - 5125

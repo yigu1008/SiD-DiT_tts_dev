@@ -145,37 +145,53 @@ search:
   type: grid
   params:
     - name: run_tag
-      values: [ "fksteering-actdiff-flux_schnell-ir" ]
+      values:
+        - "fksteering-actdiff-flux_schnell-ir"
     - name: hf_token
-      values: [ "YOUR_HF_TOKEN_HERE" ]
+      values:
+        - "YOUR_HF_TOKEN_HERE"
     - name: reward_server_port
-      values: [ 5126 ]
+      values:
+        - 5126
     - name: fail_fast
-      values: [ "0" ]   # 1 = abort whole job if composite fails
+      values:
+        - "0" # 1 = abort whole job if composite fails
     # ?? Stage 1: composite ----
     - name: run_composite
-      values: [ "1" ]
+      values:
+        - "1"
     - name: composite_backends
-      values: [ "flux_schnell" ]
+      values:
+        - "flux_schnell"
     - name: composite_methods
       # FK-steering series only (matches fksteering_actdiff_sid_ir.yaml).
-      values: [ "fksteering_actdiff_cfg fksteering_actdiff_full" ]
+      values:
+        - "fksteering_actdiff_cfg fksteering_actdiff_full"
     - name: composite_n_prompts
-      values: [ 200 ]
+      values:
+        - 200
     - name: composite_seeds
-      values: [ "42" ]
+      values:
+        - "42"
     - name: composite_n_sims
-      values: [ 60 ]
+      values:
+        - 60
     # ?? Stage 2: smartprompt ablation ----
     - name: run_smartprompt
-      values: [ "0" ]   # default OFF; flip to "1" to also run smartprompt
+      values:
+        - "0" # default OFF; flip to "1" to also run smartprompt
     - name: smartprompt_backend
-      values: [ "sid" ]
+      values:
+        - "sid"
     - name: smartprompt_n_prompts
-      values: [ 200 ]
+      values:
+        - 200
     - name: smartprompt_seed
-      values: [ 42 ]
+      values:
+        - 42
     - name: smartprompt_search_reward
-      values: [ "imagereward" ]
+      values:
+        - "imagereward"
     - name: smartprompt_cells
-      values: [ "combo_adaptive_stage3" ]
+      values:
+        - "combo_adaptive_stage3"

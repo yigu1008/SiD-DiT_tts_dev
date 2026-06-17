@@ -903,6 +903,22 @@ for method in ${METHODS}; do
       )
       run_flux_sharded "fksteering" "smc" "${fksteering_args[@]}"
       ;;
+    fksteering_actdiff_cfg)
+      # FLUX FK-steering (SMC + diff potential) with the guidance (CFG) axis
+      # only at resample -- no prompt rewrites.  Budget tier mirroring
+      # bon_actdiff_cfg / sop_actdiff_cfg.
+      run_flux_sharded "fksteering_actdiff_cfg" "smc" \
+        --smc_k "${SMC_K}" \
+        --smc_gamma "${SMC_GAMMA}" \
+        --smc_potential "diff" \
+        --smc_lambda "${FKSTEERING_LAMBDA:-${SMC_LAMBDA:-10.0}}" \
+        --smc_guidance_scale "${SMC_GUIDANCE_SCALE}" \
+        --smc_chunk "${SMC_CHUNK}" \
+        --smc_variant_expansion \
+        --smc_expansion_variants 0 \
+        --smc_expansion_guidances ${CFG_SCALES} \
+        --n_variants 1
+      ;;
     fksteering_actdiff_full)
       # FLUX FK-steering (SMC + diff potential) with guidance + prompt-rewrite
       # axes at resample.  = fksteering but with smc_variant_expansion over the

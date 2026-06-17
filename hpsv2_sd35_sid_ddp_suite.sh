@@ -1034,6 +1034,18 @@ run_method() {
       SMC_EXPANSION_VARIANTS="$(seq -s' ' 0 ${_smc_var_max})"
       SMC_EXPANSION_CS="${SMC_EXPANSION_CS:-0.0}"
       ;;
+    fksteering_actdiff_cfg)
+      # FK-steering (SMC + reward-gradient/diff potential) with CFG-only axis at
+      # resample (variant fixed).  = smc_actdiff_cfg but with the FK potential
+      # and lambda.  Budget-tier counterpart to fksteering_actdiff_full.
+      mode_arg="smc"
+      SMC_POTENTIAL="diff"
+      SMC_LAMBDA="${FKSTEERING_LAMBDA:-${SMC_LAMBDA:-10.0}}"
+      SMC_VARIANT_EXPANSION=1
+      SMC_EXPANSION_CFGS="${SMC_EXPANSION_CFGS:-${CFG_SCALES}}"
+      SMC_EXPANSION_VARIANTS="0"
+      SMC_EXPANSION_CS="${SMC_EXPANSION_CS:-0.0}"
+      ;;
     fksteering_actdiff_full)
       # FK-steering (SMC + reward-gradient/diff potential) with CFG + prompt-
       # rewrite axes at resample.  = smc_actdiff_full but with the FK potential

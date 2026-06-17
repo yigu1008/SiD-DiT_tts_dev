@@ -1,4 +1,4 @@
-description: sd35-reward-mi-diagnostic
+description: sd35-reward-mi-diagnostic-perstep
 
 target:
   service: sing
@@ -98,9 +98,9 @@ search:
   max_trials: 1
   params:
     - name: mode
-      values: [ "full" ]   # "full" = root version; set "per_step" for per-step marginal MI
+      values: [ "per_step" ]   # per-step marginal MI: sweep one step's action on a shared root trajectory
     - name: run_tag
-      values: [ "sd35_reward_mi_diagnostic" ]
+      values: [ "sd35_reward_mi_diagnostic_perstep" ]
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: n_prompts
@@ -133,4 +133,3 @@ search:
       values: [ 8 ]
     - name: per_step_baseline_variant
       values: [ 0 ]
-

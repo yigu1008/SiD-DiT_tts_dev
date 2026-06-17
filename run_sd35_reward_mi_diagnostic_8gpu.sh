@@ -52,10 +52,45 @@ MINE_EVAL_EVERY="${MINE_EVAL_EVERY:-250}"
 MINE_RESTARTS="${MINE_RESTARTS:-3}"
 MINE_DEVICE="${MINE_DEVICE:-cuda}"
 MINE_VAL_FRAC="${MINE_VAL_FRAC:-0.2}"
+MINE_ESTIMATOR="${MINE_ESTIMATOR:-smile}"
+MINE_SMILE_TAU="${MINE_SMILE_TAU:-5.0}"
+MINE_EARLY_STOP_PATIENCE="${MINE_EARLY_STOP_PATIENCE:-8}"
 
 DATASET_CSV="${DATASET_CSV:-${OUT_DIR}/mi_diag_sd35_dataset.csv}"
 REPORT_JSON="${REPORT_JSON:-${OUT_DIR}/mi_diag_sd35_report.json}"
 TABLE_CSV="${TABLE_CSV:-${OUT_DIR}/mi_diag_sd35_table.csv}"
+
+# Per-step (per_step_*) marginal-MI outputs + baseline action.
+PER_STEP_DATASET_CSV="${PER_STEP_DATASET_CSV:-${OUT_DIR}/mi_perstep_sd35_dataset.csv}"
+PER_STEP_REPORT_JSON="${PER_STEP_REPORT_JSON:-${OUT_DIR}/mi_perstep_sd35_report.json}"
+PER_STEP_TABLE_CSV="${PER_STEP_TABLE_CSV:-${OUT_DIR}/mi_perstep_sd35_table.csv}"
+PER_STEP_BASELINE_VARIANT="${PER_STEP_BASELINE_VARIANT:-0}"
+
+# Resolve the mode family: root (generate/train/full) vs per-step. Per-step
+# shards the same way but emits step_idx; training derives variant_k/cfg_k/joint_k.
+DO_GEN=0
+DO_TRAIN=0
+case "${MODE}" in
+  generate)          DO_GEN=1 ;;
+  train)             DO_TRAIN=1 ;;
+  full)              DO_GEN=1; DO_TRAIN=1 ;;
+  per_step_generate) DO_GEN=1 ;;
+  per_step_train)    DO_TRAIN=1 ;;
+  per_step)          DO_GEN=1; DO_TRAIN=1 ;;
+  *) echo "Error: unknown MODE='${MODE}'" >&2; exit 1 ;;
+esac
+
+if [[ "${MODE}" == per_step* ]]; then
+  GEN_MODE="per_step_generate"
+  TRAIN_MODE="per_step_train"
+  CSV_FLAG="--per_step_dataset_csv"
+  MERGED_CSV="${PER_STEP_DATASET_CSV}"
+else
+  GEN_MODE="generate"
+  TRAIN_MODE="train"
+  CSV_FLAG="--dataset_csv"
+  MERGED_CSV="${DATASET_CSV}"
+fi
 
 if [[ ! -f "${PROMPT_FILE}" ]]; then
   echo "Error: PROMPT_FILE not found: ${PROMPT_FILE}" >&2
@@ -107,8 +142,8 @@ PY
 mapfile -t SHARD_SIZES < "${SHARD_DIR}/shard_sizes.txt"
 
 # ── Mode dispatch ──────────────────────────────────────────────────────────
-if [[ "${MODE}" == "generate" || "${MODE}" == "full" ]]; then
-  echo "[8gpu] launching ${NUM_GPUS} shards for generation."
+if [[ "${DO_GEN}" == "1" ]]; then
+  echo "[8gpu] launching ${NUM_GPUS} shards for generation (mode=${GEN_MODE})."
   pids=()
   for ((k=0; k<NUM_GPUS; k++)); do
     shard_size="${SHARD_SIZES[$k]}"
@@ -121,7 +156,7 @@ if [[ "${MODE}" == "generate" || "${MODE}" == "full" ]]; then
 
     SHARD_CMD=(
       "${PYTHON_BIN}" "${SCRIPT_DIR}/sd35_reward_mi_diagnostic.py"
-      --mode generate
+      --mode "${GEN_MODE}"
       --prompt_file "${shard_prompts}"
       --n_prompts "${shard_size}"
       --seed_base "${SEED_BASE}"
@@ -130,7 +165,7 @@ if [[ "${MODE}" == "generate" || "${MODE}" == "full" ]]; then
       --cfg_scales "${CFG_ARR[@]}"
       --default_cfg "${DEFAULT_CFG}"
       --reward_noise_std "${REWARD_NOISE_STD}"
-      --dataset_csv "${shard_csv}"
+      "${CSV_FLAG}" "${shard_csv}"
       --backend "${BACKEND}"
       --steps "${STEPS}"
       --width "${WIDTH}"
@@ -140,6 +175,9 @@ if [[ "${MODE}" == "generate" || "${MODE}" == "full" ]]; then
       --reward_backend "${REWARD_BACKEND}"
       --resume
     )
+    if [[ "${MODE}" == per_step* ]]; then
+      SHARD_CMD+=(--per_step_baseline_variant "${PER_STEP_BASELINE_VARIANT}")
+    fi
     if [[ ${#QWEN_ARGS[@]} -gt 0 ]]; then
       SHARD_CMD+=("${QWEN_ARGS[@]}")
     fi
@@ -162,10 +200,11 @@ if [[ "${MODE}" == "generate" || "${MODE}" == "full" ]]; then
 
   # Merge shard CSVs with globally-unique prompt_id (offset by cumulative sizes).
   # Skips malformed rows (column-shift from partial writes) instead of crashing.
-  "${PYTHON_BIN}" - <<PY
+  # Generic over the header, so root and per-step (with step_idx) both merge.
+  MERGED_CSV="${MERGED_CSV}" "${PYTHON_BIN}" - <<PY
 import csv, os
 shard_dir   = os.environ["SHARD_DIR"]
-out_csv     = os.environ["DATASET_CSV"]
+out_csv     = os.environ["MERGED_CSV"]
 n_shards    = int(os.environ["NUM_GPUS"])
 sizes = [int(x.strip()) for x in open(os.path.join(shard_dir, "shard_sizes.txt"))]
 offsets = [sum(sizes[:k]) for k in range(n_shards)]
@@ -205,37 +244,54 @@ PY
 fi
 
 # ── MINE training (single GPU) ─────────────────────────────────────────────
-if [[ "${MODE}" == "train" || "${MODE}" == "full" ]]; then
-  echo "[8gpu] running MINE training on merged dataset."
-  CUDA_VISIBLE_DEVICES="${MINE_GPU:-0}" "${PYTHON_BIN}" "${SCRIPT_DIR}/sd35_reward_mi_diagnostic.py" \
-    --mode train \
-    --prompt_file "${PROMPT_FILE}" \
-    --n_prompts "${N_PROMPTS}" \
-    --seed_base "${SEED_BASE}" \
-    --n_seeds "${N_SEEDS}" \
-    --n_rewrites "${N_REWRITES}" \
-    --cfg_scales "${CFG_ARR[@]}" \
-    --default_cfg "${DEFAULT_CFG}" \
-    --reward_noise_std "${REWARD_NOISE_STD}" \
-    --dataset_csv "${DATASET_CSV}" \
-    --backend "${BACKEND}" \
-    --steps "${STEPS}" \
-    --width "${WIDTH}" \
-    --height "${HEIGHT}" \
-    --time_scale "${TIME_SCALE}" \
-    --max_sequence_length "${MAX_SEQUENCE_LENGTH}" \
-    --reward_backend "${REWARD_BACKEND}" \
-    --mine_hidden_dim "${MINE_HIDDEN_DIM}" \
-    --mine_embedding_dim "${MINE_EMBEDDING_DIM}" \
-    --mine_batch_size "${MINE_BATCH_SIZE}" \
-    --mine_lr "${MINE_LR}" \
-    --mine_steps "${MINE_STEPS}" \
-    --mine_eval_every "${MINE_EVAL_EVERY}" \
-    --mine_restarts "${MINE_RESTARTS}" \
-    --mine_device "${MINE_DEVICE}" \
-    --mine_val_frac "${MINE_VAL_FRAC}" \
-    --mine_report_json "${REPORT_JSON}" \
-    --mine_table_csv "${TABLE_CSV}"
+if [[ "${DO_TRAIN}" == "1" ]]; then
+  echo "[8gpu] running MINE training on merged dataset (mode=${TRAIN_MODE})."
+  TRAIN_CMD=(
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/sd35_reward_mi_diagnostic.py"
+    --mode "${TRAIN_MODE}"
+    --prompt_file "${PROMPT_FILE}"
+    --n_prompts "${N_PROMPTS}"
+    --seed_base "${SEED_BASE}"
+    --n_seeds "${N_SEEDS}"
+    --n_rewrites "${N_REWRITES}"
+    --cfg_scales "${CFG_ARR[@]}"
+    --default_cfg "${DEFAULT_CFG}"
+    --reward_noise_std "${REWARD_NOISE_STD}"
+    --backend "${BACKEND}"
+    --steps "${STEPS}"
+    --width "${WIDTH}"
+    --height "${HEIGHT}"
+    --time_scale "${TIME_SCALE}"
+    --max_sequence_length "${MAX_SEQUENCE_LENGTH}"
+    --reward_backend "${REWARD_BACKEND}"
+    --mine_hidden_dim "${MINE_HIDDEN_DIM}"
+    --mine_embedding_dim "${MINE_EMBEDDING_DIM}"
+    --mine_batch_size "${MINE_BATCH_SIZE}"
+    --mine_lr "${MINE_LR}"
+    --mine_steps "${MINE_STEPS}"
+    --mine_eval_every "${MINE_EVAL_EVERY}"
+    --mine_restarts "${MINE_RESTARTS}"
+    --mine_device "${MINE_DEVICE}"
+    --mine_val_frac "${MINE_VAL_FRAC}"
+    --mine_estimator "${MINE_ESTIMATOR}"
+    --mine_smile_tau "${MINE_SMILE_TAU}"
+    --mine_early_stop_patience "${MINE_EARLY_STOP_PATIENCE}"
+  )
+  if [[ "${MODE}" == per_step* ]]; then
+    TRAIN_CMD+=(
+      --per_step_dataset_csv "${MERGED_CSV}"
+      --per_step_table_csv "${PER_STEP_TABLE_CSV}"
+      --per_step_report_json "${PER_STEP_REPORT_JSON}"
+      --per_step_baseline_variant "${PER_STEP_BASELINE_VARIANT}"
+    )
+  else
+    TRAIN_CMD+=(
+      --dataset_csv "${MERGED_CSV}"
+      --mine_table_csv "${TABLE_CSV}"
+      --mine_report_json "${REPORT_JSON}"
+    )
+  fi
+  CUDA_VISIBLE_DEVICES="${MINE_GPU:-0}" "${TRAIN_CMD[@]}"
 fi
 
 echo "[8gpu] done."

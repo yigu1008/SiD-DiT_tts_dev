@@ -37,9 +37,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="SD3.5 reward-space MI diagnostic (generate + MINE critics).")
     p.add_argument(
         "--mode",
-        choices=["generate", "train", "full"],
+        choices=[
+            "generate",
+            "train",
+            "full",
+            "per_step_generate",
+            "per_step_train",
+            "per_step",
+        ],
         default="full",
-        help="generate: build dataset only, train: train critics from dataset only, full: do both.",
+        help=(
+            "generate/train/full: root-version constant-action channels. "
+            "per_step_generate/per_step_train/per_step: per-step marginal MI "
+            "(sweep one step's action on a shared root trajectory)."
+        ),
     )
 
     # Data generation knobs
@@ -115,6 +126,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--mine_seed", type=int, default=1234)
     p.add_argument("--mine_report_json", default="./mi_diag_sd35_report.json")
     p.add_argument("--mine_table_csv", default="./mi_diag_sd35_table.csv")
+    p.add_argument(
+        "--mine_estimator",
+        choices=["smile", "dv"],
+        default="smile",
+        help="smile: tau-clipped DV (lower variance, default). dv: raw Donsker-Varadhan.",
+    )
+    p.add_argument("--mine_smile_tau", type=float, default=5.0, help="Clip threshold for SMILE critic outputs.")
+    p.add_argument(
+        "--mine_early_stop_patience",
+        type=int,
+        default=8,
+        help="Stop a restart after this many eval points without EMA val-MI improvement (<=0 disables).",
+    )
+
+    # Per-step (per_step_*) marginal-MI knobs
+    p.add_argument("--per_step_dataset_csv", default="./mi_perstep_sd35_dataset.csv")
+    p.add_argument("--per_step_report_json", default="./mi_perstep_sd35_report.json")
+    p.add_argument("--per_step_table_csv", default="./mi_perstep_sd35_table.csv")
+    p.add_argument("--per_step_baseline_variant", type=int, default=0, help="Variant id held on non-branched steps.")
     return p.parse_args(argv)
 
 
@@ -545,17 +575,27 @@ def _permute_controls_in_batch(
     return out
 
 
-def _dv_bound(
+def _log_mean_exp(t: torch.Tensor, estimator: str, tau: float) -> torch.Tensor:
+    """log E[e^t] estimate. For SMILE, clip t to [-tau, tau] before the
+    logsumexp so a single large negative-sample logit cannot blow up the
+    variance of the bound (the classic MINE/DV instability)."""
+    if estimator == "smile" and tau > 0:
+        t = torch.clamp(t, min=-float(tau), max=float(tau))
+    return torch.logsumexp(t, dim=0) - math.log(float(t.shape[0]))
+
+
+def _critic_bound(
     model: MineCritic,
     reward: torch.Tensor,
     prompt_id: torch.Tensor,
     controls_pos: dict[str, torch.Tensor],
     controls_neg: dict[str, torch.Tensor],
+    estimator: str,
+    tau: float,
 ) -> torch.Tensor:
     t_pos = model(reward, prompt_id, controls_pos)
     t_neg = model(reward, prompt_id, controls_neg)
-    log_mean_exp_neg = torch.logsumexp(t_neg, dim=0) - math.log(float(t_neg.shape[0]))
-    return t_pos.mean() - log_mean_exp_neg
+    return t_pos.mean() - _log_mean_exp(t_neg, estimator, tau)
 
 
 def _estimate_mi_and_auroc(
@@ -564,46 +604,47 @@ def _estimate_mi_and_auroc(
     control_names: list[str],
     batch_size: int,
     seed: int,
+    estimator: str = "smile",
+    tau: float = 5.0,
 ) -> tuple[float, float]:
+    """Full-set DV/SMILE estimate: accumulate t_pos over every row and take a
+    SINGLE log-mean-exp over ALL negatives. Averaging per-minibatch DV bounds
+    (the old behavior) is Jensen-biased upward and high-variance, so the whole
+    set is scored in one pass against one within-prompt permuted negative draw."""
     model.eval()
-    rng = np.random.default_rng(seed)
     n = int(data_t["reward"].shape[0])
     if n <= 0:
         return 0.0, 0.5
 
-    mi_vals: list[float] = []
-    all_scores: list[np.ndarray] = []
-    all_labels: list[np.ndarray] = []
+    # One global within-prompt permutation -> conditional-MI negatives p(R|P)p(C|P).
+    rng = np.random.default_rng(seed)
+    prompt_np = data_t["prompt_id"].detach().cpu().numpy()
+    perm = _permute_within_prompt_ids(prompt_np, rng)
+    perm_t = torch.as_tensor(perm, dtype=torch.long, device=data_t["prompt_id"].device)
+
+    t_pos_chunks: list[torch.Tensor] = []
+    t_neg_chunks: list[torch.Tensor] = []
+    bs = max(1, batch_size)
     with torch.no_grad():
-        for start in range(0, n, max(1, batch_size)):
-            end = min(n, start + max(1, batch_size))
+        for start in range(0, n, bs):
+            end = min(n, start + bs)
             reward = data_t["reward"][start:end]
             prompt_id = data_t["prompt_id"][start:end]
             controls_pos = {k: data_t[k][start:end] for k in control_names}
-            controls_neg = _permute_controls_in_batch(prompt_id, controls_pos, rng)
+            neg_idx = perm_t[start:end]
+            controls_neg = {k: data_t[k].index_select(0, neg_idx) for k in control_names}
+            t_pos_chunks.append(model(reward, prompt_id, controls_pos))
+            t_neg_chunks.append(model(reward, prompt_id, controls_neg))
 
-            t_pos = model(reward, prompt_id, controls_pos)
-            t_neg = model(reward, prompt_id, controls_neg)
-            log_mean_exp_neg = torch.logsumexp(t_neg, dim=0) - math.log(float(max(1, t_neg.shape[0])))
-            mi_vals.append(float((t_pos.mean() - log_mean_exp_neg).item()))
+    t_pos = torch.cat(t_pos_chunks, dim=0)
+    t_neg = torch.cat(t_neg_chunks, dim=0)
+    mi = float((t_pos.mean() - _log_mean_exp(t_neg, estimator, tau)).item())
 
-            s_pos = t_pos.detach().cpu().numpy()
-            s_neg = t_neg.detach().cpu().numpy()
-            scores = np.concatenate([s_pos, s_neg], axis=0)
-            labels = np.concatenate(
-                [
-                    np.ones_like(s_pos, dtype=np.int64),
-                    np.zeros_like(s_neg, dtype=np.int64),
-                ],
-                axis=0,
-            )
-            all_scores.append(scores)
-            all_labels.append(labels)
-
-    mi = float(np.mean(mi_vals)) if mi_vals else 0.0
+    s_pos = t_pos.detach().cpu().numpy()
+    s_neg = t_neg.detach().cpu().numpy()
     auc = _auroc_from_scores(
-        np.concatenate(all_labels, axis=0),
-        np.concatenate(all_scores, axis=0),
+        np.concatenate([np.ones_like(s_pos, dtype=np.int64), np.zeros_like(s_neg, dtype=np.int64)], axis=0),
+        np.concatenate([s_pos, s_neg], axis=0),
     )
     return mi, auc
 
@@ -636,12 +677,22 @@ def _train_one_restart(
     opt = torch.optim.AdamW(model.parameters(), lr=float(args.mine_lr))
     rng = np.random.default_rng(restart_seed + 17)
 
+    estimator = str(getattr(args, "mine_estimator", "smile"))
+    tau = float(getattr(args, "mine_smile_tau", 5.0))
+    patience_limit = int(getattr(args, "mine_early_stop_patience", 0))
+
     train_t = _to_tensors(train_np, device=device)
     val_t = _to_tensors(val_np, device=device)
     n_train = int(train_t["reward"].shape[0])
     bs = max(1, int(args.mine_batch_size))
-    best_val = -float("inf")
+
+    # EMA-smoothed early stopping. Selecting the single max val-MI checkpoint
+    # maximizes over noisy estimates -> upward bias (worst for near-zero
+    # channels). Track an EMA of val MI and keep the best-EMA state instead.
+    best_ema = -float("inf")
     best_state: dict[str, torch.Tensor] | None = None
+    ema_val: float | None = None
+    no_improve = 0
 
     for step in range(1, int(args.mine_steps) + 1):
         model.train()
@@ -651,8 +702,8 @@ def _train_one_restart(
         prompt_id = train_t["prompt_id"].index_select(0, idx_t)
         controls_pos = {k: train_t[k].index_select(0, idx_t) for k in control_names}
         controls_neg = _permute_controls_in_batch(prompt_id, controls_pos, rng)
-        dv = _dv_bound(model, reward, prompt_id, controls_pos, controls_neg)
-        loss = -dv
+        bound = _critic_bound(model, reward, prompt_id, controls_pos, controls_neg, estimator, tau)
+        loss = -bound
         opt.zero_grad(set_to_none=True)
         loss.backward()
         if float(args.mine_grad_clip) > 0:
@@ -666,21 +717,106 @@ def _train_one_restart(
                 control_names,
                 batch_size=bs,
                 seed=restart_seed + step * 3,
+                estimator=estimator,
+                tau=tau,
             )
-            if val_mi > best_val:
-                best_val = float(val_mi)
+            ema_val = float(val_mi) if ema_val is None else 0.7 * ema_val + 0.3 * float(val_mi)
+            if ema_val > best_ema + 1e-4:
+                best_ema = float(ema_val)
                 best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
+                if patience_limit > 0 and no_improve >= patience_limit:
+                    break
 
     if best_state is not None:
         model.load_state_dict(best_state)
 
     train_mi, _ = _estimate_mi_and_auroc(
-        model, train_t, control_names, batch_size=bs, seed=restart_seed + 20001
+        model, train_t, control_names, batch_size=bs, seed=restart_seed + 20001, estimator=estimator, tau=tau
     )
     val_mi, auroc = _estimate_mi_and_auroc(
-        model, val_t, control_names, batch_size=bs, seed=restart_seed + 30001
+        model, val_t, control_names, batch_size=bs, seed=restart_seed + 30001, estimator=estimator, tau=tau
     )
     return float(train_mi), float(val_mi), float(auroc)
+
+
+def _run_channel(
+    subset: dict[str, np.ndarray],
+    controls: list[str],
+    n_prompts: int,
+    args: argparse.Namespace,
+    seed_offset: int,
+) -> dict[str, Any]:
+    """Train the real + null critics over `mine_restarts` restarts for one
+    channel (subset already filtered, must hold prompt_id, reward, and every
+    control). Returns a row dict with raw MI, null-debiased MI, AUROC, std."""
+    n_rows_subset = int(subset["reward"].shape[0])
+
+    controls_np = {c: subset[c] for c in controls}
+    null_controls = _permute_controls_globally_within_prompt(
+        subset["prompt_id"], controls_np, seed=int(args.mine_seed) + 999 * seed_offset
+    )
+    null_subset = {
+        "prompt_id": subset["prompt_id"].copy(),
+        "reward": subset["reward"].copy(),
+        **{c: null_controls[c] for c in controls},
+    }
+
+    train_idx, val_idx = _split_indices(
+        n_rows_subset, float(args.mine_val_frac), seed=int(args.mine_seed) + 31 * seed_offset
+    )
+
+    def _slice(src: dict[str, np.ndarray], idx: np.ndarray) -> dict[str, np.ndarray]:
+        out = {"prompt_id": _subset_array(src["prompt_id"], idx), "reward": _subset_array(src["reward"], idx)}
+        for c in controls:
+            out[c] = _subset_array(src[c], idx)
+        return out
+
+    train_np = _slice(subset, train_idx)
+    val_np = _slice(subset, val_idx)
+    null_train_np = _slice(null_subset, train_idx)
+    null_val_np = _slice(null_subset, val_idx)
+
+    train_mis: list[float] = []
+    val_mis: list[float] = []
+    aucs: list[float] = []
+    null_val_mis: list[float] = []
+    for r in range(int(args.mine_restarts)):
+        restart_seed = int(args.mine_seed) + 1000 * seed_offset + r
+        tr_mi, va_mi, auroc = _train_one_restart(
+            train_np, val_np, controls, n_prompts, args, restart_seed=restart_seed
+        )
+        train_mis.append(float(tr_mi))
+        val_mis.append(float(va_mi))
+        aucs.append(float(auroc))
+        _ntr, nva, _na = _train_one_restart(
+            null_train_np, null_val_np, controls, n_prompts, args, restart_seed=restart_seed + 50000
+        )
+        null_val_mis.append(float(nva))
+
+    h_control = _entropy_nats(_joint_code([subset[c] for c in controls]))
+    mi_mean = float(np.mean(val_mis))
+    mi_median = float(np.median(val_mis))
+    null_mean = float(np.mean(null_val_mis))
+    # Debias by the within-prompt-shuffled null: it shares the estimator's
+    # finite-sample bias floor, so MI - Null is the real conditional signal.
+    mi_corrected = float(max(0.0, mi_mean - null_mean))
+    mi_norm = float(mi_corrected / h_control) if h_control > 0 else 0.0
+    return {
+        "controls": list(controls),
+        "rows_used": int(n_rows_subset),
+        "MI": mi_mean,
+        "MI_median": mi_median,
+        "MI_corrected": mi_corrected,
+        "normalized_MI": mi_norm,
+        "Null_MI": null_mean,
+        "AUROC": float(np.mean(aucs)),
+        "Restart_std": float(np.std(val_mis)),
+        "train_mi_mean": float(np.mean(train_mis)),
+        "h_control_nats": float(h_control),
+    }
 
 
 def run_mine_critics(args: argparse.Namespace) -> None:
@@ -738,85 +874,24 @@ def run_mine_critics(args: argparse.Namespace) -> None:
         "specs": [],
     }
 
+    n_prompts = int(_max_or_zero(data["prompt_id"]) + 1)
     for spec_idx, spec in enumerate(specs):
         subset = _build_filtered_data(data, spec)
         n_rows_subset = int(subset["reward"].shape[0])
         if n_rows_subset < 8:
             raise RuntimeError(f"Too few rows for critic '{spec.channel}': {n_rows_subset}")
 
-        # Null setup: permute controls (jointly) within prompt before training.
-        controls_np = {c: subset[c] for c in spec.controls}
-        null_controls = _permute_controls_globally_within_prompt(
-            subset["prompt_id"], controls_np, seed=int(args.mine_seed) + 999 * (spec_idx + 1)
-        )
-        null_subset = {
-            "prompt_id": subset["prompt_id"].copy(),
-            "reward": subset["reward"].copy(),
-            **{c: null_controls[c] for c in spec.controls},
-        }
-
-        # Train/val split fixed across restarts.
-        train_idx, val_idx = _split_indices(
-            n_rows_subset,
-            float(args.mine_val_frac),
-            seed=int(args.mine_seed) + 31 * (spec_idx + 1),
-        )
-        train_np = {"prompt_id": _subset_array(subset["prompt_id"], train_idx), "reward": _subset_array(subset["reward"], train_idx)}
-        val_np = {"prompt_id": _subset_array(subset["prompt_id"], val_idx), "reward": _subset_array(subset["reward"], val_idx)}
-        for c in spec.controls:
-            train_np[c] = _subset_array(subset[c], train_idx)
-            val_np[c] = _subset_array(subset[c], val_idx)
-
-        null_train_np = {
-            "prompt_id": _subset_array(null_subset["prompt_id"], train_idx),
-            "reward": _subset_array(null_subset["reward"], train_idx),
-        }
-        null_val_np = {
-            "prompt_id": _subset_array(null_subset["prompt_id"], val_idx),
-            "reward": _subset_array(null_subset["reward"], val_idx),
-        }
-        for c in spec.controls:
-            null_train_np[c] = _subset_array(null_subset[c], train_idx)
-            null_val_np[c] = _subset_array(null_subset[c], val_idx)
-
-        n_prompts = int(max(_max_or_zero(subset["prompt_id"]), _max_or_zero(data["prompt_id"])) + 1)
-
-        train_mis: list[float] = []
-        val_mis: list[float] = []
-        aucs: list[float] = []
-        null_val_mis: list[float] = []
-
-        for r in range(int(args.mine_restarts)):
-            restart_seed = int(args.mine_seed) + 1000 * (spec_idx + 1) + r
-            tr_mi, va_mi, auroc = _train_one_restart(
-                train_np, val_np, spec.controls, n_prompts, args, restart_seed=restart_seed
-            )
-            train_mis.append(float(tr_mi))
-            val_mis.append(float(va_mi))
-            aucs.append(float(auroc))
-
-            _null_tr, null_va, _null_auc = _train_one_restart(
-                null_train_np,
-                null_val_np,
-                spec.controls,
-                n_prompts,
-                args,
-                restart_seed=restart_seed + 50000,
-            )
-            null_val_mis.append(float(null_va))
-
-        # Entropy denominator H(control)
-        h_control = _entropy_nats(_joint_code([subset[c] for c in spec.controls]))
-        mi_mean = float(np.mean(val_mis))
-        mi_norm = float(mi_mean / h_control) if h_control > 0 else 0.0
+        ch = _run_channel(subset, spec.controls, n_prompts, args, seed_offset=spec_idx + 1)
         row = {
             "Channel": spec.channel,
             "Control": ",".join(spec.controls),
-            "MI": mi_mean,
-            "normalized_MI": mi_norm,
-            "Null_MI": float(np.mean(null_val_mis)),
-            "AUROC": float(np.mean(aucs)),
-            "Restart_std": float(np.std(val_mis)),
+            "MI": ch["MI"],
+            "MI_corrected": ch["MI_corrected"],
+            "MI_median": ch["MI_median"],
+            "normalized_MI": ch["normalized_MI"],
+            "Null_MI": ch["Null_MI"],
+            "AUROC": ch["AUROC"],
+            "Restart_std": ch["Restart_std"],
         }
         all_rows.append(row)
 
@@ -824,21 +899,24 @@ def run_mine_critics(args: argparse.Namespace) -> None:
             {
                 "channel": spec.channel,
                 "controls": list(spec.controls),
-                "rows_used": n_rows_subset,
-                "train_mi_mean": float(np.mean(train_mis)),
-                "val_mi_mean": float(np.mean(val_mis)),
-                "val_mi_std": float(np.std(val_mis)),
-                "null_val_mi_mean": float(np.mean(null_val_mis)),
-                "auroc_mean": float(np.mean(aucs)),
-                "h_control_nats": float(h_control),
-                "mi_over_h_control": float(mi_norm),
+                "rows_used": ch["rows_used"],
+                "train_mi_mean": ch["train_mi_mean"],
+                "val_mi_mean": ch["MI"],
+                "val_mi_median": ch["MI_median"],
+                "val_mi_std": ch["Restart_std"],
+                "null_val_mi_mean": ch["Null_MI"],
+                "mi_corrected": ch["MI_corrected"],
+                "auroc_mean": ch["AUROC"],
+                "h_control_nats": ch["h_control_nats"],
+                "mi_over_h_control": ch["normalized_MI"],
                 "restarts": int(args.mine_restarts),
             }
         )
 
         print(
-            f"[train] {spec.channel:18s} MI={row['MI']:.4f} MI/H={row['normalized_MI']:.4f} "
-            f"Null={row['Null_MI']:.4f} AUROC={row['AUROC']:.4f} std={row['Restart_std']:.4f}"
+            f"[train] {spec.channel:18s} MI={row['MI']:.4f} MIc={row['MI_corrected']:.4f} "
+            f"MI/H={row['normalized_MI']:.4f} Null={row['Null_MI']:.4f} "
+            f"AUROC={row['AUROC']:.4f} std={row['Restart_std']:.4f}"
         )
 
     table_csv = str(Path(args.mine_table_csv).expanduser().resolve())
@@ -846,7 +924,10 @@ def run_mine_critics(args: argparse.Namespace) -> None:
     with open(table_csv, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["Channel", "Control", "MI", "normalized_MI", "Null_MI", "AUROC", "Restart_std"],
+            fieldnames=[
+                "Channel", "Control", "MI", "MI_corrected", "MI_median",
+                "normalized_MI", "Null_MI", "AUROC", "Restart_std",
+            ],
         )
         writer.writeheader()
         for row in all_rows:
@@ -861,12 +942,293 @@ def run_mine_critics(args: argparse.Namespace) -> None:
     print(f"[train] wrote report: {report_json}")
 
 
+def _existing_perstep_key_set(csv_path: str) -> set[tuple[int, int, int, int, int]]:
+    out: set[tuple[int, int, int, int, int]] = set()
+    if not os.path.exists(csv_path):
+        return out
+    with open(csv_path, encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                out.add(
+                    (
+                        int(row["prompt_id"]),
+                        int(row["seed_id"]),
+                        int(row["step_idx"]),
+                        int(row["variant_id"]),
+                        int(row["cfg_id"]),
+                    )
+                )
+            except (ValueError, TypeError, KeyError):
+                continue
+    return out
+
+
+def generate_dataset_per_step(args: argparse.Namespace) -> None:
+    """Per-step marginal-MI dataset. For each (prompt, seed) the root latent and
+    per-step noise are fixed by the seed (run_schedule_actions re-seeds to the
+    same sample_seed). At one step k we sweep the full action grid while every
+    other step is held at baseline -> the reward delta is attributable purely to
+    the action injected at step k, on a shared root trajectory. No backup."""
+    sampler_args = _build_sampler_args(args)
+    prompts = _read_prompts(args.prompt_file, int(args.n_prompts))
+    if len(prompts) == 0:
+        raise RuntimeError("No prompts found after filtering.")
+
+    out_csv = str(Path(args.per_step_dataset_csv).expanduser().resolve())
+    os.makedirs(str(Path(out_csv).parent), exist_ok=True)
+
+    rewrite_cache: dict[str, Any] = {}
+    if args.rewrites_file and os.path.exists(args.rewrites_file):
+        with open(args.rewrites_file, encoding="utf-8") as f:
+            rewrite_cache = json.load(f)
+        print(f"[per_step] loaded rewrite cache entries={len(rewrite_cache)}")
+
+    done_keys: set[tuple[int, int, int, int, int]] = set()
+    if bool(args.resume) and os.path.exists(out_csv):
+        done_keys = _existing_perstep_key_set(out_csv)
+        print(f"[per_step] resume enabled: {len(done_keys)} rows already present.")
+    else:
+        if os.path.exists(out_csv):
+            os.remove(out_csv)
+        print("[per_step] starting fresh dataset file.")
+
+    header = [
+        "prompt_id",
+        "original_prompt",
+        "seed_id",
+        "step_idx",
+        "variant_id",
+        "cfg_id",
+        "cfg_value",
+        "reward",
+    ]
+
+    sampler_args.out_dir = str(Path(out_csv).parent)
+    ctx = su.load_pipeline(sampler_args)
+    reward_model = su.load_reward_model(sampler_args, ctx.device)
+
+    cfg_values = [float(v) for v in args.cfg_scales]
+    default_cfg_id = _nearest_cfg_id(cfg_values, float(args.default_cfg))
+    base_variant = int(args.per_step_baseline_variant)
+    n_variants = int(args.n_rewrites) + 1
+    steps = int(sampler_args.steps)
+    rng = np.random.default_rng(int(args.seed_base) + 13)
+
+    total_target_rows = len(prompts) * int(args.n_seeds) * steps * n_variants * len(cfg_values)
+    written = 0
+    skipped = 0
+    t0 = time.time()
+
+    file_exists = os.path.exists(out_csv)
+    with open(out_csv, "a", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=header)
+        if not file_exists or os.path.getsize(out_csv) == 0:
+            writer.writeheader()
+
+        for prompt_id, original_prompt in enumerate(prompts):
+            variants = su.generate_variants(sampler_args, original_prompt, rewrite_cache)
+            if len(variants) < n_variants:
+                variants = variants + [original_prompt] * (n_variants - len(variants))
+            elif len(variants) > n_variants:
+                variants = variants[:n_variants]
+            emb = su.encode_variants(ctx, variants, max_sequence_length=int(args.max_sequence_length))
+
+            base_cfg_val = float(cfg_values[default_cfg_id])
+            baseline_actions = [(int(base_variant), base_cfg_val, 0.0)] * steps
+
+            for seed_id in range(int(args.n_seeds)):
+                sample_seed = int(args.seed_base) + int(seed_id)
+                for k in range(steps):
+                    for variant_id in range(n_variants):
+                        for cfg_id, cfg_val in enumerate(cfg_values):
+                            key = (int(prompt_id), int(seed_id), int(k), int(variant_id), int(cfg_id))
+                            if key in done_keys:
+                                skipped += 1
+                                continue
+                            actions = list(baseline_actions)
+                            actions[k] = (int(variant_id), float(cfg_val), 0.0)
+                            result = su.run_schedule_actions(
+                                sampler_args,
+                                ctx,
+                                emb,
+                                reward_model,
+                                original_prompt,
+                                sample_seed,
+                                actions,
+                                deterministic_noise=True,
+                            )
+                            reward_noisy = float(result.score) + float(rng.normal(0.0, float(args.reward_noise_std)))
+                            writer.writerow(
+                                {
+                                    "prompt_id": int(prompt_id),
+                                    "original_prompt": _csv_safe(original_prompt),
+                                    "seed_id": int(seed_id),
+                                    "step_idx": int(k),
+                                    "variant_id": int(variant_id),
+                                    "cfg_id": int(cfg_id),
+                                    "cfg_value": float(cfg_val),
+                                    "reward": float(reward_noisy),
+                                }
+                            )
+                            written += 1
+                            if written % max(1, int(args.save_every)) == 0:
+                                f.flush()
+                                os.fsync(f.fileno())
+                                elapsed = time.time() - t0
+                                print(
+                                    f"[per_step] written={written} skipped={skipped} "
+                                    f"done={written + skipped}/{total_target_rows} elapsed={elapsed:.1f}s"
+                                )
+        f.flush()
+        os.fsync(f.fileno())
+    print(
+        f"[per_step] complete: file={out_csv} written={written} skipped={skipped} "
+        f"total={written + skipped} target={total_target_rows}"
+    )
+
+
+def load_per_step_dataset(csv_path: str) -> dict[str, np.ndarray]:
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"per_step_dataset_csv not found: {csv_path}")
+    cols: dict[str, list[float]] = {
+        "prompt_id": [],
+        "reward": [],
+        "seed_id": [],
+        "step_idx": [],
+        "variant_id": [],
+        "cfg_id": [],
+        "cfg_value": [],
+    }
+    with open(csv_path, encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                cols["prompt_id"].append(int(row["prompt_id"]))
+                cols["reward"].append(float(row["reward"]))
+                cols["seed_id"].append(int(row["seed_id"]))
+                cols["step_idx"].append(int(row["step_idx"]))
+                cols["variant_id"].append(int(row["variant_id"]))
+                cols["cfg_id"].append(int(row["cfg_id"]))
+                cols["cfg_value"].append(float(row["cfg_value"]))
+            except (ValueError, TypeError, KeyError):
+                continue
+    arr = {
+        "prompt_id": np.asarray(cols["prompt_id"], dtype=np.int64),
+        "reward": np.asarray(cols["reward"], dtype=np.float32),
+        "seed_id": np.asarray(cols["seed_id"], dtype=np.int64),
+        "step_idx": np.asarray(cols["step_idx"], dtype=np.int64),
+        "variant_id": np.asarray(cols["variant_id"], dtype=np.int64),
+        "cfg_id": np.asarray(cols["cfg_id"], dtype=np.int64),
+        "cfg_value": np.asarray(cols["cfg_value"], dtype=np.float32),
+    }
+    if int(arr["reward"].shape[0]) <= 0:
+        raise RuntimeError("Per-step dataset is empty.")
+    return arr
+
+
+def run_per_step_critics(args: argparse.Namespace) -> None:
+    data = load_per_step_dataset(args.per_step_dataset_csv)
+    cfg_ids = _safe_unique_sorted(data["cfg_id"])
+    nearest_default_cfg_id = _nearest_cfg_id(
+        sorted(float(v) for v in np.unique(data["cfg_value"])), float(args.default_cfg)
+    )
+    default_cfg_id = int(min(cfg_ids, key=lambda cid: abs(int(cid) - int(nearest_default_cfg_id))))
+    base_variant = int(args.per_step_baseline_variant)
+    n_prompts = int(_max_or_zero(data["prompt_id"]) + 1)
+    step_ids = _safe_unique_sorted(data["step_idx"])
+
+    # (name, controls, row-mask): variant_k pins cfg=default, cfg_k pins
+    # variant=baseline, joint_k sweeps both. Each control stays scalar so the
+    # MI/H normalization remains valid (unlike a full per-step action sequence).
+    channels: list[tuple[str, list[str], np.ndarray | None]] = [
+        ("variant", ["variant_id"], data["cfg_id"] == default_cfg_id),
+        ("cfg", ["cfg_id"], data["variant_id"] == base_variant),
+        ("joint", ["variant_id", "cfg_id"], None),
+    ]
+
+    all_rows: list[dict[str, Any]] = []
+    report: dict[str, Any] = {
+        "per_step_dataset_csv": str(Path(args.per_step_dataset_csv).expanduser().resolve()),
+        "n_rows": int(data["reward"].shape[0]),
+        "n_prompts": n_prompts,
+        "default_cfg": float(args.default_cfg),
+        "default_cfg_id_used": int(default_cfg_id),
+        "baseline_variant": int(base_variant),
+        "estimator": str(args.mine_estimator),
+        "steps": [],
+    }
+
+    seed_off = 0
+    for k in step_ids:
+        step_mask = data["step_idx"] == int(k)
+        for cname, controls, chan_mask in channels:
+            seed_off += 1
+            mask = step_mask if chan_mask is None else (step_mask & chan_mask)
+            subset: dict[str, np.ndarray] = {
+                "prompt_id": data["prompt_id"][mask],
+                "reward": data["reward"][mask],
+            }
+            for c in dict.fromkeys(controls):
+                subset[c] = data[c][mask]
+            n_rows = int(subset["reward"].shape[0])
+            if n_rows < 8:
+                print(f"[per_step] skip step={k} channel={cname}: only {n_rows} rows")
+                continue
+
+            ch = _run_channel(subset, controls, n_prompts, args, seed_offset=seed_off)
+            row = {
+                "Step": int(k),
+                "Channel": cname,
+                "Control": ",".join(controls),
+                "MI": ch["MI"],
+                "MI_corrected": ch["MI_corrected"],
+                "MI_median": ch["MI_median"],
+                "normalized_MI": ch["normalized_MI"],
+                "Null_MI": ch["Null_MI"],
+                "AUROC": ch["AUROC"],
+                "Restart_std": ch["Restart_std"],
+            }
+            all_rows.append(row)
+            report["steps"].append({"step": int(k), "channel": cname, "rows_used": ch["rows_used"], **ch})
+            print(
+                f"[per_step] step={int(k):2d} {cname:8s} MI={ch['MI']:.4f} MIc={ch['MI_corrected']:.4f} "
+                f"Null={ch['Null_MI']:.4f} AUROC={ch['AUROC']:.4f} std={ch['Restart_std']:.4f}"
+            )
+
+    table_csv = str(Path(args.per_step_table_csv).expanduser().resolve())
+    os.makedirs(str(Path(table_csv).parent), exist_ok=True)
+    with open(table_csv, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "Step", "Channel", "Control", "MI", "MI_corrected", "MI_median",
+                "normalized_MI", "Null_MI", "AUROC", "Restart_std",
+            ],
+        )
+        writer.writeheader()
+        for row in all_rows:
+            writer.writerow(row)
+
+    report_json = str(Path(args.per_step_report_json).expanduser().resolve())
+    os.makedirs(str(Path(report_json).parent), exist_ok=True)
+    with open(report_json, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+
+    print(f"[per_step] wrote table: {table_csv}")
+    print(f"[per_step] wrote report: {report_json}")
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     if args.mode in {"generate", "full"}:
         generate_dataset(args)
     if args.mode in {"train", "full"}:
         run_mine_critics(args)
+    if args.mode in {"per_step_generate", "per_step"}:
+        generate_dataset_per_step(args)
+    if args.mode in {"per_step_train", "per_step"}:
+        run_per_step_critics(args)
 
 
 if __name__ == "__main__":

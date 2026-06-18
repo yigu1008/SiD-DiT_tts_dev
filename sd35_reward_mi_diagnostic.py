@@ -44,17 +44,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "per_step_generate",
             "per_step_train",
             "per_step",
+            "decompose",
         ],
         default="full",
         help=(
             "generate/train/full: root-version constant-action channels. "
             "per_step_generate/per_step_train/per_step: per-step marginal MI "
-            "(sweep one step's action on a shared root trajectory)."
+            "(sweep one step's action on a shared root trajectory). "
+            "decompose: assumption-free variance decomposition (eta^2 per control "
+            "axis) on the existing dataset CSV; no critic training, cannot diverge."
         ),
     )
 
     # Data generation knobs
-    p.add_argument("--prompt_file", required=True, help="Text file with one original prompt per line.")
+    p.add_argument("--prompt_file", default=None, help="Text file with one original prompt per line (required for generate modes).")
     p.add_argument("--n_prompts", type=int, default=50)
     p.add_argument("--seed_base", type=int, default=42)
     p.add_argument("--n_seeds", type=int, default=16)
@@ -128,17 +131,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--mine_table_csv", default="./mi_diag_sd35_table.csv")
     p.add_argument(
         "--mine_estimator",
-        choices=["smile", "dv"],
+        choices=["smile", "dv", "infonce"],
         default="smile",
-        help="smile: tau-clipped DV (lower variance, default). dv: raw Donsker-Varadhan.",
+        help=(
+            "smile: tau-clipped DV (lower variance). dv: raw Donsker-Varadhan. "
+            "infonce: contrastive lower bound, provably <= log K = H(C|P) with "
+            "within-prompt negatives, so it cannot diverge (theoretically safe)."
+        ),
     )
     p.add_argument("--mine_smile_tau", type=float, default=5.0, help="Clip threshold for SMILE critic outputs.")
+    p.add_argument(
+        "--mine_infonce_max_neg",
+        type=int,
+        default=256,
+        help="Max within-prompt negatives per block for the InfoNCE estimator (caps log K ceiling).",
+    )
+    p.add_argument(
+        "--mine_infonce_blocks",
+        type=int,
+        default=8,
+        help="Prompt-blocks sampled per InfoNCE training step.",
+    )
     p.add_argument(
         "--mine_early_stop_patience",
         type=int,
         default=8,
         help="Stop a restart after this many eval points without EMA val-MI improvement (<=0 disables).",
     )
+
+    # Variance-decomposition (decompose) knobs
+    p.add_argument("--decompose_table_csv", default="./mi_diag_sd35_decompose.csv")
+    p.add_argument("--decompose_report_json", default="./mi_diag_sd35_decompose.json")
 
     # Per-step (per_step_*) marginal-MI knobs
     p.add_argument("--per_step_dataset_csv", default="./mi_perstep_sd35_dataset.csv")
@@ -598,6 +621,112 @@ def _critic_bound(
     return t_pos.mean() - _log_mean_exp(t_neg, estimator, tau)
 
 
+def _prompt_to_rows(prompt_ids: np.ndarray) -> dict[int, np.ndarray]:
+    out: dict[int, list[int]] = {}
+    for i, p in enumerate(prompt_ids.tolist()):
+        out.setdefault(int(p), []).append(i)
+    return {k: np.asarray(v, dtype=np.int64) for k, v in out.items()}
+
+
+def _block_scores(
+    model: MineCritic,
+    reward: torch.Tensor,
+    prompt_id: torch.Tensor,
+    controls: dict[str, torch.Tensor],
+) -> torch.Tensor:
+    """Score every (reward_i, control_j) pair in a same-prompt block of size K.
+    Returns S[i, j] = f(R_i, P, C_j); the positive is the diagonal (i == j)."""
+    k = int(reward.shape[0])
+    reward_rep = reward.repeat_interleave(k)  # i-major
+    prompt_rep = prompt_id.repeat_interleave(k)
+    controls_tile = {name: v.repeat(k) for name, v in controls.items()}  # j-tiled
+    s = model(reward_rep, prompt_rep, controls_tile)
+    return s.view(k, k)
+
+
+def _infonce_from_scores(scores: torch.Tensor) -> torch.Tensor:
+    """InfoNCE lower bound from a K x K same-prompt score matrix (positive on the
+    diagonal). Bounded above by log K, so with within-prompt negatives the
+    estimate can never exceed H(C|P) -- it cannot diverge."""
+    k = int(scores.shape[0])
+    diag = torch.diagonal(scores)
+    lse = torch.logsumexp(scores, dim=1)  # over candidate controls j (incl. positive)
+    return (diag - lse).mean() + math.log(float(k))
+
+
+def _infonce_train_step(
+    model: MineCritic,
+    data_t: dict[str, torch.Tensor],
+    control_names: list[str],
+    prompt_rows: dict[int, np.ndarray],
+    rng: np.random.Generator,
+    n_blocks: int,
+    max_neg: int,
+) -> torch.Tensor:
+    device = data_t["reward"].device
+    keys = [p for p, r in prompt_rows.items() if r.shape[0] >= 2]
+    if not keys:
+        return torch.zeros((), device=device, requires_grad=True)
+    pick = rng.choice(len(keys), size=min(int(n_blocks), len(keys)), replace=False)
+    inces: list[torch.Tensor] = []
+    for ci in pick:
+        rows = prompt_rows[keys[int(ci)]]
+        if rows.shape[0] > max_neg + 1:
+            rows = rng.choice(rows, size=max_neg + 1, replace=False)
+        idx = torch.as_tensor(rows, dtype=torch.long, device=device)
+        reward = data_t["reward"].index_select(0, idx)
+        prompt_id = data_t["prompt_id"].index_select(0, idx)
+        controls = {k: data_t[k].index_select(0, idx) for k in control_names}
+        inces.append(_infonce_from_scores(_block_scores(model, reward, prompt_id, controls)))
+    return -torch.stack(inces).mean()
+
+
+def _estimate_infonce(
+    model: MineCritic,
+    data_t: dict[str, torch.Tensor],
+    control_names: list[str],
+    max_neg: int,
+    seed: int,
+) -> tuple[float, float]:
+    """Full per-prompt InfoNCE, averaged over prompt blocks. AUROC from diagonal
+    (positive) vs off-diagonal (within-prompt negative) scores."""
+    model.eval()
+    device = data_t["reward"].device
+    rng = np.random.default_rng(seed)
+    prompt_rows = _prompt_to_rows(data_t["prompt_id"].detach().cpu().numpy())
+    inces: list[float] = []
+    pos_scores: list[np.ndarray] = []
+    neg_scores: list[np.ndarray] = []
+    with torch.no_grad():
+        for rows in prompt_rows.values():
+            if rows.shape[0] < 2:
+                continue
+            r = rows
+            if r.shape[0] > max_neg + 1:
+                r = rng.choice(r, size=max_neg + 1, replace=False)
+            idx = torch.as_tensor(r, dtype=torch.long, device=device)
+            reward = data_t["reward"].index_select(0, idx)
+            prompt_id = data_t["prompt_id"].index_select(0, idx)
+            controls = {k: data_t[k].index_select(0, idx) for k in control_names}
+            scores = _block_scores(model, reward, prompt_id, controls)
+            inces.append(float(_infonce_from_scores(scores).item()))
+            k = int(scores.shape[0])
+            s_np = scores.detach().cpu().numpy()
+            off = ~np.eye(k, dtype=bool)
+            pos_scores.append(np.diagonal(s_np))
+            neg_scores.append(s_np[off])
+    if not inces:
+        return 0.0, 0.5
+    mi = float(np.mean(inces))
+    s_pos = np.concatenate(pos_scores, axis=0)
+    s_neg = np.concatenate(neg_scores, axis=0)
+    auc = _auroc_from_scores(
+        np.concatenate([np.ones_like(s_pos, dtype=np.int64), np.zeros_like(s_neg, dtype=np.int64)], axis=0),
+        np.concatenate([s_pos, s_neg], axis=0),
+    )
+    return mi, auc
+
+
 def _estimate_mi_and_auroc(
     model: MineCritic,
     data_t: dict[str, torch.Tensor],
@@ -606,6 +735,7 @@ def _estimate_mi_and_auroc(
     seed: int,
     estimator: str = "smile",
     tau: float = 5.0,
+    infonce_max_neg: int = 256,
 ) -> tuple[float, float]:
     """Full-set DV/SMILE estimate: accumulate t_pos over every row and take a
     SINGLE log-mean-exp over ALL negatives. Averaging per-minibatch DV bounds
@@ -615,6 +745,9 @@ def _estimate_mi_and_auroc(
     n = int(data_t["reward"].shape[0])
     if n <= 0:
         return 0.0, 0.5
+
+    if estimator == "infonce":
+        return _estimate_infonce(model, data_t, control_names, max_neg=int(infonce_max_neg), seed=seed)
 
     # One global within-prompt permutation -> conditional-MI negatives p(R|P)p(C|P).
     rng = np.random.default_rng(seed)
@@ -679,12 +812,15 @@ def _train_one_restart(
 
     estimator = str(getattr(args, "mine_estimator", "smile"))
     tau = float(getattr(args, "mine_smile_tau", 5.0))
+    infonce_max_neg = int(getattr(args, "mine_infonce_max_neg", 256))
+    infonce_blocks = int(getattr(args, "mine_infonce_blocks", 8))
     patience_limit = int(getattr(args, "mine_early_stop_patience", 0))
 
     train_t = _to_tensors(train_np, device=device)
     val_t = _to_tensors(val_np, device=device)
     n_train = int(train_t["reward"].shape[0])
     bs = max(1, int(args.mine_batch_size))
+    train_prompt_rows = _prompt_to_rows(train_np["prompt_id"]) if estimator == "infonce" else {}
 
     # EMA-smoothed early stopping. Selecting the single max val-MI checkpoint
     # maximizes over noisy estimates -> upward bias (worst for near-zero
@@ -696,14 +832,19 @@ def _train_one_restart(
 
     for step in range(1, int(args.mine_steps) + 1):
         model.train()
-        idx = rng.integers(0, n_train, size=bs, endpoint=False)
-        idx_t = torch.as_tensor(idx, dtype=torch.long, device=device)
-        reward = train_t["reward"].index_select(0, idx_t)
-        prompt_id = train_t["prompt_id"].index_select(0, idx_t)
-        controls_pos = {k: train_t[k].index_select(0, idx_t) for k in control_names}
-        controls_neg = _permute_controls_in_batch(prompt_id, controls_pos, rng)
-        bound = _critic_bound(model, reward, prompt_id, controls_pos, controls_neg, estimator, tau)
-        loss = -bound
+        if estimator == "infonce":
+            loss = _infonce_train_step(
+                model, train_t, control_names, train_prompt_rows, rng, infonce_blocks, infonce_max_neg
+            )
+        else:
+            idx = rng.integers(0, n_train, size=bs, endpoint=False)
+            idx_t = torch.as_tensor(idx, dtype=torch.long, device=device)
+            reward = train_t["reward"].index_select(0, idx_t)
+            prompt_id = train_t["prompt_id"].index_select(0, idx_t)
+            controls_pos = {k: train_t[k].index_select(0, idx_t) for k in control_names}
+            controls_neg = _permute_controls_in_batch(prompt_id, controls_pos, rng)
+            bound = _critic_bound(model, reward, prompt_id, controls_pos, controls_neg, estimator, tau)
+            loss = -bound
         opt.zero_grad(set_to_none=True)
         loss.backward()
         if float(args.mine_grad_clip) > 0:
@@ -719,6 +860,7 @@ def _train_one_restart(
                 seed=restart_seed + step * 3,
                 estimator=estimator,
                 tau=tau,
+                infonce_max_neg=infonce_max_neg,
             )
             ema_val = float(val_mi) if ema_val is None else 0.7 * ema_val + 0.3 * float(val_mi)
             if ema_val > best_ema + 1e-4:
@@ -734,10 +876,12 @@ def _train_one_restart(
         model.load_state_dict(best_state)
 
     train_mi, _ = _estimate_mi_and_auroc(
-        model, train_t, control_names, batch_size=bs, seed=restart_seed + 20001, estimator=estimator, tau=tau
+        model, train_t, control_names, batch_size=bs, seed=restart_seed + 20001,
+        estimator=estimator, tau=tau, infonce_max_neg=infonce_max_neg,
     )
     val_mi, auroc = _estimate_mi_and_auroc(
-        model, val_t, control_names, batch_size=bs, seed=restart_seed + 30001, estimator=estimator, tau=tau
+        model, val_t, control_names, batch_size=bs, seed=restart_seed + 30001,
+        estimator=estimator, tau=tau, infonce_max_neg=infonce_max_neg,
     )
     return float(train_mi), float(val_mi), float(auroc)
 
@@ -1219,8 +1363,216 @@ def run_per_step_critics(args: argparse.Namespace) -> None:
     print(f"[per_step] wrote report: {report_json}")
 
 
+def _prompt_factorial(arr: dict[str, Any], pid: int) -> np.ndarray | None:
+    """Balanced seed×variant×cfg reward tensor for one prompt.
+
+    Returns a (ns, nv, nc) array, or None if the prompt's grid is not a
+    complete factorial (missing or duplicate cells -> skip the prompt).
+    """
+    mask = arr["prompt_id"] == int(pid)
+    s = arr["seed_id"][mask]
+    v = arr["variant_id"][mask]
+    c = arr["cfg_id"][mask]
+    r = arr["reward"][mask]
+    s_levels = np.unique(s)
+    v_levels = np.unique(v)
+    c_levels = np.unique(c)
+    ns, nv, nc = int(s_levels.size), int(v_levels.size), int(c_levels.size)
+    if int(r.size) != ns * nv * nc:
+        return None
+    s_idx = {int(x): i for i, x in enumerate(s_levels)}
+    v_idx = {int(x): i for i, x in enumerate(v_levels)}
+    c_idx = {int(x): i for i, x in enumerate(c_levels)}
+    grid = np.full((ns, nv, nc), np.nan, dtype=np.float64)
+    for si, vi, ci, ri in zip(s.tolist(), v.tolist(), c.tolist(), r.tolist()):
+        grid[s_idx[int(si)], v_idx[int(vi)], c_idx[int(ci)]] = float(ri)
+    if np.isnan(grid).any():
+        return None
+    return grid
+
+
+def _decompose_one(grid: np.ndarray) -> dict[str, float]:
+    """Balanced two-way (variant×cfg) ANOVA with seeds as replicates.
+
+    The reward at a fixed (variant, cfg) cell varies only with the seed, so the
+    within-cell sum of squares is the *seed-driven* (per-instance noise) variance
+    that cross-prompt conditional MI cannot see. The between-cell variance splits
+    into cfg, variant, and variant×cfg systematic effects. eta^2 are SS fractions
+    of the per-prompt total (sum to 1 up to float clamping of the interaction).
+    """
+    ns, nv, nc = grid.shape
+    n_cells = int(grid.size)
+    grand = float(grid.mean())
+    ss_total = float(((grid - grand) ** 2).sum())
+
+    m_vc = grid.mean(axis=0)                       # (nv, nc) cell means over seeds
+    ss_seed = float(((grid - m_vc[None, :, :]) ** 2).sum())  # within-cell, seed-driven
+    ss_systematic = ss_total - ss_seed
+    m_v = m_vc.mean(axis=1)                         # variant marginal
+    m_c = m_vc.mean(axis=0)                         # cfg marginal
+    ss_variant = float(ns * nc * ((m_v - grand) ** 2).sum())
+    ss_cfg = float(ns * nv * ((m_c - grand) ** 2).sum())
+    ss_inter = max(0.0, float(ss_systematic - ss_variant - ss_cfg))
+
+    out = {
+        "ss_total": ss_total,
+        "ss_seed": ss_seed,
+        "ss_variant": ss_variant,
+        "ss_cfg": ss_cfg,
+        "ss_variant_x_cfg": ss_inter,
+        "sd_total": math.sqrt(ss_total / max(1, n_cells)),
+        "sd_seed": math.sqrt(ss_seed / max(1, n_cells)),
+        "dims": [int(ns), int(nv), int(nc)],
+    }
+    denom = ss_total if ss_total > 0 else 1.0
+    out["eta2_seed"] = ss_seed / denom if ss_total > 0 else 0.0
+    out["eta2_variant"] = ss_variant / denom if ss_total > 0 else 0.0
+    out["eta2_cfg"] = ss_cfg / denom if ss_total > 0 else 0.0
+    out["eta2_variant_x_cfg"] = ss_inter / denom if ss_total > 0 else 0.0
+    return out
+
+
+def run_decompose(args: argparse.Namespace) -> None:
+    """Prompt-stratified variance decomposition (eta^2 per control axis).
+
+    Assumption-free alternative to the MINE/InfoNCE critics: each prompt is its
+    own stratum (prompt treated as a random effect; per-prompt eta^2 is
+    scale-invariant, so within-prompt z-scoring is implicit and unnecessary).
+    Reports mean ± SEM of eta^2 across prompts. Cannot diverge.
+    """
+    data = load_dataset(args.dataset_csv)
+    pids = _safe_unique_sorted(data["prompt_id"])
+
+    axes = ["seed", "cfg", "variant", "variant_x_cfg"]
+    label = {
+        "seed": "Seed (within-cell)",
+        "cfg": "CFG",
+        "variant": "Prompt variant",
+        "variant_x_cfg": "Variant×CFG",
+    }
+    per_prompt: dict[str, list[float]] = {a: [] for a in axes}
+    sd_total: list[float] = []
+    sd_seed: list[float] = []
+    used = 0
+    skipped: list[int] = []
+    dims_seen: set[tuple[int, int, int]] = set()
+
+    # First pass: find the modal (most common) complete-factorial grid shape and
+    # decompose only prompts matching it, so the design is balanced across prompts
+    # and degenerate single-cell prompts don't inject structural-zero eta^2.
+    grids: dict[int, np.ndarray] = {}
+    shape_counts: dict[tuple[int, int, int], int] = {}
+    for pid in pids:
+        grid = _prompt_factorial(data, int(pid))
+        if grid is None:
+            skipped.append(int(pid))
+            continue
+        grids[int(pid)] = grid
+        shape_counts[grid.shape] = shape_counts.get(grid.shape, 0) + 1
+    if not shape_counts:
+        modal_shape = None
+    else:
+        modal_shape = max(shape_counts, key=lambda s: (shape_counts[s], s[0] * s[1] * s[2]))
+
+    for pid in pids:
+        grid = grids.get(int(pid))
+        if grid is None or grid.shape != modal_shape:
+            if int(pid) not in skipped:
+                skipped.append(int(pid))
+            continue
+        d = _decompose_one(grid)
+        used += 1
+        dims_seen.add(tuple(d["dims"]))
+        per_prompt["seed"].append(d["eta2_seed"])
+        per_prompt["cfg"].append(d["eta2_cfg"])
+        per_prompt["variant"].append(d["eta2_variant"])
+        per_prompt["variant_x_cfg"].append(d["eta2_variant_x_cfg"])
+        sd_total.append(d["sd_total"])
+        sd_seed.append(d["sd_seed"])
+
+    if used == 0:
+        raise RuntimeError(
+            "No complete-factorial prompts found for decomposition "
+            f"(checked {len(pids)} prompts). The dataset may be partial/unbalanced."
+        )
+
+    def _mean_sem(xs: list[float]) -> tuple[float, float, float]:
+        a = np.asarray(xs, dtype=np.float64)
+        m = float(a.mean())
+        sem = float(a.std(ddof=1) / math.sqrt(a.size)) if a.size > 1 else 0.0
+        return m, sem, float(np.median(a))
+
+    rows: list[dict[str, Any]] = []
+    report_axes: dict[str, Any] = {}
+    for a in axes:
+        m, sem, med = _mean_sem(per_prompt[a])
+        rows.append({
+            "Axis": label[a],
+            "eta2_mean": round(m, 6),
+            "eta2_sem": round(sem, 6),
+            "eta2_median": round(med, 6),
+        })
+        report_axes[a] = {"label": label[a], "eta2_mean": m, "eta2_sem": sem, "eta2_median": med}
+
+    sdt_m, sdt_sem, _ = _mean_sem(sd_total)
+    sds_m, sds_sem, _ = _mean_sem(sd_seed)
+
+    table_csv = str(Path(args.decompose_table_csv).expanduser().resolve())
+    os.makedirs(str(Path(table_csv).parent), exist_ok=True)
+    with open(table_csv, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["Axis", "eta2_mean", "eta2_sem", "eta2_median"])
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+    report = {
+        "kind": "variance_decomposition",
+        "note": (
+            "Prompt-stratified balanced ANOVA (variant×cfg with seeds as "
+            "replicates). eta^2 are per-prompt SS fractions averaged across "
+            "prompts; 'Seed (within-cell)' is the per-instance noise effect that "
+            "cross-prompt conditional MI cannot detect."
+        ),
+        "dataset_csv": str(Path(args.dataset_csv).expanduser().resolve()),
+        "n_prompts_total": int(len(pids)),
+        "n_prompts_used": int(used),
+        "n_prompts_skipped": int(len(skipped)),
+        "skipped_prompt_ids": [int(x) for x in skipped[:50]],
+        "modal_grid_dims": list(modal_shape) if modal_shape is not None else None,
+        "grid_dims_seen": sorted([list(d) for d in dims_seen]),
+        "axes": report_axes,
+        "sd_total_reward_mean": sdt_m,
+        "sd_total_reward_sem": sdt_sem,
+        "sd_seed_reward_mean": sds_m,
+        "sd_seed_reward_sem": sds_sem,
+    }
+    report_json = str(Path(args.decompose_report_json).expanduser().resolve())
+    os.makedirs(str(Path(report_json).parent), exist_ok=True)
+    with open(report_json, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+
+    print(
+        f"[decompose] prompts used={used}/{len(pids)} skipped={len(skipped)} "
+        f"grid_dims(s,v,c)={sorted([list(d) for d in dims_seen])}"
+    )
+    for a in axes:
+        info = report_axes[a]
+        print(
+            f"[decompose] {info['label']:20s} eta^2 = {info['eta2_mean']:.4f} "
+            f"± {info['eta2_sem']:.4f}  (median {info['eta2_median']:.4f})"
+        )
+    print(
+        f"[decompose] reward SD: total={sdt_m:.4f}±{sdt_sem:.4f}  "
+        f"seed-only(within-cell)={sds_m:.4f}±{sds_sem:.4f}"
+    )
+    print(f"[decompose] wrote table: {table_csv}")
+    print(f"[decompose] wrote report: {report_json}")
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    if args.mode in {"generate", "full", "per_step_generate", "per_step"} and not args.prompt_file:
+        raise SystemExit(f"--prompt_file is required for mode '{args.mode}'.")
     if args.mode in {"generate", "full"}:
         generate_dataset(args)
     if args.mode in {"train", "full"}:
@@ -1229,6 +1581,8 @@ def main(argv: list[str] | None = None) -> None:
         generate_dataset_per_step(args)
     if args.mode in {"per_step_train", "per_step"}:
         run_per_step_critics(args)
+    if args.mode == "decompose":
+        run_decompose(args)
 
 
 if __name__ == "__main__":

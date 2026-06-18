@@ -132,11 +132,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--mine_estimator",
         choices=["smile", "dv", "infonce"],
-        default="smile",
+        default="infonce",
         help=(
-            "smile: tau-clipped DV (lower variance). dv: raw Donsker-Varadhan. "
-            "infonce: contrastive lower bound, provably <= log K = H(C|P) with "
-            "within-prompt negatives, so it cannot diverge (theoretically safe)."
+            "infonce (default): contrastive lower bound, provably <= log K = "
+            "H(C|P) with within-prompt negatives, so it cannot diverge "
+            "(theoretically safe). smile: tau-clipped DV (lower variance, but can "
+            "still blow up on high-cardinality joint controls). dv: raw "
+            "Donsker-Varadhan (unbounded log-partition; diverges easily)."
         ),
     )
     p.add_argument("--mine_smile_tau", type=float, default=5.0, help="Clip threshold for SMILE critic outputs.")
@@ -941,23 +943,41 @@ def _run_channel(
         null_val_mis.append(float(nva))
 
     h_control = _entropy_nats(_joint_code([subset[c] for c in controls]))
-    mi_mean = float(np.mean(val_mis))
-    mi_median = float(np.median(val_mis))
+    mi_mean_raw = float(np.mean(val_mis))
+    mi_median_raw = float(np.median(val_mis))
     null_mean = float(np.mean(null_val_mis))
+    # Hard information-theoretic ceiling: I(C;R|P) <= H(C|P) <= H(C). Any
+    # estimate above H(C) is an estimator divergence (DV/SMILE log-partition
+    # blow-up on near-unique joint codes, e.g. seed x variant x cfg), not signal.
+    # Flag it and clamp every reported quantity inside the bound; keep the raw
+    # mean for audit so divergence is visible rather than silently swallowed.
+    diverged = bool(h_control > 0.0 and mi_mean_raw > h_control * 1.05)
+    if h_control > 0.0:
+        mi_mean = min(mi_mean_raw, h_control)
+        mi_median = min(mi_median_raw, h_control)
+    else:
+        mi_mean = mi_mean_raw
+        mi_median = mi_median_raw
     # Debias by the within-prompt-shuffled null: it shares the estimator's
     # finite-sample bias floor, so MI - Null is the real conditional signal.
     mi_corrected = float(max(0.0, mi_mean - null_mean))
-    mi_norm = float(mi_corrected / h_control) if h_control > 0 else 0.0
+    if h_control > 0.0:
+        mi_corrected = min(mi_corrected, h_control)
+        mi_norm = float(min(1.0, mi_corrected / h_control))
+    else:
+        mi_norm = 0.0
     return {
         "controls": list(controls),
         "rows_used": int(n_rows_subset),
         "MI": mi_mean,
+        "MI_raw": mi_mean_raw,
         "MI_median": mi_median,
         "MI_corrected": mi_corrected,
         "normalized_MI": mi_norm,
         "Null_MI": null_mean,
         "AUROC": float(np.mean(aucs)),
         "Restart_std": float(np.std(val_mis)),
+        "diverged": diverged,
         "train_mi_mean": float(np.mean(train_mis)),
         "h_control_nats": float(h_control),
     }
@@ -1030,12 +1050,14 @@ def run_mine_critics(args: argparse.Namespace) -> None:
             "Channel": spec.channel,
             "Control": ",".join(spec.controls),
             "MI": ch["MI"],
+            "MI_raw": ch["MI_raw"],
             "MI_corrected": ch["MI_corrected"],
             "MI_median": ch["MI_median"],
             "normalized_MI": ch["normalized_MI"],
             "Null_MI": ch["Null_MI"],
             "AUROC": ch["AUROC"],
             "Restart_std": ch["Restart_std"],
+            "diverged": int(ch["diverged"]),
         }
         all_rows.append(row)
 
@@ -1046,6 +1068,7 @@ def run_mine_critics(args: argparse.Namespace) -> None:
                 "rows_used": ch["rows_used"],
                 "train_mi_mean": ch["train_mi_mean"],
                 "val_mi_mean": ch["MI"],
+                "val_mi_mean_raw": ch["MI_raw"],
                 "val_mi_median": ch["MI_median"],
                 "val_mi_std": ch["Restart_std"],
                 "null_val_mi_mean": ch["Null_MI"],
@@ -1053,14 +1076,20 @@ def run_mine_critics(args: argparse.Namespace) -> None:
                 "auroc_mean": ch["AUROC"],
                 "h_control_nats": ch["h_control_nats"],
                 "mi_over_h_control": ch["normalized_MI"],
+                "diverged": bool(ch["diverged"]),
                 "restarts": int(args.mine_restarts),
             }
         )
 
+        warn = (
+            f"  [WARN diverged: raw MI={ch['MI_raw']:.1f} exceeded H(C)={ch['h_control_nats']:.3f} "
+            f"ceiling -> clamped; rerun with --mine_estimator infonce]"
+            if ch["diverged"] else ""
+        )
         print(
             f"[train] {spec.channel:18s} MI={row['MI']:.4f} MIc={row['MI_corrected']:.4f} "
             f"MI/H={row['normalized_MI']:.4f} Null={row['Null_MI']:.4f} "
-            f"AUROC={row['AUROC']:.4f} std={row['Restart_std']:.4f}"
+            f"AUROC={row['AUROC']:.4f} std={row['Restart_std']:.4f}{warn}"
         )
 
     table_csv = str(Path(args.mine_table_csv).expanduser().resolve())
@@ -1069,8 +1098,8 @@ def run_mine_critics(args: argparse.Namespace) -> None:
         writer = csv.DictWriter(
             f,
             fieldnames=[
-                "Channel", "Control", "MI", "MI_corrected", "MI_median",
-                "normalized_MI", "Null_MI", "AUROC", "Restart_std",
+                "Channel", "Control", "MI", "MI_raw", "MI_corrected", "MI_median",
+                "normalized_MI", "Null_MI", "AUROC", "Restart_std", "diverged",
             ],
         )
         writer.writeheader()

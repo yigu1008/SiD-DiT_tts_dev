@@ -189,7 +189,7 @@ search:
         - "sid"
     - name: n_prompts
       values:
-        - 100
+        - 200
     - name: seed_list
       values:
         - "42 43 44 45 46" # 5 replicates -> across-run error bars

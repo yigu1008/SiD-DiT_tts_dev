@@ -198,7 +198,7 @@ search:
         - "imagereward"
     - name: methods
       values:
-        - "fksteering_actdiff_cfg fksteering_actdiff_full"
+        - "fksteering fksteering_actdiff_cfg fksteering_actdiff_full"
     # BON_N defaults to matched-NFE (76 for 4-step, 136 for sd35_base).
     # bon_actdiff_* uses the same N but spreads across the action bank.
     - name: neg_bank

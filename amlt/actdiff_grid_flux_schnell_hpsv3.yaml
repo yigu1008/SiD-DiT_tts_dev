@@ -123,6 +123,14 @@ search:
       - if [ "$$HEALTH_OK" != "1" ]; then echo "Reward server failed to become healthy"; tail -n 400 "$$REWARD_SERVER_LOG"; exit 1; fi
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      # Install the eval-only reward backends (pickscore is already covered by
+      # transformers; hpsv2 + open_clip are not) into the ptca env -- the env the
+      # offline multi-reward eval runs in. Without this, eval hits "No module
+      # named hpsv2" after full generation. Verify the import loudly here while
+      # the network is still up; warm the backbone/vocab into the cache. Non-fatal.
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "hpsv2" "open_clip_torch" || echo "[aio] ERROR: hpsv2/open_clip_torch pip install returned nonzero (see pip output above); eval will degrade to 3-way"
+      - '/opt/conda/envs/ptca/bin/python -c "import hpsv2" && echo "[aio] hpsv2 import OK (4-way eval enabled)" || echo "[aio] ERROR hpsv2 import FAILED in ptca env; eval will degrade to 3-way (IR/hpsv3/pickscore)"'
+      - 'CUDA_VISIBLE_DEVICES="" REWARD_BACKENDS="pickscore hpsv2" PRELOAD_WARM=1 HPS_ROOT="$$HPS_ROOT" HF_HOME="$$HF_HOME" /opt/conda/envs/ptca/bin/python preload_reward_models.py || echo "[aio] WARN eval reward warm-up failed; pickscore/hpsv2 may be skipped in eval"'
       - export SAMPLING_GPUS=$$((${GPUS} - 1))
       - export CUDA_VISIBLE_DEVICES_SAMPLE=$$(seq -s, 1 $$SAMPLING_GPUS)
       - export CUDA_VISIBLE_DEVICES=$$CUDA_VISIBLE_DEVICES_SAMPLE
@@ -130,7 +138,7 @@ search:
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
       # ?? Stage 1: composite_all_backends ----
-      - 'if [ "{run_composite}" = "1" ]; then echo "[aio] Stage 1: composite_all_backends"; export RUN_ROOT=$$RUN_ROOT_BASE/composite; mkdir -p "$$RUN_ROOT"; BACKENDS="{composite_backends}" METHODS="{composite_methods}" N_PROMPTS={composite_n_prompts} SEEDS="{composite_seeds}" N_SIMS={composite_n_sims} SEARCH_REWARD="hpsv3" REWARD_BACKEND="hpsv3" REWARD_TYPE="hpsv3" REWARD_BACKENDS="hpsv3" PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash hpsv2_composite_all_backends.sh || ( echo "[aio] composite FAILED"; if [ "{fail_fast}" = "1" ]; then exit 1; fi ); fi'
+      - 'if [ "{run_composite}" = "1" ]; then echo "[aio] Stage 1: composite_all_backends"; export RUN_ROOT=$$RUN_ROOT_BASE/composite; mkdir -p "$$RUN_ROOT"; BACKENDS="{composite_backends}" METHODS="{composite_methods}" N_PROMPTS={composite_n_prompts} SEEDS="{composite_seeds}" N_SIMS={composite_n_sims} SEARCH_REWARD="hpsv3" REWARD_BACKEND="hpsv3" REWARD_TYPE="hpsv3" REWARD_BACKENDS="hpsv3" EVAL_BACKENDS="imagereward hpsv3 pickscore hpsv2" EVAL_ALLOW_MISSING_BACKENDS=1 PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash hpsv2_composite_all_backends.sh || ( echo "[aio] composite FAILED"; if [ "{fail_fast}" = "1" ]; then exit 1; fi ); fi'
       # ?? Stage 2: smartprompt ablation ----
       - 'if [ "{run_smartprompt}" = "1" ]; then echo "[aio] Stage 2: smartprompt ablation"; export RUN_ROOT=$$RUN_ROOT_BASE/smartprompt; mkdir -p "$$RUN_ROOT"; BACKEND={smartprompt_backend} N_PROMPTS={smartprompt_n_prompts} SEED={smartprompt_seed} SEARCH_REWARD={smartprompt_search_reward} CELLS="{smartprompt_cells}" PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash run_mcts_smartprompt_ablation.sh || ( echo "[aio] smartprompt FAILED"; exit 1 ); fi'
 

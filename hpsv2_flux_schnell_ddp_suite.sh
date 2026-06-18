@@ -44,7 +44,11 @@ REWARD_PROMPT_MODE="${REWARD_PROMPT_MODE:-standard}"
 EVAL_BEST_IMAGES="${EVAL_BEST_IMAGES:-1}"
 EVAL_BACKENDS="${EVAL_BACKENDS:-imagereward hpsv2 pickscore}"
 EVAL_REWARD_DEVICE="${EVAL_REWARD_DEVICE:-cpu}"
-EVAL_ALLOW_MISSING_BACKENDS="${EVAL_ALLOW_MISSING_BACKENDS:-0}"
+# Default ON: the multi-reward eval scores with whatever backends are available.
+# A missing eval-only backend (e.g. hpsv2 absent in the eval env) must degrade
+# the eval, never crash the whole backend after full generation. Set to 0 to
+# require every requested backend.
+EVAL_ALLOW_MISSING_BACKENDS="${EVAL_ALLOW_MISSING_BACKENDS:-1}"
 
 # Keep ImageReward inference independent from cluster wandb/protobuf drift.
 SID_FORCE_WANDB_STUB="${SID_FORCE_WANDB_STUB:-1}"

@@ -429,6 +429,12 @@ def main() -> None:
         f"found={aggregate['num_images_found']} scored={aggregate['num_images_scored']} "
         f"missing={aggregate['num_missing_images']}"
     )
+    if init_errors:
+        # A skipped backend (allow_missing_backends) would otherwise only show as
+        # count=0/mean=n/a below; echo the init error so a degraded (e.g. 3-way)
+        # eval is unmistakable in the log, not silently inferred from a zero count.
+        for backend, err in init_errors.items():
+            print(f"[eval] WARN backend SKIPPED: {backend} unavailable -> {err}")
     for backend in args.backends:
         stats = aggregate["backend_stats"].get(backend, {})
         mean = stats.get("mean")

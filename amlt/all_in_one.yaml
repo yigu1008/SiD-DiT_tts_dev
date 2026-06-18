@@ -127,7 +127,12 @@ search:
       # open_clip ViT-H-14 backbone + BPE vocab and pickscore's processor land
       # in the cache. CPU-only (CUDA_VISIBLE_DEVICES="") so it never contends
       # with the reward server already holding GPU 0. Non-fatal.
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "hpsv2" "open_clip_torch" || true
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "hpsv2" "open_clip_torch" || echo "[aio] ERROR: hpsv2/open_clip_torch pip install returned nonzero (see pip output above); eval will degrade to 3-way"
+      # Verify hpsv2 actually imports in the ptca env -- this is the env the
+      # offline multi-reward eval runs in. Previously a failed install was
+      # swallowed by "|| true" and only surfaced as "No module named hpsv2" at
+      # eval time, after full generation. Surface it loudly here (non-fatal).
+      - '/opt/conda/envs/ptca/bin/python -c "import hpsv2" && echo "[aio] hpsv2 import OK (4-way eval enabled)" || echo "[aio] ERROR hpsv2 import FAILED in ptca env; eval will degrade to 3-way (IR/hpsv3/pickscore)"'
       - 'CUDA_VISIBLE_DEVICES="" REWARD_BACKENDS="pickscore hpsv2" PRELOAD_WARM=1 HPS_ROOT="$$HPS_ROOT" HF_HOME="$$HF_HOME" /opt/conda/envs/ptca/bin/python preload_reward_models.py || echo "[aio] WARN eval reward warm-up failed; pickscore/hpsv2 may be skipped in eval"'
       - export SAMPLING_GPUS=$$((${GPUS} - 1))
       - export CUDA_VISIBLE_DEVICES_SAMPLE=$$(seq -s, 1 $$SAMPLING_GPUS)

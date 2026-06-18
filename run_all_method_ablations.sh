@@ -190,10 +190,12 @@ for method in ${METHODS}; do
     agg=$(find "${RUN_ROOT}" -name 'aggregate_ddp.json' -path "*/${method}/*" 2>/dev/null | head -1)
     ir_eval=$(find "${RUN_ROOT}" -name 'best_images_multi_reward_aggregate.json' -path "*/${method}/*" 2>/dev/null | head -1)
     ms="" eir="" eh=""
-    [[ -f "${agg}" ]] && ms=$("${PYTHON_BIN}" -c "import json; print(json.load(open('${agg}')).get('mean_search', ''))")
+    # aggregate_ddp.json stores "mean_search_score"; eval json nests per-backend
+    # means under "backend_stats". Keep fallbacks for older flat-keyed runs.
+    [[ -f "${agg}" ]] && ms=$("${PYTHON_BIN}" -c "import json; d=json.load(open('${agg}')); print(d.get('mean_search_score', d.get('mean_search', '')))")
     [[ -f "${ir_eval}" ]] && {
-        eir=$("${PYTHON_BIN}" -c "import json; d=json.load(open('${ir_eval}')); print(d.get('imagereward', {}).get('mean', ''))")
-        eh=$("${PYTHON_BIN}" -c "import json; d=json.load(open('${ir_eval}')); print(d.get('hpsv3', {}).get('mean', ''))")
+        eir=$("${PYTHON_BIN}" -c "import json; d=json.load(open('${ir_eval}')); s=d.get('backend_stats', d); print(s.get('imagereward', {}).get('mean', ''))")
+        eh=$("${PYTHON_BIN}" -c "import json; d=json.load(open('${ir_eval}')); s=d.get('backend_stats', d); print(s.get('hpsv3', {}).get('mean', ''))")
     }
     printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
         "${method}" "${cfg_dyn}" "${prm_dyn}" "${neg_show}" "${sig_show}" \

@@ -268,9 +268,10 @@ search:
       values: [ 1.0 ]
     - name: steps
       values: [ 4 ]
-    # No prompt-variant axis: pure budget scaling over seeds + CFG-MCTS only.
+    # Prompt search ON: bon_mcts branches over a 3-way Qwen rewrite bank in
+    # addition to the seed + CFG-MCTS axes (use_qwen=1, precompute_rewrites=1).
     - name: n_variants
-      values: [ 1 ]
+      values: [ 3 ]
     - name: ucb_c
       values: [ 1.41 ]
     - name: smc_k
@@ -346,9 +347,9 @@ search:
     - name: sd35_backend
       values: [ "sid" ]
     - name: use_qwen
-      values: [ 0 ]
+      values: [ 1 ]
     - name: precompute_rewrites
-      values: [ 0 ]
+      values: [ 1 ]
     - name: rewrites_overwrite
       values: [ 0 ]
     - name: qwen_precompute_device

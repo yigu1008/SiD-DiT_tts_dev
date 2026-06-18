@@ -81,7 +81,10 @@ def main() -> None:
             sj = _find_search_json(sd, method)
             if sj and os.path.isfile(sj):
                 try:
-                    ms = json.load(open(sj)).get("mean_search")
+                    sd_json = json.load(open(sj))
+                    # aggregate_ddp.json stores the key as "mean_search_score";
+                    # fall back to "mean_search" for any older runs.
+                    ms = sd_json.get("mean_search_score", sd_json.get("mean_search"))
                     if ms is not None:
                         search_vals.append(float(ms))
                 except (ValueError, OSError, KeyError):
@@ -95,8 +98,11 @@ def main() -> None:
             except (ValueError, OSError):
                 print(f"[errorbars]   WARN unreadable eval json {ej}")
                 continue
+            # best_images_multi_reward_aggregate.json nests per-backend means
+            # under "backend_stats"; older flat-keyed runs fall back to top level.
+            stats = d.get("backend_stats", d)
             for b in backends:
-                v = d.get(b, {}).get("mean")
+                v = stats.get(b, {}).get("mean")
                 if v is not None:
                     backend_vals[b].append(float(v))
 

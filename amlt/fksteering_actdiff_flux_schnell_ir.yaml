@@ -129,10 +129,14 @@ search:
       - export CUDA_VISIBLE_DEVICES_SAMPLE=$$(seq -s, 1 $$SAMPLING_GPUS)
       - export CUDA_VISIBLE_DEVICES=$$CUDA_VISIBLE_DEVICES_SAMPLE
       - export NUM_GPUS=$$SAMPLING_GPUS
+      # Warm eval-only rewards (pickscore + hpsv2) into HF_HOME in the ptca env
+      # BEFORE going offline, so the 4-way final eval can load them. Search
+      # reward stays ImageReward on the server.
+      - 'CUDA_VISIBLE_DEVICES="" REWARD_BACKENDS="pickscore hpsv2" PRELOAD_WARM=1 HPS_ROOT="$$HPS_ROOT" HF_HOME="$$HF_HOME" /opt/conda/envs/ptca/bin/python preload_reward_models.py || echo "[aio] WARN eval reward warm-up failed; pickscore/hpsv2 may be skipped in eval"'
       - export HF_HUB_OFFLINE=1
       - export TRANSFORMERS_OFFLINE=1
       # ?? Stage 1: composite_all_backends ----
-      - 'if [ "{run_composite}" = "1" ]; then echo "[aio] Stage 1: composite_all_backends"; export RUN_ROOT=$$RUN_ROOT_BASE/composite; mkdir -p "$$RUN_ROOT"; BACKENDS="{composite_backends}" METHODS="{composite_methods}" N_PROMPTS={composite_n_prompts} SEEDS="{composite_seeds}" N_SIMS={composite_n_sims} SEARCH_REWARD="imagereward" REWARD_BACKEND="imagereward" REWARD_TYPE="imagereward" REWARD_BACKENDS="imagereward" PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash hpsv2_composite_all_backends.sh || ( echo "[aio] composite FAILED"; if [ "{fail_fast}" = "1" ]; then exit 1; fi ); fi'
+      - 'if [ "{run_composite}" = "1" ]; then echo "[aio] Stage 1: composite_all_backends"; export RUN_ROOT=$$RUN_ROOT_BASE/composite; mkdir -p "$$RUN_ROOT"; BACKENDS="{composite_backends}" METHODS="{composite_methods}" N_PROMPTS={composite_n_prompts} SEEDS="{composite_seeds}" N_SIMS={composite_n_sims} SEARCH_REWARD="imagereward" REWARD_BACKEND="imagereward" REWARD_TYPE="imagereward" REWARD_BACKENDS="imagereward" EVAL_BACKENDS="imagereward hpsv3 pickscore hpsv2" EVAL_ALLOW_MISSING_BACKENDS=1 PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash hpsv2_composite_all_backends.sh || ( echo "[aio] composite FAILED"; if [ "{fail_fast}" = "1" ]; then exit 1; fi ); fi'
       # ?? Stage 2: smartprompt ablation ----
       - 'if [ "{run_smartprompt}" = "1" ]; then echo "[aio] Stage 2: smartprompt ablation"; export RUN_ROOT=$$RUN_ROOT_BASE/smartprompt; mkdir -p "$$RUN_ROOT"; BACKEND={smartprompt_backend} N_PROMPTS={smartprompt_n_prompts} SEED={smartprompt_seed} SEARCH_REWARD={smartprompt_search_reward} CELLS="{smartprompt_cells}" PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash run_mcts_smartprompt_ablation.sh || ( echo "[aio] smartprompt FAILED"; exit 1 ); fi'
 

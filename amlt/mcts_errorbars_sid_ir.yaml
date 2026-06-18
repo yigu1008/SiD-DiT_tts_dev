@@ -109,8 +109,11 @@ search:
       - $$REWARD_PY -m pip install --no-cache-dir --no-deps "datasets" "wandb" || true
       - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; fi'
       - $$REWARD_PY -c "import ImageReward; print('[verify] ImageReward', ImageReward.__file__)"
-      # ?? Reward server (ImageReward only -- light search reward) ----
-      - export REWARD_BACKENDS_SERVER='imagereward'
+      # ?? Reward server (ImageReward = search reward; HPSv3 = eval-only) ----
+      # Search optimizes ImageReward (see search_reward=imagereward); HPSv3 is
+      # served too so the final eval / error-bar stage can score it (the ptca
+      # sampling env cannot import hpsv3 locally).
+      - export REWARD_BACKENDS_SERVER='imagereward hpsv3'
       - export STAGE_REWARD_WEIGHTS_LOCAL=1
       - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
       - REWARD_BACKENDS="$$REWARD_BACKENDS_SERVER" $$REWARD_PY preload_reward_models.py
@@ -191,9 +194,11 @@ search:
       values:
         - "42 43 44 45 46" # 5 replicates -> across-run error bars
     - name: search_reward
-      # Override with -p search_reward=composite_all4 for the 4-reward variant.
+      # ImageReward-only search (matches the "-ir" run name). HPSv3 is reported
+      # at eval via the reward server. Override with -p search_reward=... if you
+      # want the composite to drive MCTS instead.
       values:
-        - "composite_hpsv3_ir"
+        - "imagereward"
     - name: methods
       values:
         - "baseline mcts"

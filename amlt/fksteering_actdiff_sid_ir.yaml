@@ -94,7 +94,7 @@ search:
       - mkdir -p /mnt/data/v-yigu/model_cache/hf_cache /mnt/data/v-yigu/model_cache/ImageReward /mnt/data/v-yigu/model_cache/hpsv2
       - mkdir -p /home/aiscuser/.cache
       - ln -sfn /mnt/data/v-yigu/model_cache/ImageReward /home/aiscuser/.cache/ImageReward || true
-      - export ALL_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large domiso/SenseFlow'
+      - export ALL_REPOS='YGu1998/SiD-DiT-SD3.5-large stabilityai/stable-diffusion-3.5-large domiso/SenseFlow yuvalkirstain/PickScore_v1'
       - for repo in $$ALL_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('cache OK:', sys.argv[1])" "$$repo" || ( echo "FATAL prefetch failed for $$repo"; exit 1 ); done
       - for repo in $$ALL_REPOS; do dir="$$HF_HOME/hub/models--$$(echo $$repo | sed 's|/|--|g')"; if ! ls $$dir/snapshots/*/* >/dev/null 2>&1; then echo "FATAL cache verify failed for $$repo (looked in $$dir)"; exit 1; fi; echo "verify_OK $$repo"; done
       # ?? Reward env + ImageReward fix-up ----
@@ -109,8 +109,11 @@ search:
       - $$REWARD_PY -m pip install --no-cache-dir --no-deps "datasets" "wandb" || true
       - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; fi'
       - $$REWARD_PY -c "import ImageReward; print('[verify] ImageReward', ImageReward.__file__)"
-      # ?? Reward server (ImageReward only -- light search reward) ----
-      - export REWARD_BACKENDS_SERVER='imagereward'
+      # ?? Reward server (ImageReward = search reward; HPSv3 = eval-only) ----
+      # Search optimizes ImageReward (see search_reward=imagereward); HPSv3 is
+      # served too so the final eval can score it (the ptca sampling env cannot
+      # import hpsv3 locally).
+      - export REWARD_BACKENDS_SERVER='imagereward hpsv3'
       - export STAGE_REWARD_WEIGHTS_LOCAL=1
       - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
       - REWARD_BACKENDS="$$REWARD_BACKENDS_SERVER" $$REWARD_PY preload_reward_models.py
@@ -148,6 +151,11 @@ search:
       - export N_PROMPTS={n_prompts}
       - export SEED={seed}
       - export SEARCH_REWARD={search_reward}
+      # Final eval rewards: add PickScore alongside IR/hpsv3 (search reward stays
+      # ImageReward-only on the server). PickScore_v1 prefetched above so the
+      # offline eval (ptca python, shared HF_HOME) can load it.
+      - export EVAL_BACKENDS="imagereward hpsv3 pickscore"
+      - export PICKSCORE_MODEL=yuvalkirstain/PickScore_v1
       - export METHODS="{methods}"
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
       # Compute-matched BoN: NFE = (N_SEEDS + N_SIMS) x STEPS
@@ -183,9 +191,11 @@ search:
       values:
         - 42
     - name: search_reward
-      # Override with -p search_reward=composite_all4 for the 4-reward variant.
+      # ImageReward-only search (matches the "-ir" run name). HPSv3 is reported
+      # at eval via the reward server. Override with -p search_reward=... if you
+      # want the composite to drive MCTS instead.
       values:
-        - "composite_hpsv3_ir"
+        - "imagereward"
     - name: methods
       values:
         - "fksteering_actdiff_cfg fksteering_actdiff_full"

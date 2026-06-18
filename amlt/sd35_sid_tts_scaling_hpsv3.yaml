@@ -5,7 +5,10 @@ description: sd35-sid-tts-scaling-hpsv3
 # {4,8,16,32,64,128,256,512}, transitioning from single-tree MCTS (low B,
 # N_SEEDS=1,TOPK=1) to BoN-MCTS (high B). Budget is exact under sim_alloc=full:
 #   B = N_SEEDS + TOPK * N_SIMS.
-# Each rung is one trial (grid over the {budget} param). Raw images saved.
+# ONE job sweeps the whole ladder: the reward server starts once and the
+# command loops over TTS_BUDGETS, writing each rung to b<budget>/. A small
+# curated set of human-portrait prompts is embedded inline as the {prompts}
+# param (no HF download). Raw images saved.
 # HPSv3 runs on GPU 0 via reward_server.py (isolated conda env); SiD sampling
 # runs on GPUs 1..7 and routes hpsv3 calls through REWARD_SERVER_URL.
 
@@ -39,7 +42,7 @@ storage:
 
 search:
   job_template:
-    name: sid-tts-{run_tag}-b{budget}
+    name: sid-tts-{run_tag}
     sku: ${NODES}x${MEM}G${GPUS}
     sla_tier: Standard
     process_count_per_node: 1
@@ -52,13 +55,9 @@ search:
       - unset PYTHONPATH || true
       - export SID_FORCE_WANDB_STUB=1
       - export WANDB_DISABLED=true
-      # ?? Budget rung -> (N_SEEDS, TOPK, N_SIMS); sim_alloc=full so B = N_SEEDS + TOPK*N_SIMS ----
-      - export BUDGET={budget}
-      - 'case "$$BUDGET" in 4) NS=1; TK=1; SIMS=3;; 8) NS=1; TK=1; SIMS=7;; 16) NS=1; TK=1; SIMS=15;; 32) NS=1; TK=1; SIMS=31;; 64) NS=4; TK=2; SIMS=30;; 128) NS=8; TK=2; SIMS=60;; 256) NS=16; TK=4; SIMS=60;; 512) NS=16; TK=8; SIMS=62;; *) echo "unknown budget $$BUDGET"; exit 1;; esac'
-      - export BON_MCTS_N_SEEDS=$$NS
-      - export BON_MCTS_TOPK=$$TK
-      - export RUNG_N_SIMS=$$SIMS
-      - 'echo "[tts] budget=$$BUDGET -> N_SEEDS=$$BON_MCTS_N_SEEDS TOPK=$$BON_MCTS_TOPK N_SIMS=$$RUNG_N_SIMS"'
+      # ?? Budget ladder is looped at run time (see TTS_BUDGETS near the end of
+      #    this command); one job sweeps all rungs. sim_alloc=full so the budget
+      #    is exact: B = N_SEEDS + TOPK*N_SIMS.
       # ?? Paths & HF auth ----
       - export PATH=/home/aiscuser/.local/bin:$$PATH
       - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
@@ -91,12 +90,11 @@ search:
       - export HF_HUB_ENABLE_HF_TRANSFER=0
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('stabilityai/stable-diffusion-3.5-large', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('SD3.5-large cache OK')"
       - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('Qwen cache OK')"; fi
-      # ?? Prompt file ----
-      - export HPSV2_PROMPT_DIR=/mnt/data/v-yigu/hpsv2_prompt_cache
+      # ?? Prompt file: curated human-portrait set embedded inline ('|'-delimited {prompts}) ----
       - export PROMPT_STYLE={prompt_style}
-      - OUT_DIR="$$HPSV2_PROMPT_DIR" STYLE="$$PROMPT_STYLE" bash get_hpsv2_prompts.sh
-      - if [ "$$PROMPT_STYLE" = "all" ]; then export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts.txt"; else export PROMPT_FILE="$$HPSV2_PROMPT_DIR/hpsv2_prompts_$$PROMPT_STYLE.txt"; fi
-      - if [ {use_subset} = 1 ]; then export PROMPT_FILE=./hpsv2_subset.txt; fi
+      - export PROMPT_FILE=/tmp/tts_portrait_prompts.txt
+      - printf '%s\n' '{prompts}' | tr '|' '\n' > "$$PROMPT_FILE"
+      - 'echo "[tts] wrote $$(wc -l < $$PROMPT_FILE) prompts to $$PROMPT_FILE"; cat "$$PROMPT_FILE"'
       # ?? Build isolated reward env (hpsv3 + eval backends) ----
       - export REWARD_ENV_NAME=reward
       - export REWARD_ENV_SENTINEL_DIR=/tmp
@@ -114,12 +112,12 @@ search:
       - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
       - $$REWARD_PY preload_reward_models.py
       - 'if [ -f "$$REWARD_LOCAL_HF_CACHE/.stage_done" ]; then export REWARD_HF_HOME="$$REWARD_LOCAL_HF_CACHE"; echo "Reward server will use local HF cache: $$REWARD_HF_HOME"; else export REWARD_HF_HOME="$$HF_HOME"; echo "Local staging unavailable; reward server using HF_HOME=$$HF_HOME"; fi'
-      # ?? Launch reward server on GPU 0 ----
-      - export OUT_ROOT=/mnt/data/v-yigu/tts_scaling/{run_tag}/b$$BUDGET
-      - mkdir -p "$$OUT_ROOT"
+      # ?? Launch reward server on GPU 0 (shared across all budget rungs) ----
+      - export RUN_ROOT=/mnt/data/v-yigu/tts_scaling/{run_tag}
+      - mkdir -p "$$RUN_ROOT"
       - export REWARD_SERVER_PORT={reward_server_port}
       - export REWARD_SERVER_URL=http://localhost:$$REWARD_SERVER_PORT
-      - export REWARD_SERVER_LOG=$$OUT_ROOT/reward_server.log
+      - export REWARD_SERVER_LOG=$$RUN_ROOT/reward_server.log
       - env -u NCCL_P2P_LEVEL -u NCCL_ASYNC_ERROR_HANDLING -u TORCH_NCCL_ASYNC_ERROR_HANDLING CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false HF_HOME="$$REWARD_HF_HOME" "$$REWARD_PY" -u reward_server.py --port "$$REWARD_SERVER_PORT" --device cuda:0 --backends $$REWARD_BACKENDS --image_reward_model ImageReward-v1.0 --pickscore_model yuvalkirstain/PickScore_v1 > "$$REWARD_SERVER_LOG" 2>&1 &
       - export REWARD_SERVER_PID=$$!
       - trap 'kill $$REWARD_SERVER_PID >/dev/null 2>&1 || true' EXIT
@@ -127,7 +125,7 @@ search:
       - export HEALTH_OK=0
       - for i in $$(seq 1 1200); do if curl -s "$$REWARD_SERVER_URL/health" >/dev/null 2>&1; then export HEALTH_OK=1; break; fi; if ! kill -0 "$$REWARD_SERVER_PID" >/dev/null 2>&1; then echo "Reward server process exited before health check passed"; tail -n 200 "$$REWARD_SERVER_LOG" || true; exit 1; fi; if [ $$((i % 10)) -eq 0 ]; then echo "[health-wait] i=$$i server log tail:"; tail -n 20 "$$REWARD_SERVER_LOG" || true; fi; sleep 3; done
       - if [ "$$HEALTH_OK" != "1" ]; then echo "Reward server failed to become healthy"; tail -n 400 "$$REWARD_SERVER_LOG"; exit 1; fi
-      - curl -s "$$REWARD_SERVER_URL/health" | tee "$$OUT_ROOT/reward_server_health.json"
+      - curl -s "$$REWARD_SERVER_URL/health" | tee "$$RUN_ROOT/reward_server_health.json"
       # ?? Qwen rewrite cache ----
       - mkdir -p /mnt/data/v-yigu/hpsv2_rewrite_cache
       - export REWRITES_FILE=/mnt/data/v-yigu/hpsv2_rewrite_cache/{run_tag}_$$PROMPT_STYLE_{start_index}_{end_index}.json
@@ -161,7 +159,6 @@ search:
       - export BASELINE_CFG={baseline_cfg}
       - export STEPS={steps}
       - export N_VARIANTS={n_variants}
-      - export N_SIMS=$$RUNG_N_SIMS
       - export UCB_C={ucb_c}
       - export SMC_K={smc_k}
       - export SMC_GAMMA={smc_gamma}
@@ -181,8 +178,6 @@ search:
       - export GA_EVAL_BATCH={ga_eval_batch}
       - export BON_N={bon_n}
       - export BEAM_WIDTH={beam_width}
-      - export BON_MCTS_N_SEEDS=$$BON_MCTS_N_SEEDS
-      - export BON_MCTS_TOPK=$$BON_MCTS_TOPK
       - export BON_MCTS_SEED_STRIDE={bon_mcts_seed_stride}
       - export BON_MCTS_SEED_OFFSET={bon_mcts_seed_offset}
       - export BON_MCTS_SIM_ALLOC=full
@@ -215,34 +210,36 @@ search:
       - export CUDA_VISIBLE_DEVICES=$$(seq -s, 1 $$SAMPLING_GPUS)
       - export NUM_GPUS=$$SAMPLING_GPUS
       - 'echo "Sampling on CUDA_VISIBLE_DEVICES=$$CUDA_VISIBLE_DEVICES NUM_GPUS=$$NUM_GPUS REWARD_SERVER_URL=$$REWARD_SERVER_URL"'
-      # ?? Run (reward_unified routes hpsv3/eval via REWARD_SERVER_URL) ----
-      - bash hpsv2_sd35_flux_allalgos.sh
+      # ?? Budget ladder: loop all 8 rungs in this one job (sim_alloc=full: B = NS + TK*SIMS).
+      #    reward_unified routes hpsv3/eval via REWARD_SERVER_URL (server already up). ----
+      - export TTS_BUDGETS='4 8 16 32 64 128 256 512'
+      - 'for BUDGET in $$TTS_BUDGETS; do case "$$BUDGET" in 4) NS=1; TK=1; SIMS=3;; 8) NS=1; TK=1; SIMS=7;; 16) NS=1; TK=1; SIMS=15;; 32) NS=1; TK=1; SIMS=31;; 64) NS=4; TK=2; SIMS=30;; 128) NS=8; TK=2; SIMS=60;; 256) NS=16; TK=4; SIMS=60;; 512) NS=16; TK=8; SIMS=62;; *) echo "unknown budget $$BUDGET"; exit 1;; esac; export BON_MCTS_N_SEEDS=$$NS; export BON_MCTS_TOPK=$$TK; export N_SIMS=$$SIMS; export OUT_ROOT=$$RUN_ROOT/b$$BUDGET; mkdir -p "$$OUT_ROOT"; echo "[tts] budget=$$BUDGET -> N_SEEDS=$$NS TOPK=$$TK N_SIMS=$$SIMS OUT_ROOT=$$OUT_ROOT"; bash hpsv2_sd35_flux_allalgos.sh; done'
 
     submit_args:
       env:
         DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: True
         SHARED_MEMORY_PERCENT: 0.5
 
-  max_trials: 8
+  max_trials: 1
   type: grid
   params:
-    # 8-rung budget ladder; one trial each. (N_SEEDS,TOPK,N_SIMS) derived in
-    # the command via the budget->case map (sim_alloc=full: B = NS + TK*SIMS).
-    - name: budget
-      values: [ 4, 8, 16, 32, 64, 128, 256, 512 ]
+    # Single job. The 8-rung budget ladder {4,8,16,32,64,128,256,512} is swept
+    # inside the command (TTS_BUDGETS loop); (N_SEEDS,TOPK,N_SIMS) derived per
+    # rung via the budget->case map (sim_alloc=full: B = NS + TK*SIMS).
     - name: run_tag
       values: [ "sd35_sid_tts_scaling_hpsv3" ]
     - name: hf_token
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: prompt_style
       values: [ "all" ]
+    # Curated human-portrait prompts, embedded inline as one '|'-delimited value.
+    - name: prompts
+      values: [ "A close-up portrait of an elderly fisherman with a weathered face and kind eyes, soft natural light, highly detailed, photorealistic|Portrait of a young woman with freckles and curly red hair, golden hour sunlight, shallow depth of field, 85mm lens|A studio portrait of a confident businesswoman in a tailored suit, dramatic Rembrandt lighting, sharp focus|Portrait of an old man with a long white beard wearing a knitted sweater, warm window light, fine detail|A cinematic portrait of a soldier with a determined expression, rim lighting, moody atmosphere, film grain|Portrait of a smiling little girl holding a sunflower in a summer field, soft bokeh, natural light|A dramatic black-and-white portrait of a jazz musician holding a saxophone, high contrast lighting|Portrait of a graceful ballerina backstage, soft diffused light, elegant pose, detailed fabric|A portrait of a Maasai warrior in traditional dress, vivid colors, golden savanna light, ultra detailed|Portrait of a bearded chef in a busy kitchen, warm ambient light, candid expression, photorealistic|A serene portrait of a Buddhist monk in orange robes meditating, soft temple light, peaceful expression|Portrait of a glamorous woman in 1950s fashion with red lipstick, vintage studio lighting|A close-up portrait of an astronaut removing the helmet, reflective visor, dramatic spotlight|Portrait of a tattooed motorcyclist leaning on a vintage motorcycle, neon city light at night, cinematic|A gentle portrait of a grandmother knitting by the fireplace, warm golden light, cozy atmosphere|Portrait of a professional ballet dancer mid-leap against a dark background, dynamic motion, studio light" ]
     - name: start_index
       values: [ 0 ]
-    # First 200 HF hpsv2 prompts (shared across all rungs and both models).
+    # 16 curated portrait prompts (shared across all rungs and both models).
     - name: end_index
-      values: [ 200 ]
-    - name: use_subset
-      values: [ 0 ]
+      values: [ 16 ]
     - name: methods
       values: [ "bon_mcts" ]
     - name: sd35_mcts_option
@@ -311,7 +308,7 @@ search:
     - name: bon_n
       values: [ 16 ]
     # bon_mcts_n_seeds / bon_mcts_topk / n_sims / sim_alloc are set per-rung in
-    # the command from {budget}; not parameterized here.
+    # the command by the TTS_BUDGETS loop; not parameterized here.
     - name: bon_mcts_seed_stride
       values: [ 1 ]
     - name: bon_mcts_seed_offset

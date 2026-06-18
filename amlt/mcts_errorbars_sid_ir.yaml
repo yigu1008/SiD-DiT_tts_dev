@@ -145,6 +145,10 @@ search:
       - export N_PROMPTS={n_prompts}
       - export SEARCH_REWARD={search_reward}
       - export METHODS="{methods}"
+      # Fresh per-step sampling noise in MCTS rollouts (re-draw torch.randn each
+      # step) so MCTS matches the baseline's stochastic regime instead of the
+      # default fixed/cached common-random-numbers sequence.
+      - export MCTS_FIXED_NOISE=0
       # Compute-matched BoN: NFE = (N_SEEDS + N_SIMS) x STEPS
       # With sim_alloc=split, TOPK divides N_SIMS -- it does NOT multiply NFE.
       # sid/senseflow/flux 4-step: 16 + 60 = 76 trajectory-equivalents.

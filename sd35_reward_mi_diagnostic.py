@@ -145,8 +145,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--mine_infonce_max_neg",
         type=int,
-        default=256,
-        help="Max within-prompt negatives per block for the InfoNCE estimator (caps log K ceiling).",
+        default=512,
+        help="Max within-prompt negatives per block for the InfoNCE estimator (caps log K ceiling). "
+        "Capped by available within-prompt rows; higher = more negatives = tighter, lower-variance bound.",
     )
     p.add_argument(
         "--mine_infonce_blocks",
@@ -371,6 +372,30 @@ def _safe_unique_sorted(values: np.ndarray) -> list[int]:
     return sorted(int(v) for v in np.unique(values))
 
 
+def _standardize_reward(arr: dict[str, np.ndarray], tag: str) -> dict[str, np.ndarray]:
+    """Z-score the reward column in place (global affine transform).
+
+    The MINE critic concatenates the raw scalar reward next to unit-scale learned
+    embeddings; an un-normalized reward leaves the objective poorly conditioned
+    (high gradient variance, slow convergence, finite-sample bias). A single
+    global affine transform leaves the conditional MI I(C;R|P) exactly invariant
+    while fixing the input scale, so this changes only estimator quality, never
+    the quantity being estimated. mean/std are stored for audit/reproducibility.
+    """
+    r = arr["reward"].astype(np.float32, copy=False)
+    mean = float(r.mean())
+    std = float(r.std())
+    if std > 1e-8:
+        arr["reward"] = ((r - mean) / std).astype(np.float32)
+    else:
+        # Degenerate (constant) reward -> no information; leave centered at 0.
+        arr["reward"] = (r - mean).astype(np.float32)
+    arr["reward_mean"] = np.float32(mean)
+    arr["reward_std"] = np.float32(std)
+    print(f"[{tag}] standardized reward: mean={mean:.4f} std={std:.4f} (z-scored for critic conditioning)")
+    return arr
+
+
 def load_dataset(csv_path: str) -> dict[str, Any]:
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"dataset_csv not found: {csv_path}")
@@ -402,6 +427,7 @@ def load_dataset(csv_path: str) -> dict[str, Any]:
     n = int(arr["reward"].shape[0])
     if n <= 0:
         raise RuntimeError("Dataset is empty.")
+    _standardize_reward(arr, tag="root")
     return arr
 
 
@@ -814,7 +840,7 @@ def _train_one_restart(
 
     estimator = str(getattr(args, "mine_estimator", "smile"))
     tau = float(getattr(args, "mine_smile_tau", 5.0))
-    infonce_max_neg = int(getattr(args, "mine_infonce_max_neg", 256))
+    infonce_max_neg = int(getattr(args, "mine_infonce_max_neg", 512))
     infonce_blocks = int(getattr(args, "mine_infonce_blocks", 8))
     patience_limit = int(getattr(args, "mine_early_stop_patience", 0))
 
@@ -1297,6 +1323,7 @@ def load_per_step_dataset(csv_path: str) -> dict[str, np.ndarray]:
     }
     if int(arr["reward"].shape[0]) <= 0:
         raise RuntimeError("Per-step dataset is empty.")
+    _standardize_reward(arr, tag="per_step")
     return arr
 
 

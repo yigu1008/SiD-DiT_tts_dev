@@ -79,7 +79,7 @@ search:
       - export NCCL_P2P_LEVEL=NVL
       # ?? Sampling env ----
       - source /opt/conda/etc/profile.d/conda.sh
-      - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
+      - /opt/conda/envs/ptca/bin/pip install --force-reinstall --no-cache-dir "setuptools>=70,<76" wheel
       - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
       - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4"

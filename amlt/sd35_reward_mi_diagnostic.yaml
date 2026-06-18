@@ -47,7 +47,7 @@ search:
       - export HUGGING_FACE_HUB_TOKEN={hf_token}
       - export WANDB_DISABLED=true
       - source /opt/conda/etc/profile.d/conda.sh
-      - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
+      - /opt/conda/envs/ptca/bin/pip install --force-reinstall --no-cache-dir "setuptools>=70,<76" wheel
       - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
       - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
       # install_reward_deps.sh only WARNs on ImageReward install failure. Force

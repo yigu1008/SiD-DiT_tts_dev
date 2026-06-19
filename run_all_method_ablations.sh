@@ -89,7 +89,14 @@ if [[ -n "${PROMPT_FILE:-}" && -f "${PROMPT_FILE}" ]]; then
     echo "[all-method]   contains ${_n_avail} non-empty lines; N_PROMPTS=${N_PROMPTS}"
 else
     PROMPT_FILE="${PROMPTS_DIR}/backend_${BACKEND}.txt"
-    if [[ ! -f "${PROMPT_FILE}" ]]; then
+    _have=0
+    [[ -f "${PROMPT_FILE}" ]] && _have=$(grep -c . "${PROMPT_FILE}" 2>/dev/null || echo 0)
+    # Regenerate when absent OR when a file cached from a smaller N_PROMPTS run
+    # has fewer prompts than now requested -- otherwise the stale file silently
+    # caps the run at the old count (e.g. a 100-prompt rerun bumped to 200).
+    if [[ ! -f "${PROMPT_FILE}" || "${_have}" -lt "${N_PROMPTS}" ]]; then
+        echo "[all-method] (re)generating prompts: have ${_have}, need ${N_PROMPTS}"
+        rm -f "${PROMPTS_DIR}/stage_rewrites_3level.json"
         env -u HF_HUB_OFFLINE -u TRANSFORMERS_OFFLINE \
             "${PYTHON_BIN}" "${SCRIPT_DIR}/cherry_pick_prompts.py" \
             --n_prompts "${N_PROMPTS}" --out_dir "${PROMPTS_DIR}" --backends "${BACKEND}"

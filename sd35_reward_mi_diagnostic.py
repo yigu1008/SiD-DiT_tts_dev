@@ -44,6 +44,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "per_step_generate",
             "per_step_train",
             "per_step",
+            "per_step_plot",
+            "per_step_calibrate",
             "decompose",
         ],
         default="full",
@@ -171,6 +173,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--per_step_report_json", default="./mi_perstep_sd35_report.json")
     p.add_argument("--per_step_table_csv", default="./mi_perstep_sd35_table.csv")
     p.add_argument("--per_step_baseline_variant", type=int, default=0, help="Variant id held on non-branched steps.")
+    p.add_argument(
+        "--per_step_n_noise", type=int, default=0,
+        help="Noise-channel grid size: number of CRN noise realizations swept at the probed step "
+        "(0 disables the noise channel). Step 0 sweeps the root latent; interior steps sweep the "
+        "per-step injected noise (inert for deterministic/Euler backbones).",
+    )
+    p.add_argument(
+        "--per_step_noise_seed_base", type=int, default=900000,
+        help="Base seed for noise-channel realizations (kept disjoint from sample seeds).",
+    )
+    p.add_argument(
+        "--per_step_test_frac", type=float, default=0.2,
+        help="Held-out test fraction for the 3-way split; MI is reported on this split only. 0 -> legacy 2-way.",
+    )
+    p.add_argument(
+        "--per_step_unclamped", action=argparse.BooleanOptionalAction, default=True,
+        help="Report mi_corrected = mi_real - mi_null without the max(0,.) floor or H(C) clamp.",
+    )
+    p.add_argument("--per_step_plot_png", default="./mi_perstep_sd35_curve.png")
     return p.parse_args(argv)
 
 
@@ -439,6 +460,24 @@ def _split_indices(n: int, val_frac: float, seed: int) -> tuple[np.ndarray, np.n
     val_idx = idx[:n_val]
     train_idx = idx[n_val:]
     return train_idx, val_idx
+
+
+def _split_indices_3way(
+    n: int, val_frac: float, test_frac: float, seed: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Disjoint train / val (early-stop) / test (report) split. The MI reported
+    for a channel is measured on `test`, which the critic never saw during
+    training or checkpoint selection -> removes the optimistic bias of reading
+    MI on the same val split used for early stopping."""
+    rng = np.random.default_rng(seed)
+    idx = np.arange(n, dtype=np.int64)
+    rng.shuffle(idx)
+    n_test = int(max(1, min(n - 2, round(n * test_frac))))
+    n_val = int(max(1, min(n - 1 - n_test, round(n * val_frac))))
+    test_idx = idx[:n_test]
+    val_idx = idx[n_test:n_test + n_val]
+    train_idx = idx[n_test + n_val:]
+    return train_idx, val_idx, test_idx
 
 
 def _subset_array(arr: np.ndarray, idx: np.ndarray) -> np.ndarray:
@@ -817,7 +856,11 @@ def _train_one_restart(
     n_prompts: int,
     args: argparse.Namespace,
     restart_seed: int,
+    test_np: dict[str, np.ndarray] | None = None,
 ) -> tuple[float, float, float]:
+    """Returns (train_mi, report_mi, auroc). report_mi/auroc are measured on
+    `test_np` when given (held-out 3-way split) else on `val_np` (legacy 2-way).
+    Early stopping always tracks val MI regardless."""
     device = args.mine_device
     if device.startswith("cuda") and not torch.cuda.is_available():
         device = "cpu"
@@ -907,11 +950,17 @@ def _train_one_restart(
         model, train_t, control_names, batch_size=bs, seed=restart_seed + 20001,
         estimator=estimator, tau=tau, infonce_max_neg=infonce_max_neg,
     )
-    val_mi, auroc = _estimate_mi_and_auroc(
-        model, val_t, control_names, batch_size=bs, seed=restart_seed + 30001,
+    if test_np is not None:
+        report_t = _to_tensors(test_np, device=device)
+        report_seed = restart_seed + 40001
+    else:
+        report_t = val_t
+        report_seed = restart_seed + 30001
+    report_mi, auroc = _estimate_mi_and_auroc(
+        model, report_t, control_names, batch_size=bs, seed=report_seed,
         estimator=estimator, tau=tau, infonce_max_neg=infonce_max_neg,
     )
-    return float(train_mi), float(val_mi), float(auroc)
+    return float(train_mi), float(report_mi), float(auroc)
 
 
 def _run_channel(
@@ -920,10 +969,19 @@ def _run_channel(
     n_prompts: int,
     args: argparse.Namespace,
     seed_offset: int,
+    test_frac: float = 0.0,
+    clamp_corrected: bool = True,
 ) -> dict[str, Any]:
     """Train the real + null critics over `mine_restarts` restarts for one
     channel (subset already filtered, must hold prompt_id, reward, and every
-    control). Returns a row dict with raw MI, null-debiased MI, AUROC, std."""
+    control). Returns a row dict with raw MI, null-debiased MI, AUROC, std.
+
+    test_frac > 0 switches to a 3-way train/val/test split and reports MI on the
+    held-out test split (the val split is used only for early stopping).
+    clamp_corrected=False reports the raw debiased difference mi_real - mi_null
+    without the max(0,.) floor or the H(C) clamp -- so a null-band-overlapping
+    channel can read slightly negative, which is the honest finite-sample
+    behaviour the per-step diagnostic wants for its error bands."""
     n_rows_subset = int(subset["reward"].shape[0])
 
     controls_np = {c: subset[c] for c in controls}
@@ -936,9 +994,17 @@ def _run_channel(
         **{c: null_controls[c] for c in controls},
     }
 
-    train_idx, val_idx = _split_indices(
-        n_rows_subset, float(args.mine_val_frac), seed=int(args.mine_seed) + 31 * seed_offset
-    )
+    use_3way = float(test_frac) > 0.0
+    if use_3way:
+        train_idx, val_idx, test_idx = _split_indices_3way(
+            n_rows_subset, float(args.mine_val_frac), float(test_frac),
+            seed=int(args.mine_seed) + 31 * seed_offset,
+        )
+    else:
+        train_idx, val_idx = _split_indices(
+            n_rows_subset, float(args.mine_val_frac), seed=int(args.mine_seed) + 31 * seed_offset
+        )
+        test_idx = None
 
     def _slice(src: dict[str, np.ndarray], idx: np.ndarray) -> dict[str, np.ndarray]:
         out = {"prompt_id": _subset_array(src["prompt_id"], idx), "reward": _subset_array(src["reward"], idx)}
@@ -948,8 +1014,10 @@ def _run_channel(
 
     train_np = _slice(subset, train_idx)
     val_np = _slice(subset, val_idx)
+    test_np = _slice(subset, test_idx) if test_idx is not None else None
     null_train_np = _slice(null_subset, train_idx)
     null_val_np = _slice(null_subset, val_idx)
+    null_test_np = _slice(null_subset, test_idx) if test_idx is not None else None
 
     train_mis: list[float] = []
     val_mis: list[float] = []
@@ -958,27 +1026,29 @@ def _run_channel(
     for r in range(int(args.mine_restarts)):
         restart_seed = int(args.mine_seed) + 1000 * seed_offset + r
         tr_mi, va_mi, auroc = _train_one_restart(
-            train_np, val_np, controls, n_prompts, args, restart_seed=restart_seed
+            train_np, val_np, controls, n_prompts, args, restart_seed=restart_seed, test_np=test_np
         )
         train_mis.append(float(tr_mi))
         val_mis.append(float(va_mi))
         aucs.append(float(auroc))
         _ntr, nva, _na = _train_one_restart(
-            null_train_np, null_val_np, controls, n_prompts, args, restart_seed=restart_seed + 50000
+            null_train_np, null_val_np, controls, n_prompts, args,
+            restart_seed=restart_seed + 50000, test_np=null_test_np,
         )
         null_val_mis.append(float(nva))
 
     h_control = _entropy_nats(_joint_code([subset[c] for c in controls]))
+    # val_mis/null_val_mis hold the *reported* per-restart MI: test-split MI when
+    # 3-way, else val-split MI (legacy). Naming kept for back-compat.
     mi_mean_raw = float(np.mean(val_mis))
     mi_median_raw = float(np.median(val_mis))
     null_mean = float(np.mean(null_val_mis))
+    null_std = float(np.std(null_val_mis))
     # Hard information-theoretic ceiling: I(C;R|P) <= H(C|P) <= H(C). Any
     # estimate above H(C) is an estimator divergence (DV/SMILE log-partition
     # blow-up on near-unique joint codes, e.g. seed x variant x cfg), not signal.
-    # Flag it and clamp every reported quantity inside the bound; keep the raw
-    # mean for audit so divergence is visible rather than silently swallowed.
     diverged = bool(h_control > 0.0 and mi_mean_raw > h_control * 1.05)
-    if h_control > 0.0:
+    if clamp_corrected and h_control > 0.0:
         mi_mean = min(mi_mean_raw, h_control)
         mi_median = min(mi_median_raw, h_control)
     else:
@@ -986,12 +1056,16 @@ def _run_channel(
         mi_median = mi_median_raw
     # Debias by the within-prompt-shuffled null: it shares the estimator's
     # finite-sample bias floor, so MI - Null is the real conditional signal.
-    mi_corrected = float(max(0.0, mi_mean - null_mean))
-    if h_control > 0.0:
-        mi_corrected = min(mi_corrected, h_control)
-        mi_norm = float(min(1.0, mi_corrected / h_control))
+    if clamp_corrected:
+        mi_corrected = float(max(0.0, mi_mean - null_mean))
+        if h_control > 0.0:
+            mi_corrected = min(mi_corrected, h_control)
+            mi_norm = float(min(1.0, mi_corrected / h_control))
+        else:
+            mi_norm = 0.0
     else:
-        mi_norm = 0.0
+        mi_corrected = float(mi_mean_raw - null_mean)
+        mi_norm = float(mi_corrected / h_control) if h_control > 0.0 else 0.0
     return {
         "controls": list(controls),
         "rows_used": int(n_rows_subset),
@@ -1001,11 +1075,13 @@ def _run_channel(
         "MI_corrected": mi_corrected,
         "normalized_MI": mi_norm,
         "Null_MI": null_mean,
+        "Null_std": null_std,
         "AUROC": float(np.mean(aucs)),
         "Restart_std": float(np.std(val_mis)),
         "diverged": diverged,
         "train_mi_mean": float(np.mean(train_mis)),
         "h_control_nats": float(h_control),
+        "report_split": "test" if use_3way else "val",
     }
 
 
@@ -1141,8 +1217,8 @@ def run_mine_critics(args: argparse.Namespace) -> None:
     print(f"[train] wrote report: {report_json}")
 
 
-def _existing_perstep_key_set(csv_path: str) -> set[tuple[int, int, int, int, int]]:
-    out: set[tuple[int, int, int, int, int]] = set()
+def _existing_perstep_key_set(csv_path: str) -> set[tuple[int, int, int, str, int, int, int]]:
+    out: set[tuple[int, int, int, str, int, int, int]] = set()
     if not os.path.exists(csv_path):
         return out
     with open(csv_path, encoding="utf-8", newline="") as f:
@@ -1154,8 +1230,10 @@ def _existing_perstep_key_set(csv_path: str) -> set[tuple[int, int, int, int, in
                         int(row["prompt_id"]),
                         int(row["seed_id"]),
                         int(row["step_idx"]),
+                        str(row.get("channel", "grid")),
                         int(row["variant_id"]),
                         int(row["cfg_id"]),
+                        int(row.get("noise_id", 0)),
                     )
                 )
             except (ValueError, TypeError, KeyError):
@@ -1197,9 +1275,11 @@ def generate_dataset_per_step(args: argparse.Namespace) -> None:
         "original_prompt",
         "seed_id",
         "step_idx",
+        "channel",
         "variant_id",
         "cfg_id",
         "cfg_value",
+        "noise_id",
         "reward",
     ]
 
@@ -1210,11 +1290,16 @@ def generate_dataset_per_step(args: argparse.Namespace) -> None:
     cfg_values = [float(v) for v in args.cfg_scales]
     default_cfg_id = _nearest_cfg_id(cfg_values, float(args.default_cfg))
     base_variant = int(args.per_step_baseline_variant)
+    base_cfg_val = float(cfg_values[default_cfg_id])
     n_variants = int(args.n_rewrites) + 1
     steps = int(sampler_args.steps)
+    n_noise = int(args.per_step_n_noise)
+    noise_seed_base = int(args.per_step_noise_seed_base)
     rng = np.random.default_rng(int(args.seed_base) + 13)
 
-    total_target_rows = len(prompts) * int(args.n_seeds) * steps * n_variants * len(cfg_values)
+    grid_rows = len(prompts) * int(args.n_seeds) * steps * n_variants * len(cfg_values)
+    noise_rows = len(prompts) * int(args.n_seeds) * steps * n_noise
+    total_target_rows = grid_rows + noise_rows
     written = 0
     skipped = 0
     t0 = time.time()
@@ -1225,6 +1310,65 @@ def generate_dataset_per_step(args: argparse.Namespace) -> None:
         if not file_exists or os.path.getsize(out_csv) == 0:
             writer.writeheader()
 
+        def _run_and_write(
+            prompt_id: int,
+            original_prompt: str,
+            emb: Any,
+            seed_id: int,
+            sample_seed: int,
+            k: int,
+            channel: str,
+            variant_id: int,
+            cfg_id: int,
+            cfg_val: float,
+            noise_id: int,
+            step_noise_seeds: dict[int, int] | None,
+        ) -> None:
+            nonlocal written, skipped
+            key = (int(prompt_id), int(seed_id), int(k), str(channel),
+                   int(variant_id), int(cfg_id), int(noise_id))
+            if key in done_keys:
+                skipped += 1
+                return
+            actions = [(int(base_variant), base_cfg_val, 0.0)] * steps
+            actions[k] = (int(variant_id), float(cfg_val), 0.0)
+            result = su.run_schedule_actions(
+                sampler_args,
+                ctx,
+                emb,
+                reward_model,
+                original_prompt,
+                sample_seed,
+                actions,
+                deterministic_noise=True,
+                step_noise_seeds=step_noise_seeds,
+                score_prompt=original_prompt,  # always score against c0
+            )
+            reward_noisy = float(result.score) + float(rng.normal(0.0, float(args.reward_noise_std)))
+            writer.writerow(
+                {
+                    "prompt_id": int(prompt_id),
+                    "original_prompt": _csv_safe(original_prompt),
+                    "seed_id": int(seed_id),
+                    "step_idx": int(k),
+                    "channel": str(channel),
+                    "variant_id": int(variant_id),
+                    "cfg_id": int(cfg_id),
+                    "cfg_value": float(cfg_val),
+                    "noise_id": int(noise_id),
+                    "reward": float(reward_noisy),
+                }
+            )
+            written += 1
+            if written % max(1, int(args.save_every)) == 0:
+                f.flush()
+                os.fsync(f.fileno())
+                elapsed = time.time() - t0
+                print(
+                    f"[per_step] written={written} skipped={skipped} "
+                    f"done={written + skipped}/{total_target_rows} elapsed={elapsed:.1f}s"
+                )
+
         for prompt_id, original_prompt in enumerate(prompts):
             variants = su.generate_variants(sampler_args, original_prompt, rewrite_cache)
             if len(variants) < n_variants:
@@ -1233,52 +1377,33 @@ def generate_dataset_per_step(args: argparse.Namespace) -> None:
                 variants = variants[:n_variants]
             emb = su.encode_variants(ctx, variants, max_sequence_length=int(args.max_sequence_length))
 
-            base_cfg_val = float(cfg_values[default_cfg_id])
-            baseline_actions = [(int(base_variant), base_cfg_val, 0.0)] * steps
-
             for seed_id in range(int(args.n_seeds)):
                 sample_seed = int(args.seed_base) + int(seed_id)
                 for k in range(steps):
+                    # variant x cfg factorial ("grid"): variant/cfg/joint channels
+                    # are read as slices of this shared block downstream.
                     for variant_id in range(n_variants):
                         for cfg_id, cfg_val in enumerate(cfg_values):
-                            key = (int(prompt_id), int(seed_id), int(k), int(variant_id), int(cfg_id))
-                            if key in done_keys:
-                                skipped += 1
-                                continue
-                            actions = list(baseline_actions)
-                            actions[k] = (int(variant_id), float(cfg_val), 0.0)
-                            result = su.run_schedule_actions(
-                                sampler_args,
-                                ctx,
-                                emb,
-                                reward_model,
-                                original_prompt,
-                                sample_seed,
-                                actions,
-                                deterministic_noise=True,
+                            _run_and_write(
+                                prompt_id, original_prompt, emb, seed_id, sample_seed, k,
+                                "grid", variant_id, cfg_id, cfg_val, 0, None,
                             )
-                            reward_noisy = float(result.score) + float(rng.normal(0.0, float(args.reward_noise_std)))
-                            writer.writerow(
-                                {
-                                    "prompt_id": int(prompt_id),
-                                    "original_prompt": _csv_safe(original_prompt),
-                                    "seed_id": int(seed_id),
-                                    "step_idx": int(k),
-                                    "variant_id": int(variant_id),
-                                    "cfg_id": int(cfg_id),
-                                    "cfg_value": float(cfg_val),
-                                    "reward": float(reward_noisy),
-                                }
-                            )
-                            written += 1
-                            if written % max(1, int(args.save_every)) == 0:
-                                f.flush()
-                                os.fsync(f.fileno())
-                                elapsed = time.time() - t0
-                                print(
-                                    f"[per_step] written={written} skipped={skipped} "
-                                    f"done={written + skipped}/{total_target_rows} elapsed={elapsed:.1f}s"
-                                )
+                    # noise channel: sweep CRN noise realizations at step k with
+                    # variant=base, cfg=default; the only thing varying within the
+                    # block is the step-k noise -> I(noise@k ; R | P).
+                    for noise_id in range(n_noise):
+                        noise_seed = (
+                            noise_seed_base
+                            + 1_000_000 * int(prompt_id)
+                            + 10_000 * int(seed_id)
+                            + 100 * int(k)
+                            + int(noise_id)
+                        )
+                        _run_and_write(
+                            prompt_id, original_prompt, emb, seed_id, sample_seed, k,
+                            "noise", base_variant, default_cfg_id, base_cfg_val,
+                            noise_id, {int(k): int(noise_seed)},
+                        )
         f.flush()
         os.fsync(f.fileno())
     print(
@@ -1298,7 +1423,9 @@ def load_per_step_dataset(csv_path: str) -> dict[str, np.ndarray]:
         "variant_id": [],
         "cfg_id": [],
         "cfg_value": [],
+        "noise_id": [],
     }
+    channels: list[str] = []
     with open(csv_path, encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -1310,6 +1437,8 @@ def load_per_step_dataset(csv_path: str) -> dict[str, np.ndarray]:
                 cols["variant_id"].append(int(row["variant_id"]))
                 cols["cfg_id"].append(int(row["cfg_id"]))
                 cols["cfg_value"].append(float(row["cfg_value"]))
+                cols["noise_id"].append(int(row.get("noise_id", 0)))
+                channels.append(str(row.get("channel", "grid")))
             except (ValueError, TypeError, KeyError):
                 continue
     arr = {
@@ -1320,6 +1449,8 @@ def load_per_step_dataset(csv_path: str) -> dict[str, np.ndarray]:
         "variant_id": np.asarray(cols["variant_id"], dtype=np.int64),
         "cfg_id": np.asarray(cols["cfg_id"], dtype=np.int64),
         "cfg_value": np.asarray(cols["cfg_value"], dtype=np.float32),
+        "noise_id": np.asarray(cols["noise_id"], dtype=np.int64),
+        "channel": np.asarray(channels, dtype=object),
     }
     if int(arr["reward"].shape[0]) <= 0:
         raise RuntimeError("Per-step dataset is empty.")
@@ -1339,13 +1470,23 @@ def run_per_step_critics(args: argparse.Namespace) -> None:
     step_ids = _safe_unique_sorted(data["step_idx"])
 
     # (name, controls, row-mask): variant_k pins cfg=default, cfg_k pins
-    # variant=baseline, joint_k sweeps both. Each control stays scalar so the
-    # MI/H normalization remains valid (unlike a full per-step action sequence).
-    channels: list[tuple[str, list[str], np.ndarray | None]] = [
-        ("variant", ["variant_id"], data["cfg_id"] == default_cfg_id),
-        ("cfg", ["cfg_id"], data["variant_id"] == base_variant),
-        ("joint", ["variant_id", "cfg_id"], None),
+    # variant=baseline, joint_k sweeps both -- all read from the "grid"
+    # (variant x cfg factorial) rows. noise_k reads the "noise" rows (CRN
+    # step-noise sweep). Each control stays scalar so the MI/H normalization
+    # remains valid (unlike a full per-step action sequence).
+    chan_col = data.get("channel")
+    grid_mask = (chan_col == "grid") if chan_col is not None else np.ones_like(data["prompt_id"], dtype=bool)
+    noise_mask = (chan_col == "noise") if chan_col is not None else np.zeros_like(data["prompt_id"], dtype=bool)
+    channels: list[tuple[str, list[str], np.ndarray]] = [
+        ("variant", ["variant_id"], grid_mask & (data["cfg_id"] == default_cfg_id)),
+        ("cfg", ["cfg_id"], grid_mask & (data["variant_id"] == base_variant)),
+        ("joint", ["variant_id", "cfg_id"], grid_mask),
     ]
+    if bool(noise_mask.any()):
+        channels.append(("noise", ["noise_id"], noise_mask))
+
+    test_frac = float(args.per_step_test_frac)
+    clamp_corrected = not bool(args.per_step_unclamped)
 
     all_rows: list[dict[str, Any]] = []
     report: dict[str, Any] = {
@@ -1356,6 +1497,8 @@ def run_per_step_critics(args: argparse.Namespace) -> None:
         "default_cfg_id_used": int(default_cfg_id),
         "baseline_variant": int(base_variant),
         "estimator": str(args.mine_estimator),
+        "test_frac": test_frac,
+        "clamp_corrected": clamp_corrected,
         "steps": [],
     }
 
@@ -1364,7 +1507,7 @@ def run_per_step_critics(args: argparse.Namespace) -> None:
         step_mask = data["step_idx"] == int(k)
         for cname, controls, chan_mask in channels:
             seed_off += 1
-            mask = step_mask if chan_mask is None else (step_mask & chan_mask)
+            mask = step_mask & chan_mask
             subset: dict[str, np.ndarray] = {
                 "prompt_id": data["prompt_id"][mask],
                 "reward": data["reward"][mask],
@@ -1376,7 +1519,10 @@ def run_per_step_critics(args: argparse.Namespace) -> None:
                 print(f"[per_step] skip step={k} channel={cname}: only {n_rows} rows")
                 continue
 
-            ch = _run_channel(subset, controls, n_prompts, args, seed_offset=seed_off)
+            ch = _run_channel(
+                subset, controls, n_prompts, args, seed_offset=seed_off,
+                test_frac=test_frac, clamp_corrected=clamp_corrected,
+            )
             row = {
                 "Step": int(k),
                 "Channel": cname,
@@ -1386,14 +1532,17 @@ def run_per_step_critics(args: argparse.Namespace) -> None:
                 "MI_median": ch["MI_median"],
                 "normalized_MI": ch["normalized_MI"],
                 "Null_MI": ch["Null_MI"],
+                "Null_std": ch.get("Null_std", 0.0),
                 "AUROC": ch["AUROC"],
                 "Restart_std": ch["Restart_std"],
+                "report_split": ch.get("report_split", "val"),
             }
             all_rows.append(row)
             report["steps"].append({"step": int(k), "channel": cname, "rows_used": ch["rows_used"], **ch})
             print(
                 f"[per_step] step={int(k):2d} {cname:8s} MI={ch['MI']:.4f} MIc={ch['MI_corrected']:.4f} "
-                f"Null={ch['Null_MI']:.4f} AUROC={ch['AUROC']:.4f} std={ch['Restart_std']:.4f}"
+                f"Null={ch['Null_MI']:.4f}±{ch.get('Null_std', 0.0):.4f} "
+                f"AUROC={ch['AUROC']:.4f} std={ch['Restart_std']:.4f}"
             )
 
     table_csv = str(Path(args.per_step_table_csv).expanduser().resolve())
@@ -1403,7 +1552,7 @@ def run_per_step_critics(args: argparse.Namespace) -> None:
             f,
             fieldnames=[
                 "Step", "Channel", "Control", "MI", "MI_corrected", "MI_median",
-                "normalized_MI", "Null_MI", "AUROC", "Restart_std",
+                "normalized_MI", "Null_MI", "Null_std", "AUROC", "Restart_std", "report_split",
             ],
         )
         writer.writeheader()
@@ -1417,6 +1566,145 @@ def run_per_step_critics(args: argparse.Namespace) -> None:
 
     print(f"[per_step] wrote table: {table_csv}")
     print(f"[per_step] wrote report: {report_json}")
+    if bool(getattr(args, "per_step_plot_png", "")):
+        try:
+            plot_per_step_mi(args, all_rows)
+        except Exception as exc:  # plotting must never break the numeric run
+            print(f"[per_step] plot skipped ({type(exc).__name__}: {exc})")
+
+
+def _rows_from_table_csv(path: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    with open(path, encoding="utf-8", newline="") as f:
+        for row in csv.DictReader(f):
+            out: dict[str, Any] = {"Step": int(row["Step"]), "Channel": str(row["Channel"])}
+            for key in ("MI", "MI_corrected", "MI_median", "normalized_MI",
+                        "Null_MI", "Null_std", "AUROC", "Restart_std"):
+                try:
+                    out[key] = float(row.get(key, "nan"))
+                except (TypeError, ValueError):
+                    out[key] = float("nan")
+            rows.append(out)
+    return rows
+
+
+def plot_per_step_mi(args: argparse.Namespace, rows: list[dict[str, Any]] | None = None) -> None:
+    """Per-step MI curve: I(channel; R | P) (raw nats, debiased) vs step k, one
+    line per channel, with a shaded restart/null band and y=0 drawn so a flat-zero
+    (e.g. deterministic-backbone noise) channel is visible. Secondary panel shows
+    normalized I/H(C). Single-step intervention; all-default continuation;
+    reward scored against c0."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if rows is None:
+        rows = _rows_from_table_csv(str(Path(args.per_step_table_csv).expanduser().resolve()))
+    if not rows:
+        print("[per_step] plot: no rows to plot.")
+        return
+
+    channels = list(dict.fromkeys(str(r["Channel"]) for r in rows))
+    steps = sorted({int(r["Step"]) for r in rows})
+
+    def _series(cname: str, field: str) -> list[float]:
+        by_step = {int(r["Step"]): float(r.get(field, float("nan"))) for r in rows if str(r["Channel"]) == cname}
+        return [by_step.get(s, float("nan")) for s in steps]
+
+    fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(8, 8), sharex=True)
+    for cname in channels:
+        mi = np.asarray(_series(cname, "MI_corrected"), dtype=np.float64)
+        band = np.asarray(_series(cname, "Restart_std"), dtype=np.float64)
+        null_band = np.asarray(_series(cname, "Null_std"), dtype=np.float64)
+        total_band = np.sqrt(np.nan_to_num(band) ** 2 + np.nan_to_num(null_band) ** 2)
+        line = ax0.plot(steps, mi, marker="o", label=cname)[0]
+        ax0.fill_between(steps, mi - total_band, mi + total_band, alpha=0.18, color=line.get_color())
+        ax1.plot(steps, _series(cname, "normalized_MI"), marker="o", label=cname)
+    ax0.axhline(0.0, color="k", lw=0.8, ls="--")
+    ax0.set_ylabel("I(channel; R | P)  [nats, debiased]")
+    ax0.set_title("Per-step conditional MI (single-step intervention, all-default continuation, scored vs c0)")
+    ax0.legend(fontsize=8)
+    ax1.axhline(0.0, color="k", lw=0.8, ls="--")
+    ax1.set_ylabel("normalized  I / H(C)")
+    ax1.set_xlabel("denoising step k")
+    ax1.set_xticks(steps)
+    ax1.legend(fontsize=8)
+    fig.tight_layout()
+
+    out_png = str(Path(args.per_step_plot_png).expanduser().resolve())
+    os.makedirs(str(Path(out_png).parent), exist_ok=True)
+    fig.savefig(out_png, dpi=150)
+    plt.close(fig)
+    print(f"[per_step] wrote plot: {out_png}")
+
+
+def _synth_channel(
+    n_prompts: int, k_levels: int, reps: int, signal: float, seed: int
+) -> dict[str, np.ndarray]:
+    """Synthetic (prompt_id, control, reward) block for the calibration guard.
+    reward = prompt_offset + signal * centered(control) + noise. signal=0 gives a
+    control independent of reward given P (-> debiased MI must sit in the null
+    band of 0); signal>0 gives a control that genuinely drives reward (-> clearly
+    positive MI)."""
+    rng = np.random.default_rng(seed)
+    prompt_ids: list[int] = []
+    controls: list[int] = []
+    rewards: list[float] = []
+    for p in range(n_prompts):
+        offset = float(rng.normal(0.0, 1.0))
+        for c in range(k_levels):
+            c_centered = (float(c) - (k_levels - 1) / 2.0)
+            for _ in range(reps):
+                prompt_ids.append(p)
+                controls.append(c)
+                rewards.append(offset + signal * c_centered + float(rng.normal(0.0, 1.0)))
+    arr = {
+        "prompt_id": np.asarray(prompt_ids, dtype=np.int64),
+        "control_id": np.asarray(controls, dtype=np.int64),
+        "reward": np.asarray(rewards, dtype=np.float32),
+    }
+    _standardize_reward(arr, tag=f"calib_signal={signal}")
+    return arr
+
+
+def run_per_step_calibrate(args: argparse.Namespace) -> None:
+    """Calibration guard for the estimator + null-debias + split, BEFORE burning
+    GPU on the full grid. random control (signal=0) must give mi_corrected within
+    its band of 0; a reward-correlated control (signal>0) must give clearly
+    positive MI. If random-control MI is not ~0, the null debias or the split is
+    wrong -- fix that first."""
+    n_prompts = max(2, int(args.n_prompts) if int(args.n_prompts) > 0 else 50)
+    k_levels = max(2, int(args.n_rewrites) + 1)
+    reps = max(2, int(args.n_seeds))
+    test_frac = float(args.per_step_test_frac)
+    clamp_corrected = not bool(args.per_step_unclamped)
+
+    cases = [("random(signal=0)", 0.0), ("correlated(signal=0.8)", 0.8)]
+    results: list[dict[str, Any]] = []
+    for off, (name, signal) in enumerate(cases):
+        arr = _synth_channel(n_prompts, k_levels, reps, signal, seed=int(args.mine_seed) + 7 * off)
+        ch = _run_channel(
+            arr, ["control_id"], n_prompts, args, seed_offset=100 + off,
+            test_frac=test_frac, clamp_corrected=clamp_corrected,
+        )
+        band = float(ch["Restart_std"]) + float(ch.get("Null_std", 0.0))
+        within_null = abs(float(ch["MI_corrected"])) <= 2.0 * band + 1e-3
+        results.append({"case": name, "signal": signal, "within_null_band": within_null, **ch})
+        print(
+            f"[calibrate] {name:24s} MIc={ch['MI_corrected']:+.4f} "
+            f"MI={ch['MI']:.4f} Null={ch['Null_MI']:.4f}±{ch.get('Null_std', 0.0):.4f} "
+            f"band={band:.4f} AUROC={ch['AUROC']:.4f}"
+        )
+
+    rnd = next(r for r in results if r["signal"] == 0.0)
+    cor = next(r for r in results if r["signal"] > 0.0)
+    rnd_ok = bool(rnd["within_null_band"])
+    cor_ok = bool(float(cor["MI_corrected"]) > 3.0 * (float(cor["Restart_std"]) + float(cor.get("Null_std", 0.0)) + 1e-3))
+    print(f"[calibrate] random-control ~0: {'PASS' if rnd_ok else 'FAIL'}; "
+          f"correlated-control >0: {'PASS' if cor_ok else 'FAIL'}")
+    if not (rnd_ok and cor_ok):
+        raise SystemExit("[calibrate] FAILED: estimator/null/split miscalibrated -- do not scale to the full grid.")
+    print("[calibrate] PASS: estimator calibrated; safe to scale.")
 
 
 def _prompt_factorial(arr: dict[str, Any], pid: int) -> np.ndarray | None:
@@ -1637,6 +1925,10 @@ def main(argv: list[str] | None = None) -> None:
         generate_dataset_per_step(args)
     if args.mode in {"per_step_train", "per_step"}:
         run_per_step_critics(args)
+    if args.mode == "per_step_plot":
+        plot_per_step_mi(args)
+    if args.mode == "per_step_calibrate":
+        run_per_step_calibrate(args)
     if args.mode == "decompose":
         run_decompose(args)
 

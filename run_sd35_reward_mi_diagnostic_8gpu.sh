@@ -29,8 +29,8 @@ MODE="${MODE:-full}"
 N_PROMPTS="${N_PROMPTS:-50}"
 N_SEEDS="${N_SEEDS:-16}"
 N_REWRITES="${N_REWRITES:-3}"
-CFG_SCALES="${CFG_SCALES:-1.0 3.0 5.0 7.0 9.0}"
-DEFAULT_CFG="${DEFAULT_CFG:-5.0}"
+CFG_SCALES="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.5}"
+DEFAULT_CFG="${DEFAULT_CFG:-1.0}"
 SEED_BASE="${SEED_BASE:-42}"
 REWARD_NOISE_STD="${REWARD_NOISE_STD:-0.01}"
 
@@ -65,6 +65,11 @@ PER_STEP_DATASET_CSV="${PER_STEP_DATASET_CSV:-${OUT_DIR}/mi_perstep_sd35_dataset
 PER_STEP_REPORT_JSON="${PER_STEP_REPORT_JSON:-${OUT_DIR}/mi_perstep_sd35_report.json}"
 PER_STEP_TABLE_CSV="${PER_STEP_TABLE_CSV:-${OUT_DIR}/mi_perstep_sd35_table.csv}"
 PER_STEP_BASELINE_VARIANT="${PER_STEP_BASELINE_VARIANT:-0}"
+PER_STEP_N_NOISE="${PER_STEP_N_NOISE:-16}"        # noise-channel CRN grid (0 disables)
+PER_STEP_NOISE_SEED_BASE="${PER_STEP_NOISE_SEED_BASE:-900000}"
+PER_STEP_TEST_FRAC="${PER_STEP_TEST_FRAC:-0.2}"   # held-out test split; MI reported on it
+PER_STEP_UNCLAMPED="${PER_STEP_UNCLAMPED:-1}"      # 1 -> report raw mi_real-mi_null (no max(0,.))
+PER_STEP_PLOT_PNG="${PER_STEP_PLOT_PNG:-${OUT_DIR}/mi_perstep_sd35_curve.png}"
 
 # Resolve the mode family: root (generate/train/full) vs per-step. Per-step
 # shards the same way but emits step_idx; training derives variant_k/cfg_k/joint_k.
@@ -176,7 +181,11 @@ if [[ "${DO_GEN}" == "1" ]]; then
       --resume
     )
     if [[ "${MODE}" == per_step* ]]; then
-      SHARD_CMD+=(--per_step_baseline_variant "${PER_STEP_BASELINE_VARIANT}")
+      SHARD_CMD+=(
+        --per_step_baseline_variant "${PER_STEP_BASELINE_VARIANT}"
+        --per_step_n_noise "${PER_STEP_N_NOISE}"
+        --per_step_noise_seed_base "${PER_STEP_NOISE_SEED_BASE}"
+      )
     fi
     if [[ ${#QWEN_ARGS[@]} -gt 0 ]]; then
       SHARD_CMD+=("${QWEN_ARGS[@]}")
@@ -283,7 +292,14 @@ if [[ "${DO_TRAIN}" == "1" ]]; then
       --per_step_table_csv "${PER_STEP_TABLE_CSV}"
       --per_step_report_json "${PER_STEP_REPORT_JSON}"
       --per_step_baseline_variant "${PER_STEP_BASELINE_VARIANT}"
+      --per_step_test_frac "${PER_STEP_TEST_FRAC}"
+      --per_step_plot_png "${PER_STEP_PLOT_PNG}"
     )
+    if [[ "${PER_STEP_UNCLAMPED}" == "1" ]]; then
+      TRAIN_CMD+=(--per_step_unclamped)
+    else
+      TRAIN_CMD+=(--no-per_step_unclamped)
+    fi
   else
     TRAIN_CMD+=(
       --dataset_csv "${MERGED_CSV}"

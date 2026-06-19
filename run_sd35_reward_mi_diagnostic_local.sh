@@ -14,8 +14,8 @@ MODE="${MODE:-full}"  # generate | train | full
 N_PROMPTS="${N_PROMPTS:-50}"
 N_SEEDS="${N_SEEDS:-16}"        # set 8 for pilot
 N_REWRITES="${N_REWRITES:-3}"   # original + 3 rewrites = 4 variants
-CFG_SCALES="${CFG_SCALES:-1.0 3.0 5.0 7.0 9.0}"
-DEFAULT_CFG="${DEFAULT_CFG:-5.0}"
+CFG_SCALES="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.5}"
+DEFAULT_CFG="${DEFAULT_CFG:-1.0}"
 REWARD_NOISE_STD="${REWARD_NOISE_STD:-0.01}"
 SEED_BASE="${SEED_BASE:-42}"
 

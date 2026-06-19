@@ -2140,7 +2140,30 @@ def run_schedule_actions(
     seed: int,
     actions: list[tuple[int, float, float]],
     deterministic_noise: bool = False,
+    step_noise_seeds: dict[int, int] | None = None,
+    score_prompt: str | None = None,
 ) -> SearchResult:
+    """Run a fixed per-step action schedule from a seeded root trajectory.
+
+    step_noise_seeds is the per-step-noise intervention hook used by the
+    per-step MI diagnostic noise channel. For every step index in the mapping
+    the injected noise (or the root latent, for step 0) is drawn from a
+    dedicated generator seeded with the mapped value, while *all other* steps
+    keep drawing from the global RNG that deterministic_noise reseeds to `seed`.
+    Because the override uses a side generator and never touches the global RNG,
+    the non-intervened noise is common-random-numbers identical across every
+    action value at the same step (CRN), so the only thing differing within a
+    sweep is the intervened step's noise -> the reward delta is attributable to
+    that one decision.
+
+    Euler/ODE backbones: _prepare_latents ignores the per-step noise for
+    step_idx > 0 (deterministic flow), so only the step-0 root override has any
+    effect; interior noise channels are structurally inert by construction.
+
+    score_prompt (when set) is the prompt the image is scored against, which may
+    differ from `prompt` used for reward correction -- the per-step prompt
+    channel sweeps the conditioning variant but must always score against c0.
+    """
     if len(actions) != args.steps:
         raise RuntimeError(f"Schedule length {len(actions)} does not match steps={args.steps}")
     if deterministic_noise:
@@ -2148,19 +2171,28 @@ def run_schedule_actions(
         if str(ctx.device).startswith("cuda"):
             torch.cuda.manual_seed_all(int(seed))
 
-    latents = make_latents(ctx, seed, args.height, args.width, emb.cond_text[0].dtype)
+    overrides = {int(k): int(v) for k, v in (step_noise_seeds or {}).items()}
+    dtype = emb.cond_text[0].dtype
+    root_seed = overrides.get(0, int(seed))
+    latents = make_latents(ctx, root_seed, args.height, args.width, dtype)
     dx = torch.zeros_like(latents)
     use_euler = getattr(args, "euler_sampler", False)
+    exec_device = torch.device(ctx.device) if isinstance(ctx.device, str) else ctx.device
     sched = step_schedule(ctx.device, latents.dtype, args.steps,
                           getattr(args, "sigmas", None), euler=use_euler)
     for step_idx, ((t_flat, t_4d, dt), (variant_idx, cfg, cs)) in enumerate(zip(sched, actions)):
-        latents = _prepare_latents(latents, dx, torch.randn_like(latents), t_4d, step_idx, use_euler)
+        if step_idx > 0 and step_idx in overrides:
+            gen = torch.Generator(device=exec_device).manual_seed(int(overrides[step_idx]))
+            step_noise = torch.randn(latents.shape, device=latents.device, dtype=latents.dtype, generator=gen)
+        else:
+            step_noise = torch.randn_like(latents)
+        latents = _prepare_latents(latents, dx, step_noise, t_4d, step_idx, use_euler)
         flow = transformer_step(args, ctx, latents, emb, int(variant_idx), t_flat, float(cfg))
         latents, dx = _apply_step(latents, flow, dx, t_4d, dt, use_euler, args.x0_sampler)
         if float(cs) > 0.0:
             dx = apply_reward_correction(ctx, dx, prompt, reward_model, float(cs), cfg=float(cfg))
     image = decode_to_pil(ctx, _final_decode_tensor(latents, dx, use_euler))
-    score = score_image(reward_model, prompt, image)
+    score = score_image(reward_model, str(score_prompt) if score_prompt is not None else prompt, image)
     return SearchResult(image=image, score=score, actions=[(int(v), float(c), float(r)) for v, c, r in actions])
 
 

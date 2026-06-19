@@ -84,7 +84,17 @@ search:
       - export PER_STEP_DATASET_CSV=$$OUT_DIR/mi_perstep_sd35_dataset.csv
       - export PER_STEP_REPORT_JSON=$$OUT_DIR/mi_perstep_sd35_report.json
       - export PER_STEP_TABLE_CSV=$$OUT_DIR/mi_perstep_sd35_table.csv
+      - export PER_STEP_PLOT_PNG=$$OUT_DIR/mi_perstep_sd35_curve.png
       - export PER_STEP_BASELINE_VARIANT={per_step_baseline_variant}
+      - export PER_STEP_N_NOISE={per_step_n_noise}
+      - export PER_STEP_NOISE_SEED_BASE={per_step_noise_seed_base}
+      - export PER_STEP_TEST_FRAC={per_step_test_frac}
+      - export PER_STEP_UNCLAMPED={per_step_unclamped}
+      # Calibration guard: cheap synthetic pre-flight on the estimator+null+split
+      # (no diffusion). random control (signal=0) MI must sit in the null band of
+      # 0; correlated control (signal>0) MI must be clearly positive. SystemExit
+      # on miscalibration so we fail BEFORE burning 8-GPU generation hours.
+      - if [ {run_calibrate} = 1 ]; then /opt/conda/envs/ptca/bin/python sd35_reward_mi_diagnostic.py --mode per_step_calibrate --n_prompts {n_prompts} --n_seeds {n_seeds} --n_rewrites {n_rewrites} --mine_estimator {mine_estimator} --mine_steps {mine_steps} --mine_batch_size {mine_batch_size} --mine_restarts {mine_restarts} --mine_device cuda --per_step_test_frac {per_step_test_frac} $$([ {per_step_unclamped} = 1 ] && echo --per_step_unclamped || echo --no-per_step_unclamped); fi
       # 8-GPU sharded driver: splits prompts NUM_GPUS ways, runs N parallel
       # generate processes pinned to GPU 0..N-1, merges shard CSVs with globally
       # unique prompt_id, then runs MINE training once on the merged CSV.
@@ -117,10 +127,10 @@ search:
         - 3
     - name: cfg_scales
       values:
-        - "1.0 3.0 5.0 7.0 9.0"
+        - "1.0 1.25 1.5 1.75 2.0 2.5"
     - name: default_cfg
       values:
-        - 5.0
+        - 1.0
     - name: sd35_backend
       values:
         - "sid"
@@ -144,10 +154,25 @@ search:
         - 3
     - name: mine_estimator
       values:
-        - "smile" # smile (tau-clipped DV, lower variance) or dv
+        - "infonce" # infonce (per-prompt KxK block, bound capped at log K) | smile | dv
     - name: mine_early_stop_patience
       values:
         - 8
     - name: per_step_baseline_variant
       values:
         - 0
+    - name: per_step_n_noise
+      values:
+        - 16 # CRN noise-channel realizations per step (0 disables the noise channel)
+    - name: per_step_noise_seed_base
+      values:
+        - 900000
+    - name: per_step_test_frac
+      values:
+        - 0.2 # held-out test split; MI reported on it only
+    - name: per_step_unclamped
+      values:
+        - 1 # 1 -> report raw mi_real-mi_null (no max(0,.), no H(C) clamp)
+    - name: run_calibrate
+      values:
+        - 1 # 1 -> run synthetic calibration guard before the full grid

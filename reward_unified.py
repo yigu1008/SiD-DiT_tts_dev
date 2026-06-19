@@ -189,7 +189,7 @@ class UnifiedRewardScorer:
         max_new_tokens: int = 512,
         unifiedreward_prompt_mode: str = "standard",
     ) -> None:
-        valid = {"auto", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "all", "unified", "unifiedreward", "composite_hpsv3_ir", "composite_ir_ps", "composite_all4"}
+        valid = {"auto", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "all", "unified", "unifiedreward", "composite_hpsv3_ir", "composite_ir_ps", "composite_3", "composite_all4"}
         if backend not in valid:
             raise ValueError(f"Unsupported backend: {backend}")
         if unifiedreward_prompt_mode not in {"standard", "strict"}:
@@ -297,9 +297,9 @@ class UnifiedRewardScorer:
     def _load_backends(self) -> None:
         target = "unifiedreward" if self.backend == "unified" else self.backend
         need_unifiedreward = target in {"unifiedreward", "auto"}
-        need_imagereward = target in {"imagereward", "blend", "auto", "all", "composite_hpsv3_ir", "composite_ir_ps", "composite_all4"}
-        need_pickscore = target in {"pickscore", "auto", "all", "composite_ir_ps", "composite_all4"}
-        need_hpsv3 = target in {"hpsv3", "blend", "auto", "all", "composite_hpsv3_ir", "composite_all4"}
+        need_imagereward = target in {"imagereward", "blend", "auto", "all", "composite_hpsv3_ir", "composite_ir_ps", "composite_3", "composite_all4"}
+        need_pickscore = target in {"pickscore", "auto", "all", "composite_ir_ps", "composite_3", "composite_all4"}
+        need_hpsv3 = target in {"hpsv3", "blend", "auto", "all", "composite_hpsv3_ir", "composite_3", "composite_all4"}
         need_hpsv2 = target in {"hpsv2", "blend", "auto", "all", "composite_all4"}
 
         # ── Reward server (separate conda env) ──────────────────────────
@@ -1585,6 +1585,26 @@ class UnifiedRewardScorer:
         span = max(1e-6, hi - lo)
         return (float(val) - lo) / span
 
+    def _score_composite_3(self, prompt: str, image: Image.Image) -> float:
+        """Equal-weight average of {imagereward, hpsv3, pickscore} after
+        min-max normalization to [0,1].
+
+        Unlike composite_all4 this excludes HPSv2 by design — it's the
+        triple-reward search target (IR + HPSv3 + PickScore).  All three
+        components are required; raises if any is missing rather than
+        silently degrading, so a misconfigured reward server fails loud.
+        """
+        ir_lo, ir_hi = self._COMPOSITE_IR_RANGE
+        hpsv3_lo, hpsv3_hi = self._COMPOSITE_HPSV3_RANGE
+        ps_lo, ps_hi = self._COMPOSITE_PICKSCORE_RANGE
+        missing = [b for b in ("imagereward", "hpsv3", "pickscore") if b not in self.available]
+        if missing:
+            raise RuntimeError(f"composite_3 requires imagereward+hpsv3+pickscore; missing {missing}.")
+        ir = self._norm(float(self._score_imagereward(prompt, image)), ir_lo, ir_hi)
+        h = self._norm(float(self._score_hpsv3(prompt, image)), hpsv3_lo, hpsv3_hi)
+        ps = self._norm(float(self._score_pickscore(prompt, image)), ps_lo, ps_hi)
+        return float((ir + h + ps) / 3.0)
+
     def _score_composite_all4(self, prompt: str, image: Image.Image) -> float:
         """Equal-weight average of {imagereward, hpsv3, hpsv2, pickscore}
         after min-max normalization to [0,1].
@@ -1689,6 +1709,8 @@ class UnifiedRewardScorer:
             return self._score_composite_hpsv3_ir(prompt, image)
         if target == "composite_ir_ps":
             return self._score_composite_ir_ps(prompt, image)
+        if target == "composite_3":
+            return self._score_composite_3(prompt, image)
         if target == "composite_all4":
             return self._score_composite_all4(prompt, image)
         if target == "all":

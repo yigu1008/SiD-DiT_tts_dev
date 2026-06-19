@@ -141,9 +141,12 @@ search:
       - export START_INDEX={start_index}
       - export END_INDEX={end_index}
       - export METHODS='{methods}'
-      - export REWARD_BACKEND=hpsv3
-      - export REWARD_TYPE=hpsv3
-      - export REWARD_BACKENDS=hpsv3
+      - export REWARD_BACKEND=composite_3
+      - export REWARD_TYPE=composite_3
+      - export REWARD_BACKENDS='imagereward hpsv3 pickscore'
+      # FLUX HPSv3 runs hot (~11-15); bump the composite HPSv3 upper bound so it
+      # isn't clipped at 1.0 before averaging (default HI=14).
+      - export COMPOSITE_HPSV3_HI=16
       - export EVAL_BEST_IMAGES=1
       - export EVAL_BACKENDS='{eval_backends}'
       - export REWARD_DEVICE=cuda
@@ -222,9 +225,11 @@ search:
       values: [ "YOUR_HF_TOKEN_HERE" ]
     - name: prompt_style
       values: [ "all" ]
-    # Curated human-portrait prompts, embedded inline as one '|'-delimited value.
+    # Curated diverse HPDv2 prompts (compositional / multi-object) chosen for
+    # reward headroom — replaces the saturated portrait set so test-time
+    # scaling has variance to exploit. Embedded inline as one '|'-delimited value.
     - name: prompts
-      values: [ "A close-up portrait of an elderly fisherman with a weathered face and kind eyes, soft natural light, highly detailed, photorealistic|Portrait of a young woman with freckles and curly red hair, golden hour sunlight, shallow depth of field, 85mm lens|A studio portrait of a confident businesswoman in a tailored suit, dramatic Rembrandt lighting, sharp focus|Portrait of an old man with a long white beard wearing a knitted sweater, warm window light, fine detail|A cinematic portrait of a soldier with a determined expression, rim lighting, moody atmosphere, film grain|Portrait of a smiling little girl holding a sunflower in a summer field, soft bokeh, natural light|A dramatic black-and-white portrait of a jazz musician holding a saxophone, high contrast lighting|Portrait of a graceful ballerina backstage, soft diffused light, elegant pose, detailed fabric|A portrait of a Maasai warrior in traditional dress, vivid colors, golden savanna light, ultra detailed|Portrait of a bearded chef in a busy kitchen, warm ambient light, candid expression, photorealistic|A serene portrait of a Buddhist monk in orange robes meditating, soft temple light, peaceful expression|Portrait of a glamorous woman in 1950s fashion with red lipstick, vintage studio lighting|A close-up portrait of an astronaut removing the helmet, reflective visor, dramatic spotlight|Portrait of a tattooed motorcyclist leaning on a vintage motorcycle, neon city light at night, cinematic|A gentle portrait of a grandmother knitting by the fireplace, warm golden light, cozy atmosphere|Portrait of a professional ballet dancer mid-leap against a dark background, dynamic motion, studio light" ]
+      values: [ "A kangaroo in an orange hoodie and blue sunglasses stands on the grass in front of the Sydney Opera House holding a Welcome Friends sign|A West Highland white terrier holding a Hug me sign|An ocelot sneaking through a bog in an oil painting|A fox wearing a yellow dress|A spring landscape painting featuring a treeless mountain village with melting lake ice, winding stone steps, and fog|A peaceful, nature-filled landscape with vibrant flowers and trees and a serene cloud-filled sky|A smiling man is cooking in his kitchen|A man rides a motorcycle down a dirt road|A girl is holding a large kite on a grassy field|A bottle of wine sitting on top of a table next to a glass of wine|A table topped with lots of food and drinks|A pink bicycle leaning against a green railing next to a canal|A modular dome house with a futuristic glass design, floating above a city in a cloudy atmosphere|An aircraft carrier perfectly encased within a glass bottle|A boy playing with a toy robot in a futuristic city|A unicorn with a car on its head" ]
     - name: start_index
       values: [ 0 ]
     # 16 curated portrait prompts (shared across all rungs and both models).
@@ -235,7 +240,7 @@ search:
     - name: eval_backends
       values: [ "hpsv3" ]
     - name: reward_server_backends
-      values: [ "hpsv3" ]
+      values: [ "imagereward hpsv3 pickscore" ]
     - name: reward_server_port
       values: [ 5100 ]
     - name: cfg_scales

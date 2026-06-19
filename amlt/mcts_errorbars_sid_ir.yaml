@@ -148,6 +148,12 @@ search:
       - export N_PROMPTS={n_prompts}
       - export SEARCH_REWARD={search_reward}
       - export METHODS="{methods}"
+      # MCTS rollout budget (honored over the sid dispatch default of 60).
+      - export N_SIMS={n_sims}
+      # Pinned-prompt-file A/B: when prompt_file is non-empty the driver uses it
+      # verbatim (bypassing cherry_pick), so the prompt set is identical across
+      # code versions / runs. Empty -> auto-generate (current cherry_pick path).
+      - export PROMPT_FILE="{prompt_file}"
       # Fresh per-step sampling noise in MCTS rollouts (re-draw torch.randn each
       # step) so MCTS matches the baseline's stochastic regime instead of the
       # default fixed/cached common-random-numbers sequence.
@@ -202,6 +208,15 @@ search:
     - name: methods
       values:
         - "baseline mcts"
+    - name: n_sims
+      values:
+        - 120 # MCTS rollouts/prompt (was sid-default 60); override -p n_sims=...
+    - name: prompt_file
+      # Empty -> auto-generate via cherry_pick (default). To A/B a fixed prompt
+      # set across code versions, pin a committed file, e.g.
+      #   -p prompt_file=./hpsv2_subset.txt -p n_prompts=20 -p seed_list="42"
+      values:
+        - ""
     # BON_N defaults to matched-NFE (76 for 4-step, 136 for sd35_base).
     # bon_actdiff_* uses the same N but spreads across the action bank.
     - name: neg_bank

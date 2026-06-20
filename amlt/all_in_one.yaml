@@ -127,7 +127,7 @@ search:
       # open_clip ViT-H-14 backbone + BPE vocab and pickscore's processor land
       # in the cache. CPU-only (CUDA_VISIBLE_DEVICES="") so it never contends
       # with the reward server already holding GPU 0. Non-fatal.
-      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "hpsv2" "open_clip_torch" || echo "[aio] ERROR: hpsv2/open_clip_torch pip install returned nonzero (see pip output above); eval will degrade to 3-way"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "open_clip_torch" "hpsv2x" || /opt/conda/envs/ptca/bin/pip install --no-cache-dir "open_clip_torch" "hpsv2" || echo "[aio] ERROR: hpsv2x/hpsv2 install failed (see pip output above); eval will degrade to 3-way"
       # Verify hpsv2 actually imports in the ptca env -- this is the env the
       # offline multi-reward eval runs in. Previously a failed install was
       # swallowed by "|| true" and only surfaced as "No module named hpsv2" at

@@ -161,8 +161,15 @@ echo "[setup_reward_env] Installing CLIP ..."
 echo "[setup_reward_env] Installing remaining deps ..."
 "${PIP}" install --no-cache-dir \
     "xxhash>=3.4.1" "ftfy>=6.2.3" "regex>=2024.11.6" "tqdm>=4.66.4" \
-    "open-clip-torch" "hpsv2" "clint" \
+    "open-clip-torch" "clint" \
     "pillow>=10.0.0" "numpy>=1.24.0" "scipy>=1.10.0"
+
+# hpsv2x is the drop-in fork bundling the BPE vocab (bpe_simple_vocab_16e6.txt.gz)
+# that the official hpsv2 wheel omits -- without it hpsv2.score() raises at the
+# tokenizer. Fall back to plain hpsv2 only if hpsv2x is unavailable.
+"${PIP}" install --no-cache-dir "hpsv2x" || \
+    "${PIP}" install --no-cache-dir "hpsv2" || \
+    echo "[setup_reward_env] WARNING: hpsv2x/hpsv2 install failed"
 
 echo "[setup_reward_env] Verifying ..."
 "${PY}" -c "

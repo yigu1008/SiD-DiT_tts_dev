@@ -2494,11 +2494,12 @@ def run_ga(
     )
 
 
-def systematic_resample(weights: torch.Tensor) -> torch.Tensor:
-    k = int(weights.shape[0])
+def systematic_resample(weights: torch.Tensor, num_samples: int | None = None) -> torch.Tensor:
+    n = int(weights.shape[0])
+    m = n if num_samples is None else int(num_samples)
     cdf = torch.cumsum(weights, dim=0)
-    u = (torch.rand(1, device=weights.device) + torch.arange(k, device=weights.device)) / float(k)
-    return torch.searchsorted(cdf, u).clamp(0, k - 1)
+    u = (torch.rand(1, device=weights.device) + torch.arange(m, device=weights.device)) / float(m)
+    return torch.searchsorted(cdf, u).clamp(0, n - 1)
 
 
 @torch.no_grad()
@@ -2761,7 +2762,7 @@ def run_smc(
                     child_logw = child_logw + float(lam) * la_t
 
             child_weights = torch.softmax(child_logw, dim=0)
-            idx = systematic_resample(child_weights)
+            idx = systematic_resample(child_weights, num_samples=k)
             chosen = idx.tolist()
             latents = torch.cat([children_lat[int(i)] for i in chosen], dim=0)
             dx = torch.cat([children_dx[int(i)] for i in chosen], dim=0)

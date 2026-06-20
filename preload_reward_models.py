@@ -233,41 +233,68 @@ def _warm_pickscore(model_id: str) -> None:
 # HPSv2
 # ---------------------------------------------------------------------------
 
+def _set_hpsv2_root(hps_root: str) -> None:
+    """Point the hpsv2 package at HPS_ROOT. The package otherwise reads/writes
+    its own ~/.cache/hpsv2 and ignores the HPS_ROOT env entirely, so the staged
+    checkpoint is never found. Defensive across package versions."""
+    try:
+        import hpsv2
+        if hasattr(hpsv2, "set_root_path"):
+            hpsv2.set_root_path(hps_root)
+        else:
+            setattr(hpsv2, "root_path", hps_root)
+        _log(f"hpsv2 root_path set to {hps_root}")
+    except Exception as exc:
+        _log(f"WARNING: could not set hpsv2 root_path ({exc}); package will use its default cache")
+
+
 def preload_hpsv2() -> None:
     hps_root = os.environ.get("HPS_ROOT", str(Path.home() / ".cache" / "hpsv2"))
-    checkpoint = Path(hps_root) / "HPS_v2_compressed.pt"
+    # Scorers call hpsv2.score(..., hps_version="v2.1") everywhere, so the v2.1
+    # checkpoint is what must be staged -- NOT HPS_v2_compressed.pt (v2.0).
+    checkpoint = Path(hps_root) / "HPS_v2.1_compressed.pt"
     sentinel = _sentinel_path("hpsv2")
 
     have_ckpt = checkpoint.is_file() and checkpoint.stat().st_size > 0
 
     if LOCAL_RANK == 0:
+        Path(hps_root).mkdir(parents=True, exist_ok=True)
+        _set_hpsv2_root(hps_root)
         if have_ckpt:
-            _log(f"HPSv2 checkpoint already cached at {hps_root}")
+            _log(f"HPSv2.1 checkpoint already cached at {hps_root}")
         else:
-            _log("downloading HPSv2 checkpoint ...")
+            _log("downloading HPSv2.1 checkpoint ...")
             try:
-                _hf_download("xswu/HPSv2", "HPS_v2_compressed.pt", hps_root)
-                _log(f"HPSv2 checkpoint ready at {hps_root}")
+                _hf_download("xswu/HPSv2", "HPS_v2.1_compressed.pt", hps_root)
+                _log(f"HPSv2.1 checkpoint ready at {hps_root}")
             except Exception as exc:
-                _log(f"ERROR downloading HPSv2: {exc}")
+                _log(f"ERROR downloading HPSv2.1: {exc}")
                 raise
         if PRELOAD_WARM:
-            _warm_hpsv2()
+            # Strict when hpsv2 was explicitly requested -- a silent warm-up
+            # failure is exactly how hpsv2 has been vanishing from 4-way evals.
+            _warm_hpsv2(strict=("hpsv2" in BACKENDS))
         _mark_done("hpsv2")
     else:
         _wait_for_sentinel(sentinel, "HPSv2 checkpoint")
 
 
-def _warm_hpsv2() -> None:
-    """Run one real hpsv2.score() so the open_clip ViT-H-14 backbone and BPE
-    vocab — which hpsv2 lazily fetches on first call, NOT covered by the
-    checkpoint download — are cached for an offline eval. Non-fatal."""
+def _warm_hpsv2(strict: bool = False) -> None:
+    """Run one real hpsv2.score() so the open_clip ViT-H-14 backbone (and, on a
+    plain-hpsv2 install, the BPE vocab) — which hpsv2 lazily fetches on first
+    call, NOT covered by the checkpoint download — are cached for an offline
+    eval. Raises when strict (hpsv2 explicitly requested) so the failure is loud
+    instead of silently degrading the eval to a smaller reward set."""
     try:
         import hpsv2
         hpsv2.score([_dummy_image()], "a test prompt", hps_version="v2.1")
         _log("HPSv2 warm-up OK (open_clip backbone + BPE cached)")
     except Exception as exc:
-        _log(f"WARNING: HPSv2 warm-up failed (eval may skip it): {exc}")
+        msg = f"HPSv2 warm-up failed: {exc}"
+        if strict:
+            _log(f"ERROR: {msg} (hpsv2 explicitly requested -- failing loudly)")
+            raise
+        _log(f"WARNING: {msg} (eval may skip it)")
 
 
 # ---------------------------------------------------------------------------

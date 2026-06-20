@@ -156,6 +156,17 @@ def _load_imagereward(device: str, model_name: str = "ImageReward-v1.0"):
 def _load_hpsv2(device: str):
     """Load HPSv2."""
     import hpsv2
+    # Honor HPS_ROOT (the package otherwise ignores it and uses ~/.cache/hpsv2).
+    hps_root = os.environ.get("HPS_ROOT")
+    if hps_root:
+        try:
+            if hasattr(hpsv2, "set_root_path"):
+                hpsv2.set_root_path(hps_root)
+            else:
+                setattr(hpsv2, "root_path", hps_root)
+        except Exception:
+            pass
+
     # Just use the hpsv2.score API
     def score_fn(prompt: str, image: Image.Image) -> float:
         import tempfile
@@ -168,6 +179,11 @@ def _load_hpsv2(device: str):
         finally:
             os.unlink(tmp_path)
 
+    # Fail at LOAD, not per-request: run one dummy score so a broken install
+    # (missing BPE vocab / absent v2.1 checkpoint) surfaces here and main()
+    # leaves hpsv2 out of _scorers -- instead of /health advertising it healthy
+    # and every /score request 500-ing.
+    _ = score_fn("a test prompt", Image.new("RGB", (64, 64)))
     return score_fn
 
 

@@ -237,6 +237,13 @@ with open(out_csv, "w", encoding="utf-8", newline="") as fout:
                 writer = csv.DictWriter(fout, fieldnames=header)
                 writer.writeheader()
             for row in reader:
+                # Column-shifted rows (partial writes / unescaped delimiters)
+                # land surplus values under the restkey None and missing
+                # trailing fields read back as None; either way the columns
+                # are misaligned, so skip rather than crash on writerow.
+                if None in row or any(v is None for v in row.values()):
+                    shard_skipped += 1
+                    continue
                 try:
                     pid = int(row["prompt_id"])
                 except (ValueError, TypeError, KeyError):

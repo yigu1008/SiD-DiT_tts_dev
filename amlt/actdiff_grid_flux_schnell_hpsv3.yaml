@@ -105,7 +105,7 @@ search:
       - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; fi'
       - $$REWARD_PY -c "import ImageReward; print('[verify] ImageReward', ImageReward.__file__)"
       # ?? Reward server (HPSv3 + ImageReward -- composite needs both) ----
-      - export REWARD_BACKENDS_SERVER='hpsv3'
+      - export REWARD_BACKENDS_SERVER='hpsv3 imagereward'
       - export STAGE_REWARD_WEIGHTS_LOCAL=1
       - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
       - REWARD_BACKENDS="$$REWARD_BACKENDS_SERVER" $$REWARD_PY preload_reward_models.py
@@ -164,9 +164,10 @@ search:
     - name: composite_backends
       values: [ "flux_schnell" ]
     - name: composite_methods
-      # FLUX has bon_actdiff_{cfg,full} and sop_actdiff_{cfg,full} aliases.
-      # SMC ActDiff for FLUX is not yet wired (uses fixed CFG).
-      values: [ "baseline bon bon_actdiff_cfg bon_actdiff_full das das_actdiff_full sop sop_actdiff_cfg sop_actdiff_full fksteering_actdiff_full bon_mcts" ]
+      # hpsv3-guided full-tier actdiff trio (SMC / DAS / SoP) + references.
+      # fksteering_actdiff_full = SMC actdiff (FK-steering, diff potential);
+      # das_actdiff_full = DAS actdiff; sop_actdiff_full = SoP actdiff.
+      values: [ "baseline fksteering_actdiff_full das_actdiff_full sop_actdiff_full bon_mcts" ]
     - name: composite_n_prompts
       values: [ 200 ]
     - name: composite_seeds

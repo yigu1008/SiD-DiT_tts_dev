@@ -109,7 +109,8 @@ search:
   params:
     - name: mode
       values:
-        - "per_step" # per-step marginal MI: sweep one step's action on a shared root trajectory
+        - "per_step"       # full: generate OSD dataset + MINE critics + variance/paired decompose
+        - "per_step_train" # reuse existing dataset: MINE critics + variance/paired decompose only (no regen)
     - name: run_tag
       values:
         - "sd35_reward_mi_diagnostic_perstep"

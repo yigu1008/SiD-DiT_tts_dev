@@ -69,6 +69,7 @@ PER_STEP_N_NOISE="${PER_STEP_N_NOISE:-16}"        # noise-channel CRN grid (0 di
 PER_STEP_NOISE_SEED_BASE="${PER_STEP_NOISE_SEED_BASE:-900000}"
 PER_STEP_TEST_FRAC="${PER_STEP_TEST_FRAC:-0.2}"   # held-out test split; MI reported on it
 PER_STEP_UNCLAMPED="${PER_STEP_UNCLAMPED:-1}"      # 1 -> report raw mi_real-mi_null (no max(0,.))
+PER_STEP_CRN_RESIDUALIZE="${PER_STEP_CRN_RESIDUALIZE:-1}"  # 1 -> center reward within (prompt,seed); conditional MI
 PER_STEP_PLOT_PNG="${PER_STEP_PLOT_PNG:-${OUT_DIR}/mi_perstep_sd35_curve.png}"
 PER_STEP_DECOMPOSE_TABLE_CSV="${PER_STEP_DECOMPOSE_TABLE_CSV:-${OUT_DIR}/mi_perstep_sd35_decompose.csv}"
 PER_STEP_DECOMPOSE_REPORT_JSON="${PER_STEP_DECOMPOSE_REPORT_JSON:-${OUT_DIR}/mi_perstep_sd35_decompose.json}"
@@ -308,6 +309,11 @@ if [[ "${DO_TRAIN}" == "1" ]]; then
       TRAIN_CMD+=(--per_step_unclamped)
     else
       TRAIN_CMD+=(--no-per_step_unclamped)
+    fi
+    if [[ "${PER_STEP_CRN_RESIDUALIZE}" == "1" ]]; then
+      TRAIN_CMD+=(--per_step_crn_residualize)
+    else
+      TRAIN_CMD+=(--no-per_step_crn_residualize)
     fi
   else
     TRAIN_CMD+=(

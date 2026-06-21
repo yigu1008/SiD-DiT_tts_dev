@@ -194,6 +194,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--per_step_unclamped", action=argparse.BooleanOptionalAction, default=True,
         help="Report mi_corrected = mi_real - mi_null without the max(0,.) floor or H(C) clamp.",
     )
+    p.add_argument(
+        "--per_step_crn_residualize", action=argparse.BooleanOptionalAction, default=True,
+        help="Center reward within each (prompt_id, seed_id) CRN block before the per-step "
+        "MINE/InfoNCE estimator. This removes the per-root baseline (the dominant seed-variance "
+        "nuisance, eta2_seed~0.92-0.999) so the estimator measures conditional MI "
+        "I(action; R | prompt, seed) instead of the seed-swamped marginal I(action; R). "
+        "Off -> legacy raw-reward marginal MI.",
+    )
     p.add_argument("--per_step_plot_png", default="./mi_perstep_sd35_curve.png")
     return p.parse_args(argv)
 
@@ -418,6 +426,37 @@ def _standardize_reward(arr: dict[str, np.ndarray], tag: str) -> dict[str, np.nd
     arr["reward_std"] = np.float32(std)
     print(f"[{tag}] standardized reward: mean={mean:.4f} std={std:.4f} (z-scored for critic conditioning)")
     return arr
+
+
+def _crn_residualize_reward(
+    reward: np.ndarray, prompt_id: np.ndarray, seed_id: np.ndarray
+) -> np.ndarray:
+    """Center reward within each (prompt_id, seed_id) CRN block.
+
+    The per-step OSD design fixes the root trajectory and sweeps only the
+    action at step k, so within one (prompt, seed) block every row shares the
+    same root. Subtracting that block's mean removes the per-root baseline --
+    the seed-variance nuisance that dominates total reward variance
+    (eta2_seed ~ 0.92-0.999) and that biases the marginal MI estimate toward 0.
+    What remains is the action-attributable residual, so a downstream estimator
+    measures the conditional MI I(action; R | prompt, seed). Variance reduction
+    by exact differencing -- the MI analogue of the paired CRN-delta / reachable
+    -gap statistics in run_per_step_decompose.
+    """
+    out = reward.astype(np.float32, copy=True)
+    pair = np.stack([prompt_id.astype(np.int64), seed_id.astype(np.int64)], axis=1)
+    _, inv = np.unique(pair, axis=0, return_inverse=True)
+    inv = np.asarray(inv).reshape(-1)  # numpy>=2.0 may return inv with shape (N,1)
+    n_groups = int(inv.max()) + 1 if inv.size else 0
+    if n_groups == 0:
+        return out
+    sums = np.zeros(n_groups, dtype=np.float64)
+    cnts = np.zeros(n_groups, dtype=np.float64)
+    np.add.at(sums, inv, out.astype(np.float64))
+    np.add.at(cnts, inv, 1.0)
+    means = (sums / np.maximum(cnts, 1.0)).astype(np.float32)
+    out -= means[inv]
+    return out
 
 
 def load_dataset(csv_path: str) -> dict[str, Any]:
@@ -1490,6 +1529,7 @@ def run_per_step_critics(args: argparse.Namespace) -> None:
 
     test_frac = float(args.per_step_test_frac)
     clamp_corrected = not bool(args.per_step_unclamped)
+    crn_residualize = bool(args.per_step_crn_residualize)
 
     all_rows: list[dict[str, Any]] = []
     report: dict[str, Any] = {
@@ -1502,8 +1542,14 @@ def run_per_step_critics(args: argparse.Namespace) -> None:
         "estimator": str(args.mine_estimator),
         "test_frac": test_frac,
         "clamp_corrected": clamp_corrected,
+        "crn_residualize": crn_residualize,
         "steps": [],
     }
+    if crn_residualize:
+        print(
+            "[per_step] CRN residualization ON: reward centered within (prompt,seed) blocks "
+            "-> estimator reports conditional MI I(action; R | prompt, seed)."
+        )
 
     seed_off = 0
     for k in step_ids:
@@ -1521,6 +1567,18 @@ def run_per_step_critics(args: argparse.Namespace) -> None:
             if n_rows < 8:
                 print(f"[per_step] skip step={k} channel={cname}: only {n_rows} rows")
                 continue
+
+            if crn_residualize:
+                # Difference out the per-root (prompt,seed) baseline, then
+                # re-standardize the residual to unit scale so the MINE/InfoNCE
+                # input stays well-conditioned (affine -> MI-invariant).
+                resid = _crn_residualize_reward(
+                    subset["reward"], subset["prompt_id"], data["seed_id"][mask]
+                )
+                rstd = float(resid.std())
+                if rstd > 1e-8:
+                    resid = (resid / rstd).astype(np.float32)
+                subset["reward"] = resid
 
             ch = _run_channel(
                 subset, controls, n_prompts, args, seed_offset=seed_off,

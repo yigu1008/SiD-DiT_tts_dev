@@ -90,6 +90,7 @@ search:
       - export PER_STEP_NOISE_SEED_BASE={per_step_noise_seed_base}
       - export PER_STEP_TEST_FRAC={per_step_test_frac}
       - export PER_STEP_UNCLAMPED={per_step_unclamped}
+      - export PER_STEP_CRN_RESIDUALIZE={per_step_crn_residualize}
       # Calibration guard: cheap synthetic pre-flight on the estimator+null+split
       # (no diffusion). random control (signal=0) MI must sit in the null band of
       # 0; correlated control (signal>0) MI must be clearly positive. SystemExit
@@ -174,6 +175,9 @@ search:
     - name: per_step_unclamped
       values:
         - 1 # 1 -> report raw mi_real-mi_null (no max(0,.), no H(C) clamp)
+    - name: per_step_crn_residualize
+      values:
+        - 1 # 1 -> center reward within (prompt,seed) CRN blocks; estimator reports conditional MI I(action;R|prompt,seed) instead of seed-swamped marginal MI
     - name: run_calibrate
       values:
         - 1 # 1 -> run synthetic calibration guard before the full grid

@@ -70,6 +70,8 @@ PER_STEP_NOISE_SEED_BASE="${PER_STEP_NOISE_SEED_BASE:-900000}"
 PER_STEP_TEST_FRAC="${PER_STEP_TEST_FRAC:-0.2}"   # held-out test split; MI reported on it
 PER_STEP_UNCLAMPED="${PER_STEP_UNCLAMPED:-1}"      # 1 -> report raw mi_real-mi_null (no max(0,.))
 PER_STEP_PLOT_PNG="${PER_STEP_PLOT_PNG:-${OUT_DIR}/mi_perstep_sd35_curve.png}"
+PER_STEP_DECOMPOSE_TABLE_CSV="${PER_STEP_DECOMPOSE_TABLE_CSV:-${OUT_DIR}/mi_perstep_sd35_decompose.csv}"
+PER_STEP_DECOMPOSE_REPORT_JSON="${PER_STEP_DECOMPOSE_REPORT_JSON:-${OUT_DIR}/mi_perstep_sd35_decompose.json}"
 
 # Resolve the mode family: root (generate/train/full) vs per-step. Per-step
 # shards the same way but emits step_idx; training derives variant_k/cfg_k/joint_k.
@@ -315,6 +317,18 @@ if [[ "${DO_TRAIN}" == "1" ]]; then
     )
   fi
   CUDA_VISIBLE_DEVICES="${MINE_GPU:-0}" "${TRAIN_CMD[@]}"
+
+  # Variance-based effect sizes on the same merged OSD dataset (CPU-only, cheap).
+  # Complements the MINE/InfoNCE table, which is biased low in nats.
+  if [[ "${MODE}" == per_step* ]]; then
+    echo "[8gpu] running per-step variance decomposition (Sobol/gap/cfg-slope)."
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/sd35_reward_mi_diagnostic.py" \
+      --mode per_step_decompose \
+      --per_step_dataset_csv "${MERGED_CSV}" \
+      --per_step_baseline_variant "${PER_STEP_BASELINE_VARIANT}" \
+      --per_step_decompose_table_csv "${PER_STEP_DECOMPOSE_TABLE_CSV}" \
+      --per_step_decompose_report_json "${PER_STEP_DECOMPOSE_REPORT_JSON}"
+  fi
 fi
 
 echo "[8gpu] done."

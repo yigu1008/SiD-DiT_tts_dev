@@ -47,6 +47,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "per_step_plot",
             "per_step_calibrate",
             "decompose",
+            "per_step_decompose",
         ],
         default="full",
         help=(
@@ -167,6 +168,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # Variance-decomposition (decompose) knobs
     p.add_argument("--decompose_table_csv", default="./mi_diag_sd35_decompose.csv")
     p.add_argument("--decompose_report_json", default="./mi_diag_sd35_decompose.json")
+    p.add_argument("--per_step_decompose_table_csv", default="./mi_perstep_sd35_decompose.csv")
+    p.add_argument("--per_step_decompose_report_json", default="./mi_perstep_sd35_decompose.json")
 
     # Per-step (per_step_*) marginal-MI knobs
     p.add_argument("--per_step_dataset_csv", default="./mi_perstep_sd35_dataset.csv")
@@ -1913,6 +1916,209 @@ def run_decompose(args: argparse.Namespace) -> None:
     print(f"[decompose] wrote report: {report_json}")
 
 
+def _perstep_factorial(
+    data: dict[str, np.ndarray], step: int, pid: int, grid_mask: np.ndarray
+) -> np.ndarray | None:
+    """Balanced seed×variant×cfg reward tensor for one (step, prompt) cell.
+
+    Reads only the "grid"-channel one-step-deviation rows at the probed step:
+    every other step is held at baseline, so the variance across this tensor is
+    attributable purely to the action injected at step k on a shared root.
+    Returns (ns, nv, nc) or None if the cell is not a complete factorial.
+    """
+    mask = grid_mask & (data["step_idx"] == int(step)) & (data["prompt_id"] == int(pid))
+    s = data["seed_id"][mask]
+    v = data["variant_id"][mask]
+    c = data["cfg_id"][mask]
+    r = data["reward"][mask]
+    s_levels = np.unique(s)
+    v_levels = np.unique(v)
+    c_levels = np.unique(c)
+    ns, nv, nc = int(s_levels.size), int(v_levels.size), int(c_levels.size)
+    if int(r.size) != ns * nv * nc or ns == 0 or nv == 0 or nc == 0:
+        return None
+    s_idx = {int(x): i for i, x in enumerate(s_levels)}
+    v_idx = {int(x): i for i, x in enumerate(v_levels)}
+    c_idx = {int(x): i for i, x in enumerate(c_levels)}
+    grid = np.full((ns, nv, nc), np.nan, dtype=np.float64)
+    for si, vi, ci, ri in zip(s.tolist(), v.tolist(), c.tolist(), r.tolist()):
+        grid[s_idx[int(si)], v_idx[int(vi)], c_idx[int(ci)]] = float(ri)
+    if np.isnan(grid).any():
+        return None
+    return grid
+
+
+def run_per_step_decompose(args: argparse.Namespace) -> None:
+    """Per-step variance-based effect sizes on the existing one-step-deviation data.
+
+    An assumption-free complement to the per-step MINE/InfoNCE critics, which are
+    biased low in nats and read near-zero here. For each step k we read the
+    "grid"-channel rows (variant×cfg factorial swept at step k on a shared root,
+    all other steps at baseline) and report, per step:
+      - Sobol first-order indices (eta^2 SS fractions) for variant / cfg /
+        variant×cfg / seed-noise, via the same balanced two-way ANOVA as
+        `decompose`; these are scale-invariant and cannot diverge.
+      - CRN oracle gap = mean over seeds of (max_a R - min_a R): the reward
+        spread between the best and worst action at step k on the same root.
+      - cfg slope = dR/dcfg at step k (baseline variant), least-squares.
+    Reward is z-scored on load, so *_z columns are in SD units; *_raw columns
+    multiply back by the stored reward SD for natural reward units.
+    """
+    data = load_per_step_dataset(args.per_step_dataset_csv)
+    reward_std = float(data.get("reward_std", np.float32(1.0)))
+    chan_col = data.get("channel")
+    grid_mask = (
+        (chan_col == "grid") if chan_col is not None
+        else np.ones_like(data["prompt_id"], dtype=bool)
+    )
+    base_variant = int(args.per_step_baseline_variant)
+    pids = _safe_unique_sorted(data["prompt_id"])
+    step_ids = _safe_unique_sorted(data["step_idx"])
+
+    def _mean_sem(xs: list[float]) -> tuple[float, float, float]:
+        a = np.asarray(xs, dtype=np.float64)
+        if a.size == 0:
+            return 0.0, 0.0, 0.0
+        m = float(a.mean())
+        sem = float(a.std(ddof=1) / math.sqrt(a.size)) if a.size > 1 else 0.0
+        return m, sem, float(np.median(a))
+
+    all_rows: list[dict[str, Any]] = []
+    report: dict[str, Any] = {
+        "kind": "per_step_variance_decomposition",
+        "note": (
+            "Per-step one-step-deviation effect sizes. eta^2 are per-prompt "
+            "balanced-ANOVA SS fractions (Sobol first-order indices) averaged "
+            "across prompts; oracle_gap is the best-vs-worst action reward spread "
+            "at step k on a shared root (CRN); cfg_slope is dR/dcfg at step k. "
+            "*_z in reward-SD units, *_raw rescaled by the stored reward SD."
+        ),
+        "per_step_dataset_csv": str(Path(args.per_step_dataset_csv).expanduser().resolve()),
+        "reward_std": reward_std,
+        "baseline_variant": base_variant,
+        "steps": [],
+    }
+
+    for k in step_ids:
+        # eta^2 over modal complete-factorial prompts (balanced design)
+        grids: dict[int, np.ndarray] = {}
+        shape_counts: dict[tuple[int, int, int], int] = {}
+        for pid in pids:
+            g = _perstep_factorial(data, int(k), int(pid), grid_mask)
+            if g is None:
+                continue
+            grids[int(pid)] = g
+            shape_counts[g.shape] = shape_counts.get(g.shape, 0) + 1
+        modal_shape = (
+            max(shape_counts, key=lambda s: (shape_counts[s], s[0] * s[1] * s[2]))
+            if shape_counts else None
+        )
+
+        eta2 = {a: [] for a in ("seed", "cfg", "variant", "variant_x_cfg")}
+        gaps_z: list[float] = []
+        slopes_z: list[float] = []
+        used = 0
+        for pid in pids:
+            g = grids.get(int(pid))
+            if g is None or g.shape != modal_shape:
+                continue
+            d = _decompose_one(g)
+            eta2["seed"].append(d["eta2_seed"])
+            eta2["cfg"].append(d["eta2_cfg"])
+            eta2["variant"].append(d["eta2_variant"])
+            eta2["variant_x_cfg"].append(d["eta2_variant_x_cfg"])
+            # CRN oracle gap: per seed, best minus worst action at step k.
+            per_seed_gap = g.reshape(g.shape[0], -1)
+            gaps_z.append(float((per_seed_gap.max(axis=1) - per_seed_gap.min(axis=1)).mean()))
+            used += 1
+
+        # cfg slope at baseline variant: dR/dcfg per (prompt, seed), least-squares.
+        slope_mask = (
+            grid_mask
+            & (data["step_idx"] == int(k))
+            & (data["variant_id"] == base_variant)
+        )
+        sp = data["prompt_id"][slope_mask]
+        ss = data["seed_id"][slope_mask]
+        scfg = data["cfg_value"][slope_mask].astype(np.float64)
+        sr = data["reward"][slope_mask].astype(np.float64)
+        for pid in pids:
+            pm = sp == int(pid)
+            if not bool(pm.any()):
+                continue
+            seeds_here = np.unique(ss[pm])
+            for sd_ in seeds_here:
+                sm = pm & (ss == int(sd_))
+                x = scfg[sm]
+                y = sr[sm]
+                if x.size >= 2 and float(np.ptp(x)) > 1e-8:
+                    slopes_z.append(float(np.polyfit(x, y, 1)[0]))
+
+        ev_m, ev_sem, _ = _mean_sem(eta2["variant"])
+        ec_m, ec_sem, _ = _mean_sem(eta2["cfg"])
+        ei_m, ei_sem, _ = _mean_sem(eta2["variant_x_cfg"])
+        es_m, es_sem, _ = _mean_sem(eta2["seed"])
+        gap_m, gap_sem, _ = _mean_sem(gaps_z)
+        slope_m, slope_sem, _ = _mean_sem(slopes_z)
+
+        row = {
+            "Step": int(k),
+            "n_prompts_used": int(used),
+            "grid_dims": "x".join(str(d) for d in modal_shape) if modal_shape else "",
+            "eta2_variant": round(ev_m, 6),
+            "eta2_cfg": round(ec_m, 6),
+            "eta2_variant_x_cfg": round(ei_m, 6),
+            "eta2_seed": round(es_m, 6),
+            "oracle_gap_z": round(gap_m, 6),
+            "oracle_gap_raw": round(gap_m * reward_std, 6),
+            "cfg_slope_z": round(slope_m, 6),
+            "cfg_slope_raw": round(slope_m * reward_std, 6),
+        }
+        all_rows.append(row)
+        report["steps"].append({
+            "step": int(k),
+            "n_prompts_used": int(used),
+            "grid_dims": list(modal_shape) if modal_shape else None,
+            "eta2_variant": {"mean": ev_m, "sem": ev_sem},
+            "eta2_cfg": {"mean": ec_m, "sem": ec_sem},
+            "eta2_variant_x_cfg": {"mean": ei_m, "sem": ei_sem},
+            "eta2_seed": {"mean": es_m, "sem": es_sem},
+            "oracle_gap_z": {"mean": gap_m, "sem": gap_sem},
+            "oracle_gap_raw": {"mean": gap_m * reward_std, "sem": gap_sem * reward_std},
+            "cfg_slope_z": {"mean": slope_m, "sem": slope_sem},
+            "cfg_slope_raw": {"mean": slope_m * reward_std, "sem": slope_sem * reward_std},
+        })
+        print(
+            f"[per_step_decompose] step={int(k):2d} used={used:3d} "
+            f"eta2(var={ev_m:.4f} cfg={ec_m:.4f} vxc={ei_m:.4f} seed={es_m:.4f}) "
+            f"gap_z={gap_m:.4f} gap_raw={gap_m * reward_std:.4f} "
+            f"cfg_slope_raw={slope_m * reward_std:.4f}"
+        )
+
+    table_csv = str(Path(args.per_step_decompose_table_csv).expanduser().resolve())
+    os.makedirs(str(Path(table_csv).parent), exist_ok=True)
+    with open(table_csv, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "Step", "n_prompts_used", "grid_dims",
+                "eta2_variant", "eta2_cfg", "eta2_variant_x_cfg", "eta2_seed",
+                "oracle_gap_z", "oracle_gap_raw", "cfg_slope_z", "cfg_slope_raw",
+            ],
+        )
+        writer.writeheader()
+        for row in all_rows:
+            writer.writerow(row)
+
+    report_json = str(Path(args.per_step_decompose_report_json).expanduser().resolve())
+    os.makedirs(str(Path(report_json).parent), exist_ok=True)
+    with open(report_json, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+
+    print(f"[per_step_decompose] wrote table: {table_csv}")
+    print(f"[per_step_decompose] wrote report: {report_json}")
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     if args.mode in {"generate", "full", "per_step_generate", "per_step"} and not args.prompt_file:
@@ -1931,6 +2137,8 @@ def main(argv: list[str] | None = None) -> None:
         run_per_step_calibrate(args)
     if args.mode == "decompose":
         run_decompose(args)
+    if args.mode == "per_step_decompose":
+        run_per_step_decompose(args)
 
 
 if __name__ == "__main__":

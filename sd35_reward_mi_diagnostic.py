@@ -1958,8 +1958,14 @@ def run_per_step_decompose(args: argparse.Namespace) -> None:
       - Sobol first-order indices (eta^2 SS fractions) for variant / cfg /
         variant×cfg / seed-noise, via the same balanced two-way ANOVA as
         `decompose`; these are scale-invariant and cannot diverge.
-      - CRN oracle gap = mean over seeds of (max_a R - min_a R): the reward
-        spread between the best and worst action at step k on the same root.
+      - reachable_gap = best minus worst action at step k after averaging over
+        seeds FIRST (cancels per-instance noise) -> the expected-reward gain from
+        always steering to the best action; the honest, noise-debiased gap.
+      - oracle_gap = mean over seeds of (max_a R - min_a R): the clairvoyant
+        per-seed spread. Inflated by seed noise (max-of-noise bias), so kept only
+        as an upper bound next to reachable_gap.
+      - gap_snr = reachable_gap / seed-noise SD: reachable gain in units of the
+        irreducible per-instance noise.
       - cfg slope = dR/dcfg at step k (baseline variant), least-squares.
     Reward is z-scored on load, so *_z columns are in SD units; *_raw columns
     multiply back by the stored reward SD for natural reward units.
@@ -2016,6 +2022,8 @@ def run_per_step_decompose(args: argparse.Namespace) -> None:
 
         eta2 = {a: [] for a in ("seed", "cfg", "variant", "variant_x_cfg")}
         gaps_z: list[float] = []
+        gaps_sys_z: list[float] = []
+        snrs: list[float] = []
         slopes_z: list[float] = []
         used = 0
         for pid in pids:
@@ -2027,9 +2035,20 @@ def run_per_step_decompose(args: argparse.Namespace) -> None:
             eta2["cfg"].append(d["eta2_cfg"])
             eta2["variant"].append(d["eta2_variant"])
             eta2["variant_x_cfg"].append(d["eta2_variant_x_cfg"])
-            # CRN oracle gap: per seed, best minus worst action at step k.
-            per_seed_gap = g.reshape(g.shape[0], -1)
-            gaps_z.append(float((per_seed_gap.max(axis=1) - per_seed_gap.min(axis=1)).mean()))
+            # Clairvoyant per-seed gap: best minus worst action within each seed.
+            # Inflated by seed noise (max-of-noise bias), so report it only as an
+            # upper bound alongside the debiased systematic gap below.
+            per_seed = g.reshape(g.shape[0], -1)
+            gaps_z.append(float((per_seed.max(axis=1) - per_seed.min(axis=1)).mean()))
+            # Debiased reachable gap: average over seeds FIRST (cancels per-instance
+            # noise), then best minus worst action cell mean -> the expected-reward
+            # improvement from always steering to the best step-k action.
+            cell_means = g.mean(axis=0).reshape(-1)
+            gap_sys = float(cell_means.max() - cell_means.min())
+            gaps_sys_z.append(gap_sys)
+            sd_seed = float(d.get("sd_seed", 0.0))
+            if sd_seed > 1e-8:
+                snrs.append(gap_sys / sd_seed)
             used += 1
 
         # cfg slope at baseline variant: dR/dcfg per (prompt, seed), least-squares.
@@ -2059,6 +2078,8 @@ def run_per_step_decompose(args: argparse.Namespace) -> None:
         ei_m, ei_sem, _ = _mean_sem(eta2["variant_x_cfg"])
         es_m, es_sem, _ = _mean_sem(eta2["seed"])
         gap_m, gap_sem, _ = _mean_sem(gaps_z)
+        gsys_m, gsys_sem, _ = _mean_sem(gaps_sys_z)
+        snr_m, snr_sem, _ = _mean_sem(snrs)
         slope_m, slope_sem, _ = _mean_sem(slopes_z)
 
         row = {
@@ -2071,6 +2092,9 @@ def run_per_step_decompose(args: argparse.Namespace) -> None:
             "eta2_seed": round(es_m, 6),
             "oracle_gap_z": round(gap_m, 6),
             "oracle_gap_raw": round(gap_m * reward_std, 6),
+            "reachable_gap_z": round(gsys_m, 6),
+            "reachable_gap_raw": round(gsys_m * reward_std, 6),
+            "gap_snr": round(snr_m, 6),
             "cfg_slope_z": round(slope_m, 6),
             "cfg_slope_raw": round(slope_m * reward_std, 6),
         }
@@ -2085,13 +2109,17 @@ def run_per_step_decompose(args: argparse.Namespace) -> None:
             "eta2_seed": {"mean": es_m, "sem": es_sem},
             "oracle_gap_z": {"mean": gap_m, "sem": gap_sem},
             "oracle_gap_raw": {"mean": gap_m * reward_std, "sem": gap_sem * reward_std},
+            "reachable_gap_z": {"mean": gsys_m, "sem": gsys_sem},
+            "reachable_gap_raw": {"mean": gsys_m * reward_std, "sem": gsys_sem * reward_std},
+            "gap_snr": {"mean": snr_m, "sem": snr_sem},
             "cfg_slope_z": {"mean": slope_m, "sem": slope_sem},
             "cfg_slope_raw": {"mean": slope_m * reward_std, "sem": slope_sem * reward_std},
         })
         print(
             f"[per_step_decompose] step={int(k):2d} used={used:3d} "
             f"eta2(var={ev_m:.4f} cfg={ec_m:.4f} vxc={ei_m:.4f} seed={es_m:.4f}) "
-            f"gap_z={gap_m:.4f} gap_raw={gap_m * reward_std:.4f} "
+            f"reach_gap_raw={gsys_m * reward_std:.4f} snr={snr_m:.4f} "
+            f"clairvoyant_gap_raw={gap_m * reward_std:.4f} "
             f"cfg_slope_raw={slope_m * reward_std:.4f}"
         )
 
@@ -2103,7 +2131,9 @@ def run_per_step_decompose(args: argparse.Namespace) -> None:
             fieldnames=[
                 "Step", "n_prompts_used", "grid_dims",
                 "eta2_variant", "eta2_cfg", "eta2_variant_x_cfg", "eta2_seed",
-                "oracle_gap_z", "oracle_gap_raw", "cfg_slope_z", "cfg_slope_raw",
+                "oracle_gap_z", "oracle_gap_raw",
+                "reachable_gap_z", "reachable_gap_raw", "gap_snr",
+                "cfg_slope_z", "cfg_slope_raw",
             ],
         )
         writer.writeheader()

@@ -1918,13 +1918,16 @@ def run_decompose(args: argparse.Namespace) -> None:
 
 def _perstep_factorial(
     data: dict[str, np.ndarray], step: int, pid: int, grid_mask: np.ndarray
-) -> np.ndarray | None:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
     """Balanced seed×variant×cfg reward tensor for one (step, prompt) cell.
 
     Reads only the "grid"-channel one-step-deviation rows at the probed step:
     every other step is held at baseline, so the variance across this tensor is
     attributable purely to the action injected at step k on a shared root.
-    Returns (ns, nv, nc) or None if the cell is not a complete factorial.
+    Returns (grid, v_levels, c_levels) with grid of shape (ns, nv, nc), or None
+    if the cell is not a complete factorial. The level arrays give the
+    variant_id / cfg_id along the grid's axes (needed to locate the baseline
+    action cell for the paired CRN-delta test).
     """
     mask = grid_mask & (data["step_idx"] == int(step)) & (data["prompt_id"] == int(pid))
     s = data["seed_id"][mask]
@@ -1945,7 +1948,66 @@ def _perstep_factorial(
         grid[s_idx[int(si)], v_idx[int(vi)], c_idx[int(ci)]] = float(ri)
     if np.isnan(grid).any():
         return None
-    return grid
+    return grid, v_levels, c_levels
+
+
+def _paired_delta_stats(
+    delta_rows: list[np.ndarray],
+    baseline_flat_idx: int | None,
+    rng: np.random.Generator,
+    n_splits: int = 40,
+) -> dict[str, float]:
+    """Paired CRN-delta statistics at one step.
+
+    Each row of ``delta_rows`` is a (prompt, seed) pair's reward delta vector
+    R(action) - R(baseline action), flattened over the (variant×cfg) action
+    cells. Because both terms share the same root noise (CRN), the per-instance
+    seed noise differences out, so a small consistent action effect that the
+    unpaired MI/variance views drown in seed variance becomes detectable.
+
+      - best_delta / best_t : the single non-baseline action with the largest
+        mean paired delta, and its one-sample paired t-statistic (in-sample
+        selection, so best_delta is mildly optimistic -- read it with best_t).
+      - heldout_gain : winner's-curse-free reachable gain. Repeatedly split the
+        pairs in half, pick the best action on one half, evaluate its mean delta
+        on the other; average. Negative -> no action reliably beats baseline.
+      - frac_sig : fraction of non-baseline action cells with |paired t| > 2.
+    All values are in z (reward-SD) units; the caller rescales to raw.
+    """
+    out = {"best_delta": 0.0, "best_t": 0.0, "heldout_gain": 0.0, "frac_sig": 0.0, "n_pairs": 0}
+    if not delta_rows or baseline_flat_idx is None:
+        return out
+    D = np.concatenate(delta_rows, axis=0)
+    n, ncells = D.shape
+    out["n_pairs"] = int(n)
+    if n < 2 or ncells < 2:
+        return out
+    mean_d = D.mean(axis=0)
+    se = D.std(axis=0, ddof=1) / math.sqrt(n)
+    t = np.divide(mean_d, se, out=np.zeros_like(mean_d), where=se > 1e-12)
+    nb = np.ones(ncells, dtype=bool)
+    nb[int(baseline_flat_idx)] = False
+    nb_mean = mean_d[nb]
+    nb_t = t[nb]
+    best_local = int(np.argmax(nb_mean))
+    out["best_delta"] = float(nb_mean[best_local])
+    out["best_t"] = float(nb_t[best_local])
+    out["frac_sig"] = float(np.mean(np.abs(nb_t) > 2.0))
+    gains: list[float] = []
+    h = n // 2
+    if h >= 1:
+        for _ in range(int(n_splits)):
+            perm = rng.permutation(n)
+            a, b = perm[:h], perm[h:]
+            ma = D[a].mean(axis=0).copy()
+            mb = D[b].mean(axis=0)
+            ma[int(baseline_flat_idx)] = -np.inf  # never select baseline
+            gains.append(float(mb[int(np.argmax(ma))]))
+            mb_sel = mb.copy()
+            mb_sel[int(baseline_flat_idx)] = -np.inf
+            gains.append(float(ma[int(np.argmax(mb_sel))]) if np.isfinite(ma[int(np.argmax(mb_sel))]) else 0.0)
+    out["heldout_gain"] = float(np.mean(gains)) if gains else 0.0
+    return out
 
 
 def run_per_step_decompose(args: argparse.Namespace) -> None:
@@ -1981,6 +2043,18 @@ def run_per_step_decompose(args: argparse.Namespace) -> None:
     pids = _safe_unique_sorted(data["prompt_id"])
     step_ids = _safe_unique_sorted(data["step_idx"])
 
+    # Baseline cfg_id = the swept cfg level whose value is nearest the default
+    # cfg held on non-branched steps. Defines the reference action cell that the
+    # paired CRN-delta test differences against.
+    cfg_id_to_val: dict[int, float] = {}
+    for cid, cv in zip(data["cfg_id"].tolist(), data["cfg_value"].tolist()):
+        cfg_id_to_val.setdefault(int(cid), float(cv))
+    default_cfg_id = (
+        min(cfg_id_to_val, key=lambda cid: abs(cfg_id_to_val[cid] - float(args.default_cfg)))
+        if cfg_id_to_val else 0
+    )
+    rng = np.random.default_rng(20260620)
+
     def _mean_sem(xs: list[float]) -> tuple[float, float, float]:
         a = np.asarray(xs, dtype=np.float64)
         if a.size == 0:
@@ -1995,9 +2069,11 @@ def run_per_step_decompose(args: argparse.Namespace) -> None:
         "note": (
             "Per-step one-step-deviation effect sizes. eta^2 are per-prompt "
             "balanced-ANOVA SS fractions (Sobol first-order indices) averaged "
-            "across prompts; oracle_gap is the best-vs-worst action reward spread "
-            "at step k on a shared root (CRN); cfg_slope is dR/dcfg at step k. "
-            "*_z in reward-SD units, *_raw rescaled by the stored reward SD."
+            "across prompts; reachable_gap is the noise-debiased best-vs-worst "
+            "action reward spread at step k (seed-averaged); paired_* are CRN "
+            "paired-delta statistics (R(action)-R(baseline) per shared root), "
+            "with heldout_gain the winner's-curse-free reachable gain; cfg_slope "
+            "is dR/dcfg at step k. *_z in reward-SD units, *_raw rescaled by SD."
         ),
         "per_step_dataset_csv": str(Path(args.per_step_dataset_csv).expanduser().resolve()),
         "reward_std": reward_std,
@@ -2008,12 +2084,15 @@ def run_per_step_decompose(args: argparse.Namespace) -> None:
     for k in step_ids:
         # eta^2 over modal complete-factorial prompts (balanced design)
         grids: dict[int, np.ndarray] = {}
+        levels: dict[int, tuple[np.ndarray, np.ndarray]] = {}
         shape_counts: dict[tuple[int, int, int], int] = {}
         for pid in pids:
-            g = _perstep_factorial(data, int(k), int(pid), grid_mask)
-            if g is None:
+            res = _perstep_factorial(data, int(k), int(pid), grid_mask)
+            if res is None:
                 continue
+            g, v_levels, c_levels = res
             grids[int(pid)] = g
+            levels[int(pid)] = (v_levels, c_levels)
             shape_counts[g.shape] = shape_counts.get(g.shape, 0) + 1
         modal_shape = (
             max(shape_counts, key=lambda s: (shape_counts[s], s[0] * s[1] * s[2]))
@@ -2025,6 +2104,8 @@ def run_per_step_decompose(args: argparse.Namespace) -> None:
         gaps_sys_z: list[float] = []
         snrs: list[float] = []
         slopes_z: list[float] = []
+        delta_rows: list[np.ndarray] = []
+        baseline_flat_idx: int | None = None
         used = 0
         for pid in pids:
             g = grids.get(int(pid))
@@ -2049,7 +2130,19 @@ def run_per_step_decompose(args: argparse.Namespace) -> None:
             sd_seed = float(d.get("sd_seed", 0.0))
             if sd_seed > 1e-8:
                 snrs.append(gap_sys / sd_seed)
+            # Paired CRN-delta rows: R(action) - R(baseline action) per seed,
+            # differencing out the shared root noise.
+            v_lv, c_lv = levels[int(pid)]
+            bvi = np.where(v_lv == base_variant)[0]
+            bci = np.where(c_lv == default_cfg_id)[0]
+            if bvi.size and bci.size:
+                nc = g.shape[2]
+                base_col = g[:, int(bvi[0]), int(bci[0])]
+                delta_rows.append((g - base_col[:, None, None]).reshape(g.shape[0], -1))
+                baseline_flat_idx = int(bvi[0]) * nc + int(bci[0])
             used += 1
+
+        paired = _paired_delta_stats(delta_rows, baseline_flat_idx, rng)
 
         # cfg slope at baseline variant: dR/dcfg per (prompt, seed), least-squares.
         slope_mask = (
@@ -2095,6 +2188,13 @@ def run_per_step_decompose(args: argparse.Namespace) -> None:
             "reachable_gap_z": round(gsys_m, 6),
             "reachable_gap_raw": round(gsys_m * reward_std, 6),
             "gap_snr": round(snr_m, 6),
+            "paired_best_delta_z": round(paired["best_delta"], 6),
+            "paired_best_delta_raw": round(paired["best_delta"] * reward_std, 6),
+            "paired_best_t": round(paired["best_t"], 4),
+            "paired_heldout_gain_z": round(paired["heldout_gain"], 6),
+            "paired_heldout_gain_raw": round(paired["heldout_gain"] * reward_std, 6),
+            "paired_frac_sig": round(paired["frac_sig"], 4),
+            "paired_n_pairs": int(paired["n_pairs"]),
             "cfg_slope_z": round(slope_m, 6),
             "cfg_slope_raw": round(slope_m * reward_std, 6),
         }
@@ -2112,6 +2212,15 @@ def run_per_step_decompose(args: argparse.Namespace) -> None:
             "reachable_gap_z": {"mean": gsys_m, "sem": gsys_sem},
             "reachable_gap_raw": {"mean": gsys_m * reward_std, "sem": gsys_sem * reward_std},
             "gap_snr": {"mean": snr_m, "sem": snr_sem},
+            "paired": {
+                "best_delta_z": paired["best_delta"],
+                "best_delta_raw": paired["best_delta"] * reward_std,
+                "best_t": paired["best_t"],
+                "heldout_gain_z": paired["heldout_gain"],
+                "heldout_gain_raw": paired["heldout_gain"] * reward_std,
+                "frac_sig": paired["frac_sig"],
+                "n_pairs": paired["n_pairs"],
+            },
             "cfg_slope_z": {"mean": slope_m, "sem": slope_sem},
             "cfg_slope_raw": {"mean": slope_m * reward_std, "sem": slope_sem * reward_std},
         })
@@ -2119,7 +2228,8 @@ def run_per_step_decompose(args: argparse.Namespace) -> None:
             f"[per_step_decompose] step={int(k):2d} used={used:3d} "
             f"eta2(var={ev_m:.4f} cfg={ec_m:.4f} vxc={ei_m:.4f} seed={es_m:.4f}) "
             f"reach_gap_raw={gsys_m * reward_std:.4f} snr={snr_m:.4f} "
-            f"clairvoyant_gap_raw={gap_m * reward_std:.4f} "
+            f"paired(best_raw={paired['best_delta'] * reward_std:.4f} t={paired['best_t']:.2f} "
+            f"heldout_raw={paired['heldout_gain'] * reward_std:.4f} sig={paired['frac_sig']:.2f}) "
             f"cfg_slope_raw={slope_m * reward_std:.4f}"
         )
 
@@ -2133,6 +2243,9 @@ def run_per_step_decompose(args: argparse.Namespace) -> None:
                 "eta2_variant", "eta2_cfg", "eta2_variant_x_cfg", "eta2_seed",
                 "oracle_gap_z", "oracle_gap_raw",
                 "reachable_gap_z", "reachable_gap_raw", "gap_snr",
+                "paired_best_delta_z", "paired_best_delta_raw", "paired_best_t",
+                "paired_heldout_gain_z", "paired_heldout_gain_raw",
+                "paired_frac_sig", "paired_n_pairs",
                 "cfg_slope_z", "cfg_slope_raw",
             ],
         )

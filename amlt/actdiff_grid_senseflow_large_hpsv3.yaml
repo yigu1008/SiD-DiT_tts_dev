@@ -109,11 +109,12 @@ search:
       - $$REWARD_PY -m pip install --no-cache-dir --no-deps "datasets" "wandb" || true
       - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; fi'
       - $$REWARD_PY -c "import ImageReward; print('[verify] ImageReward', ImageReward.__file__)"
-      # ?? Reward server (hpsv3 + imagereward -- composite_hpsv3_ir served whole) ----
-      # search_reward=composite_hpsv3_ir needs BOTH backends. ImageReward is only
-      # installed in the reward env (setup_reward_env.sh), never in ptca, so the
-      # ptca-side local fallback fails. Serve BOTH from the reward server: the
-      # ptca process probes the server, finds both, and never loads locally.
+      # ?? Reward server (hpsv3 + imagereward) ----
+      # SEARCH uses hpsv3 only (search_reward=hpsv3), but EVAL reports both
+      # imagereward+hpsv3 (grid-eval policy, run_all_method_ablations.sh
+      # EVAL_BACKENDS default). ImageReward is installed only in the reward env,
+      # never in ptca, so serve BOTH from the server; the ptca/eval process
+      # probes the server, finds both, and never loads locally.
       - export REWARD_BACKENDS_SERVER='hpsv3 imagereward'
       - export STAGE_REWARD_WEIGHTS_LOCAL=1
       - export REWARD_LOCAL_HF_CACHE=/tmp/hf_cache_local
@@ -179,8 +180,10 @@ search:
     - name: seed
       values: [ 42 ]
     - name: search_reward
-      # Override with -p search_reward=composite_all4 for the 4-reward variant.
-      values: [ "composite_hpsv3_ir" ]
+      # hpsv3-only search for the _hpsv3 runs. Eval still reports imagereward+
+      # hpsv3 (EVAL_BACKENDS). Override with -p search_reward=composite_hpsv3_ir
+      # (needs both on the server) or composite_all4 for other variants.
+      values: [ "hpsv3" ]
     - name: methods
       values: [ "baseline bon bon_actdiff_cfg bon_actdiff_full das das_actdiff_full sop sop_actdiff_cfg sop_actdiff_full smc smc_actdiff_cfg smc_actdiff_full fksteering_actdiff_full bon_mcts" ]
     # BON_N defaults to matched-NFE (76 for 4-step, 136 for sd35_base).

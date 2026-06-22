@@ -78,6 +78,8 @@ search:
       - export MINE_DEVICE=cuda
       - export MINE_ESTIMATOR={mine_estimator}
       - export MINE_EARLY_STOP_PATIENCE={mine_early_stop_patience}
+      - export MINE_ROSS_K={mine_ross_k}
+      - export MINE_ROSS_BOOTSTRAP={mine_ross_bootstrap}
       - export DATASET_CSV=$$OUT_DIR/mi_diag_sd35_dataset.csv
       - export REPORT_JSON=$$OUT_DIR/mi_diag_sd35_report.json
       - export TABLE_CSV=$$OUT_DIR/mi_diag_sd35_table.csv
@@ -156,7 +158,14 @@ search:
         - 3
     - name: mine_estimator
       values:
+        - "ross"    # ross: scipy-free k-NN mixed discrete-continuous MI on 1-D reward, per-prompt conditional MI + bootstrap CI (no critic/training variance)
         - "infonce" # infonce (per-prompt KxK block, bound capped at log K) | smile | dv
+    - name: mine_ross_k
+      values:
+        - 3 # k-NN neighbors for the Ross estimator
+    - name: mine_ross_bootstrap
+      values:
+        - 200 # prompt-bootstrap resamples for the Ross 95% CI (0 disables)
     - name: mine_early_stop_patience
       values:
         - 8

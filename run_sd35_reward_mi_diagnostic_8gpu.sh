@@ -55,6 +55,8 @@ MINE_VAL_FRAC="${MINE_VAL_FRAC:-0.2}"
 MINE_ESTIMATOR="${MINE_ESTIMATOR:-infonce}"
 MINE_SMILE_TAU="${MINE_SMILE_TAU:-5.0}"
 MINE_EARLY_STOP_PATIENCE="${MINE_EARLY_STOP_PATIENCE:-8}"
+MINE_ROSS_K="${MINE_ROSS_K:-3}"
+MINE_ROSS_BOOTSTRAP="${MINE_ROSS_BOOTSTRAP:-200}"
 
 DATASET_CSV="${DATASET_CSV:-${OUT_DIR}/mi_diag_sd35_dataset.csv}"
 REPORT_JSON="${REPORT_JSON:-${OUT_DIR}/mi_diag_sd35_report.json}"
@@ -295,6 +297,8 @@ if [[ "${DO_TRAIN}" == "1" ]]; then
     --mine_estimator "${MINE_ESTIMATOR}"
     --mine_smile_tau "${MINE_SMILE_TAU}"
     --mine_early_stop_patience "${MINE_EARLY_STOP_PATIENCE}"
+    --mine_ross_k "${MINE_ROSS_K}"
+    --mine_ross_bootstrap "${MINE_ROSS_BOOTSTRAP}"
   )
   if [[ "${MODE}" == per_step* ]]; then
     TRAIN_CMD+=(

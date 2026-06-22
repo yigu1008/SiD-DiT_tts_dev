@@ -134,16 +134,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--mine_table_csv", default="./mi_diag_sd35_table.csv")
     p.add_argument(
         "--mine_estimator",
-        choices=["smile", "dv", "infonce"],
+        choices=["smile", "dv", "infonce", "ross"],
         default="infonce",
         help=(
             "infonce (default): contrastive lower bound, provably <= log K = "
             "H(C|P) with within-prompt negatives, so it cannot diverge "
             "(theoretically safe). smile: tau-clipped DV (lower variance, but can "
             "still blow up on high-cardinality joint controls). dv: raw "
-            "Donsker-Varadhan (unbounded log-partition; diverges easily)."
+            "Donsker-Varadhan (unbounded log-partition; diverges easily). "
+            "ross: Ross (2014) k-NN mixed discrete-continuous MI -- no critic, no "
+            "training, low variance for the small discrete action grid. Computes "
+            "per-prompt I(action; R | prompt), averages, with a within-prompt "
+            "label-permuted null and a prompt-bootstrap CI. Recommended for the "
+            "per-step diagnostic where neural critics are high-variance."
         ),
     )
+    p.add_argument("--mine_ross_k", type=int, default=3, help="k-NN neighbors for the Ross estimator.")
+    p.add_argument("--mine_ross_bootstrap", type=int, default=200, help="Prompt-bootstrap resamples for the Ross CI (0 disables).")
     p.add_argument("--mine_smile_tau", type=float, default=5.0, help="Clip threshold for SMILE critic outputs.")
     p.add_argument(
         "--mine_infonce_max_neg",
@@ -563,6 +570,16 @@ def _entropy_nats(discrete_values: np.ndarray) -> float:
     probs = counts.astype(np.float64) / float(np.sum(counts))
     probs = probs[probs > 0]
     return float(-np.sum(probs * np.log(probs)))
+
+
+def _mi_explained_var(mi: float) -> float:
+    """Gaussian I<->rho^2 map: rho^2 = 1 - exp(-2I). Reads the (debiased) MI as
+    the fraction of (CRN-residualized) reward variance the channel explains --
+    cardinality-free (unlike MI/H(C)), in [0,1), ~2I for small I, and directly
+    comparable to the variance/eta^2 decompose. Negative debiased MI floors to 0.
+    """
+    m = max(0.0, float(mi))
+    return float(1.0 - np.exp(-2.0 * m))
 
 
 def _joint_code(cols: list[np.ndarray]) -> np.ndarray:
@@ -1005,6 +1022,198 @@ def _train_one_restart(
     return float(train_mi), float(report_mi), float(auroc)
 
 
+def _digamma(x: np.ndarray) -> np.ndarray:
+    """Vectorized digamma (psi) for x > 0, scipy-free.
+
+    Recurrence psi(x) = psi(x+1) - 1/x shifts every entry to x >= 6, then the
+    standard asymptotic series. Accurate to ~1e-8 over the counts we feed it
+    (sample sizes / class counts), which is far below the estimator's sampling
+    noise. Avoids a hard scipy dependency in the generation env.
+    """
+    x = np.asarray(x, dtype=np.float64).copy()
+    result = np.zeros_like(x)
+    small = x < 6.0
+    while np.any(small):
+        result[small] -= 1.0 / x[small]
+        x[small] += 1.0
+        small = x < 6.0
+    inv = 1.0 / x
+    inv2 = inv * inv
+    result += np.log(x) - 0.5 * inv + inv2 * (-1.0 / 12.0 + inv2 * (1.0 / 120.0 - inv2 / 252.0))
+    return result
+
+
+def _ross_mi_1d(y: np.ndarray, labels: np.ndarray, k: int) -> float:
+    """Ross (2014) MI between a discrete label and a 1-D continuous y.
+
+    I = psi(N) + <psi(k_i)> - <psi(N_class_i)> - <psi(m_i + 1)>, where for each
+    point i: k_i is the (possibly class-size-limited) neighbor count, the radius
+    d_i is the distance to its k_i-th nearest same-class neighbor in y, and m_i
+    counts all points (any class) with |y_j - y_i| <= d_i. Because y is scalar
+    we do every nearest-neighbor / radius query by sorting -- no KD-tree, no
+    scipy. Matches sklearn's mutual_info_classif discrete-target formula.
+    """
+    n = int(y.shape[0])
+    if n < 3:
+        return 0.0
+    y = y.astype(np.float64)
+    order = np.argsort(y, kind="mergesort")
+    ys = y[order]  # sorted reward; for radius counts via searchsorted
+
+    radii = np.empty(n, dtype=np.float64)
+    k_used = np.empty(n, dtype=np.float64)
+    label_counts = np.empty(n, dtype=np.float64)
+    uniq = np.unique(labels)
+    for lab in uniq:
+        cls = np.where(labels == lab)[0]
+        nc = int(cls.shape[0])
+        label_counts[cls] = float(nc)
+        if nc < 2:
+            radii[cls] = 0.0
+            k_used[cls] = 0.0  # excluded below (psi undefined); keep separate
+            continue
+        kk = min(int(k), nc - 1)
+        yc = y[cls]
+        corder = np.argsort(yc, kind="mergesort")
+        yc_sorted = yc[corder]
+        # distance to the kk-th nearest same-class neighbor for each class point
+        for rank, ci in enumerate(corder):
+            lo = max(0, rank - kk)
+            hi = min(nc - 1, rank + kk)
+            window = np.abs(yc_sorted[lo:hi + 1] - yc_sorted[rank])
+            window = np.sort(window)
+            # window[0] is self (0); the kk-th neighbor distance is window[kk]
+            radii[cls[ci]] = float(window[kk]) if kk < window.shape[0] else float(window[-1])
+        k_used[cls] = float(kk)
+
+    valid = label_counts >= 2.0
+    if not np.any(valid):
+        return 0.0
+    # m_i: count of all points within radius d_i (exclusive of self), 1-D via
+    # searchsorted on the globally sorted reward.
+    lo_idx = np.searchsorted(ys, y - radii, side="left")
+    hi_idx = np.searchsorted(ys, y + radii, side="right")
+    m = (hi_idx - lo_idx - 1).astype(np.float64)  # subtract self
+    m = np.maximum(m, 0.0)
+
+    vy = valid
+    mi = (
+        _digamma(np.array([float(n)]))[0]
+        + float(np.mean(_digamma(k_used[vy])))
+        - float(np.mean(_digamma(label_counts[vy])))
+        - float(np.mean(_digamma(m[vy] + 1.0)))
+    )
+    return float(mi)
+
+
+def _ross_conditional_mi(
+    prompt_id: np.ndarray, reward: np.ndarray, label_code: np.ndarray, k: int
+) -> float:
+    """Per-prompt Ross MI, averaged over prompts (equal weight, matching the
+    InfoNCE per-prompt-block average). Conditions on prompt; with CRN-residualized
+    reward this is I(action; R | prompt, seed)."""
+    rows_by_prompt = _prompt_to_rows(prompt_id)
+    vals: list[float] = []
+    for rows in rows_by_prompt.values():
+        if rows.shape[0] < 3:
+            continue
+        lab = label_code[rows]
+        if np.unique(lab).shape[0] < 2:
+            continue  # no action variation in this prompt -> MI undefined
+        vals.append(_ross_mi_1d(reward[rows], lab, k))
+    if not vals:
+        return 0.0
+    return float(np.mean(vals))
+
+
+def _run_channel_ross(
+    subset: dict[str, np.ndarray],
+    controls: list[str],
+    args: argparse.Namespace,
+    seed_offset: int,
+    clamp_corrected: bool = True,
+) -> dict[str, Any]:
+    """Ross k-NN estimator path: no critic, no train/val/test split, no restarts.
+    Real MI minus a within-prompt label-permuted null, with a prompt-bootstrap CI.
+    Returns the same row schema as `_run_channel` (plus CI keys for the report)."""
+    k = int(getattr(args, "mine_ross_k", 3))
+    n_rows = int(subset["reward"].shape[0])
+    reward = subset["reward"].astype(np.float64)
+    prompt_id = subset["prompt_id"]
+    label_code = _joint_code([subset[c] for c in controls])
+
+    mi_real = _ross_conditional_mi(prompt_id, reward, label_code, k)
+
+    # Null: permute the controls within prompt, recompute. Ross is low-bias, so
+    # the null sits near 0 -- but we keep the same debiasing contract as the
+    # neural path for an apples-to-apples comparison.
+    rng = np.random.default_rng(int(args.mine_seed) + 999 * seed_offset)
+    perm = _permute_within_prompt_ids(prompt_id, rng)
+    null_code = label_code[perm]
+    mi_null = _ross_conditional_mi(prompt_id, reward, null_code, k)
+
+    h_control = _entropy_nats(label_code)
+    if clamp_corrected:
+        mi_corrected = float(max(0.0, mi_real - mi_null))
+        if h_control > 0.0:
+            mi_corrected = min(mi_corrected, h_control)
+            mi_norm = float(min(1.0, mi_corrected / h_control))
+        else:
+            mi_norm = 0.0
+    else:
+        mi_corrected = float(mi_real - mi_null)
+        mi_norm = float(mi_corrected / h_control) if h_control > 0.0 else 0.0
+
+    # Prompt-bootstrap CI on the debiased MI (resample whole prompts).
+    n_boot = int(getattr(args, "mine_ross_bootstrap", 0))
+    ci_lo = ci_hi = float("nan")
+    boot_std = 0.0
+    if n_boot > 0:
+        prompts = np.array(sorted(set(int(p) for p in prompt_id)))
+        rows_by_prompt = _prompt_to_rows(prompt_id)
+        boot_rng = np.random.default_rng(int(args.mine_seed) + 7 * seed_offset + 1)
+        boots: list[float] = []
+        for _ in range(n_boot):
+            pick = boot_rng.choice(prompts, size=prompts.shape[0], replace=True)
+            mi_vals = []
+            for p in pick:
+                rows = rows_by_prompt.get(int(p))
+                if rows is None or rows.shape[0] < 3:
+                    continue
+                lab = label_code[rows]
+                if np.unique(lab).shape[0] < 2:
+                    continue
+                mi_vals.append(_ross_mi_1d(reward[rows], lab, k))
+            if mi_vals:
+                boots.append(float(np.mean(mi_vals)) - mi_null)
+        if boots:
+            ci_lo = float(np.percentile(boots, 2.5))
+            ci_hi = float(np.percentile(boots, 97.5))
+            boot_std = float(np.std(boots))
+
+    return {
+        "controls": list(controls),
+        "rows_used": int(n_rows),
+        "MI": float(mi_real),
+        "MI_raw": float(mi_real),
+        "MI_median": float(mi_real),
+        "MI_corrected": float(mi_corrected),
+        "normalized_MI": float(mi_norm),
+        "mi_explained_var": _mi_explained_var(mi_corrected),
+        "Null_MI": float(mi_null),
+        "Null_std": 0.0,
+        "AUROC": float("nan"),  # not defined for the k-NN estimator
+        "Restart_std": boot_std,
+        "diverged": False,
+        "train_mi_mean": float(mi_real),
+        "h_control_nats": float(h_control),
+        "report_split": "full",
+        "MI_ci_lo": ci_lo,
+        "MI_ci_hi": ci_hi,
+        "estimator": "ross",
+    }
+
+
 def _run_channel(
     subset: dict[str, np.ndarray],
     controls: list[str],
@@ -1024,6 +1233,10 @@ def _run_channel(
     without the max(0,.) floor or the H(C) clamp -- so a null-band-overlapping
     channel can read slightly negative, which is the honest finite-sample
     behaviour the per-step diagnostic wants for its error bands."""
+    if str(getattr(args, "mine_estimator", "")) == "ross":
+        return _run_channel_ross(
+            subset, controls, args, seed_offset=seed_offset, clamp_corrected=clamp_corrected
+        )
     n_rows_subset = int(subset["reward"].shape[0])
 
     controls_np = {c: subset[c] for c in controls}
@@ -1116,6 +1329,7 @@ def _run_channel(
         "MI_median": mi_median,
         "MI_corrected": mi_corrected,
         "normalized_MI": mi_norm,
+        "mi_explained_var": _mi_explained_var(mi_corrected),
         "Null_MI": null_mean,
         "Null_std": null_std,
         "AUROC": float(np.mean(aucs)),
@@ -1592,18 +1806,30 @@ def run_per_step_critics(args: argparse.Namespace) -> None:
                 "MI_corrected": ch["MI_corrected"],
                 "MI_median": ch["MI_median"],
                 "normalized_MI": ch["normalized_MI"],
+                "mi_explained_var": ch.get("mi_explained_var", _mi_explained_var(ch["MI_corrected"])),
                 "Null_MI": ch["Null_MI"],
                 "Null_std": ch.get("Null_std", 0.0),
                 "AUROC": ch["AUROC"],
                 "Restart_std": ch["Restart_std"],
                 "report_split": ch.get("report_split", "val"),
+                "MI_ci_lo": ch.get("MI_ci_lo", float("nan")),
+                "MI_ci_hi": ch.get("MI_ci_hi", float("nan")),
             }
             all_rows.append(row)
             report["steps"].append({"step": int(k), "channel": cname, "rows_used": ch["rows_used"], **ch})
+            ci_lo = ch.get("MI_ci_lo", float("nan"))
+            ci_hi = ch.get("MI_ci_hi", float("nan"))
+            ci_str = (
+                f" CI=[{ci_lo:+.4f},{ci_hi:+.4f}]"
+                if (ci_lo == ci_lo and ci_hi == ci_hi)  # not NaN
+                else ""
+            )
+            rho2 = ch.get("mi_explained_var", _mi_explained_var(ch["MI_corrected"]))
             print(
-                f"[per_step] step={int(k):2d} {cname:8s} MI={ch['MI']:.4f} MIc={ch['MI_corrected']:.4f} "
+                f"[per_step] step={int(k):2d} {cname:8s} MIc={ch['MI_corrected']:.4f} nats "
+                f"rho2={rho2:.4f} (MI_raw={ch['MI']:.4f} MI/H={ch['normalized_MI']:.4f}) "
                 f"Null={ch['Null_MI']:.4f}±{ch.get('Null_std', 0.0):.4f} "
-                f"AUROC={ch['AUROC']:.4f} std={ch['Restart_std']:.4f}"
+                f"AUROC={ch['AUROC']:.4f} std={ch['Restart_std']:.4f}{ci_str}"
             )
 
     table_csv = str(Path(args.per_step_table_csv).expanduser().resolve())
@@ -1613,7 +1839,8 @@ def run_per_step_critics(args: argparse.Namespace) -> None:
             f,
             fieldnames=[
                 "Step", "Channel", "Control", "MI", "MI_corrected", "MI_median",
-                "normalized_MI", "Null_MI", "Null_std", "AUROC", "Restart_std", "report_split",
+                "normalized_MI", "mi_explained_var", "Null_MI", "Null_std", "AUROC",
+                "Restart_std", "report_split", "MI_ci_lo", "MI_ci_hi",
             ],
         )
         writer.writeheader()
@@ -1640,7 +1867,7 @@ def _rows_from_table_csv(path: str) -> list[dict[str, Any]]:
         for row in csv.DictReader(f):
             out: dict[str, Any] = {"Step": int(row["Step"]), "Channel": str(row["Channel"])}
             for key in ("MI", "MI_corrected", "MI_median", "normalized_MI",
-                        "Null_MI", "Null_std", "AUROC", "Restart_std"):
+                        "mi_explained_var", "Null_MI", "Null_std", "AUROC", "Restart_std"):
                 try:
                     out[key] = float(row.get(key, "nan"))
                 except (TypeError, ValueError):
@@ -1653,7 +1880,8 @@ def plot_per_step_mi(args: argparse.Namespace, rows: list[dict[str, Any]] | None
     """Per-step MI curve: I(channel; R | P) (raw nats, debiased) vs step k, one
     line per channel, with a shaded restart/null band and y=0 drawn so a flat-zero
     (e.g. deterministic-backbone noise) channel is visible. Secondary panel shows
-    normalized I/H(C). Single-step intervention; all-default continuation;
+    the explained-variance equivalent rho^2 = 1 - exp(-2I) (cardinality-free,
+    decompose-comparable). Single-step intervention; all-default continuation;
     reward scored against c0."""
     import matplotlib
     matplotlib.use("Agg")
@@ -1680,13 +1908,16 @@ def plot_per_step_mi(args: argparse.Namespace, rows: list[dict[str, Any]] | None
         total_band = np.sqrt(np.nan_to_num(band) ** 2 + np.nan_to_num(null_band) ** 2)
         line = ax0.plot(steps, mi, marker="o", label=cname)[0]
         ax0.fill_between(steps, mi - total_band, mi + total_band, alpha=0.18, color=line.get_color())
-        ax1.plot(steps, _series(cname, "normalized_MI"), marker="o", label=cname)
+        rho2 = np.asarray(_series(cname, "mi_explained_var"), dtype=np.float64)
+        if not np.any(np.isfinite(rho2)):  # backward-compat with pre-rho2 tables
+            rho2 = 1.0 - np.exp(-2.0 * np.maximum(0.0, mi))
+        ax1.plot(steps, rho2, marker="o", label=cname)
     ax0.axhline(0.0, color="k", lw=0.8, ls="--")
     ax0.set_ylabel("I(channel; R | P)  [nats, debiased]")
     ax0.set_title("Per-step conditional MI (single-step intervention, all-default continuation, scored vs c0)")
     ax0.legend(fontsize=8)
     ax1.axhline(0.0, color="k", lw=0.8, ls="--")
-    ax1.set_ylabel("normalized  I / H(C)")
+    ax1.set_ylabel("explained var  rho^2 = 1 - exp(-2I)")
     ax1.set_xlabel("denoising step k")
     ax1.set_xticks(steps)
     ax1.legend(fontsize=8)

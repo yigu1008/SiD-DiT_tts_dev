@@ -121,9 +121,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--cfg_scales",
         nargs="+",
         type=float,
-        default=list(_DEFAULT_CFG_SCALES),
+        default=None,  # sentinel: None = not provided -> resolved per backend in _apply_backend_defaults
     )
-    parser.add_argument("--baseline_cfg", type=float, default=_DEFAULT_BASELINE_CFG)
+    parser.add_argument("--baseline_cfg", type=float, default=None)  # sentinel: see _apply_backend_defaults
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--width", type=int, default=1024)
     parser.add_argument("--height", type=int, default=1024)
@@ -449,12 +449,16 @@ def _apply_backend_defaults(args: argparse.Namespace) -> argparse.Namespace:
             continue
         if getattr(args, key, None) is None:
             setattr(args, key, val)
-    # Keep legacy behavior for sid, but use SenseFlow defaults when user kept parser defaults.
+    # cfg_scales / baseline_cfg use a None sentinel: an explicit user bank is
+    # always honored; only when unset do we fall back to the backend default,
+    # then the global default. This replaces the old equality-against-default
+    # heuristic that silently forced senseflow back to [0.0] whenever a run
+    # happened to pass the default 7-value bank -- which collapsed the cfg sweep.
+    if getattr(args, "cfg_scales", None) is None:
+        args.cfg_scales = list(cfg.get("cfg_scales", _DEFAULT_CFG_SCALES))
+    if getattr(args, "baseline_cfg", None) is None:
+        args.baseline_cfg = float(cfg.get("baseline_cfg", _DEFAULT_BASELINE_CFG))
     if (args.backend or "").startswith("senseflow"):
-        if list(getattr(args, "cfg_scales", [])) == list(_DEFAULT_CFG_SCALES):
-            args.cfg_scales = list(cfg.get("cfg_scales", [0.0]))
-        if float(getattr(args, "baseline_cfg", _DEFAULT_BASELINE_CFG)) == float(_DEFAULT_BASELINE_CFG):
-            args.baseline_cfg = float(cfg.get("baseline_cfg", 0.0))
         if not getattr(args, "x0_sampler", False):
             args.x0_sampler = bool(cfg.get("x0_sampler", False))
     # Final fallbacks for fields not covered by any backend config.

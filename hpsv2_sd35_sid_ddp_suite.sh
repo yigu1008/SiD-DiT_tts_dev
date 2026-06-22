@@ -338,12 +338,10 @@ MCTS_N_INTERP="${MCTS_N_INTERP:-1}"
 
 _DEFAULT_CFG_SCALES_STR="1.0 1.25 1.5 1.75 2.0 2.25 2.5"
 if [[ "${SD35_BACKEND}" == "senseflow_large" || "${SD35_BACKEND}" == "senseflow_medium" ]]; then
-  if [[ "${CFG_SCALES}" == "${_DEFAULT_CFG_SCALES_STR}" ]]; then
-    CFG_SCALES="0.0"
-  fi
-  if [[ "${BASELINE_CFG}" == "1.0" ]]; then
-    BASELINE_CFG="0.0"
-  fi
+  # SenseFlow sweeps the SiD CFG bank (baseline 1.0 == conditional-only == the
+  # distilled canonical; higher values re-apply external guidance). Do NOT
+  # collapse to 0.0 here -- that degenerate single-point bank killed the cfg
+  # action axis for every actdiff variant.
   # 4-step backend — drop N_SIMS unless caller explicitly set it.
   if [[ "${N_SIMS}" == "60" ]]; then
     N_SIMS="25"

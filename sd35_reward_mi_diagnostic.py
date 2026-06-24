@@ -24,7 +24,7 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -134,7 +134,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--mine_table_csv", default="./mi_diag_sd35_table.csv")
     p.add_argument(
         "--mine_estimator",
-        choices=["smile", "dv", "infonce", "ross"],
+        choices=["smile", "dv", "infonce", "ross", "mm", "omega2", "dcor"],
         default="infonce",
         help=(
             "infonce (default): contrastive lower bound, provably <= log K = "
@@ -142,15 +142,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "(theoretically safe). smile: tau-clipped DV (lower variance, but can "
             "still blow up on high-cardinality joint controls). dv: raw "
             "Donsker-Varadhan (unbounded log-partition; diverges easily). "
-            "ross: Ross (2014) k-NN mixed discrete-continuous MI -- no critic, no "
-            "training, low variance for the small discrete action grid. Computes "
-            "per-prompt I(action; R | prompt), averages, with a within-prompt "
-            "label-permuted null and a prompt-bootstrap CI. Recommended for the "
-            "per-step diagnostic where neural critics are high-variance."
+            "NON-NEURAL paths (no critic/training, low variance for the small "
+            "discrete action grid; per-prompt statistic averaged, within-prompt "
+            "label-permuted null, prompt-bootstrap CI -- recommended for the "
+            "per-step diagnostic). ross: Ross (2014) k-NN mixed discrete-continuous "
+            "MI in nats. mm: Miller-Madow bias-corrected binned MI in nats -- "
+            "histogram bias profile independent of Ross, an apples-to-apples MI "
+            "cross-check. omega2: one-way ANOVA bias-corrected variance-explained "
+            "effect size in [0,1] -- distribution-side twin of rho^2=1-exp(-2I). "
+            "dcor: distance correlation in [0,1] -- model-free nonlinear dependence, "
+            "no cardinality normalization. Sweep these on this axis to triangulate."
         ),
     )
     p.add_argument("--mine_ross_k", type=int, default=3, help="k-NN neighbors for the Ross estimator.")
-    p.add_argument("--mine_ross_bootstrap", type=int, default=200, help="Prompt-bootstrap resamples for the Ross CI (0 disables).")
+    p.add_argument("--mine_ross_bootstrap", type=int, default=200, help="Prompt-bootstrap resamples for the non-neural (ross/mm/omega2/dcor) CI (0 disables).")
+    p.add_argument("--mine_mm_bins", type=int, default=8, help="Equal-frequency reward bins for the Miller-Madow (mm) MI estimator.")
     p.add_argument("--mine_smile_tau", type=float, default=5.0, help="Clip threshold for SMILE critic outputs.")
     p.add_argument(
         "--mine_infonce_max_neg",
@@ -1126,45 +1132,194 @@ def _ross_conditional_mi(
     return float(np.mean(vals))
 
 
-def _run_channel_ross(
+def _omega2_1d(y: np.ndarray, labels: np.ndarray) -> float:
+    """One-way ANOVA bias-corrected effect size omega^2: the share of reward
+    variance explained by the discrete action, debiased for the group count
+    (so the permuted null sits at ~0). omega^2 = (SS_between - (g-1) MS_within)
+    / (SS_total + MS_within). May read slightly negative below chance; the outer
+    debias/floor handles that. This is the distribution-side twin of the Gaussian
+    rho^2 = 1 - exp(-2I) effect size -- a model-free check on the MI estimators."""
+    y = y.astype(np.float64)
+    n = int(y.shape[0])
+    uniq = np.unique(labels)
+    g = int(uniq.shape[0])
+    if n < 3 or g < 2 or g >= n:
+        return 0.0
+    grand = float(np.mean(y))
+    ss_total = float(np.sum((y - grand) ** 2))
+    if ss_total <= 0.0:
+        return 0.0
+    ss_between = 0.0
+    for lab in uniq:
+        yc = y[labels == lab]
+        ss_between += float(yc.shape[0]) * (float(np.mean(yc)) - grand) ** 2
+    ss_within = ss_total - ss_between
+    df_within = n - g
+    if df_within <= 0:
+        return 0.0
+    ms_within = ss_within / float(df_within)
+    denom = ss_total + ms_within
+    if denom <= 0.0:
+        return 0.0
+    return float((ss_between - float(g - 1) * ms_within) / denom)
+
+
+def _dcor_1d(y: np.ndarray, labels: np.ndarray) -> float:
+    """Distance correlation in [0,1] between the 1-D reward and the discrete
+    action (0/1 discrete metric on the labels). Model-free, captures nonlinear
+    dependence, and (unlike MI) needs no cardinality normalization. O(n^2) per
+    prompt -- fine for the small per-prompt action grid."""
+    y = y.astype(np.float64)
+    n = int(y.shape[0])
+    if n < 3 or np.unique(labels).shape[0] < 2:
+        return 0.0
+    a = np.abs(y[:, None] - y[None, :])
+    lab = labels.reshape(-1)
+    b = (lab[:, None] != lab[None, :]).astype(np.float64)  # discrete 0/1 metric
+
+    def _dcenter(m: np.ndarray) -> np.ndarray:
+        rm = m.mean(axis=1, keepdims=True)
+        cm = m.mean(axis=0, keepdims=True)
+        return m - rm - cm + float(m.mean())
+
+    A = _dcenter(a)
+    B = _dcenter(b)
+    dcov2 = float(np.mean(A * B))
+    dvar = float(np.mean(A * A)) * float(np.mean(B * B))
+    if dvar <= 0.0:
+        return 0.0
+    dcor2 = dcov2 / np.sqrt(dvar)
+    return float(np.sqrt(max(0.0, dcor2)))
+
+
+def _mm_mi_1d(y: np.ndarray, labels: np.ndarray, bins: int) -> float:
+    """Miller-Madow bias-corrected MI (nats) between the discrete action and the
+    reward binned into `bins` equal-frequency (quantile) cells. Histogram-based,
+    so its bias profile is independent of the Ross k-NN path -- an apples-to-
+    apples MI cross-check. I_MM = I_plugin + (m_A + m_B - m_AB - 1) / (2N), where
+    m_* are the nonempty cell counts (the correction shrinks the upward-biased
+    plug-in)."""
+    y = y.astype(np.float64)
+    n = int(y.shape[0])
+    if n < 3 or np.unique(labels).shape[0] < 2:
+        return 0.0
+    b = int(min(int(bins), max(2, n // 2)))
+    edges = np.quantile(y, np.linspace(0.0, 1.0, b + 1))
+    edges[0] = -np.inf
+    edges[-1] = np.inf
+    rb = np.clip(np.searchsorted(edges, y, side="right") - 1, 0, b - 1)
+    _la, lab_idx = np.unique(labels, return_inverse=True)
+    g = int(_la.shape[0])
+    joint = np.zeros((g, b), dtype=np.float64)
+    np.add.at(joint, (lab_idx, rb), 1.0)
+    p = joint / float(n)
+    pa = p.sum(axis=1, keepdims=True)  # (g,1)
+    pb = p.sum(axis=0, keepdims=True)  # (1,b)
+    paeb = pa * pb                     # (g,b) broadcast
+    nz = p > 0.0
+    mi_plug = float(np.sum(p[nz] * np.log(p[nz] / paeb[nz])))
+    m_ab = int(np.count_nonzero(joint))
+    m_a = int(np.count_nonzero(joint.sum(axis=1)))
+    m_b = int(np.count_nonzero(joint.sum(axis=0)))
+    return float(mi_plug + float(m_a + m_b - m_ab - 1) / (2.0 * float(n)))
+
+
+# (estimator, units) registry for the non-neural channel path. units="nats" ->
+# reported as MI with rho^2 = 1 - exp(-2I) effect size + H(C) normalization;
+# units="frac" -> the statistic is already a [0,1] effect size (no H(C) norm).
+_NONNEURAL_ESTIMATORS = ("ross", "mm", "omega2", "dcor")
+
+
+def _nonneural_stat_fn(
+    estimator: str, args: argparse.Namespace
+) -> tuple[Callable[[np.ndarray, np.ndarray], float], str]:
+    if estimator == "ross":
+        k = int(getattr(args, "mine_ross_k", 3))
+        return (lambda r, l: _ross_mi_1d(r, l, k)), "nats"
+    if estimator == "mm":
+        bins = int(getattr(args, "mine_mm_bins", 8))
+        return (lambda r, l: _mm_mi_1d(r, l, bins)), "nats"
+    if estimator == "omega2":
+        return (lambda r, l: _omega2_1d(r, l)), "frac"
+    if estimator == "dcor":
+        return (lambda r, l: _dcor_1d(r, l)), "frac"
+    raise ValueError(f"unknown non-neural estimator: {estimator!r}")
+
+
+def _per_prompt_stat(
+    prompt_id: np.ndarray,
+    reward: np.ndarray,
+    label_code: np.ndarray,
+    stat_fn: Callable[[np.ndarray, np.ndarray], float],
+) -> float:
+    """Average a per-prompt (reward, action) statistic over prompts, equal
+    weight, matching the InfoNCE per-prompt-block average. With CRN-residualized
+    reward this conditions on (prompt, seed)."""
+    rows_by_prompt = _prompt_to_rows(prompt_id)
+    vals: list[float] = []
+    for rows in rows_by_prompt.values():
+        if rows.shape[0] < 3:
+            continue
+        lab = label_code[rows]
+        if np.unique(lab).shape[0] < 2:
+            continue  # no action variation in this prompt -> statistic undefined
+        vals.append(stat_fn(reward[rows], lab))
+    if not vals:
+        return 0.0
+    return float(np.mean(vals))
+
+
+def _run_channel_nonneural(
     subset: dict[str, np.ndarray],
     controls: list[str],
     args: argparse.Namespace,
     seed_offset: int,
     clamp_corrected: bool = True,
 ) -> dict[str, Any]:
-    """Ross k-NN estimator path: no critic, no train/val/test split, no restarts.
-    Real MI minus a within-prompt label-permuted null, with a prompt-bootstrap CI.
-    Returns the same row schema as `_run_channel` (plus CI keys for the report)."""
-    k = int(getattr(args, "mine_ross_k", 3))
+    """Non-neural estimator path (ross / mm / omega2 / dcor): no critic, no
+    train/val/test split, no restarts. Per-prompt statistic minus a within-prompt
+    label-permuted null, with a prompt-bootstrap CI. Returns the same row schema
+    as `_run_channel` (plus CI keys). For units="frac" estimators (omega2/dcor)
+    the statistic is already a [0,1] effect size: H(C) normalization is N/A
+    (normalized_MI=NaN) and mi_explained_var is the debiased statistic itself."""
+    estimator = str(getattr(args, "mine_estimator", "ross"))
+    stat_fn, units = _nonneural_stat_fn(estimator, args)
+    is_nats = units == "nats"
     n_rows = int(subset["reward"].shape[0])
     reward = subset["reward"].astype(np.float64)
     prompt_id = subset["prompt_id"]
     label_code = _joint_code([subset[c] for c in controls])
 
-    mi_real = _ross_conditional_mi(prompt_id, reward, label_code, k)
+    mi_real = _per_prompt_stat(prompt_id, reward, label_code, stat_fn)
 
-    # Null: permute the controls within prompt, recompute. Ross is low-bias, so
-    # the null sits near 0 -- but we keep the same debiasing contract as the
-    # neural path for an apples-to-apples comparison.
+    # Null: permute the controls within prompt, recompute. These estimators are
+    # low-bias, so the null sits near 0 -- but we keep the same debiasing contract
+    # as the neural path for an apples-to-apples comparison.
     rng = np.random.default_rng(int(args.mine_seed) + 999 * seed_offset)
     perm = _permute_within_prompt_ids(prompt_id, rng)
     null_code = label_code[perm]
-    mi_null = _ross_conditional_mi(prompt_id, reward, null_code, k)
+    mi_null = _per_prompt_stat(prompt_id, reward, null_code, stat_fn)
 
     h_control = _entropy_nats(label_code)
     if clamp_corrected:
         mi_corrected = float(max(0.0, mi_real - mi_null))
-        if h_control > 0.0:
+        if is_nats and h_control > 0.0:
             mi_corrected = min(mi_corrected, h_control)
-            mi_norm = float(min(1.0, mi_corrected / h_control))
-        else:
-            mi_norm = 0.0
     else:
         mi_corrected = float(mi_real - mi_null)
-        mi_norm = float(mi_corrected / h_control) if h_control > 0.0 else 0.0
 
-    # Prompt-bootstrap CI on the debiased MI (resample whole prompts).
+    if is_nats:
+        if clamp_corrected:
+            mi_norm = float(min(1.0, mi_corrected / h_control)) if h_control > 0.0 else 0.0
+        else:
+            mi_norm = float(mi_corrected / h_control) if h_control > 0.0 else 0.0
+        mi_ev = _mi_explained_var(mi_corrected)
+    else:
+        # omega2/dcor are cardinality-free [0,1] effect sizes already.
+        mi_norm = float("nan")
+        mi_ev = float(max(0.0, min(1.0, mi_corrected)))
+
+    # Prompt-bootstrap CI on the debiased statistic (resample whole prompts).
     n_boot = int(getattr(args, "mine_ross_bootstrap", 0))
     ci_lo = ci_hi = float("nan")
     boot_std = 0.0
@@ -1183,7 +1338,7 @@ def _run_channel_ross(
                 lab = label_code[rows]
                 if np.unique(lab).shape[0] < 2:
                     continue
-                mi_vals.append(_ross_mi_1d(reward[rows], lab, k))
+                mi_vals.append(stat_fn(reward[rows], lab))
             if mi_vals:
                 boots.append(float(np.mean(mi_vals)) - mi_null)
         if boots:
@@ -1199,10 +1354,10 @@ def _run_channel_ross(
         "MI_median": float(mi_real),
         "MI_corrected": float(mi_corrected),
         "normalized_MI": float(mi_norm),
-        "mi_explained_var": _mi_explained_var(mi_corrected),
+        "mi_explained_var": float(mi_ev),
         "Null_MI": float(mi_null),
         "Null_std": 0.0,
-        "AUROC": float("nan"),  # not defined for the k-NN estimator
+        "AUROC": float("nan"),  # not defined for these estimators
         "Restart_std": boot_std,
         "diverged": False,
         "train_mi_mean": float(mi_real),
@@ -1210,7 +1365,8 @@ def _run_channel_ross(
         "report_split": "full",
         "MI_ci_lo": ci_lo,
         "MI_ci_hi": ci_hi,
-        "estimator": "ross",
+        "estimator": estimator,
+        "estimator_units": units,
     }
 
 
@@ -1233,8 +1389,8 @@ def _run_channel(
     without the max(0,.) floor or the H(C) clamp -- so a null-band-overlapping
     channel can read slightly negative, which is the honest finite-sample
     behaviour the per-step diagnostic wants for its error bands."""
-    if str(getattr(args, "mine_estimator", "")) == "ross":
-        return _run_channel_ross(
+    if str(getattr(args, "mine_estimator", "")) in _NONNEURAL_ESTIMATORS:
+        return _run_channel_nonneural(
             subset, controls, args, seed_offset=seed_offset, clamp_corrected=clamp_corrected
         )
     n_rows_subset = int(subset["reward"].shape[0])

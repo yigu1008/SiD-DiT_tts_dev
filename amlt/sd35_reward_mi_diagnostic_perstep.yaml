@@ -80,6 +80,8 @@ search:
       - export MINE_EARLY_STOP_PATIENCE={mine_early_stop_patience}
       - export MINE_ROSS_K={mine_ross_k}
       - export MINE_ROSS_BOOTSTRAP={mine_ross_bootstrap}
+      - export MINE_MM_BINS={mine_mm_bins}
+      - export SWEEP_ESTIMATORS='{sweep_estimators}'
       - export DATASET_CSV=$$OUT_DIR/mi_diag_sd35_dataset.csv
       - export REPORT_JSON=$$OUT_DIR/mi_diag_sd35_report.json
       - export TABLE_CSV=$$OUT_DIR/mi_diag_sd35_table.csv
@@ -100,8 +102,14 @@ search:
       - if [ {run_calibrate} = 1 ]; then /opt/conda/envs/ptca/bin/python sd35_reward_mi_diagnostic.py --mode per_step_calibrate --n_prompts {n_prompts} --n_seeds {n_seeds} --n_rewrites {n_rewrites} --mine_estimator {mine_estimator} --mine_steps {mine_steps} --mine_batch_size {mine_batch_size} --mine_restarts {mine_restarts} --mine_device cuda --per_step_test_frac {per_step_test_frac} $$([ {per_step_unclamped} = 1 ] && echo --per_step_unclamped || echo --no-per_step_unclamped); fi
       # 8-GPU sharded driver: splits prompts NUM_GPUS ways, runs N parallel
       # generate processes pinned to GPU 0..N-1, merges shard CSVs with globally
-      # unique prompt_id, then runs MINE training once on the merged CSV.
-      - bash run_sd35_reward_mi_diagnostic_8gpu.sh
+      # unique prompt_id. ESTIMATOR SWEEP: generate the OSD dataset ONCE
+      # (mode=per_step -> per_step_generate), then re-estimate it with every
+      # estimator in SWEEP_ESTIMATORS via per_step_train (reuses the cached
+      # dataset, no 8-GPU regen -- ~seconds each for the non-neural paths). Each
+      # estimator writes its own mi_perstep_<est>_{table.csv,report.json,curve.png}.
+      # mode=per_step_train (override) skips generation and sweeps a prior dataset.
+      - if [ {mode} = per_step ]; then MODE=per_step_generate bash run_sd35_reward_mi_diagnostic_8gpu.sh; fi
+      - for est in $$SWEEP_ESTIMATORS; do echo "[sweep] estimator=$$est (per_step_train, reusing cached dataset)"; MODE=per_step_train MINE_ESTIMATOR=$$est PER_STEP_REPORT_JSON=$$OUT_DIR/mi_perstep_$${est}_report.json PER_STEP_TABLE_CSV=$$OUT_DIR/mi_perstep_$${est}_table.csv PER_STEP_PLOT_PNG=$$OUT_DIR/mi_perstep_$${est}_curve.png bash run_sd35_reward_mi_diagnostic_8gpu.sh || echo "[sweep] estimator=$$est FAILED (continuing)"; done
 
     submit_args:
       env:
@@ -158,14 +166,28 @@ search:
         - 3
     - name: mine_estimator
       values:
-        - "ross"    # ross: scipy-free k-NN mixed discrete-continuous MI on 1-D reward, per-prompt conditional MI + bootstrap CI (no critic/training variance)
-        - "infonce" # infonce (per-prompt KxK block, bound capped at log K) | smile | dv
+        - "ross" # estimator for the synthetic calibration guard (representative non-neural path); the real sweep is driven by sweep_estimators below
+    - name: sweep_estimators
+      # ESTIMATOR SWEEP axis: every estimator here is run on the SAME cached OSD
+      # dataset via per_step_train (one 8-GPU generation, then ~seconds each for
+      # the non-neural paths). All share the per-prompt + permuted-null + bootstrap
+      # contract, so they are directly comparable. Edit to drop/add estimators.
+      #   ross   : scipy-free k-NN mixed discrete-continuous MI (nats) + bootstrap CI
+      #   mm     : Miller-Madow bias-corrected binned MI (nats) -- histogram bias profile independent of ross
+      #   omega2 : one-way ANOVA bias-corrected variance-explained [0,1] -- distribution twin of rho^2 = 1 - exp(-2I)
+      #   dcor   : distance correlation [0,1] -- model-free nonlinear dependence, no cardinality normalization
+      #   infonce: neural contrastive lower bound (per-prompt KxK block, capped at log K)
+      values:
+        - "ross mm omega2 dcor infonce"
     - name: mine_ross_k
       values:
         - 3 # k-NN neighbors for the Ross estimator
     - name: mine_ross_bootstrap
       values:
-        - 200 # prompt-bootstrap resamples for the Ross 95% CI (0 disables)
+        - 200 # prompt-bootstrap resamples for the non-neural (ross/mm/omega2/dcor) 95% CI (0 disables)
+    - name: mine_mm_bins
+      values:
+        - 8 # equal-frequency reward bins for the Miller-Madow (mm) MI estimator
     - name: mine_early_stop_patience
       values:
         - 8

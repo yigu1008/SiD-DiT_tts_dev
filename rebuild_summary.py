@@ -12,9 +12,10 @@ Usage:
     python rebuild_summary.py --run_root <RUN_ROOT> --layout synergy
         # then: python plot_synergy_2x2.py --summary <RUN_ROOT>/summary.tsv
 
-Layouts:
-    synergy     : columns method, cfg_dynamic, prompt_dynamic, mean_search, eval_ir, eval_hpsv3
-    all_method  : columns method, cfg_dynamic, prompt_dynamic, neg_bank, sigma_bank, mean_search, eval_ir, eval_hpsv3
+Layouts (all carry a search_reward column so rows from different SEARCH_REWARD
+runs under one run_root never collapse onto one method name):
+    synergy     : columns method, search_reward, cfg_dynamic, prompt_dynamic, mean_search, eval_ir, eval_hpsv3
+    all_method  : columns method, search_reward, cfg_dynamic, prompt_dynamic, neg_bank, sigma_bank, mean_search, eval_ir, eval_hpsv3
     pareto      : columns method, search_reward, mean_imagereward, mean_hpsv3, mean_hpsv2, mean_pickscore
 """
 from __future__ import annotations
@@ -59,9 +60,24 @@ _PRM_DYN = {
 }
 
 
-def _find_method_aggs(run_root: Path) -> dict[str, tuple[Path | None, Path | None]]:
-    """Return {method_name: (aggregate_ddp_path, best_images_aggregate_path)}."""
-    out: dict[str, tuple[Path | None, Path | None]] = {}
+def _agg_search_reward(agg: Path) -> str:
+    """Read the search_reward provenance tag written into aggregate_ddp.json.
+    Older aggregates predate the tag -> '' (grouped as 'unknown')."""
+    try:
+        return str(json.loads(agg.read_text()).get("search_reward", "") or "")
+    except Exception:
+        return ""
+
+
+def _find_method_aggs(run_root: Path) -> dict[tuple[str, str], tuple[Path | None, Path | None]]:
+    """Return {(search_reward, method): (aggregate_ddp_path, best_images_aggregate_path)}.
+
+    Keying by (search_reward, method) -- not method alone -- so that a run_root
+    spanning multiple SEARCH_REWARD subtrees (e.g. a composite_hpsv3_ir run and a
+    raw hpsv3 run) does NOT collapse same-named methods onto one row. Mixing those
+    would put a ~0.8 normalized-composite mean_search next to a ~14 raw-hpsv3 one
+    in the same table."""
+    out: dict[tuple[str, str], tuple[Path | None, Path | None]] = {}
     for agg in sorted(run_root.glob("**/aggregate_ddp.json")):
         # Path layout: <root>/[run_*/]<method>/aggregate_ddp.json
         parts = agg.relative_to(run_root).parts
@@ -70,8 +86,9 @@ def _find_method_aggs(run_root: Path) -> dict[str, tuple[Path | None, Path | Non
         method = parts[-2]
         if method.startswith("_") or method in {"prompts", "trees"}:
             continue
+        reward = _agg_search_reward(agg) or "unknown"
         sibling = agg.parent / "best_images_multi_reward_aggregate.json"
-        out[method] = (agg, sibling if sibling.exists() else None)
+        out[(reward, method)] = (agg, sibling if sibling.exists() else None)
     return out
 
 
@@ -109,15 +126,18 @@ def main() -> None:
     with open(out, "w", newline="") as f:
         w = csv.writer(f, delimiter="\t")
         if args.layout == "synergy":
-            w.writerow(["method", "cfg_dynamic", "prompt_dynamic", "mean_search", "eval_ir", "eval_hpsv3"])
+            w.writerow(["method", "search_reward", "cfg_dynamic", "prompt_dynamic", "mean_search", "eval_ir", "eval_hpsv3"])
         elif args.layout == "all_method":
-            w.writerow(["method", "cfg_dynamic", "prompt_dynamic", "neg_bank", "sigma_bank",
+            w.writerow(["method", "search_reward", "cfg_dynamic", "prompt_dynamic", "neg_bank", "sigma_bank",
                         "mean_search", "eval_ir", "eval_hpsv3"])
         else:  # pareto
             w.writerow(["method", "search_reward",
                         "mean_imagereward", "mean_hpsv3", "mean_hpsv2", "mean_pickscore"])
-        for method, (agg, ir_eval) in sorted(methods.items()):
-            ms = _extract_scalar(agg, "mean_search") if agg else ""
+        for (reward, method), (agg, ir_eval) in sorted(methods.items()):
+            # aggregate_ddp.json stores "mean_search_score"; fall back to the
+            # legacy "mean_search" key for older runs.
+            ms = ((_extract_scalar(agg, "mean_search_score") or _extract_scalar(agg, "mean_search"))
+                  if agg else "")
             eir = _extract_scalar(ir_eval, "imagereward", "mean") if ir_eval else ""
             eh = _extract_scalar(ir_eval, "hpsv3", "mean") if ir_eval else ""
             eh2 = _extract_scalar(ir_eval, "hpsv2", "mean") if ir_eval else ""
@@ -125,12 +145,12 @@ def main() -> None:
             cfg_d = _CFG_DYN.get(method, "?")
             prm_d = _PRM_DYN.get(method, "?")
             if args.layout == "synergy":
-                w.writerow([method, cfg_d, prm_d, ms, eir, eh])
+                w.writerow([method, reward, cfg_d, prm_d, ms, eir, eh])
             elif args.layout == "all_method":
-                w.writerow([method, cfg_d, prm_d, "-", "-", ms, eir, eh])
+                w.writerow([method, reward, cfg_d, prm_d, "-", "-", ms, eir, eh])
             else:  # pareto
-                w.writerow([method, "?", eir, eh, eh2, eps])
-            print(f"  {method}: mean_search={ms or '-'}  eval_ir={eir or '-'}  eval_hpsv3={eh or '-'}")
+                w.writerow([method, reward, eir, eh, eh2, eps])
+            print(f"  [{reward}] {method}: mean_search={ms or '-'}  eval_ir={eir or '-'}  eval_hpsv3={eh or '-'}")
     print(f"\n  rebuilt summary -> {out}  ({len(methods)} methods)")
 
 

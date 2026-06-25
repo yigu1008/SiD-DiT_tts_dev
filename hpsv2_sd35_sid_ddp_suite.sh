@@ -805,7 +805,7 @@ append_method_summary() {
   local method_out="$1"
   local method_name="$2"
   local elapsed_sec="$3"
-  "${PYTHON_BIN}" - <<'PY' "${method_out}" "${method_name}" "${elapsed_sec}" "${SUITE_TSV}" "${EVAL_BACKENDS}"
+  "${PYTHON_BIN}" - <<'PY' "${method_out}" "${method_name}" "${elapsed_sec}" "${SUITE_TSV}" "${EVAL_BACKENDS}" "${REWARD_BACKEND}"
 import csv
 import glob
 import json
@@ -819,6 +819,7 @@ method = sys.argv[2]
 elapsed = int(sys.argv[3])
 suite_tsv = sys.argv[4]
 eval_backends = [x for x in str(sys.argv[5]).split() if x]
+search_reward = sys.argv[6] if len(sys.argv) > 6 else ""
 
 baseline = []
 search = []
@@ -853,6 +854,7 @@ mean_delta = float(statistics.fmean(deltas))
 
 aggregate = {
     "method": method,
+    "search_reward": search_reward,
     "elapsed_sec": elapsed,
     "num_samples": len(search),
     "mean_baseline_score": mean_baseline,

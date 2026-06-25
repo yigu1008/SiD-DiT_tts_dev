@@ -185,7 +185,7 @@ search:
       # (needs both on the server) or composite_all4 for other variants.
       values: [ "hpsv3" ]
     - name: methods
-      values: [ "baseline bon bon_actdiff_cfg bon_actdiff_full das das_actdiff_full sop sop_actdiff_cfg sop_actdiff_full smc smc_actdiff_cfg smc_actdiff_full fksteering_actdiff_full bon_mcts" ]
+      values: [ "baseline bon bon_actdiff_cfg bon_actdiff_full das das_actdiff_full sop sop_actdiff_cfg sop_actdiff_full smc smc_actdiff_cfg smc_actdiff_full fksteering fksteering_actdiff_cfg fksteering_actdiff_full bon_mcts" ]
     # BON_N defaults to matched-NFE (76 for 4-step, 136 for sd35_base).
     # bon_actdiff_* uses the same N but spreads across the action bank.
     - name: neg_bank

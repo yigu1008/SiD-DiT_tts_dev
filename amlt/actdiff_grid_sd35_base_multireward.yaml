@@ -141,6 +141,9 @@ search:
       - export SEED={seed}
       - export SEARCH_REWARD={search_reward}
       - export METHODS="{methods}"
+      # Entropy-gated adaptive branching for bon_mcts (28-step sd35_base only).
+      - export ADAPTIVE_KEY_STEPS={adaptive_key_steps}
+      - export ADAPTIVE_KEY_STEP_BUDGET={adaptive_key_step_budget}
       # Compute-matched BoN: NFE = (N_SEEDS + N_SIMS) x STEPS
       - 'if [ "{backend}" = "sd35_base" ]; then export BON_N={bon_n_long}; else export BON_N={bon_n_short}; fi'
       - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
@@ -175,6 +178,10 @@ search:
       # Trimmed to base fksteering + das (+ baseline ref). Full kit preserved below:
       # values: [ "baseline sop sop_actdiff_cfg sop_actdiff_full fksteering fksteering_actdiff_cfg fksteering_actdiff_full das das_actdiff_full" ]
       values: [ "baseline fksteering das" ]
+    - name: adaptive_key_steps
+      values: [ 0 ]   # 1 -> per-prompt entropy-gated bon_mcts branching (28-step sd35_base)
+    - name: adaptive_key_step_budget
+      values: [ 4 ]   # top-K branch points by CFG divergence (used when adaptive_key_steps=1)
     - name: neg_bank
       values: [ "||low quality, blurry, lowres, jpeg artifacts||bad anatomy, deformed, mutated, extra limbs||watermark, signature, text, frame, cropped" ]
     - name: sigma_bank

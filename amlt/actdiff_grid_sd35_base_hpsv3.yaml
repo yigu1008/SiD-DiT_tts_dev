@@ -145,6 +145,11 @@ search:
       - export SEED={seed}
       - export SEARCH_REWARD={search_reward}
       - export METHODS="{methods}"
+      # Entropy-gated adaptive branching for bon_mcts (28-step sd35_base only;
+      # no-op on 4-step backends). -p adaptive_key_steps=1 -p adaptive_key_step_budget=K
+      # -> per-prompt branch at the top-K CFG-divergence steps.
+      - export ADAPTIVE_KEY_STEPS={adaptive_key_steps}
+      - export ADAPTIVE_KEY_STEP_BUDGET={adaptive_key_step_budget}
       # Compute-matched BoN: NFE = (N_SEEDS + N_SIMS) x STEPS
       # With sim_alloc=split, TOPK divides N_SIMS -- it does NOT multiply NFE.
       # sid/senseflow/flux 4-step: 16 + 60 = 76 trajectory-equivalents.
@@ -181,6 +186,10 @@ search:
       # Trimmed to base fksteering + das (+ baseline ref). Full kit preserved below:
       # values: [ "baseline bon bon_actdiff_cfg bon_actdiff_full das das_actdiff_full sop sop_actdiff_cfg sop_actdiff_full smc smc_actdiff_cfg smc_actdiff_full fksteering fksteering_actdiff_cfg fksteering_actdiff_full bon_mcts" ]
       values: [ "baseline fksteering das" ]
+    - name: adaptive_key_steps
+      values: [ 0 ]   # 1 -> per-prompt entropy-gated bon_mcts branching (28-step sd35_base)
+    - name: adaptive_key_step_budget
+      values: [ 4 ]   # top-K branch points by CFG divergence (used when adaptive_key_steps=1)
     # BON_N defaults to matched-NFE (76 for 4-step, 136 for sd35_base).
     # bon_actdiff_* uses the same N but spreads across the action bank.
     - name: neg_bank

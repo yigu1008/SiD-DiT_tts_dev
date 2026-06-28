@@ -167,7 +167,9 @@ search:
       # hpsv3-guided full-tier actdiff trio (SMC / DAS / SoP) + references.
       # fksteering_actdiff_full = SMC actdiff (FK-steering, diff potential);
       # das_actdiff_full = DAS actdiff; sop_actdiff_full = SoP actdiff.
-      values: [ "baseline fksteering fksteering_actdiff_full das_actdiff_full sop_actdiff_full bon_mcts" ]
+      # Trimmed to base fksteering + das (+ baseline ref). Full kit preserved below:
+      # values: [ "baseline fksteering fksteering_actdiff_full das_actdiff_full sop_actdiff_full bon_mcts" ]
+      values: [ "baseline fksteering das" ]
     - name: composite_n_prompts
       values: [ 200 ]
     - name: composite_seeds

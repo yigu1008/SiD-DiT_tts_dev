@@ -172,7 +172,9 @@ search:
       # Both require the matching backends on the reward server (served above).
       values: [ "composite_hpsv3_ir", "composite_3" ]
     - name: methods
-      values: [ "baseline sop sop_actdiff_cfg sop_actdiff_full fksteering fksteering_actdiff_cfg fksteering_actdiff_full das das_actdiff_full" ]
+      # Trimmed to base fksteering + das (+ baseline ref). Full kit preserved below:
+      # values: [ "baseline sop sop_actdiff_cfg sop_actdiff_full fksteering fksteering_actdiff_cfg fksteering_actdiff_full das das_actdiff_full" ]
+      values: [ "baseline fksteering das" ]
     - name: neg_bank
       values: [ "||low quality, blurry, lowres, jpeg artifacts||bad anatomy, deformed, mutated, extra limbs||watermark, signature, text, frame, cropped" ]
     - name: sigma_bank

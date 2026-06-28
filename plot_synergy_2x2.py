@@ -179,11 +179,15 @@ def _interaction_panel(ax: plt.Axes, vals: dict[str, float], metric: str) -> Non
                     xytext=(10,  6), fontsize=10)
 
 
-def _image_strip_panel(ax: plt.Axes, run_root: Path, prompt_index: int) -> None:
+def _image_strip_panel(ax: plt.Axes, run_root: Path, prompt_index: int,
+                       cell_methods: dict[str, str] | None = None) -> None:
     from PIL import Image
-    methods_in_order = ["bon_mcts_static_cfg", "bon_mcts_adaptive_cfg",
-                        "bon_mcts_rewrite_only", "bon_mcts_full"]
     labels = ["base", "+CFG", "+prompt", "both"]
+    cm = cell_methods or {
+        "base": "bon_mcts_static_cfg", "+CFG": "bon_mcts_adaptive_cfg",
+        "+prompt": "bon_mcts_rewrite_only", "both": "bon_mcts_full",
+    }
+    methods_in_order = [cm[l] for l in labels]
     n = len(methods_in_order)
     ax.axis("off")
     sub = ax.figure.subplots(1, n, gridspec_kw={"wspace": 0.04},
@@ -218,19 +222,25 @@ def main() -> None:
     p.add_argument("--run_root", type=Path, default=None,
                    help="Required with --example_strip; root containing the per-method dirs.")
     p.add_argument("--title", default=None)
+    # Cell -> method mapping. Defaults are the bon_mcts cfg x prompt factorial; override
+    # for the actdiff 2x2, e.g. --cell_base sop --cell_cfg sop_actdiff_cfg
+    # --cell_prompt sop_actdiff_prompt --cell_both sop_actdiff_full.
+    p.add_argument("--cell_base", default="bon_mcts_static_cfg")
+    p.add_argument("--cell_cfg", default="bon_mcts_adaptive_cfg")
+    p.add_argument("--cell_prompt", default="bon_mcts_rewrite_only")
+    p.add_argument("--cell_both", default="bon_mcts_full")
     args = p.parse_args()
 
+    cell_methods = {
+        "base": args.cell_base, "+CFG": args.cell_cfg,
+        "+prompt": args.cell_prompt, "both": args.cell_both,
+    }
     rows = _read(args.summary, args.metric)
-    missing = [c for c in CELLS if c not in rows]
+    missing = [m for m in cell_methods.values() if m not in rows]
     if missing:
         raise SystemExit(f"summary.tsv missing cells: {missing}\nHave: {list(rows)}")
 
-    vals = {
-        "base":    rows["bon_mcts_static_cfg"],
-        "+CFG":    rows["bon_mcts_adaptive_cfg"],
-        "+prompt": rows["bon_mcts_rewrite_only"],
-        "both":    rows["bon_mcts_full"],
-    }
+    vals = {label: rows[m] for label, m in cell_methods.items()}
     additive    = vals["+CFG"] + vals["+prompt"] - vals["base"]
     me_cfg      = ((vals["+CFG"] + vals["both"]) - (vals["base"] + vals["+prompt"])) / 2.0
     me_prompt   = ((vals["+prompt"] + vals["both"]) - (vals["base"] + vals["+CFG"])) / 2.0
@@ -258,7 +268,7 @@ def main() -> None:
         ax_strip = fig.add_subplot(gs[:, 1])
         _bar_panel(ax_bars, vals, args.metric)
         _interaction_panel(ax_inter, vals, args.metric)
-        _image_strip_panel(ax_strip, args.run_root, args.example_strip)
+        _image_strip_panel(ax_strip, args.run_root, args.example_strip, cell_methods)
         ax_strip.set_title(f"example: prompt #{args.example_strip}",
                             fontsize=12, fontweight="bold", pad=6)
     else:

@@ -1016,6 +1016,18 @@ run_method() {
       _sop_var_max="$((${N_VARIANTS} - 1))"
       SOP_VARIANT_BANK="$(seq -s' ' 0 ${_sop_var_max})"
       ;;
+    sop_actdiff_prompt)
+      # SoP with PROMPT-rewrite axis only (CFG fixed at baseline). The (0,1) cell
+      # of the cfg x prompt 2x2 synergy: pairs with sop_actdiff_cfg (1,0),
+      # sop_actdiff_full (1,1) and canonical sop (0,0) to test 1+1>2.
+      mode_arg="sop"
+      SOP_ACTION_DIVERSE=1
+      SOP_CFG_BANK="${BASELINE_CFG}"
+      N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
+      REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
+      _sop_var_max="$((${N_VARIANTS} - 1))"
+      SOP_VARIANT_BANK="$(seq -s' ' 0 ${_sop_var_max})"
+      ;;
     smc_actdiff_cfg)
       # SMC with CFG axis at resample (variant fixed).  Uses existing
       # smc_variant_expansion infrastructure.
@@ -1030,6 +1042,17 @@ run_method() {
       mode_arg="smc"
       SMC_VARIANT_EXPANSION=1
       SMC_EXPANSION_CFGS="${SMC_EXPANSION_CFGS:-${CFG_SCALES}}"
+      N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
+      REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
+      _smc_var_max="$((${N_VARIANTS} - 1))"
+      SMC_EXPANSION_VARIANTS="$(seq -s' ' 0 ${_smc_var_max})"
+      SMC_EXPANSION_CS="${SMC_EXPANSION_CS:-0.0}"
+      ;;
+    smc_actdiff_prompt)
+      # SMC with PROMPT-rewrite axis only (CFG fixed at baseline) -- (0,1) cell.
+      mode_arg="smc"
+      SMC_VARIANT_EXPANSION=1
+      SMC_EXPANSION_CFGS="${BASELINE_CFG}"
       N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
       REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
       _smc_var_max="$((${N_VARIANTS} - 1))"
@@ -1057,6 +1080,19 @@ run_method() {
       SMC_LAMBDA="${FKSTEERING_LAMBDA:-${SMC_LAMBDA:-10.0}}"
       SMC_VARIANT_EXPANSION=1
       SMC_EXPANSION_CFGS="${SMC_EXPANSION_CFGS:-${CFG_SCALES}}"
+      N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
+      REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
+      _smc_var_max="$((${N_VARIANTS} - 1))"
+      SMC_EXPANSION_VARIANTS="$(seq -s' ' 0 ${_smc_var_max})"
+      SMC_EXPANSION_CS="${SMC_EXPANSION_CS:-0.0}"
+      ;;
+    fksteering_actdiff_prompt)
+      # FK-steering with PROMPT-rewrite axis only (CFG fixed at baseline) -- (0,1) cell.
+      mode_arg="smc"
+      SMC_POTENTIAL="diff"
+      SMC_LAMBDA="${FKSTEERING_LAMBDA:-${SMC_LAMBDA:-10.0}}"
+      SMC_VARIANT_EXPANSION=1
+      SMC_EXPANSION_CFGS="${BASELINE_CFG}"
       N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
       REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
       _smc_var_max="$((${N_VARIANTS} - 1))"

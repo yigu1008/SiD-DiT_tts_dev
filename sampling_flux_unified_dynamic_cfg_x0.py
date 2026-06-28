@@ -214,6 +214,17 @@ def run(args: argparse.Namespace) -> None:
             for sample_i in range(int(args.n_samples)):
                 seed = int(args.seed) + sample_i
                 print(f"  sample {sample_i + 1}/{args.n_samples} seed={seed}")
+                # True no-search baseline reference (variant 0, fixed baseline
+                # guidance, same seed) so delta_vs_base is meaningful -- otherwise
+                # baseline_score == search_score and the suite reports delta 0.
+                baseline_actions = [
+                    (0, float(getattr(args, "baseline_guidance_scale", 1.0)))
+                    for _ in range(int(args.steps))
+                ]
+                baseline = base.run_action_sequence(
+                    args=args, ctx=ctx, reward_model=reward_model,
+                    prompt=prompt, embeds=embeds, seed=seed, actions=baseline_actions,
+                )
                 result = _run_dynamic_cfg_x0_flux(
                     args=args, ctx=ctx, reward_model=reward_model, prompt=prompt,
                     embeds=embeds, seed=seed, cfg=cfg, logger=logger,
@@ -221,15 +232,16 @@ def run(args: argparse.Namespace) -> None:
                 if save_entry:
                     out_path = os.path.join(args.out_dir, f"{slug}_s{sample_i}_dynamic_cfg_x0.png")
                     result.image.save(out_path)
+                    baseline.image.save(os.path.join(args.out_dir, f"{slug}_s{sample_i}_baseline.png"))
                 prompt_samples.append({
                     "seed": seed,
                     "search_score": float(result.score),
-                    "baseline_score": float(result.score),
-                    "delta_score": 0.0,
+                    "baseline_score": float(baseline.score),
+                    "delta_score": float(result.score - baseline.score),
                     "actions": [[int(v), float(g)] for v, g in result.actions],
                     "artifacts_saved": bool(save_entry),
                 })
-                del result
+                del result, baseline
                 gc.collect()
                 if ctx.device.startswith("cuda"):
                     torch.cuda.empty_cache()

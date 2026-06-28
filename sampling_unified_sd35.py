@@ -145,6 +145,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Auto-compute N evenly-spaced key steps. 0 = disabled (use --mcts_key_steps or branch at every step).",
     )
     parser.add_argument(
+        "--adaptive_key_steps",
+        action="store_true",
+        help="ADAPTIVE branching: per prompt, run one baseline rollout to get the per-step "
+             "guidance-divergence profile (||flow_c-flow_u||), then branch only at the "
+             "--adaptive_key_step_budget highest-divergence steps. Overrides --mcts_key_steps / "
+             "--mcts_key_step_count when set. Concentrates the tree budget on the steps that "
+             "actually move the outcome for THIS prompt (reward-free, ~1 extra rollout/prompt).",
+    )
+    parser.add_argument(
+        "--adaptive_key_step_budget",
+        type=int,
+        default=0,
+        help="Number of adaptive branch points (top-K by per-step CFG divergence; step 0 always "
+             "included). 0 = disabled. Only used with --adaptive_key_steps.",
+    )
+    parser.add_argument(
         "--mcts_fresh_noise_steps",
         default="",
         help="Comma-separated step indices for extra fresh-noise exploration in MCTS (e.g. '0,7,14'). "
@@ -2739,6 +2755,33 @@ def _parse_key_steps(args: argparse.Namespace) -> list[int] | None:
     return None  # default: branch at every step
 
 
+def _adaptive_key_steps_from_divergence(
+    divergence: list[float], budget: int, total: int
+) -> list[int]:
+    """Pick the `budget` highest-divergence steps (always including step 0) as the
+    tree's branch points, from the per-step guidance-divergence profile
+    (cfg_delta_rms_per_step = ||flow_c - flow_u|| per step). High divergence = the
+    action/CFG choice still moves the prediction here = worth branching; low = the
+    outcome is committed, branching is wasted. Falls back to evenly-spaced if the
+    profile is missing/degenerate (e.g. all-zero when baseline cfg==1.0)."""
+    total = int(total)
+    k = max(1, int(budget))
+    if k >= total:
+        return list(range(total))
+    div = [float(x) for x in (divergence or [])]
+    if len(div) < total or max(div, default=0.0) <= 0.0:
+        if k == 1:
+            return [0]
+        return sorted(set(int(round(i * (total - 1) / (k - 1))) for i in range(k)))
+    order = sorted(range(total), key=lambda s: div[s], reverse=True)
+    chosen = {0}
+    for s in order:
+        if len(chosen) >= k:
+            break
+        chosen.add(int(s))
+    return sorted(chosen)
+
+
 def _resolve_mcts_fresh_noise_steps(
     args: argparse.Namespace,
     total_steps: int,
@@ -3035,6 +3078,26 @@ def run_mcts(
     if use_integrated_noise_actions:
         # 4-step setting: keep per-step branching so noise_t remains a true step action.
         key_steps = list(range(int(args.steps)))
+    elif getattr(args, "adaptive_key_steps", False) and int(getattr(args, "adaptive_key_step_budget", 0)) > 0:
+        # Adaptive branching: one baseline rollout -> per-step CFG-divergence profile
+        # -> branch only at the top-K highest-divergence steps for THIS prompt.
+        probe_stats: dict = {}
+        probe_action = (int(anchor_variant_idx), float(anchor_cfg), float(anchor_cs))
+        _run_segment(
+            args, ctx, emb, reward_model, prompt,
+            start_latents, dx0, probe_action, sched, 0, int(args.steps),
+            stats_out=probe_stats,
+        )
+        div_profile = probe_stats.get("cfg_delta_rms_per_step", [])
+        key_steps = _adaptive_key_steps_from_divergence(
+            div_profile, int(args.adaptive_key_step_budget), int(args.steps)
+        )
+        print(
+            f"  mcts: adaptive key steps (top-{int(args.adaptive_key_step_budget)} by CFG "
+            f"divergence) = {key_steps}  profile={[round(float(x), 3) for x in div_profile]}"
+        )
+        if 0 not in key_steps:
+            key_steps = [0] + key_steps
     else:
         key_steps = _parse_key_steps(args)
         if key_steps is None:

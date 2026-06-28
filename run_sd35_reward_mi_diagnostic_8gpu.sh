@@ -70,6 +70,7 @@ PER_STEP_TABLE_CSV="${PER_STEP_TABLE_CSV:-${OUT_DIR}/mi_perstep_sd35_table.csv}"
 PER_STEP_BASELINE_VARIANT="${PER_STEP_BASELINE_VARIANT:-0}"
 PER_STEP_N_NOISE="${PER_STEP_N_NOISE:-16}"        # noise-channel CRN grid (0 disables)
 PER_STEP_NOISE_SEED_BASE="${PER_STEP_NOISE_SEED_BASE:-900000}"
+PER_STEP_STEP_SUBSET="${PER_STEP_STEP_SUBSET:-full}"  # generation-time step filter (full|stride4|coarse8|snr_aligned|"0,7,14,...")
 PER_STEP_TEST_FRAC="${PER_STEP_TEST_FRAC:-0.2}"   # held-out test split; MI reported on it
 PER_STEP_UNCLAMPED="${PER_STEP_UNCLAMPED:-1}"      # 1 -> report raw mi_real-mi_null (no max(0,.))
 PER_STEP_CRN_RESIDUALIZE="${PER_STEP_CRN_RESIDUALIZE:-1}"  # 1 -> center reward within (prompt,seed); conditional MI
@@ -191,6 +192,7 @@ if [[ "${DO_GEN}" == "1" ]]; then
         --per_step_baseline_variant "${PER_STEP_BASELINE_VARIANT}"
         --per_step_n_noise "${PER_STEP_N_NOISE}"
         --per_step_noise_seed_base "${PER_STEP_NOISE_SEED_BASE}"
+        --per_step_step_subset "${PER_STEP_STEP_SUBSET}"
       )
     fi
     if [[ ${#QWEN_ARGS[@]} -gt 0 ]]; then

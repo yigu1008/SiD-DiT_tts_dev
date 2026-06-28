@@ -92,6 +92,7 @@ search:
       - export PER_STEP_BASELINE_VARIANT={per_step_baseline_variant}
       - export PER_STEP_N_NOISE={per_step_n_noise}
       - export PER_STEP_NOISE_SEED_BASE={per_step_noise_seed_base}
+      - export PER_STEP_STEP_SUBSET={per_step_step_subset}
       - export PER_STEP_TEST_FRAC={per_step_test_frac}
       - export PER_STEP_UNCLAMPED={per_step_unclamped}
       - export PER_STEP_CRN_RESIDUALIZE={per_step_crn_residualize}
@@ -110,6 +111,11 @@ search:
       # mode=per_step_train (override) skips generation and sweeps a prior dataset.
       - if [ {mode} = per_step ]; then MODE=per_step_generate bash run_sd35_reward_mi_diagnostic_8gpu.sh; fi
       - for est in $$SWEEP_ESTIMATORS; do echo "[sweep] estimator=$$est (per_step_train, reusing cached dataset)"; MODE=per_step_train MINE_ESTIMATOR=$$est PER_STEP_REPORT_JSON=$$OUT_DIR/mi_perstep_$${est}_report.json PER_STEP_TABLE_CSV=$$OUT_DIR/mi_perstep_$${est}_table.csv PER_STEP_PLOT_PNG=$$OUT_DIR/mi_perstep_$${est}_curve.png bash run_sd35_reward_mi_diagnostic_8gpu.sh || echo "[sweep] estimator=$$est FAILED (continuing)"; done
+      # STEP-STRATEGY EVAL (free, post-hoc): on a FULL run (per_step_step_subset=full),
+      # score each candidate step subset against the full per-step MI curve and print the
+      # cheapest faithful subset -> lock it in as -p per_step_step_subset=<name> for future
+      # high-step (sd35_base 28-step) runs so generation only probes those steps.
+      - /opt/conda/envs/ptca/bin/python sd35_reward_mi_diagnostic.py --mode per_step_strategy_eval --per_step_table_csv $$OUT_DIR/mi_perstep_ross_table.csv --per_step_strategies "{sweep_step_strategies}" --per_step_strategy_channel joint --per_step_strategy_out $$OUT_DIR/mi_perstep_strategy_eval.csv || echo "[strategy_eval] skipped (no ross table?)"
 
     submit_args:
       env:
@@ -200,6 +206,16 @@ search:
     - name: per_step_noise_seed_base
       values:
         - 900000
+    - name: per_step_step_subset
+      values:
+        # GENERATION step filter. "full" = probe every step (needed once on sd35_base to
+        # run the strategy eval). After validation, override with e.g.
+        #   -p per_step_step_subset=snr_aligned   (or coarse_to_fine / stride4 / "0,7,14,20,27")
+        # so a 28-step backbone only generates the reward-relevant steps.
+        - "full"
+    - name: sweep_step_strategies
+      values:
+        - "full stride2 stride4 coarse8 coarse_to_fine snr_aligned"
     - name: per_step_test_frac
       values:
         - 0.2 # held-out test split; MI reported on it only

@@ -46,6 +46,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "per_step",
             "per_step_plot",
             "per_step_calibrate",
+            "per_step_strategy_eval",
             "decompose",
             "per_step_decompose",
         ],
@@ -198,6 +199,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--per_step_noise_seed_base", type=int, default=900000,
         help="Base seed for noise-channel realizations (kept disjoint from sample seeds).",
+    )
+    p.add_argument(
+        "--per_step_step_subset", default="full",
+        help="GENERATION-time step filter for the per-step OSD sweep. 'full' (default) probes "
+        "every step. A strategy name ('stride2','stride4','coarse8','snr_aligned') or an explicit "
+        "list ('0,7,14,20,27') probes only those steps -- the big cost lever for high-step "
+        "backbones like sd35_base (28 steps). Validate which subset is faithful with "
+        "--mode per_step_strategy_eval on a full run first.",
+    )
+    p.add_argument(
+        "--per_step_strategies",
+        default="full stride2 stride4 coarse8 coarse_to_fine snr_aligned",
+        help="Candidate step-subset strategies the per_step_strategy_eval pass scores against the "
+        "full per-step MI table (space-separated).",
+    )
+    p.add_argument(
+        "--per_step_strategy_channel", default="joint",
+        help="Channel whose per-step MI curve the strategy eval uses to locate the peak/key steps.",
+    )
+    p.add_argument(
+        "--per_step_strategy_out", default="",
+        help="Output CSV for per_step_strategy_eval (default: alongside --per_step_table_csv as "
+        "mi_perstep_strategy_eval.csv).",
     )
     p.add_argument(
         "--per_step_test_frac", type=float, default=0.2,
@@ -1705,12 +1729,19 @@ def generate_dataset_per_step(args: argparse.Namespace) -> None:
     base_cfg_val = float(cfg_values[default_cfg_id])
     n_variants = int(args.n_rewrites) + 1
     steps = int(sampler_args.steps)
+    step_subset = _resolve_step_subset(getattr(args, "per_step_step_subset", "full"), steps)
+    if len(step_subset) < steps:
+        print(
+            f"[per_step] step subset '{args.per_step_step_subset}' -> probing "
+            f"{len(step_subset)}/{steps} steps: {step_subset} (skips the rest at generation time)"
+        )
     n_noise = int(args.per_step_n_noise)
     noise_seed_base = int(args.per_step_noise_seed_base)
     rng = np.random.default_rng(int(args.seed_base) + 13)
 
-    grid_rows = len(prompts) * int(args.n_seeds) * steps * n_variants * len(cfg_values)
-    noise_rows = len(prompts) * int(args.n_seeds) * steps * n_noise
+    n_probe_steps = len(step_subset)
+    grid_rows = len(prompts) * int(args.n_seeds) * n_probe_steps * n_variants * len(cfg_values)
+    noise_rows = len(prompts) * int(args.n_seeds) * n_probe_steps * n_noise
     total_target_rows = grid_rows + noise_rows
     written = 0
     skipped = 0
@@ -1791,7 +1822,7 @@ def generate_dataset_per_step(args: argparse.Namespace) -> None:
 
             for seed_id in range(int(args.n_seeds)):
                 sample_seed = int(args.seed_base) + int(seed_id)
-                for k in range(steps):
+                for k in step_subset:
                     # variant x cfg factorial ("grid"): variant/cfg/joint channels
                     # are read as slices of this shared block downstream.
                     for variant_id in range(n_variants):
@@ -2030,6 +2061,134 @@ def _rows_from_table_csv(path: str) -> list[dict[str, Any]]:
                     out[key] = float("nan")
             rows.append(out)
     return rows
+
+
+def _strategy_steps(name: str, total: int) -> list[int]:
+    """Resolve a step-subset strategy name (or explicit '0,3,6' list) to step indices
+    in [0, total). 'coarse_to_fine' is data-dependent and handled in the eval, not here."""
+    name = (name or "full").strip().lower()
+    if total <= 1:
+        return list(range(total))
+    last = total - 1
+    if name in ("full", "all", ""):
+        return list(range(total))
+    if name.startswith("stride"):
+        s = max(1, int(name[len("stride"):] or "1"))
+        return sorted(set(list(range(0, total, s)) + [last]))
+    if name == "coarse8":
+        n = min(8, total)
+        return sorted(set(int(round(i * last / (n - 1))) for i in range(n)))
+    if name == "snr_aligned":
+        # Align to a 4-step (SiD) backbone's normalized noise levels + endpoint, so
+        # the sd35_base curve is sampled at the diffusion times SiD actually visits.
+        fracs = [0.0, 0.25, 0.5, 0.75, 1.0]
+        return sorted(set(int(round(f * last)) for f in fracs))
+    # explicit list "0,7,14,20,27"
+    out = []
+    for tok in name.replace(",", " ").split():
+        try:
+            v = int(tok)
+        except ValueError:
+            continue
+        if 0 <= v < total:
+            out.append(v)
+    return sorted(set(out)) or list(range(total))
+
+
+def _resolve_step_subset(spec: str, steps: int) -> list[int]:
+    sub = _strategy_steps(spec, steps)
+    return sub if sub else list(range(steps))
+
+
+def _evaluate_step_strategies(
+    rows: list[dict[str, Any]], total_steps: int, channel: str, strategies: list[str],
+) -> tuple[list[dict[str, Any]], int]:
+    """Score each candidate step-subset against the FULL per-step MI curve. A subset is
+    'faithful' if its own argmax-MI step lands within +/-1 of the full curve's peak --
+    i.e. generating only that subset would have led you to the same key step."""
+    mi_by_step: dict[int, float] = {}
+    for r in rows:
+        if str(r.get("Channel")) != channel:
+            continue
+        v = r.get("MI_corrected", float("nan"))
+        if v == v:  # not NaN
+            mi_by_step[int(r["Step"])] = float(v)
+    if not mi_by_step:  # channel absent -> fall back to per-step max over all channels
+        for r in rows:
+            v = r.get("MI_corrected", float("nan"))
+            if v == v:
+                k = int(r["Step"])
+                mi_by_step[k] = max(mi_by_step.get(k, float("-inf")), float(v))
+    if not mi_by_step:
+        return [], -1
+    all_steps = sorted(mi_by_step)
+    full_peak = max(all_steps, key=lambda k: mi_by_step[k])
+    results: list[dict[str, Any]] = []
+    for name in strategies:
+        if name == "coarse_to_fine":
+            base = [s for s in _strategy_steps("coarse8", total_steps) if s in mi_by_step]
+            cpeak = max(base, key=lambda k: mi_by_step[k]) if base else full_peak
+            refine = [cpeak + d for d in (-2, -1, 0, 1, 2)]
+            subset = sorted(set(s for s in (base + refine) if s in mi_by_step))
+        else:
+            subset = [s for s in _strategy_steps(name, total_steps) if s in mi_by_step]
+        if not subset:
+            continue
+        speak = max(subset, key=lambda k: mi_by_step[k])
+        results.append({
+            "strategy": name,
+            "n_steps": len(subset),
+            "cost_frac": round(len(subset) / float(len(all_steps)), 3),
+            "subset_peak_step": speak,
+            "subset_peak_mi": round(mi_by_step[speak], 5),
+            "full_peak_step": full_peak,
+            "full_peak_mi": round(mi_by_step[full_peak], 5),
+            "peak_offset": abs(speak - full_peak),
+            "peak_preserved": int(abs(speak - full_peak) <= 1),
+        })
+    return results, full_peak
+
+
+def run_per_step_strategy_eval(args: argparse.Namespace) -> None:
+    """Post-hoc: read a full per-step MI table and report, for each candidate step-subset
+    strategy, whether it would reproduce the full curve's peak -- so you can lock in the
+    cheapest faithful subset (--per_step_step_subset) for future high-step runs."""
+    table_csv = str(Path(args.per_step_table_csv).expanduser().resolve())
+    rows = _rows_from_table_csv(table_csv)
+    total_steps = (max(int(r["Step"]) for r in rows) + 1) if rows else 0
+    strategies = [s for s in str(args.per_step_strategies).split() if s]
+    channel = str(args.per_step_strategy_channel)
+    results, full_peak = _evaluate_step_strategies(rows, total_steps, channel, strategies)
+    if not results:
+        print(f"[strategy_eval] no usable MI rows in {table_csv} (channel={channel}); skipped.")
+        return
+    out_csv = str(args.per_step_strategy_out) or str(
+        Path(table_csv).parent / "mi_perstep_strategy_eval.csv"
+    )
+    with open(out_csv, "w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(results[0].keys()))
+        w.writeheader()
+        for r in results:
+            w.writerow(r)
+    print(f"[strategy_eval] total_steps={total_steps} channel={channel} full_peak_step={full_peak}")
+    for r in results:
+        flag = "OK " if r["peak_preserved"] else "MISS"
+        print(
+            f"[strategy_eval] {flag} {r['strategy']:14s} n_steps={r['n_steps']:2d} "
+            f"cost={r['cost_frac']:.2f} subset_peak={r['subset_peak_step']:2d} "
+            f"(off={r['peak_offset']}) full_peak={r['full_peak_step']}"
+        )
+    faithful = [r for r in results if r["peak_preserved"] and r["strategy"] != "full"]
+    if faithful:
+        best = min(faithful, key=lambda r: r["n_steps"])
+        steps_list = ",".join(str(s) for s in _strategy_steps(best["strategy"], total_steps))
+        print(
+            f"[strategy_eval] RECOMMEND --per_step_step_subset={best['strategy']} "
+            f"({best['n_steps']}/{total_steps} steps, {best['cost_frac']:.0%} cost; = {steps_list})"
+        )
+    else:
+        print("[strategy_eval] no cheaper subset preserved the peak -> keep full step probing.")
+    print(f"[strategy_eval] wrote {out_csv}")
 
 
 def plot_per_step_mi(args: argparse.Namespace, rows: list[dict[str, Any]] | None = None) -> None:
@@ -2723,6 +2882,8 @@ def main(argv: list[str] | None = None) -> None:
         plot_per_step_mi(args)
     if args.mode == "per_step_calibrate":
         run_per_step_calibrate(args)
+    if args.mode == "per_step_strategy_eval":
+        run_per_step_strategy_eval(args)
     if args.mode == "decompose":
         run_decompose(args)
     if args.mode == "per_step_decompose":

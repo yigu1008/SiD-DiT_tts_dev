@@ -330,6 +330,8 @@ MCTS_KEY_STEP_COUNT="${MCTS_KEY_STEP_COUNT:-2}"
 MCTS_KEY_STEP_STRIDE="${MCTS_KEY_STEP_STRIDE:-0}"
 ADAPTIVE_KEY_STEPS="${ADAPTIVE_KEY_STEPS:-0}"            # 1 -> per-prompt entropy-gated branching
 ADAPTIVE_KEY_STEP_BUDGET="${ADAPTIVE_KEY_STEP_BUDGET:-0}"  # top-K branch points by CFG divergence
+KEYSTEP_STRATEGY="${KEYSTEP_STRATEGY:-auto}"            # auto|every|even|early|explicit|divergence
+KEYSTEP_BUDGET="${KEYSTEP_BUDGET:-0}"                   # K for even/early/divergence (0 -> default 4)
 MCTS_KEY_DEFAULT_COUNT="${MCTS_KEY_DEFAULT_COUNT:-2}"
 MCTS_FRESH_NOISE_STEPS="${MCTS_FRESH_NOISE_STEPS:-}"
 MCTS_FRESH_NOISE_SAMPLES="${MCTS_FRESH_NOISE_SAMPLES:-1}"
@@ -1524,6 +1526,7 @@ PY
     --mcts_key_steps "${MCTS_KEY_STEPS}" \
     --mcts_key_step_count "${MCTS_KEY_STEP_COUNT}" \
     $([ "${ADAPTIVE_KEY_STEPS}" = "1" ] && echo "--adaptive_key_steps --adaptive_key_step_budget ${ADAPTIVE_KEY_STEP_BUDGET}") \
+    --keystep_strategy "${KEYSTEP_STRATEGY}" --keystep_budget "${KEYSTEP_BUDGET}" \
     --mcts_fresh_noise_steps "${MCTS_FRESH_NOISE_STEPS}" \
     --mcts_fresh_noise_samples "${MCTS_FRESH_NOISE_SAMPLES}" \
     --mcts_fresh_noise_scale "${MCTS_FRESH_NOISE_SCALE}" \

@@ -161,6 +161,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "included). 0 = disabled. Only used with --adaptive_key_steps.",
     )
     parser.add_argument(
+        "--keystep_strategy",
+        default="auto",
+        choices=["auto", "every", "even", "early", "explicit", "divergence"],
+        help="Key-step selection strategy for MCTS branching (registry in sampling_unified_sd35). "
+             "auto: legacy precedence (explicit > count > adaptive). every: branch all steps. "
+             "even: K evenly spaced. early: first K (front-loaded signal). explicit: --mcts_key_steps. "
+             "divergence: per-prompt top-K by CFG divergence (one baseline rollout). "
+             "Budget K from --keystep_budget. Add a new strategy via the registry + a choice here.",
+    )
+    parser.add_argument(
+        "--keystep_budget",
+        type=int,
+        default=0,
+        help="K for even/early/divergence key-step strategies (0 -> fall back to "
+             "--adaptive_key_step_budget, then 4).",
+    )
+    parser.add_argument(
         "--mcts_fresh_noise_steps",
         default="",
         help="Comma-separated step indices for extra fresh-noise exploration in MCTS (e.g. '0,7,14'). "
@@ -2782,6 +2799,73 @@ def _adaptive_key_steps_from_divergence(
     return sorted(chosen)
 
 
+# ── Key-step selection strategy registry ──────────────────────────────────
+# Each FIXED / pre-tree strategy maps (total_steps, budget) -> sorted key-step
+# list (always anchored at step 0). Add a strategy by writing one function and
+# registering it below + adding its name to --keystep_strategy choices. The
+# per-prompt adaptive `divergence` strategy reuses _adaptive_key_steps_from_
+# divergence (needs a rollout, handled in run_mcts). `online` is a per-node gate
+# inside the tree, not a pre-tree list.
+
+def _keysteps_even(total: int, budget: int) -> list[int]:
+    """K evenly-spaced steps across [0, total-1]."""
+    k = max(1, int(budget))
+    if k >= total:
+        return list(range(total))
+    if k == 1:
+        return [0]
+    return sorted(set(int(round(i * (total - 1) / (k - 1))) for i in range(k)))
+
+
+def _keysteps_early(total: int, budget: int) -> list[int]:
+    """First K steps -- the high-noise band where the reward signal is most
+    front-loaded (per the per-step MI study)."""
+    k = max(1, min(int(budget), int(total)))
+    return list(range(k))
+
+
+_KEYSTEP_FIXED_STRATEGIES = {
+    "even": _keysteps_even,
+    "early": _keysteps_early,
+}
+
+
+def _resolve_mcts_key_steps(
+    args: argparse.Namespace, total: int, divergence: list[float] | None = None
+) -> list[int] | None:
+    """Dispatch key-step selection by --keystep_strategy. Returns a sorted list,
+    or None = branch at every step. 'auto' preserves the legacy precedence
+    (explicit --mcts_key_steps > --mcts_key_step_count > --adaptive_key_steps).
+    'divergence' requires the caller to pass the per-prompt divergence profile."""
+    strat = str(getattr(args, "keystep_strategy", "auto")).strip().lower()
+    budget = int(getattr(args, "keystep_budget", 0)) or int(getattr(args, "adaptive_key_step_budget", 0)) or 4
+    if strat in ("", "auto"):
+        if getattr(args, "adaptive_key_steps", False) and int(getattr(args, "adaptive_key_step_budget", 0)) > 0:
+            return _adaptive_key_steps_from_divergence(divergence or [], int(args.adaptive_key_step_budget), total)
+        return _parse_key_steps(args)
+    if strat == "every":
+        return None
+    if strat == "explicit":
+        return _parse_key_steps(args)
+    if strat == "divergence":
+        return _adaptive_key_steps_from_divergence(divergence or [], budget, total)
+    fn = _KEYSTEP_FIXED_STRATEGIES.get(strat)
+    if fn is not None:
+        return fn(total, budget)
+    # Unknown strategy -> safe fallback.
+    return _parse_key_steps(args)
+
+
+def _keystep_strategy_needs_rollout(args: argparse.Namespace) -> bool:
+    """True if the selected strategy needs the per-prompt divergence pre-pass."""
+    strat = str(getattr(args, "keystep_strategy", "auto")).strip().lower()
+    if strat == "divergence":
+        return True
+    if strat in ("", "auto"):
+        return bool(getattr(args, "adaptive_key_steps", False)) and int(getattr(args, "adaptive_key_step_budget", 0)) > 0
+    return False
+
+
 def _resolve_mcts_fresh_noise_steps(
     args: argparse.Namespace,
     total_steps: int,
@@ -3074,36 +3158,34 @@ def run_mcts(
     _, t0_4d, _ = sched[0]
     start_latents = _prepare_latents(latents0, dx0, latents0, t0_4d, 0, use_euler)
 
-    # --- Key-step branching setup ---
+    # --- Key-step branching setup (strategy registry: --keystep_strategy) ---
     if use_integrated_noise_actions:
         # 4-step setting: keep per-step branching so noise_t remains a true step action.
         key_steps = list(range(int(args.steps)))
-    elif getattr(args, "adaptive_key_steps", False) and int(getattr(args, "adaptive_key_step_budget", 0)) > 0:
-        # Adaptive branching: one baseline rollout -> per-step CFG-divergence profile
-        # -> branch only at the top-K highest-divergence steps for THIS prompt.
-        probe_stats: dict = {}
-        probe_action = (int(anchor_variant_idx), float(anchor_cfg), float(anchor_cs))
-        _run_segment(
-            args, ctx, emb, reward_model, prompt,
-            start_latents, dx0, probe_action, sched, 0, int(args.steps),
-            stats_out=probe_stats,
-        )
-        div_profile = probe_stats.get("cfg_delta_rms_per_step", [])
-        key_steps = _adaptive_key_steps_from_divergence(
-            div_profile, int(args.adaptive_key_step_budget), int(args.steps)
-        )
-        print(
-            f"  mcts: adaptive key steps (top-{int(args.adaptive_key_step_budget)} by CFG "
-            f"divergence) = {key_steps}  profile={[round(float(x), 3) for x in div_profile]}"
-        )
-        if 0 not in key_steps:
-            key_steps = [0] + key_steps
     else:
-        key_steps = _parse_key_steps(args)
+        div_profile: list[float] | None = None
+        if _keystep_strategy_needs_rollout(args):
+            # One baseline rollout -> per-step CFG-divergence profile, consumed by
+            # the adaptive `divergence` strategy.
+            probe_stats: dict = {}
+            probe_action = (int(anchor_variant_idx), float(anchor_cfg), float(anchor_cs))
+            _run_segment(
+                args, ctx, emb, reward_model, prompt,
+                start_latents, dx0, probe_action, sched, 0, int(args.steps),
+                stats_out=probe_stats,
+            )
+            div_profile = probe_stats.get("cfg_delta_rms_per_step", [])
+        key_steps = _resolve_mcts_key_steps(args, int(args.steps), divergence=div_profile)
         if key_steps is None:
             key_steps = list(range(int(args.steps)))
         if 0 not in key_steps:
             key_steps = [0] + key_steps
+        _strat = str(getattr(args, "keystep_strategy", "auto"))
+        if div_profile is not None:
+            print(f"  mcts: keystep_strategy={_strat} key_steps={sorted(set(key_steps))} "
+                  f"profile={[round(float(x), 3) for x in div_profile]}")
+        else:
+            print(f"  mcts: keystep_strategy={_strat} key_steps={sorted(set(key_steps))}")
     key_steps = sorted(set(key_steps))
     n_key = len(key_steps)
     # For each key step k, the segment runs from key_steps[k] to key_steps[k+1] (or args.steps)

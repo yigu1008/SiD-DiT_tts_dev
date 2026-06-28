@@ -209,9 +209,5 @@ search:
       values: [ "||low quality, blurry, lowres, jpeg artifacts||bad anatomy, deformed, mutated, extra limbs||watermark, signature, text, frame, cropped" ]
     - name: sigma_bank
       values: [ "-0.05 0.0 0.05" ]
-    - name: bon_n_short
-      values: [ 76 ]   # matched NFE for 4-step backends (16 + 60 = 76)
-    - name: bon_n_long
-      values: [ 136 ]  # matched NFE for sd35_base 28-step (16 + 120 = 136)
     - name: reward_server_port
       values: [ 5125 ]

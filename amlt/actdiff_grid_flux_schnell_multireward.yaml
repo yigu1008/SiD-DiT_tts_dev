@@ -178,7 +178,7 @@ search:
       # in the sd35-suite path used by the sid/senseflow/sd35_base variants).
       # fksteering_actdiff_full = SMC actdiff (FK-steering, diff potential);
       # das_actdiff_full = DAS actdiff; sop_actdiff_full = SoP actdiff.
-      values: [ "baseline sop_actdiff_full fksteering_actdiff_full das_actdiff_full" ]
+      values: [ "baseline sop_actdiff_full fksteering fksteering_actdiff_full das_actdiff_full" ]
     - name: composite_n_prompts
       values: [ 200 ]
     - name: composite_seeds

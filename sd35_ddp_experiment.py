@@ -103,6 +103,18 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Auto-compute N evenly-spaced key steps. 0 disables auto key-step selection.",
     )
+    # Key-step selection strategy (consumed by sampling_unified_sd35.run_mcts). Defined
+    # here too so runners using this base parser (e.g. sd35_ddp_experiment_bon_mcts.py)
+    # accept the flags the suite forwards.
+    parser.add_argument("--adaptive_key_steps", action="store_true",
+                        help="Per-prompt entropy-gated branching (top-K CFG divergence).")
+    parser.add_argument("--adaptive_key_step_budget", type=int, default=0,
+                        help="K branch points for --adaptive_key_steps (0 = disabled).")
+    parser.add_argument("--keystep_strategy", default="auto",
+                        choices=["auto", "every", "even", "early", "explicit", "divergence"],
+                        help="MCTS key-step strategy (see sampling_unified_sd35 registry).")
+    parser.add_argument("--keystep_budget", type=int, default=0,
+                        help="K for even/early/divergence (0 -> adaptive_key_step_budget, then 4).")
     parser.add_argument(
         "--mcts_fresh_noise_steps",
         default="",

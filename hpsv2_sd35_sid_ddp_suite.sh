@@ -1526,7 +1526,7 @@ PY
     --mcts_key_steps "${MCTS_KEY_STEPS}" \
     --mcts_key_step_count "${MCTS_KEY_STEP_COUNT}" \
     $([ "${ADAPTIVE_KEY_STEPS}" = "1" ] && echo "--adaptive_key_steps --adaptive_key_step_budget ${ADAPTIVE_KEY_STEP_BUDGET}") \
-    --keystep_strategy "${KEYSTEP_STRATEGY}" --keystep_budget "${KEYSTEP_BUDGET}" \
+    $([ "${KEYSTEP_STRATEGY}" != "auto" ] && echo "--keystep_strategy ${KEYSTEP_STRATEGY} --keystep_budget ${KEYSTEP_BUDGET}") \
     --mcts_fresh_noise_steps "${MCTS_FRESH_NOISE_STEPS}" \
     --mcts_fresh_noise_samples "${MCTS_FRESH_NOISE_SAMPLES}" \
     --mcts_fresh_noise_scale "${MCTS_FRESH_NOISE_SCALE}" \

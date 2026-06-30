@@ -69,7 +69,11 @@ export SEARCH_REWARD REWARD_BACKEND="${SEARCH_REWARD}" REWARD_TYPE="${SEARCH_REW
 export EVAL_BACKENDS="imagereward hpsv3 pickscore hpsv2" EVAL_ALLOW_MISSING_BACKENDS=1
 export USE_QWEN=1 PRECOMPUTE_REWRITES=1 SYNERGY_N_VARIANTS=3
 export CUDA_VISIBLE_DEVICES_SAMPLE
+# Pin sampling to the sampling GPUs so it does NOT land on the reward server's
+# GPU (the reward server was launched pinned to CUDA_VISIBLE_DEVICES_REWARD).
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_SAMPLE}"
 export NUM_GPUS="$(echo "${CUDA_VISIBLE_DEVICES_SAMPLE}" | tr ',' '\n' | grep -c .)"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 echo "[synergy-local] === pass A: full (both axes), N_SIMS=${N_SIMS_FULL} ==="
 METHODS="bon_mcts_full" N_SIMS="${N_SIMS_FULL}" bash "${SCRIPT_DIR}/hpsv2_composite_all_backends.sh" \

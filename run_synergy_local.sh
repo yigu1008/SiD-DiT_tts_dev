@@ -15,7 +15,8 @@
 #
 # Usage:
 #   CUDA_VISIBLE_DEVICES_REWARD=0 CUDA_VISIBLE_DEVICES_SAMPLE=1,2,3 \
-#   RUN_ROOT=$HOME/synergy_local bash run_synergy_local.sh
+#   bash run_synergy_local.sh
+# Outputs default under /data/ygu/synergy_local/run_<timestamp> (override RUN_ROOT).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -23,7 +24,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 CUDA_VISIBLE_DEVICES_REWARD="${CUDA_VISIBLE_DEVICES_REWARD:-0}"      # GPU for the reward server
 CUDA_VISIBLE_DEVICES_SAMPLE="${CUDA_VISIBLE_DEVICES_SAMPLE:-1,2,3}" # GPU(s) for sampling
-RUN_ROOT="${RUN_ROOT:-$HOME/synergy_local/run_$(date +%Y%m%d_%H%M%S)}"
+RUN_ROOT="${RUN_ROOT:-/data/ygu/synergy_local/run_$(date +%Y%m%d_%H%M%S)}"
 REWARD_SERVER_PORT="${REWARD_SERVER_PORT:-5119}"
 BACKEND="${BACKEND:-sid}"
 SEARCH_REWARD="${SEARCH_REWARD:-composite_3}"

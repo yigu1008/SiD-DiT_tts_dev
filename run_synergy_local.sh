@@ -62,6 +62,18 @@ cat ${PROMPT_SETS} > "${RUN_ROOT}/_prompts/backend_${BACKEND}.txt"
 N_PROMPTS="$(grep -c . "${RUN_ROOT}/_prompts/backend_${BACKEND}.txt")"
 echo "[synergy-local] prompts=${N_PROMPTS} backend=${BACKEND} reward=${SEARCH_REWARD} seeds='${SEEDS}'"
 
+# ── 2b. Pre-rewrite with Qwen ONCE (deterministic) so the +prompt cells reuse a
+#        cached rewrites file instead of re-running Qwen per cell/seed. ─────────
+export SYNERGY_REWRITES_FILE="${RUN_ROOT}/_prompts/rewrites_qwen.json"
+if [[ ! -f "${SYNERGY_REWRITES_FILE}" ]]; then
+  echo "[synergy-local] pre-computing Qwen rewrites (n_variants=3) -> ${SYNERGY_REWRITES_FILE}"
+  CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_SAMPLE%%,*}" "${PYTHON_BIN}" "${SCRIPT_DIR}/precompute_sd35_rewrites.py" \
+    --prompt_file "${RUN_ROOT}/_prompts/backend_${BACKEND}.txt" \
+    --rewrites_file "${SYNERGY_REWRITES_FILE}" \
+    --n_variants 3 --qwen_id "${QWEN_ID:-Qwen/Qwen3-4B}" --device cuda:0 \
+    || { echo "[synergy-local] rewrite precompute failed -> cells will rewrite on the fly"; unset SYNERGY_REWRITES_FILE; }
+fi
+
 # ── 3. Shared env, then two passes into one RUN_ROOT ────────────────────────
 export REWARD_SERVER_URL REWARD_API_BASE="${REWARD_SERVER_URL}"
 export RUN_ROOT BACKENDS="${BACKEND}" N_PROMPTS SEEDS PYTHON_BIN
@@ -96,4 +108,13 @@ if [[ -n "${SUM}" ]]; then
       --title "synergy ${BACKEND} (composite_3)" || echo "[synergy-local] plot ex${ex} skipped"
   done
 fi
+
+# ── 5. Per-prompt synergy montage: base / +cfg / +prompt / both side by side,
+#       so you can SEE what each axis adds and what is lost when one is removed.
+"${PYTHON_BIN}" "${SCRIPT_DIR}/make_synergy_montage.py" \
+  --run_root "${RUN_ROOT}/${BACKEND}" --prompts "${MONTAGE_PROMPTS:-0-11}" --include_baseline \
+  --out "${RUN_ROOT}/synergy-${BACKEND}-montage.png" || echo "[synergy-local] montage skipped"
+
 echo "[synergy-local] DONE -> ${RUN_ROOT}"
+echo "[synergy-local]   montage : ${RUN_ROOT}/synergy-${BACKEND}-montage.png"
+echo "[synergy-local]   bars    : ${RUN_ROOT}/synergy-${BACKEND}-ex-*.png"

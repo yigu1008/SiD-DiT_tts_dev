@@ -61,19 +61,36 @@ def main() -> None:
         rewrite_cache = json.load(open(args.rewrites_file, encoding="utf-8"))
         print(f"[grid] loaded rewrites for {len(rewrite_cache)} prompts")
 
-    # composite_* / hpsv3 must be served (loading them locally alongside the
-    # pipeline OOMs). Fail fast with guidance rather than crash mid-generation.
-    needs_server = any(k in str(args.reward_backend) for k in ("composite", "hpsv3", "all"))
-    if needs_server and not os.environ.get("REWARD_SERVER_URL", "").strip():
-        raise SystemExit(
-            f"reward_backend={args.reward_backend} needs a reward server, but REWARD_SERVER_URL "
-            "is unset -> the reward models would load in-process on the pipeline GPU and OOM.\n"
-            "Boot one (in the reward env), then re-run with REWARD_SERVER_URL set, e.g.:\n"
-            "  CUDA_VISIBLE_DEVICES=0 python reward_server.py --port 5119 --device cuda:0 \\\n"
-            "    --backends hpsv3 imagereward pickscore --image_reward_model ImageReward-v1.0 \\\n"
-            "    --pickscore_model yuvalkirstain/PickScore_v1 &\n"
-            "  REWARD_SERVER_URL=http://localhost:5119 <this command>"
-        )
+    # composite_* / hpsv3 must be SERVED (loading them locally alongside the
+    # pipeline OOMs). Verify the server is up AND actually serving the needed
+    # backends up front -- otherwise reward_unified silently falls back to
+    # loading them in-process and hpsv3 OOMs mid-run.
+    _need = {"composite_3": ["imagereward", "hpsv3", "pickscore"],
+             "composite_hpsv3_ir": ["imagereward", "hpsv3"],
+             "composite_all4": ["imagereward", "hpsv3", "pickscore", "hpsv2"],
+             "hpsv3": ["hpsv3"]}.get(str(args.reward_backend), [])
+    if _need:
+        url = os.environ.get("REWARD_SERVER_URL", "").strip()
+        if not url:
+            raise SystemExit(
+                f"reward_backend={args.reward_backend} needs a reward server, but REWARD_SERVER_URL "
+                "is unset -> reward models load in-process on the pipeline GPU and OOM. Boot one and set it."
+            )
+        import json as _json
+        import urllib.request as _u
+        try:
+            health = _json.loads(_u.urlopen(f"{url.rstrip('/')}/health", timeout=5).read().decode())
+            served = set(health.get("backends", []))
+        except Exception as e:
+            raise SystemExit(f"reward server at {url} is unreachable ({e}). Boot it before running the grid.")
+        missing = [b for b in _need if b not in served]
+        if missing:
+            raise SystemExit(
+                f"reward server at {url} serves {sorted(served)} but is MISSING {missing} "
+                f"(needed for {args.reward_backend}). The server likely failed to load {missing} "
+                "(often OOM/leaked GPU memory). Free the server GPU (kill leftover procs / reset) and "
+                "reboot reward_server.py with --backends hpsv3 imagereward pickscore, then re-run."
+            )
 
     print(f"[grid] backend={args.backend} reward={args.reward_backend} steps={steps} "
           f"cfg_bank={cfg_bank} n_variants={n_variants} seeds={seeds} prompts={len(sel)} "

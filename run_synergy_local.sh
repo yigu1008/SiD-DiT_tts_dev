@@ -104,13 +104,23 @@ export NUM_GPUS="$(echo "${CUDA_VISIBLE_DEVICES_SAMPLE}" | tr ',' '\n' | grep -c
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 # Ablation cells first (cheaper @30 sims) so base/+cfg/+prompt appear early,
-# then the expensive both-axes cell @60 last.
-echo "[synergy-local] === pass 1: ablations base + single-axis, N_SIMS=${N_SIMS_SINGLE} ==="
-METHODS="bon_mcts_static_cfg bon_mcts_adaptive_cfg bon_mcts_rewrite_only" N_SIMS="${N_SIMS_SINGLE}" \
-  bash "${SCRIPT_DIR}/hpsv2_composite_all_backends.sh" || echo "[synergy-local] pass 1 (ablations) FAILED"
-echo "[synergy-local] === pass 2: full (both axes), N_SIMS=${N_SIMS_FULL} ==="
-METHODS="bon_mcts_full" N_SIMS="${N_SIMS_FULL}" bash "${SCRIPT_DIR}/hpsv2_composite_all_backends.sh" \
-  || echo "[synergy-local] pass 2 (full) FAILED"
+# then the expensive both-axes cell @60 last. Toggle either pass:
+#   SKIP_FULL=1       -> run only the ablation cells (base/+cfg/+prompt)
+#   SKIP_ABLATIONS=1  -> run only bon_mcts_full
+if [[ "${SKIP_ABLATIONS:-0}" != "1" ]]; then
+  echo "[synergy-local] === pass 1: ablations base + single-axis, N_SIMS=${N_SIMS_SINGLE} ==="
+  METHODS="bon_mcts_static_cfg bon_mcts_adaptive_cfg bon_mcts_rewrite_only" N_SIMS="${N_SIMS_SINGLE}" \
+    bash "${SCRIPT_DIR}/hpsv2_composite_all_backends.sh" || echo "[synergy-local] pass 1 (ablations) FAILED"
+else
+  echo "[synergy-local] SKIP_ABLATIONS=1 — skipping ablation cells"
+fi
+if [[ "${SKIP_FULL:-0}" != "1" ]]; then
+  echo "[synergy-local] === pass 2: full (both axes), N_SIMS=${N_SIMS_FULL} ==="
+  METHODS="bon_mcts_full" N_SIMS="${N_SIMS_FULL}" bash "${SCRIPT_DIR}/hpsv2_composite_all_backends.sh" \
+    || echo "[synergy-local] pass 2 (full) FAILED"
+else
+  echo "[synergy-local] SKIP_FULL=1 — skipping bon_mcts_full (ablations only)"
+fi
 
 # ── 4. Summary + synergy plots (bars + qualitative image strips) ────────────
 SUM="${RUN_ROOT}/synergy-${BACKEND}-summary.tsv"

@@ -77,7 +77,7 @@ search:
       - /opt/conda/envs/ptca/bin/python preload_reward_models.py
       - export HF_HUB_ENABLE_HF_TRANSFER=0
       - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('black-forest-labs/FLUX.1-schnell', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('FLUX.1-schnell cache OK')"
-      - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen3-4B', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('Qwen cache OK')"; fi
+      - if [ {use_qwen} = 1 ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('Qwen/Qwen2.5-3B-Instruct', token=os.environ.get('HF_TOKEN'), resume_download=True, max_workers=1); print('Qwen cache OK')"; fi
       - export HPSV2_PROMPT_DIR=/mnt/data/v-yigu/hpsv2_prompt_cache
       - export PROMPT_STYLE={prompt_style}
       - OUT_DIR="$$HPSV2_PROMPT_DIR" STYLE="$$PROMPT_STYLE" bash get_hpsv2_prompts.sh

@@ -83,7 +83,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--n_variants", type=int, default=3)
     parser.add_argument("--no_qwen", action="store_true")
-    parser.add_argument("--qwen_id", default="Qwen/Qwen3-4B")
+    parser.add_argument("--qwen_id", default="Qwen/Qwen2.5-3B-Instruct")
     parser.add_argument("--qwen_python", default="python3")
     parser.add_argument("--qwen_dtype", default="bfloat16", choices=["float16", "bfloat16"])
     parser.add_argument("--qwen_timeout_sec", type=float, default=240.0)

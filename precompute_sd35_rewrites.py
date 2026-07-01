@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--start_index", type=int, default=0)
     p.add_argument("--end_index", type=int, default=-1)
     p.add_argument("--n_variants", type=int, default=3)
-    p.add_argument("--qwen_id", default="Qwen/Qwen3-4B")
+    p.add_argument("--qwen_id", default="Qwen/Qwen2.5-3B-Instruct")
     p.add_argument("--qwen_dtype", choices=["float16", "bfloat16"], default="bfloat16")
     p.add_argument("--device", default="auto", help="auto|cpu|cuda|cuda:N")
     p.add_argument("--batch_size", type=int, default=16)

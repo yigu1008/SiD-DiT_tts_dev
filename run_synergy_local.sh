@@ -78,8 +78,11 @@ if [[ ! -f "${SYNERGY_REWRITES_FILE}" ]]; then
   CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_SAMPLE%%,*}" "${PYTHON_BIN}" "${SCRIPT_DIR}/precompute_sd35_rewrites.py" \
     --prompt_file "${RUN_ROOT}/_prompts/backend_${BACKEND}.txt" \
     --rewrites_file "${SYNERGY_REWRITES_FILE}" \
-    --n_variants 3 --qwen_id "${QWEN_ID:-Qwen/Qwen3-4B}" --device cuda:0 \
-    || { echo "[synergy-local] rewrite precompute failed -> cells will rewrite on the fly"; unset SYNERGY_REWRITES_FILE; }
+    --n_variants 3 --qwen_id "${QWEN_ID:-Qwen/Qwen2.5-3B-Instruct}" --device cuda:0 \
+    || { echo "[synergy-local] FATAL: Qwen rewrite precompute failed -> the +prompt axis would be empty and the synergy invalid. Fix Qwen (transformers version / QWEN_ID) and retry."; exit 1; }
+fi
+if [[ ! -s "${SYNERGY_REWRITES_FILE}" ]]; then
+  echo "[synergy-local] FATAL: ${SYNERGY_REWRITES_FILE} missing/empty after precompute — no prompt rewrites."; exit 1
 fi
 
 if [[ "${PREPARE_ONLY:-0}" == "1" ]]; then

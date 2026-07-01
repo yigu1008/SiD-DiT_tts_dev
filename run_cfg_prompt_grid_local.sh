@@ -27,7 +27,7 @@ GRID_SEEDS="${GRID_SEEDS:-42}"
 GRID_END="${GRID_END:-}"                          # limit #prompts (empty = all)
 GRID_SAVE_IMAGES="${GRID_SAVE_IMAGES:-0}"         # 1 -> also dump each cell image
 PROMPT_SETS="${PROMPT_SETS:-${SCRIPT_DIR}/prompts_qual_exp1.txt ${SCRIPT_DIR}/prompts_qual_exp2.txt}"
-QWEN_ID="${QWEN_ID:-Qwen/Qwen3-4B}"
+QWEN_ID="${QWEN_ID:-Qwen/Qwen2.5-3B-Instruct}"   # Qwen2.5 works with older transformers; Qwen3 needs >=4.51
 
 mkdir -p "${RUN_ROOT}/_prompts"
 SERVER_LOG="${RUN_ROOT}/reward_server.log"

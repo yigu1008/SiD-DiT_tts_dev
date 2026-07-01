@@ -128,7 +128,8 @@ fi
 # ── 5. Per-prompt synergy montage: base / +cfg / +prompt / both side by side,
 #       so you can SEE what each axis adds and what is lost when one is removed.
 "${PYTHON_BIN}" "${SCRIPT_DIR}/make_synergy_montage.py" \
-  --run_root "${RUN_ROOT}/${BACKEND}" --prompts "${MONTAGE_PROMPTS:-0-11}" --include_baseline \
+  --run_root "${RUN_ROOT}/${BACKEND}" --seed "${MONTAGE_SEED:-42}" \
+  --rank_by_synergy --top "${MONTAGE_TOP:-12}" \
   --out "${RUN_ROOT}/synergy-${BACKEND}-montage.png" || echo "[synergy-local] montage skipped"
 
 echo "[synergy-local] DONE -> ${RUN_ROOT}"

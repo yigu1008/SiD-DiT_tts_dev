@@ -13,9 +13,15 @@
 # the sid (SD3.5-SiD) weights cached, and GPUs. Qwen is used for the +prompt
 # rewrites (USE_QWEN=1). Edit the GPU / path vars below for your machine.
 #
-# Usage:
+# Usage (one shot):
 #   CUDA_VISIBLE_DEVICES_REWARD=0 CUDA_VISIBLE_DEVICES_SAMPLE=1,2,3 \
 #   bash run_synergy_local.sh
+#
+# Usage (two-step: prepare prompts+rewrites first, then run) -- use a FIXED
+# RUN_ROOT so step 2 reuses step 1's artifacts:
+#   RUN_ROOT=/data/ygu/synergy_local/exp1 PREPARE_ONLY=1 bash run_synergy_local.sh   # prep only
+#   RUN_ROOT=/data/ygu/synergy_local/exp1 CUDA_VISIBLE_DEVICES_SAMPLE=1,2,3 bash run_synergy_local.sh  # run
+#
 # Outputs default under /data/ygu/synergy_local/run_<timestamp> (override RUN_ROOT).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,7 +44,9 @@ SERVER_LOG="${RUN_ROOT}/reward_server.log"
 REWARD_SERVER_URL="${REWARD_SERVER_URL:-http://localhost:${REWARD_SERVER_PORT}}"
 
 # ── 1. Reward server: hpsv3 + imagereward + pickscore (composite_3 needs all) ─
-if curl -s --max-time 3 "${REWARD_SERVER_URL}/health" >/dev/null 2>&1; then
+if [[ "${PREPARE_ONLY:-0}" == "1" ]]; then
+  echo "[synergy-local] PREPARE_ONLY=1 — skipping reward server (prep = prompts + Qwen rewrites only)"
+elif curl -s --max-time 3 "${REWARD_SERVER_URL}/health" >/dev/null 2>&1; then
   echo "[synergy-local] reusing reward server at ${REWARD_SERVER_URL}"
 else
   echo "[synergy-local] booting reward server (hpsv3 imagereward pickscore) on GPU ${CUDA_VISIBLE_DEVICES_REWARD}"
@@ -72,6 +80,14 @@ if [[ ! -f "${SYNERGY_REWRITES_FILE}" ]]; then
     --rewrites_file "${SYNERGY_REWRITES_FILE}" \
     --n_variants 3 --qwen_id "${QWEN_ID:-Qwen/Qwen3-4B}" --device cuda:0 \
     || { echo "[synergy-local] rewrite precompute failed -> cells will rewrite on the fly"; unset SYNERGY_REWRITES_FILE; }
+fi
+
+if [[ "${PREPARE_ONLY:-0}" == "1" ]]; then
+  echo "[synergy-local] PREPARE_ONLY done. Prep artifacts under ${RUN_ROOT}/_prompts:"
+  echo "[synergy-local]   prompts : ${RUN_ROOT}/_prompts/backend_${BACKEND}.txt (${N_PROMPTS})"
+  echo "[synergy-local]   rewrites: ${SYNERGY_REWRITES_FILE:-<none>}"
+  echo "[synergy-local] Now run the search reusing them:  RUN_ROOT=${RUN_ROOT} bash run_synergy_local.sh"
+  exit 0
 fi
 
 # ── 3. Shared env, then two passes into one RUN_ROOT ────────────────────────

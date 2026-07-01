@@ -16,11 +16,16 @@ encode_variants / run_schedule_actions.
 Grid knobs via env: GRID_SEEDS (default --seed), GRID_START/GRID_END (prompt
 slice), GRID_SAVE_IMAGES=1. Everything else via the standard su CLI, e.g.:
 
-  python run_cfg_prompt_grid.py --backend sid \
+  REWARD_SERVER_URL=http://localhost:5119 CUDA_VISIBLE_DEVICES=1 \
+  python run_cfg_prompt_grid.py --backend sid --steps 4 \
     --prompt_file .../backend_sid.txt --rewrites_file .../rewrites_qwen.json \
     --n_variants 3 --cfg_scales 1.0 1.25 1.5 1.75 2.0 2.25 2.5 \
-    --reward_backend composite_3 --reward_api_base http://localhost:5119 \
-    --out_dir /data/ygu/cfg_prompt_grid/exp1
+    --reward_backend composite_3 --out_dir /data/ygu/cfg_prompt_grid/exp1
+
+IMPORTANT: for composite_* / hpsv3 rewards, set REWARD_SERVER_URL to an already-
+running reward server (reward_unified routes scoring there). Without it the
+reward models load IN-PROCESS on the pipeline GPU and hpsv3 OOMs. --reward_api_base
+is unrelated (it's the UnifiedReward LLM API), do NOT use it for the server.
 """
 from __future__ import annotations
 
@@ -56,8 +61,23 @@ def main() -> None:
         rewrite_cache = json.load(open(args.rewrites_file, encoding="utf-8"))
         print(f"[grid] loaded rewrites for {len(rewrite_cache)} prompts")
 
+    # composite_* / hpsv3 must be served (loading them locally alongside the
+    # pipeline OOMs). Fail fast with guidance rather than crash mid-generation.
+    needs_server = any(k in str(args.reward_backend) for k in ("composite", "hpsv3", "all"))
+    if needs_server and not os.environ.get("REWARD_SERVER_URL", "").strip():
+        raise SystemExit(
+            f"reward_backend={args.reward_backend} needs a reward server, but REWARD_SERVER_URL "
+            "is unset -> the reward models would load in-process on the pipeline GPU and OOM.\n"
+            "Boot one (in the reward env), then re-run with REWARD_SERVER_URL set, e.g.:\n"
+            "  CUDA_VISIBLE_DEVICES=0 python reward_server.py --port 5119 --device cuda:0 \\\n"
+            "    --backends hpsv3 imagereward pickscore --image_reward_model ImageReward-v1.0 \\\n"
+            "    --pickscore_model yuvalkirstain/PickScore_v1 &\n"
+            "  REWARD_SERVER_URL=http://localhost:5119 <this command>"
+        )
+
     print(f"[grid] backend={args.backend} reward={args.reward_backend} steps={steps} "
-          f"cfg_bank={cfg_bank} n_variants={n_variants} seeds={seeds} prompts={len(sel)}")
+          f"cfg_bank={cfg_bank} n_variants={n_variants} seeds={seeds} prompts={len(sel)} "
+          f"reward_server={os.environ.get('REWARD_SERVER_URL', '<in-process>')}")
     ctx = su.load_pipeline(args)
     reward_model = su.load_reward_model(args, ctx.device)
 

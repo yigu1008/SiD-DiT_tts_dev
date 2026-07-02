@@ -78,17 +78,27 @@ echo "[grid-local] running GRID_MODE=${GRID_MODE} on GPU ${CUDA_VISIBLE_DEVICES_
 if [[ "${GRID_MODE}" == "step" ]]; then
   REWARD_SERVER_URL="${REWARD_SERVER_URL}" CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_SAMPLE}" \
   GRID_SEEDS="${GRID_SEEDS}" GRID_END="${GRID_END}" GRID_SAVE_IMAGES="${GRID_SAVE_IMAGES}" GRID_VARIANT="${GRID_VARIANT:-0}" \
+  GRID_STEPS="${GRID_STEPS}" GRID_STEP_JOINT="${GRID_STEP_JOINT:-0}" \
   PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}" \
   "${PYTHON_BIN}" "${SCRIPT_DIR}/run_cfg_step_grid.py" \
     --backend "${BACKEND}" --steps "${STEPS}" \
     --prompt_file "${PROMPT_FILE}" --rewrites_file "${REWRITES_FILE}" \
     --n_variants "${N_VARIANTS}" --cfg_scales ${CFG_SCALES} --baseline_cfg "${BASELINE_CFG}" \
     --reward_backend "${SEARCH_REWARD}" --out_dir "${RUN_ROOT}"
-  "${PYTHON_BIN}" "${SCRIPT_DIR}/plot_cfg_step_grid.py" \
-    --grid_csv "${RUN_ROOT}/cfg_step_grid.csv" --rank_by_gain --top "${PLOT_TOP:-12}" \
-    --out "${RUN_ROOT}/cfg_step_rectangles.png" \
-    || echo "[grid-local] step plot failed; CSV intact at ${RUN_ROOT}/cfg_step_grid.csv"
-  echo "[grid-local] DONE -> ${RUN_ROOT} (csv: cfg_step_grid.csv, plot: cfg_step_rectangles.png)"
+  if [[ "${GRID_STEP_JOINT:-0}" == "1" ]]; then
+    # Joint intervention: the heatmap has no single-step rows -> montage is the read.
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/plot_cfg_step_montage.py" \
+      --run_root "${RUN_ROOT}" --joint --seed "${GRID_SEEDS%% *}" --rank_by_gain --top "${PLOT_TOP:-10}" \
+      --out "${RUN_ROOT}/cfg_joint_montage.png" \
+      || echo "[grid-local] joint montage failed; CSV intact at ${RUN_ROOT}/cfg_step_grid.csv"
+    echo "[grid-local] DONE -> ${RUN_ROOT} (csv: cfg_step_grid.csv, montage: cfg_joint_montage.png)"
+  else
+    "${PYTHON_BIN}" "${SCRIPT_DIR}/plot_cfg_step_grid.py" \
+      --grid_csv "${RUN_ROOT}/cfg_step_grid.csv" --rank_by_gain --top "${PLOT_TOP:-12}" \
+      --out "${RUN_ROOT}/cfg_step_rectangles.png" \
+      || echo "[grid-local] step plot failed; CSV intact at ${RUN_ROOT}/cfg_step_grid.csv"
+    echo "[grid-local] DONE -> ${RUN_ROOT} (csv: cfg_step_grid.csv, plot: cfg_step_rectangles.png)"
+  fi
 else
   REWARD_SERVER_URL="${REWARD_SERVER_URL}" CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_SAMPLE}" \
   GRID_SEEDS="${GRID_SEEDS}" GRID_END="${GRID_END}" GRID_SAVE_IMAGES="${GRID_SAVE_IMAGES}" \

@@ -43,6 +43,8 @@ def main() -> None:
     p.add_argument("--rank_by_gain", action="store_true")
     p.add_argument("--top", type=int, default=12)
     p.add_argument("--cols", type=int, default=4)
+    p.add_argument("--aggregate", action="store_true",
+                   help="One summary heatmap: mean gain per (step x cfg) over all prompts (easiest read).")
     p.add_argument("--out", default="cfg_step_rectangles.png")
     a = p.parse_args()
 
@@ -60,6 +62,30 @@ def main() -> None:
         return M, b
 
     pis = sorted(rew)
+
+    if a.aggregate:
+        # mean gain per (step, cfg) across all prompts -> one summary heatmap
+        stacks = np.stack([delta_matrix(pi)[0] for pi in pis])
+        Mbar = np.nanmean(stacks, axis=0)
+        lim = float(np.nanmax(np.abs(Mbar))) or 1e-6
+        fig, ax = plt.subplots(figsize=(1.1 * len(cfgs) + 2, 0.6 * len(steps) + 2))
+        im = ax.imshow(Mbar, aspect="auto", cmap="RdBu_r", vmin=-lim, vmax=lim, origin="lower")
+        ax.set_xticks(range(len(cfgs))); ax.set_xticklabels([f"{c:g}" for c in cfgs])
+        ax.set_yticks(range(len(steps))); ax.set_yticklabels([f"step {s}" for s in steps])
+        ax.set_xlabel("cfg bumped at step"); ax.set_ylabel("step")
+        for i in range(len(steps)):
+            for j in range(len(cfgs)):
+                ax.text(j, i, f"{Mbar[i, j]:+.3f}", ha="center", va="center", fontsize=8,
+                        color=("white" if abs(Mbar[i, j]) > 0.6 * lim else "black"))
+        bi, bj = np.unravel_index(np.nanargmax(Mbar), Mbar.shape)
+        ax.plot(bj, bi, "k*", ms=14)
+        fig.colorbar(im, ax=ax, label="mean reward gain vs constant-cfg baseline")
+        ax.set_title(f"per-step CFG effect (mean over {len(pis)} prompts)\n"
+                     f"best: step {steps[bi]} @ cfg {cfgs[bj]:g}  ({Mbar[bi, bj]:+.3f})")
+        fig.savefig(a.out, dpi=130, bbox_inches="tight")
+        print(f"[cfg-step-plot] aggregate -> {a.out}  best step {steps[bi]} cfg {cfgs[bj]:g} mean-gain {Mbar[bi, bj]:+.4f}")
+        return
+
     gain = {pi: (np.nanmax(delta_matrix(pi)[0]) if np.isfinite(delta_matrix(pi)[0]).any() else -1e9) for pi in pis}
     if a.rank_by_gain:
         pis.sort(key=lambda i: gain[i], reverse=True)

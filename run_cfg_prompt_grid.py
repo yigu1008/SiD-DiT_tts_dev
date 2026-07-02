@@ -44,7 +44,10 @@ def main() -> None:
     seeds = [int(s) for s in os.environ.get("GRID_SEEDS", str(int(args.seed))).split()]
     start = int(os.environ.get("GRID_START", "0"))
     end_env = os.environ.get("GRID_END", "")
-    save_images = os.environ.get("GRID_SAVE_IMAGES", "0") == "1"
+    save_images = os.environ.get("GRID_SAVE_IMAGES", "1") == "1"   # default ON
+    img_dir = os.path.join(out_dir, "images")
+    if save_images:
+        os.makedirs(img_dir, exist_ok=True)
     msl = int(getattr(args, "max_sequence_length", 256) or 256)
     steps = int(args.steps)
     cfg_bank = [float(c) for c in args.cfg_scales]
@@ -126,7 +129,7 @@ def main() -> None:
                         })
                         written += 1
                         if save_images:
-                            res.image.save(os.path.join(out_dir, f"p{pi:05d}_s{seed}_v{vi}_cfg{cfg:.2f}.png"))
+                            res.image.save(os.path.join(img_dir, f"p{pi:05d}_s{seed}_v{vi}_cfg{cfg:.2f}.png"))
                         del res
                 f.flush()
             print(f"[grid] p{pi:05d} done ({written} cells so far)")

@@ -25,7 +25,7 @@ N_VARIANTS="${N_VARIANTS:-3}"
 SEARCH_REWARD="${SEARCH_REWARD:-composite_3}"
 GRID_SEEDS="${GRID_SEEDS:-42}"
 GRID_END="${GRID_END:-}"                          # limit #prompts (empty = all)
-GRID_SAVE_IMAGES="${GRID_SAVE_IMAGES:-0}"         # 1 -> also dump each cell image
+GRID_SAVE_IMAGES="${GRID_SAVE_IMAGES:-1}"         # save each cell image (0 to skip)
 PROMPT_SETS="${PROMPT_SETS:-${SCRIPT_DIR}/prompts_qual_exp1.txt ${SCRIPT_DIR}/prompts_qual_exp2.txt}"
 QWEN_ID="${QWEN_ID:-Qwen/Qwen2.5-3B-Instruct}"   # Qwen2.5 works with older transformers; Qwen3 needs >=4.51
 

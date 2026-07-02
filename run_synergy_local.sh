@@ -99,6 +99,11 @@ export RUN_ROOT BACKENDS="${BACKEND}" N_PROMPTS SEEDS PYTHON_BIN
 export SEARCH_REWARD REWARD_BACKEND="${SEARCH_REWARD}" REWARD_TYPE="${SEARCH_REWARD}" REWARD_BACKENDS="${SEARCH_REWARD}"
 export EVAL_BACKENDS="imagereward hpsv3 pickscore hpsv2" EVAL_ALLOW_MISSING_BACKENDS=1
 export USE_QWEN=1 PRECOMPUTE_REWRITES=1 SYNERGY_N_VARIANTS=3
+# The synergy run needs its OWN cells (baseline / mcts_cfg_only / mcts_prompt_only
+# / mcts_all). For sd35_base the composite driver otherwise substitutes a
+# lightweight kit (baseline bon bon_mcts) and drops them — disable that so
+# sd35_base honors the per-pass METHODS we send.
+export LIGHTWEIGHT_SD35_BASE="${LIGHTWEIGHT_SD35_BASE:-0}"
 export CUDA_VISIBLE_DEVICES_SAMPLE
 # Pin sampling to the sampling GPUs so it does NOT land on the reward server's
 # GPU (the reward server was launched pinned to CUDA_VISIBLE_DEVICES_REWARD).

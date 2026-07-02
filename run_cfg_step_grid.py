@@ -35,6 +35,10 @@ def main() -> None:
     steps = int(args.steps)
     cfg_bank = [float(c) for c in args.cfg_scales]
     bcfg = float(args.baseline_cfg)
+    # Which steps to alter (0-indexed; e.g. GRID_STEPS="1 2" = 2nd+3rd only).
+    # Default: all steps.
+    alter_steps = [int(x) for x in os.environ.get("GRID_STEPS", "").split() if x != ""]
+    alter_steps = [k for k in alter_steps if 0 <= k < steps] or list(range(steps))
 
     _need = {"composite_3": ["imagereward", "hpsv3", "pickscore"],
              "composite_hpsv3_ir": ["imagereward", "hpsv3"],
@@ -61,7 +65,8 @@ def main() -> None:
         rewrite_cache = json.load(open(args.rewrites_file, encoding="utf-8"))
 
     print(f"[cfg-step] backend={args.backend} reward={args.reward_backend} steps={steps} "
-          f"cfg_bank={cfg_bank} baseline_cfg={bcfg} variant={variant} seeds={seeds} prompts={len(sel)}")
+          f"alter_steps={alter_steps} cfg_bank={cfg_bank} baseline_cfg={bcfg} variant={variant} "
+          f"seeds={seeds} prompts={len(sel)}")
     ctx = su.load_pipeline(args)
     reward_model = su.load_reward_model(args, ctx.device)
     img_dir = os.path.join(out_dir, "images")
@@ -85,7 +90,7 @@ def main() -> None:
                             "reward": float(res0.score), "is_baseline": 1})
                 if save_images:
                     res0.image.save(os.path.join(img_dir, f"p{pi:05d}_s{seed}_baseline.png"))
-                for k in range(steps):
+                for k in alter_steps:
                     for cfg in cfg_bank:
                         if abs(cfg - bcfg) < 1e-9:
                             continue  # == all-baseline, already recorded

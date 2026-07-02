@@ -1111,7 +1111,7 @@ run_method() {
       N_VARIANTS="${SYNERGY_N_VARIANTS:-${N_VARIANTS}}"
       REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
       ;;
-    bon_mcts_static_cfg|bon_mcts_adaptive_cfg|bon_mcts_rewrite_only|bon_mcts_full|bon_mcts|bon_mcts_neg|bon_mcts_sigma|bon_mcts_axes|bon_mcts_step_reward|bon_mcts_multiseed|bon_mcts_singleseed)
+    bon_mcts_static_cfg|bon_mcts_adaptive_cfg|bon_mcts_rewrite_only|bon_mcts_full|bon_mcts|bon_mcts_neg|bon_mcts_sigma|bon_mcts_axes|bon_mcts_step_reward|bon_mcts_multiseed|bon_mcts_singleseed|mcts_cfg_only|mcts_prompt_only|mcts_all)
       # Action-axis variants share the bon_mcts runner; only differ in which
       # CLI banks (NEG / SIGMA_PERTURB) they pass.  Running them as four
       # methods inside the SAME suite invocation amortizes one pipeline load
@@ -1208,6 +1208,37 @@ run_method() {
           # vanilla — no banks unless caller set them outside
           BON_MCTS_NEG_BANK="${BON_MCTS_NEG_BANK:-}"
           BON_MCTS_SIGMA_PERTURB_BANK="${BON_MCTS_SIGMA_PERTURB_BANK:-}"
+          ;;
+        # ── Plain MCTS synergy cells: single seed (N_SEEDS=1, TOPK=1) so there
+        #    is NO best-of-N seed prescreen — the full N_SIMS runs as one MCTS
+        #    tree on one seed. Axes toggle exactly like the bon_mcts_* cells:
+        #    cfg via adaptive-cfg lookahead, prompt via rewrites/N_VARIANTS.
+        mcts_cfg_only)
+          BON_MCTS_N_SEEDS=1; BON_MCTS_TOPK=1
+          BON_MCTS_REFINE_METHOD="ours_tree"
+          LOOKAHEAD_METHOD_MODE="rollout_tree_prior_adaptive_cfg"
+          N_VARIANTS=1
+          REWRITES_FILE=""
+          BON_MCTS_NEG_BANK=""
+          BON_MCTS_SIGMA_PERTURB_BANK=""
+          ;;
+        mcts_prompt_only)
+          BON_MCTS_N_SEEDS=1; BON_MCTS_TOPK=1
+          BON_MCTS_REFINE_METHOD="mcts"
+          LOOKAHEAD_METHOD_MODE=""
+          N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
+          REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
+          BON_MCTS_NEG_BANK=""
+          BON_MCTS_SIGMA_PERTURB_BANK=""
+          ;;
+        mcts_all)
+          BON_MCTS_N_SEEDS=1; BON_MCTS_TOPK=1
+          BON_MCTS_REFINE_METHOD="ours_tree"
+          LOOKAHEAD_METHOD_MODE="rollout_tree_prior_adaptive_cfg"
+          N_VARIANTS="${SYNERGY_N_VARIANTS:-3}"
+          REWRITES_FILE="${SYNERGY_REWRITES_FILE:-${REWRITES_FILE:-}}"
+          BON_MCTS_NEG_BANK=""
+          BON_MCTS_SIGMA_PERTURB_BANK=""
           ;;
       esac
       ;;

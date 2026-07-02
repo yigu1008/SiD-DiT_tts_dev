@@ -110,19 +110,22 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 # then the expensive both-axes cell @60 last. Toggle either pass:
 #   SKIP_FULL=1       -> run only the ablation cells (base/+cfg/+prompt)
 #   SKIP_ABLATIONS=1  -> run only bon_mcts_full
+# Plain MCTS (no BoN seed prescreen): baseline (no search) + single-axis cells
+# @ N_SIMS_SINGLE, then both-axes @ N_SIMS_FULL. Cells: baseline / mcts_cfg_only
+# / mcts_prompt_only / mcts_all. Override the whole set via SYNERGY_METHODS_*.
 if [[ "${SKIP_ABLATIONS:-0}" != "1" ]]; then
-  echo "[synergy-local] === pass 1: ablations base + single-axis, N_SIMS=${N_SIMS_SINGLE} ==="
-  METHODS="bon_mcts_static_cfg bon_mcts_adaptive_cfg bon_mcts_rewrite_only" N_SIMS="${N_SIMS_SINGLE}" \
+  echo "[synergy-local] === pass 1: baseline + single-axis (plain mcts), N_SIMS=${N_SIMS_SINGLE} ==="
+  METHODS="${SYNERGY_METHODS_SINGLE:-baseline mcts_cfg_only mcts_prompt_only}" N_SIMS="${N_SIMS_SINGLE}" \
     bash "${SCRIPT_DIR}/hpsv2_composite_all_backends.sh" || echo "[synergy-local] pass 1 (ablations) FAILED"
 else
   echo "[synergy-local] SKIP_ABLATIONS=1 — skipping ablation cells"
 fi
 if [[ "${SKIP_FULL:-0}" != "1" ]]; then
-  echo "[synergy-local] === pass 2: full (both axes), N_SIMS=${N_SIMS_FULL} ==="
-  METHODS="bon_mcts_full" N_SIMS="${N_SIMS_FULL}" bash "${SCRIPT_DIR}/hpsv2_composite_all_backends.sh" \
+  echo "[synergy-local] === pass 2: both axes (plain mcts), N_SIMS=${N_SIMS_FULL} ==="
+  METHODS="${SYNERGY_METHODS_FULL:-mcts_all}" N_SIMS="${N_SIMS_FULL}" bash "${SCRIPT_DIR}/hpsv2_composite_all_backends.sh" \
     || echo "[synergy-local] pass 2 (full) FAILED"
 else
-  echo "[synergy-local] SKIP_FULL=1 — skipping bon_mcts_full (ablations only)"
+  echo "[synergy-local] SKIP_FULL=1 — skipping mcts_all (ablations only)"
 fi
 
 # ── 4. Summary + synergy plots (bars + qualitative image strips) ────────────
@@ -132,8 +135,8 @@ SUM="${RUN_ROOT}/synergy-${BACKEND}-summary.tsv"
 if [[ -n "${SUM}" ]]; then
   for ex in 0 1 2 3 4; do
     "${PYTHON_BIN}" "${SCRIPT_DIR}/plot_synergy_2x2.py" --summary "${SUM}" --metric eval_hpsv3 \
-      --cell_base bon_mcts_static_cfg --cell_cfg bon_mcts_adaptive_cfg \
-      --cell_prompt bon_mcts_rewrite_only --cell_both bon_mcts_full \
+      --cell_base baseline --cell_cfg mcts_cfg_only \
+      --cell_prompt mcts_prompt_only --cell_both mcts_all \
       --example_strip "${ex}" --run_root "${RUN_ROOT}/${BACKEND}" \
       --out_png "${RUN_ROOT}/synergy-${BACKEND}-ex-${ex}.png" \
       --title "synergy ${BACKEND} (composite_3)" || echo "[synergy-local] plot ex${ex} skipped"

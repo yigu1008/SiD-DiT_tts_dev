@@ -70,26 +70,39 @@ if [[ ! -f "${REWRITES_FILE}" ]]; then
 fi
 
 # ── 3. Grid sampler on the sampler GPU, scoring via the reward server ────────
-echo "[grid-local] running grid on GPU ${CUDA_VISIBLE_DEVICES_SAMPLE} -> ${RUN_ROOT}"
-REWARD_SERVER_URL="${REWARD_SERVER_URL}" \
-CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_SAMPLE}" \
-GRID_SEEDS="${GRID_SEEDS}" GRID_END="${GRID_END}" GRID_SAVE_IMAGES="${GRID_SAVE_IMAGES}" \
-PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}" \
-"${PYTHON_BIN}" "${SCRIPT_DIR}/run_cfg_prompt_grid.py" \
-  --backend "${BACKEND}" --steps "${STEPS}" \
-  --prompt_file "${PROMPT_FILE}" --rewrites_file "${REWRITES_FILE}" \
-  --n_variants "${N_VARIANTS}" --cfg_scales ${CFG_SCALES} --baseline_cfg "${BASELINE_CFG}" \
-  --reward_backend "${SEARCH_REWARD}" --out_dir "${RUN_ROOT}"
-
-# ── 4. Reward-rectangle plot ────────────────────────────────────────────────
+# GRID_MODE=prompt (default): constant cfg x prompt-variant rectangle.
+# GRID_MODE=step: per-step CFG intervention (bump cfg at one step) x reward.
+GRID_MODE="${GRID_MODE:-prompt}"
 "${PYTHON_BIN}" -c "import matplotlib" 2>/dev/null || "${PYTHON_BIN}" -m pip install --quiet matplotlib || true
-if ! "${PYTHON_BIN}" "${SCRIPT_DIR}/plot_cfg_prompt_grid.py" \
-  --grid_csv "${RUN_ROOT}/cfg_prompt_grid.csv" --baseline_cfg "${BASELINE_CFG}" \
-  --rank_by_synergy --top "${PLOT_TOP:-12}" --out "${RUN_ROOT}/cfg_prompt_rectangles.png"; then
-  echo "[grid-local] WARN: rectangle plot failed (see error above). The CSV is intact; re-run the plot manually:"
-  echo "  ${PYTHON_BIN} ${SCRIPT_DIR}/plot_cfg_prompt_grid.py --grid_csv ${RUN_ROOT}/cfg_prompt_grid.csv --baseline_cfg ${BASELINE_CFG} --rank_by_synergy --top 12 --out ${RUN_ROOT}/cfg_prompt_rectangles.png"
+echo "[grid-local] running GRID_MODE=${GRID_MODE} on GPU ${CUDA_VISIBLE_DEVICES_SAMPLE} -> ${RUN_ROOT}"
+if [[ "${GRID_MODE}" == "step" ]]; then
+  REWARD_SERVER_URL="${REWARD_SERVER_URL}" CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_SAMPLE}" \
+  GRID_SEEDS="${GRID_SEEDS}" GRID_END="${GRID_END}" GRID_SAVE_IMAGES="${GRID_SAVE_IMAGES}" GRID_VARIANT="${GRID_VARIANT:-0}" \
+  PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}" \
+  "${PYTHON_BIN}" "${SCRIPT_DIR}/run_cfg_step_grid.py" \
+    --backend "${BACKEND}" --steps "${STEPS}" \
+    --prompt_file "${PROMPT_FILE}" --rewrites_file "${REWRITES_FILE}" \
+    --n_variants "${N_VARIANTS}" --cfg_scales ${CFG_SCALES} --baseline_cfg "${BASELINE_CFG}" \
+    --reward_backend "${SEARCH_REWARD}" --out_dir "${RUN_ROOT}"
+  "${PYTHON_BIN}" "${SCRIPT_DIR}/plot_cfg_step_grid.py" \
+    --grid_csv "${RUN_ROOT}/cfg_step_grid.csv" --rank_by_gain --top "${PLOT_TOP:-12}" \
+    --out "${RUN_ROOT}/cfg_step_rectangles.png" \
+    || echo "[grid-local] step plot failed; CSV intact at ${RUN_ROOT}/cfg_step_grid.csv"
+  echo "[grid-local] DONE -> ${RUN_ROOT} (csv: cfg_step_grid.csv, plot: cfg_step_rectangles.png)"
+else
+  REWARD_SERVER_URL="${REWARD_SERVER_URL}" CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_SAMPLE}" \
+  GRID_SEEDS="${GRID_SEEDS}" GRID_END="${GRID_END}" GRID_SAVE_IMAGES="${GRID_SAVE_IMAGES}" \
+  PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}" \
+  "${PYTHON_BIN}" "${SCRIPT_DIR}/run_cfg_prompt_grid.py" \
+    --backend "${BACKEND}" --steps "${STEPS}" \
+    --prompt_file "${PROMPT_FILE}" --rewrites_file "${REWRITES_FILE}" \
+    --n_variants "${N_VARIANTS}" --cfg_scales ${CFG_SCALES} --baseline_cfg "${BASELINE_CFG}" \
+    --reward_backend "${SEARCH_REWARD}" --out_dir "${RUN_ROOT}"
+  if ! "${PYTHON_BIN}" "${SCRIPT_DIR}/plot_cfg_prompt_grid.py" \
+    --grid_csv "${RUN_ROOT}/cfg_prompt_grid.csv" --baseline_cfg "${BASELINE_CFG}" \
+    --rank_by_synergy --top "${PLOT_TOP:-12}" --out "${RUN_ROOT}/cfg_prompt_rectangles.png"; then
+    echo "[grid-local] WARN: rectangle plot failed (CSV intact). Re-run manually:"
+    echo "  ${PYTHON_BIN} ${SCRIPT_DIR}/plot_cfg_prompt_grid.py --grid_csv ${RUN_ROOT}/cfg_prompt_grid.csv --baseline_cfg ${BASELINE_CFG} --rank_by_synergy --top 12 --out ${RUN_ROOT}/cfg_prompt_rectangles.png"
+  fi
+  echo "[grid-local] DONE -> ${RUN_ROOT} (csv: cfg_prompt_grid.csv, plot: cfg_prompt_rectangles.png)"
 fi
-
-echo "[grid-local] DONE -> ${RUN_ROOT}"
-echo "[grid-local]   grid csv : ${RUN_ROOT}/cfg_prompt_grid.csv"
-echo "[grid-local]   rectangles: ${RUN_ROOT}/cfg_prompt_rectangles.png"

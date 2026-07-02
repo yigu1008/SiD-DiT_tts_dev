@@ -82,10 +82,13 @@ PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}" \
   --reward_backend "${SEARCH_REWARD}" --out_dir "${RUN_ROOT}"
 
 # ── 4. Reward-rectangle plot ────────────────────────────────────────────────
-"${PYTHON_BIN}" "${SCRIPT_DIR}/plot_cfg_prompt_grid.py" \
+"${PYTHON_BIN}" -c "import matplotlib" 2>/dev/null || "${PYTHON_BIN}" -m pip install --quiet matplotlib || true
+if ! "${PYTHON_BIN}" "${SCRIPT_DIR}/plot_cfg_prompt_grid.py" \
   --grid_csv "${RUN_ROOT}/cfg_prompt_grid.csv" --baseline_cfg "${BASELINE_CFG}" \
-  --rank_by_synergy --top "${PLOT_TOP:-12}" --out "${RUN_ROOT}/cfg_prompt_rectangles.png" \
-  || echo "[grid-local] plot skipped"
+  --rank_by_synergy --top "${PLOT_TOP:-12}" --out "${RUN_ROOT}/cfg_prompt_rectangles.png"; then
+  echo "[grid-local] WARN: rectangle plot failed (see error above). The CSV is intact; re-run the plot manually:"
+  echo "  ${PYTHON_BIN} ${SCRIPT_DIR}/plot_cfg_prompt_grid.py --grid_csv ${RUN_ROOT}/cfg_prompt_grid.csv --baseline_cfg ${BASELINE_CFG} --rank_by_synergy --top 12 --out ${RUN_ROOT}/cfg_prompt_rectangles.png"
+fi
 
 echo "[grid-local] DONE -> ${RUN_ROOT}"
 echo "[grid-local]   grid csv : ${RUN_ROOT}/cfg_prompt_grid.csv"

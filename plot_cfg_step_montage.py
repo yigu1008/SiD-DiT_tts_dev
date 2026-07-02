@@ -43,7 +43,8 @@ def _parse_prompts(spec: str) -> list[int]:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--run_root", required=True, help="dir with images/ and cfg_step_grid.csv")
-    p.add_argument("--step", type=int, required=True, help="denoising step to montage (0-indexed)")
+    p.add_argument("--step", type=int, default=0, help="denoising step to montage (0-indexed)")
+    p.add_argument("--joint", action="store_true", help="montage the JOINT intervention (GRID_STEP_JOINT run)")
     p.add_argument("--seed", default="42")
     p.add_argument("--prompts", default=None, help="subset '0-9'/'0,3,7' (default: all with data)")
     p.add_argument("--top", type=int, default=10)
@@ -57,15 +58,16 @@ def main() -> None:
     rew: dict[tuple[int, float], float] = {}
     base: dict[int, float] = {}
     cfgs = set()
+    target_step = -2 if a.joint else a.step
     for r in csv.DictReader(open(csv_path, encoding="utf-8")):
         pi, rw = int(r["prompt_index"]), float(r["reward"])
         if int(r["is_baseline"]) == 1:
             base[pi] = rw
-        elif int(r["step"]) == a.step:
+        elif int(r["step"]) == target_step:
             c = float(r["cfg"]); rew[(pi, c)] = rw; cfgs.add(c)
     cfgs = sorted(cfgs)
     if not cfgs:
-        raise SystemExit(f"no rows for step {a.step} in {csv_path}")
+        raise SystemExit(f"no rows for {'joint' if a.joint else f'step {a.step}'} in {csv_path}")
 
     prompts_txt: list[str] = []
     pf = (glob.glob(f"{a.run_root}/_prompts/backend_*.txt") or [None])[0]
@@ -86,7 +88,7 @@ def main() -> None:
     canvas = Image.new("RGB", (W, H), (18, 18, 20))
     d = ImageDraw.Draw(canvas)
     fh, fr = _font(16), _font(12)
-    d.text((8, 6), f"cfg @ step {a.step} (seed {a.seed})", fill=(235, 235, 235), font=fh)
+    d.text((8, 6), f"cfg @ {'joint steps' if a.joint else f'step {a.step}'} (seed {a.seed})", fill=(235, 235, 235), font=fh)
     for c, (_v, lab) in enumerate(cols):
         d.text((lw + c * (T + pad) + pad + 4, 6), lab, fill=(220, 220, 220), font=fr)
 
@@ -102,7 +104,9 @@ def main() -> None:
             if v == "__base__":
                 path = os.path.join(img_dir, f"p{pi:05d}_s{a.seed}_baseline.png"); score = base.get(pi)
             else:
-                path = os.path.join(img_dir, f"p{pi:05d}_s{a.seed}_step{a.step}_cfg{float(v):.2f}.png")
+                fn = (f"p{pi:05d}_s{a.seed}_joint_cfg{float(v):.2f}.png" if a.joint
+                      else f"p{pi:05d}_s{a.seed}_step{a.step}_cfg{float(v):.2f}.png")
+                path = os.path.join(img_dir, fn)
                 score = rew.get((pi, float(v)))
             if os.path.exists(path):
                 canvas.paste(Image.open(path).convert("RGB").resize((T, T)), (x, y))
@@ -115,7 +119,7 @@ def main() -> None:
                 d.rectangle([x, y + T - 18, x + 78, y + T], fill=(0, 0, 0))
                 d.text((x + 3, y + T - 16), f"{score:.3f}", fill=(255, 235, 120), font=fr)
 
-    out = a.out or os.path.join(a.run_root, f"cfg_step{a.step}_montage.png")
+    out = a.out or os.path.join(a.run_root, ("cfg_joint_montage.png" if a.joint else f"cfg_step{a.step}_montage.png"))
     canvas.save(out)
     print(f"[step-montage] wrote {out}  ({len(pis)} prompts x {len(cols)} cols @ step {a.step})")
 

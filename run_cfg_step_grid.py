@@ -39,6 +39,7 @@ def main() -> None:
     # Default: all steps.
     alter_steps = [int(x) for x in os.environ.get("GRID_STEPS", "").split() if x != ""]
     alter_steps = [k for k in alter_steps if 0 <= k < steps] or list(range(steps))
+    joint = os.environ.get("GRID_STEP_JOINT", "0") == "1"  # bump all alter_steps together
 
     _need = {"composite_3": ["imagereward", "hpsv3", "pickscore"],
              "composite_hpsv3_ir": ["imagereward", "hpsv3"],
@@ -90,19 +91,36 @@ def main() -> None:
                             "reward": float(res0.score), "is_baseline": 1})
                 if save_images:
                     res0.image.save(os.path.join(img_dir, f"p{pi:05d}_s{seed}_baseline.png"))
-                for k in alter_steps:
+                if joint:
+                    # Bump cfg at ALL alter_steps TOGETHER (guidance-interval) -> a
+                    # much stronger, visible intervention. step=-2 marks the joint row.
                     for cfg in cfg_bank:
                         if abs(cfg - bcfg) < 1e-9:
-                            continue  # == all-baseline, already recorded
+                            continue
                         actions = list(base_actions)
-                        actions[k] = (v, float(cfg), 0.0)
+                        for k in alter_steps:
+                            actions[k] = (v, float(cfg), 0.0)
                         res = su.run_schedule_actions(args, ctx, emb, reward_model, prompt, int(seed),
                                                       actions, deterministic_noise=True, score_prompt=prompt)
-                        w.writerow({"prompt_index": pi, "seed": int(seed), "step": k, "cfg": float(cfg),
+                        w.writerow({"prompt_index": pi, "seed": int(seed), "step": -2, "cfg": float(cfg),
                                     "reward": float(res.score), "is_baseline": 0})
                         if save_images:
-                            res.image.save(os.path.join(img_dir, f"p{pi:05d}_s{seed}_step{k}_cfg{cfg:.2f}.png"))
+                            res.image.save(os.path.join(img_dir, f"p{pi:05d}_s{seed}_joint_cfg{cfg:.2f}.png"))
                         del res
+                else:
+                    for k in alter_steps:
+                        for cfg in cfg_bank:
+                            if abs(cfg - bcfg) < 1e-9:
+                                continue  # == all-baseline, already recorded
+                            actions = list(base_actions)
+                            actions[k] = (v, float(cfg), 0.0)
+                            res = su.run_schedule_actions(args, ctx, emb, reward_model, prompt, int(seed),
+                                                          actions, deterministic_noise=True, score_prompt=prompt)
+                            w.writerow({"prompt_index": pi, "seed": int(seed), "step": k, "cfg": float(cfg),
+                                        "reward": float(res.score), "is_baseline": 0})
+                            if save_images:
+                                res.image.save(os.path.join(img_dir, f"p{pi:05d}_s{seed}_step{k}_cfg{cfg:.2f}.png"))
+                            del res
                 f.flush()
             print(f"[cfg-step] p{pi:05d} done")
     print(f"[cfg-step] wrote {grid_csv}")

@@ -43,7 +43,7 @@ def main() -> None:
     p.add_argument("--prompt_index", type=int, default=1)
     p.add_argument("--seed", default="42")
     p.add_argument("--cfg_lo", type=float, default=None, help="baseline cfg (default: min in CSV)")
-    p.add_argument("--row_labels", default="Original prompt|LLM-enhanced prompt")
+    p.add_argument("--row_labels", default="v1|v2")
     p.add_argument("--col_labels", default="Original CFG|Scaled CFG")
     p.add_argument("--title", default=None)
     p.add_argument("--out", default=None)
@@ -113,11 +113,15 @@ def main() -> None:
              f">  +prompt alone {single_prompt:.3f}    (baseline {base:.3f}, +{gain:.3f})",
              ha="center", fontsize=13.5, color="#2e7d32", fontweight="bold")
 
-    title = a.title or f"Prompt rewriting × CFG scaling are complementary — “{text.get(pi, {}).get(0, '')[:44]}”"
+    title = a.title or f"CFG scale × prompt version — “{text.get(pi, {}).get(0, '')[:48]}”"
     fig.suptitle(title, fontsize=16, fontweight="bold", y=0.975)
     out = a.out or os.path.join(a.run_root, f"synergy_slide_p{pi:05d}.png")
     fig.savefig(out, dpi=150, bbox_inches="tight", facecolor="white")
+    v1_text = text.get(pi, {}).get(0, "")
+    v2_text = text.get(pi, {}).get(v_b, "")
     print(f"[slide] wrote {out}  base {base:.3f} -> both {both_val:.3f}  (+{gain:.3f})")
+    print(f"[slide] v1 (original prompt): {v1_text}")
+    print(f"[slide] v2 (rewrite, variant {v_b}): {v2_text}")
 
 
 if __name__ == "__main__":

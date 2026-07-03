@@ -104,12 +104,14 @@ def main() -> None:
     fig.text(0.56, 0.935, "CFG scale  →", ha="center", fontsize=15, color="#c0392b", fontweight="bold")
     fig.text(0.055, 0.48, "prompt quality  →", rotation=90, va="center", fontsize=15,
              color="#c0392b", fontweight="bold")
-    # diagonal total-gain callout
+    # bottom callout: both beats EITHER single axis (the defensible claim)
     gain = both_val - base
+    single_cfg = rew.get((pi, 0, c_b), cfg_val)
+    single_prompt = rew.get((pi, v_b, cfg_lo), prompt_val)
     fig.text(0.56, 0.015,
-             f"both knobs together:  {base:.3f} → {both_val:.3f}   (+{gain:.3f}, "
-             f"more than +CFG or +prompt alone)",
-             ha="center", fontsize=14, color="#2e7d32", fontweight="bold")
+             f"both together {both_val:.3f}  >  +CFG alone {single_cfg:.3f}   and   "
+             f">  +prompt alone {single_prompt:.3f}    (baseline {base:.3f}, +{gain:.3f})",
+             ha="center", fontsize=13.5, color="#2e7d32", fontweight="bold")
 
     title = a.title or f"Prompt rewriting × CFG scaling are complementary — “{text.get(pi, {}).get(0, '')[:44]}”"
     fig.suptitle(title, fontsize=16, fontweight="bold", y=0.975)

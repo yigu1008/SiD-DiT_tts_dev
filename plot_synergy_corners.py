@@ -77,23 +77,33 @@ def main() -> None:
 
     cfgs = sorted(cfgs)
     cfg_lo = a.cfg_lo if a.cfg_lo is not None else cfgs[0]
-    cfg_hi = a.cfg_hi if a.cfg_hi is not None else cfgs[-1]
+    cfg_hi = a.cfg_hi if a.cfg_hi is not None else cfgs[-1]   # cap on the boost cfg
+    boost_cfgs = [c for c in cfgs if c <= cfg_hi + 1e-9] or cfgs  # cfgs eligible as a boost
     rewrites = sorted(v for v in variants if v != 0) or [0]  # variant 0 = original
 
+    # Textbook cfg x prompt synergy, picking the BEST cfg per axis (robust to a
+    # wide sweep where the top cfg may overcook):
+    #   base    = reward(orig, baseline cfg)
+    #   +cfg    = best cfg for the ORIGINAL prompt        (max over cfg)
+    #   +prompt = best rewrite at the baseline cfg        (max over variant)
+    #   +both   = best (rewrite, cfg) jointly             (max over both)
+    # synergy = both - (cfg + prompt - base).
     def corners(pi):
         base = rew.get((pi, 0, cfg_lo))
-        plus_cfg = rew.get((pi, 0, cfg_hi))
-        if base is None or plus_cfg is None:
+        if base is None:
             return None
-        # pick the rewrite variant that wins at HIGH cfg -> the "+both" cell
-        cand = [(rew.get((pi, v, cfg_hi), -1e9), v) for v in rewrites]
-        best_both, v_star = max(cand)
-        plus_prompt = rew.get((pi, v_star, cfg_lo))
-        if plus_prompt is None or best_both < -1e8:
+        cfg_val, c_cfg = max((rew.get((pi, 0, c), -1e9), c) for c in boost_cfgs)
+        prompt_val, v_p = max((rew.get((pi, v, cfg_lo), -1e9), v) for v in rewrites)
+        both_val, v_b, c_b = max((rew.get((pi, v, c), -1e9), v, c)
+                                 for v in rewrites for c in boost_cfgs)
+        if min(cfg_val, prompt_val, both_val) < -1e8:
             return None
-        syn = best_both - (plus_cfg + plus_prompt - base)
-        return {"v": v_star, "base": base, "cfg": plus_cfg, "prompt": plus_prompt,
-                "both": best_both, "syn": syn}
+        syn = both_val - (cfg_val + prompt_val - base)
+        return {"syn": syn,
+                "cells": {"base":   (0,   cfg_lo, base),
+                          "cfg":    (0,   c_cfg,  cfg_val),
+                          "prompt": (v_p, cfg_lo, prompt_val),
+                          "both":   (v_b, c_b,    both_val)}}
 
     pis = sorted({pi for (pi, _v, _c) in rew})
     if a.prompts:
@@ -104,19 +114,17 @@ def main() -> None:
     if not scored:
         raise SystemExit("no prompt had all four corners present")
 
-    cols = [("base", 0, cfg_lo, "baseline"),
-            ("cfg", 0, cfg_hi, f"+cfg ({cfg_hi:g})"),
-            ("prompt", None, cfg_lo, "+prompt"),
-            ("both", None, cfg_hi, f"+both ({cfg_hi:g})")]
+    cols = [("base", "baseline"), ("cfg", "+cfg (best)"),
+            ("prompt", "+prompt (best)"), ("both", "+both (best)")]
     T, lw, hh, pad = int(a.thumb), 210, 30, 8
     W = lw + len(cols) * (T + pad) + pad
     H = hh + len(scored) * (T + pad) + pad
     canvas = Image.new("RGB", (W, H), (18, 18, 20))
     d = ImageDraw.Draw(canvas)
     fh, fr, fs = _font(18), _font(13), _font(15)
-    d.text((8, 7), f"cfg x prompt synergy — 1+1>2  (seed {a.seed}, cfg {cfg_lo:g}->{cfg_hi:g})",
+    d.text((8, 7), f"cfg x prompt synergy — 1+1>2  (seed {a.seed}, baseline cfg {cfg_lo:g})",
            fill=(235, 235, 235), font=fh)
-    for ci, (_k, _v, _c, lab) in enumerate(cols):
+    for ci, (_k, lab) in enumerate(cols):
         d.text((lw + ci * (T + pad) + pad + 4, 9), lab, fill=(220, 220, 220), font=fs)
 
     for row, (pi, c) in enumerate(scored):
@@ -125,9 +133,9 @@ def main() -> None:
         d.text((6, y + 22), (text[pi].get(0, "")[:30]), fill=(185, 185, 185), font=fr)
         syn_col = (120, 235, 140) if c["syn"] > 0 else (235, 140, 120)
         d.text((6, y + 44), f"synergy\n{c['syn']:+.3f}", fill=syn_col, font=fs)
-        for ci, (key, vi, cfv, _lab) in enumerate(cols):
+        for ci, (key, _lab) in enumerate(cols):
             x = lw + ci * (T + pad) + pad
-            v_use = c["v"] if vi is None else vi
+            v_use, cfv, score = c["cells"][key]
             fn = f"p{pi:05d}_s{a.seed}_v{v_use}_cfg{cfv:.2f}.png"
             path = os.path.join(img_dir, fn)
             if os.path.exists(path):
@@ -137,8 +145,11 @@ def main() -> None:
                 d.text((x + 8, y + T // 2), "(missing)", fill=(140, 140, 140), font=fr)
             if key == "both":
                 d.rectangle([x, y, x + T - 1, y + T - 1], outline=(90, 220, 120), width=4)
-            d.rectangle([x, y + T - 20, x + 84, y + T], fill=(0, 0, 0))
-            d.text((x + 3, y + T - 18), f"{c[key]:.3f}", fill=(255, 235, 120), font=fr)
+            # tag: which cfg (and variant) this best-cell used
+            tag = f"cfg {cfv:g}" + ("" if key in ("base", "cfg") else f"  v{v_use}")
+            d.rectangle([x, y + T - 36, x + 120, y + T], fill=(0, 0, 0))
+            d.text((x + 3, y + T - 34), tag, fill=(180, 210, 255), font=fr)
+            d.text((x + 3, y + T - 18), f"{score:.3f}", fill=(255, 235, 120), font=fr)
 
     out = a.out or os.path.join(a.run_root, "synergy_corners.png")
     canvas.save(out)

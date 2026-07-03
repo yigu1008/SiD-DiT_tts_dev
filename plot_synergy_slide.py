@@ -46,6 +46,8 @@ def main() -> None:
     p.add_argument("--row_labels", default="v1|v2")
     p.add_argument("--col_labels", default="Original CFG|Scaled CFG")
     p.add_argument("--title", default=None)
+    p.add_argument("--annotate", action="store_true",
+                   help="add title + axis arrows + bottom reward callout (default: clean 2x2 only)")
     p.add_argument("--out", default=None)
     a = p.parse_args()
 
@@ -76,7 +78,9 @@ def main() -> None:
     rlab = a.row_labels.split("|"); clab = a.col_labels.split("|")
     fig = plt.figure(figsize=(9.6, 10.2))
     fig.patch.set_facecolor("white")
-    gs = fig.add_gridspec(2, 2, left=0.14, right=0.98, top=0.90, bottom=0.06,
+    top = 0.90 if a.annotate else 0.955
+    bottom = 0.06 if a.annotate else 0.01
+    gs = fig.add_gridspec(2, 2, left=0.08, right=0.99, top=top, bottom=bottom,
                           hspace=0.06, wspace=0.04)
     for (ri, ci), (v, c, s, tag) in cells.items():
         ax = fig.add_subplot(gs[ri, ci])
@@ -100,21 +104,22 @@ def main() -> None:
         if ci == 0:
             ax.set_ylabel(rlab[ri], fontsize=17, fontweight="bold", labelpad=10)
 
-    # axis arrows: CFG (top, →) and prompt (left, ↓), both "reward increases"
-    fig.text(0.56, 0.935, "CFG scale  →", ha="center", fontsize=15, color="#c0392b", fontweight="bold")
-    fig.text(0.055, 0.48, "prompt quality  →", rotation=90, va="center", fontsize=15,
-             color="#c0392b", fontweight="bold")
-    # bottom callout: both beats EITHER single axis (the defensible claim)
     gain = both_val - base
-    single_cfg = rew.get((pi, 0, c_b), cfg_val)
-    single_prompt = rew.get((pi, v_b, cfg_lo), prompt_val)
-    fig.text(0.56, 0.015,
-             f"both together {both_val:.3f}  >  +CFG alone {single_cfg:.3f}   and   "
-             f">  +prompt alone {single_prompt:.3f}    (baseline {base:.3f}, +{gain:.3f})",
-             ha="center", fontsize=13.5, color="#2e7d32", fontweight="bold")
-
-    title = a.title or f"CFG scale × prompt version — “{text.get(pi, {}).get(0, '')[:48]}”"
-    fig.suptitle(title, fontsize=16, fontweight="bold", y=0.975)
+    if a.annotate:
+        # optional extras: axis arrows, bottom callout, title
+        fig.text(0.56, 0.935, "CFG scale  →", ha="center", fontsize=15, color="#c0392b", fontweight="bold")
+        fig.text(0.02, 0.48, "prompt quality  →", rotation=90, va="center", fontsize=15,
+                 color="#c0392b", fontweight="bold")
+        single_cfg = rew.get((pi, 0, c_b), cfg_val)
+        single_prompt = rew.get((pi, v_b, cfg_lo), prompt_val)
+        fig.text(0.56, 0.015,
+                 f"both together {both_val:.3f}  >  +CFG alone {single_cfg:.3f}   and   "
+                 f">  +prompt alone {single_prompt:.3f}    (baseline {base:.3f}, +{gain:.3f})",
+                 ha="center", fontsize=13.5, color="#2e7d32", fontweight="bold")
+        title = a.title or f"CFG scale × prompt version — “{text.get(pi, {}).get(0, '')[:48]}”"
+        fig.suptitle(title, fontsize=16, fontweight="bold", y=0.975)
+    elif a.title:
+        fig.suptitle(a.title, fontsize=16, fontweight="bold", y=0.985)
     out = a.out or os.path.join(a.run_root, f"synergy_slide_p{pi:05d}.png")
     fig.savefig(out, dpi=150, bbox_inches="tight", facecolor="white")
     v1_text = text.get(pi, {}).get(0, "")

@@ -27,7 +27,8 @@ from PIL import Image, ImageDraw, ImageFont
 # (method subdir, image-filename suffix, column label)
 DEFAULT_METHODS = [
     ("baseline", "base", "base"),
-    ("smc", "smc", "DAS"),
+    ("das", "bon", "DAS"),           # Diffusion Action Search (mode=bon)
+    ("smc", "smc", "SMC"),           # Sequential Monte Carlo
     ("fksteering", "smc", "FK-Steering"),
     ("bon_mcts", "mcts", "MCTS (ours)"),
 ]

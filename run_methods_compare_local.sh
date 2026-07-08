@@ -21,7 +21,7 @@ BACKEND="${BACKEND:-sd35_base}"
 SEARCH_REWARD="${SEARCH_REWARD:-composite_3}"
 SEEDS="${SEEDS:-42}"
 N_SIMS="${N_SIMS:-30}"
-METHODS="${METHODS:-baseline smc fksteering bon_mcts}"
+METHODS="${METHODS:-baseline das smc fksteering bon_mcts}"
 PROMPT_SETS="${PROMPT_SETS:-${SCRIPT_DIR}/prompts_portraits.txt}"
 
 mkdir -p "${RUN_ROOT}/_prompts"

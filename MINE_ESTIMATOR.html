@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>MINE Estimator</title>
+  <style>
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      background-color: #1a1a1a;
+      border: none;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    ul.task-list{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    body{max-width:860px;margin:2rem auto;padding:0 1.2rem;
+         font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;color:#1a1a1a;}
+    h1,h2{border-bottom:1px solid #e2e2e2;padding-bottom:.3rem;}
+    code,pre{background:#f6f8fa;border-radius:6px;}
+    pre{padding:.9rem 1rem;overflow:auto;} code{padding:.15rem .35rem;font-size:.92em;}
+    pre code{padding:0;background:none;}
+    table{border-collapse:collapse;} th,td{border:1px solid #d0d7de;padding:.4rem .7rem;}
+    th{background:#f0f3f6;} blockquote{color:#555;border-left:3px solid #ccc;padding-left:1rem;}
+  </style>
+  <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+  <script
+  src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js"
+  type="text/javascript"></script>
+  <!--[if lt IE 9]>
+    <script src="//cdnjs.cloudflare.com/ajax/libs/html5shiv/3.7.3/html5shiv-printshiv.min.js"></script>
+  <![endif]-->
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">MINE Estimator</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#mine-estimator-how-the-rewardaction-mi-is-estimated"
+id="toc-mine-estimator-how-the-rewardaction-mi-is-estimated">MINE
+Estimator — How the Reward↔︎Action MI Is Estimated</a>
+<ul>
+<li><a href="#what-is-estimated-conditional-mi-ir-c-p"
+id="toc-what-is-estimated-conditional-mi-ir-c-p">1. What is estimated:
+conditional MI <code>I(R; C | P)</code></a></li>
+<li><a href="#the-critic-network-minecritic"
+id="toc-the-critic-network-minecritic">2. The critic network
+(<code>MineCritic</code>)</a></li>
+<li><a href="#the-variational-lower-bound-dv-smile-infonce"
+id="toc-the-variational-lower-bound-dv-smile-infonce">3. The variational
+lower bound (DV / SMILE / InfoNCE)</a></li>
+<li><a
+href="#negatives-within-prompt-permutation-what-makes-it-conditional"
+id="toc-negatives-within-prompt-permutation-what-makes-it-conditional">4.
+Negatives = within-prompt permutation (what makes it
+<em>conditional</em>)</a></li>
+<li><a href="#training-a-single-restart-_train_one_restart"
+id="toc-training-a-single-restart-_train_one_restart">5. Training a
+single restart (<code>_train_one_restart</code>)</a></li>
+<li><a href="#why-ema-early-stopping-bias-control"
+id="toc-why-ema-early-stopping-bias-control">6. Why EMA early stopping
+(bias control)</a></li>
+<li><a href="#the-final-estimate-_estimate_mi_and_auroc"
+id="toc-the-final-estimate-_estimate_mi_and_auroc">7. The final estimate
+(<code>_estimate_mi_and_auroc</code>)</a></li>
+<li><a href="#debiasing-and-reporting"
+id="toc-debiasing-and-reporting">8. Debiasing and reporting</a></li>
+<li><a href="#non-neural-cross-checks"
+id="toc-non-neural-cross-checks">9. Non-neural cross-checks</a></li>
+<li><a href="#key-hyperparameters" id="toc-key-hyperparameters">10. Key
+hyperparameters</a></li>
+<li><a href="#summary-one-line" id="toc-summary-one-line">Summary (one
+line)</a></li>
+</ul></li>
+</ul>
+</nav>
+<h1 id="mine-estimator-how-the-rewardaction-mi-is-estimated">MINE
+Estimator — How the Reward↔︎Action MI Is Estimated</h1>
+<p>This documents the neural MI estimator in
+<code>sd35_reward_mi_diagnostic.py</code>. It answers a single question:
+<strong>how much does a search “control” channel <code>C</code> (prompt
+variant, CFG, or per-step action) explain about the reward
+<code>R</code>, holding the prompt <code>P</code> fixed?</strong></p>
+<h2 id="what-is-estimated-conditional-mi-ir-c-p">1. What is estimated:
+conditional MI <code>I(R; C | P)</code></h2>
+<p>We estimate the <strong>within-prompt conditional mutual
+information</strong></p>
+<p><span class="math display">\[
+I(R; C \mid P) \;=\; \mathbb{E}_{P}\Big[\, \mathrm{KL}\big(\,p(R,C\mid
+P)\;\|\;p(R\mid P)\,p(C\mid P)\,\big)\Big]
+\]</span></p>
+<ul>
+<li><code>R</code> — scalar reward (composite / IR / HPSv3 …).</li>
+<li><code>C</code> — a discrete control channel: variant id, cfg id, or
+action id.</li>
+<li><code>P</code> — prompt id (the confounder we condition on).</li>
+</ul>
+<p>Conditioning on <code>P</code> is the whole point: raw
+<code>I(R;C)</code> is dominated by prompt-level reward differences. We
+want the reward variation <strong>attributable to the action</strong>,
+with the prompt held fixed. This is achieved entirely through how
+negatives are sampled (§4).</p>
+<h2 id="the-critic-network-minecritic">2. The critic network
+(<code>MineCritic</code>)</h2>
+<p>A single scalar critic <code>T_θ(r, p, c)</code>:</p>
+<pre><code>reward  r ──────────────► [ scalar, 1-d ]
+prompt  p ──► Embedding(n_prompts, 32) ─────────┐
+control c ──► Embedding(|C|, 32) ───────────────┤─► concat ─► MLP ─► T ∈ ℝ
+                                                 │   Linear(in,256)→SiLU
+              (one embedding per control channel)│   Linear(256,256)→SiLU
+                                                 │   Linear(256,1)</code></pre>
+<ul>
+<li>Input dim <code>= 1 + 32·(1 + #controls)</code> (reward is the raw
+scalar; prompt and each control are embedded, default
+<code>embedding_dim=32</code>, <code>hidden_dim=256</code>).</li>
+<li>Output is a single logit <code>T_θ(r,p,c)</code> — higher ⇒ this
+<code>(r,c)</code> pair looks like a genuine within-prompt co-occurrence
+rather than a shuffled one.</li>
+</ul>
+<h2 id="the-variational-lower-bound-dv-smile-infonce">3. The variational
+lower bound (DV / SMILE / InfoNCE)</h2>
+<p>The estimate uses a Donsker–Varadhan (DV) style lower bound:</p>
+<p><span class="math display">\[
+I(R;C\mid P) \;\ge\;
+\underbrace{\mathbb{E}_{\text{pos}}\big[T_\theta\big]}_{\text{joint
+}p(r,c\mid p)} \;-\; \log
+\underbrace{\mathbb{E}_{\text{neg}}\big[e^{T_\theta}\big]}_{\text{product
+}p(r\mid p)p(c\mid p)}
+\]</span></p>
+<p>In code (<code>_critic_bound</code>, <code>_log_mean_exp</code>):</p>
+<pre><code>bound = t_pos.mean() − logmeanexp(t_neg)</code></pre>
+<p>Three interchangeable estimators (<code>--mine_estimator</code>,
+default <strong><code>smile</code></strong>):</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>estimator</th>
+<th>bound</th>
+<th>key detail</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>dv</code></td>
+<td>raw Donsker–Varadhan</td>
+<td><code>logmeanexp(t_neg)</code> unclipped — low bias, high
+variance</td>
+</tr>
+<tr class="even">
+<td><strong><code>smile</code></strong></td>
+<td>DV with clipped critic</td>
+<td>clip <code>T</code> to <code>[−τ, τ]</code>
+(τ=<code>mine_smile_tau</code>, default 5) <strong>inside</strong> the
+log-mean-exp — tames the classic MINE/DV blow-up from a single large
+negative logit; trades a little bias for much lower variance</td>
+</tr>
+<tr class="odd">
+<td><code>infonce</code></td>
+<td>block softmax (NCE)</td>
+<td>K same-prompt samples per block, diagonal = positive; lowest
+variance, bounded by <code>log K</code></td>
+</tr>
+</tbody>
+</table>
+<p>SMILE is the default: it is the DV bound with <code>t_neg</code>
+clamped to <code>[−τ,τ]</code> before the <code>logsumexp</code>, which
+is the single most important stabilizer for near-zero channels.</p>
+<h2
+id="negatives-within-prompt-permutation-what-makes-it-conditional">4.
+Negatives = within-prompt permutation (what makes it
+<em>conditional</em>)</h2>
+<p>Positives are the real joint rows <code>(r_i, p_i, c_i)</code>.
+Negatives are built by <strong>permuting the control within each prompt
+group</strong> (<code>_permute_within_prompt_ids</code>,
+<code>_permute_controls_in_batch</code>):</p>
+<pre><code>negative_i = (r_i, p_i, c_{σ(i)})   where σ shuffles rows only among the SAME prompt</code></pre>
+<p>This draws from <code>p(R|P)·p(C|P)</code> — the product of the
+within-prompt conditionals — so the bound estimates
+<code>I(R;C|P)</code>, not the prompt-confounded <code>I(R;C)</code>.
+Shuffling across prompts would instead measure prompt effects; shuffling
+<em>within</em> prompt is what isolates the action’s contribution.</p>
+<h2 id="training-a-single-restart-_train_one_restart">5. Training a
+single restart (<code>_train_one_restart</code>)</h2>
+<ol type="1">
+<li><strong>3-way split</strong> train / val / test
+(<code>--mine_val_frac</code>), split by row.</li>
+<li><strong>Optimizer</strong>: AdamW, <code>lr=1e-4</code>, gradient
+clip <code>1.0</code>, batch <code>1024</code>, up to
+<code>mine_steps=10000</code> steps.</li>
+<li><strong>Per step</strong>: sample a minibatch → positives are the
+real rows, negatives are a within-prompt permutation of the controls in
+that batch → <code>loss = −bound</code> → backprop.</li>
+<li><strong>EMA-smoothed early stopping</strong> (§6): every
+<code>mine_eval_every=250</code> steps, measure val MI, update an EMA
+<code>ema ← 0.7·ema + 0.3·val_mi</code>, and keep the
+<strong>best-EMA</strong> checkpoint (optional patience via
+<code>--mine_early_stop_patience</code>).</li>
+<li><strong>Restarts</strong>: <code>--mine_restarts</code> (default 3)
+independent inits/seeds; results are aggregated across restarts to
+reduce init variance.</li>
+</ol>
+<h2 id="why-ema-early-stopping-bias-control">6. Why EMA early stopping
+(bias control)</h2>
+<p>Selecting the single <strong>max</strong> val-MI checkpoint maximizes
+over noisy estimates → an upward bias that is worst exactly where the
+true MI is near zero. Instead we track an EMA of val MI and keep the
+best <em>smoothed</em> checkpoint, so a lucky spike doesn’t get locked
+in. (<code>best_ema</code>, <code>ema_val</code> in
+<code>_train_one_restart</code>.)</p>
+<h2 id="the-final-estimate-_estimate_mi_and_auroc">7. The final estimate
+(<code>_estimate_mi_and_auroc</code>)</h2>
+<p>The reported number is a <strong>full-set single-pass</strong>
+DV/SMILE evaluation on the held-out <strong>test</strong> split (not the
+running training bound):</p>
+<ul>
+<li>Accumulate <code>t_pos</code> over <strong>every</strong> row, and
+take <strong>one</strong> <code>log-mean-exp</code> over
+<strong>all</strong> negatives from a single within-prompt
+permutation.</li>
+<li>This avoids averaging per-minibatch DV bounds, which is
+Jensen-biased <em>upward</em> and high-variance:</li>
+</ul>
+<p><span class="math display">\[
+\widehat{I} \;=\; \frac{1}{N}\sum_i
+T_\theta(\text{pos}_i)\;-\;\log\!\Big(\tfrac{1}{N}\sum_i
+e^{\,\mathrm{clip}_\tau T_\theta(\text{neg}_i)}\Big)
+\]</span></p>
+<ul>
+<li>A companion <strong>AUROC</strong> (positives vs. negatives by
+critic score) is returned as a critic-quality diagnostic — AUROC ≈ 0.5 ⇒
+the critic can’t separate joint from shuffled ⇒ MI ≈ 0.</li>
+</ul>
+<h2 id="debiasing-and-reporting">8. Debiasing and reporting</h2>
+<ul>
+<li><strong>Permutation null</strong>: the same pipeline is run on a
+label-permuted dataset to get <code>mi_null</code> (should sit at ~0).
+The corrected statistic is <code>mi_corrected = mi_real − mi_null</code>
+(<code>--mine_report_raw_corrected</code> drops the
+<code>max(0,·)</code> floor / <code>H(C)</code> clamp so the null
+genuinely centers at zero).</li>
+<li><strong>Prompt-bootstrap CI</strong>: resample prompts to get a
+confidence interval.</li>
+<li><strong>Explained-variance readout</strong>
+(<code>_mi_explained_var</code>): MI (nats) is mapped to a variance
+fraction via the Gaussian <code>I ↔︎ ρ²</code> identity</li>
+</ul>
+<p><span class="math display">\[
+\rho^2 \;=\; 1 - e^{-2\widehat{I}} \;\in [0,1)
+\]</span></p>
+<p>i.e. the fraction of (CRN-residualized) reward variance the channel
+explains — cardinality-free (unlike <code>MI/H(C)</code>),
+<code>≈ 2·I</code> for small <code>I</code>, and directly comparable to
+the variance / η² decomposition.</p>
+<h2 id="non-neural-cross-checks">9. Non-neural cross-checks</h2>
+<p>The same driver also computes distribution-free estimators as sanity
+checks against MINE, each with a prompt-bootstrap CI
+(<code>--mine_ross_bootstrap</code>):</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>estimator</th>
+<th>idea</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>ross</code></td>
+<td>k-NN (Ross) MI for a continuous reward vs. discrete label
+(<code>--mine_ross_k</code>)</td>
+</tr>
+<tr class="even">
+<td><code>mm</code></td>
+<td>Miller–Madow bias-corrected plug-in on equal-frequency reward bins
+(<code>--mine_mm_bins</code>)</td>
+</tr>
+<tr class="odd">
+<td><code>omega2</code></td>
+<td>ω² — bias-debiased fraction of reward variance explained by the
+discrete action (distribution twin of the Gaussian ρ² map)</td>
+</tr>
+<tr class="even">
+<td><code>dcor</code></td>
+<td>distance correlation</td>
+</tr>
+</tbody>
+</table>
+<p>If MINE and these agree (and the null sits at 0), the MI is
+trustworthy.</p>
+<h2 id="key-hyperparameters">10. Key hyperparameters</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>flag</th>
+<th>default</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>--mine_estimator</code></td>
+<td><code>smile</code></td>
+<td>bound: <code>smile</code> / <code>dv</code> /
+<code>infonce</code></td>
+</tr>
+<tr class="even">
+<td><code>--mine_smile_tau</code></td>
+<td><code>5.0</code></td>
+<td>SMILE critic clip <code>[−τ,τ]</code></td>
+</tr>
+<tr class="odd">
+<td><code>--mine_hidden_dim</code></td>
+<td><code>256</code></td>
+<td>critic MLP width</td>
+</tr>
+<tr class="even">
+<td><code>--mine_embedding_dim</code></td>
+<td><code>32</code></td>
+<td>prompt/control embedding size</td>
+</tr>
+<tr class="odd">
+<td><code>--mine_batch_size</code></td>
+<td><code>1024</code></td>
+<td>minibatch</td>
+</tr>
+<tr class="even">
+<td><code>--mine_lr</code></td>
+<td><code>1e-4</code></td>
+<td>AdamW LR</td>
+</tr>
+<tr class="odd">
+<td><code>--mine_steps</code></td>
+<td><code>10000</code></td>
+<td>max training steps per restart</td>
+</tr>
+<tr class="even">
+<td><code>--mine_eval_every</code></td>
+<td><code>250</code></td>
+<td>val-MI eval cadence</td>
+</tr>
+<tr class="odd">
+<td><code>--mine_grad_clip</code></td>
+<td><code>1.0</code></td>
+<td>grad-norm clip</td>
+</tr>
+<tr class="even">
+<td><code>--mine_val_frac</code></td>
+<td><code>0.2</code></td>
+<td>held-out fraction</td>
+</tr>
+<tr class="odd">
+<td><code>--mine_restarts</code></td>
+<td><code>3</code></td>
+<td>independent inits</td>
+</tr>
+<tr class="even">
+<td><code>--mine_early_stop_patience</code></td>
+<td><code>0</code></td>
+<td>0 = off; else EMA-plateau patience</td>
+</tr>
+</tbody>
+</table>
+<h2 id="summary-one-line">Summary (one line)</h2>
+<p>A prompt/control-embedding MLP critic is trained by a SMILE-clipped
+Donsker–Varadhan bound with <strong>within-prompt-permuted
+negatives</strong> to estimate the conditional MI <code>I(R;C|P)</code>;
+the reported value is a full-set single-pass test estimate,
+EMA-checkpoint selected, null-subtracted and prompt-bootstrapped, and
+reported both in nats and as an explained-variance fraction
+<code>ρ² = 1 − e^{−2I}</code>.</p>
+</body>
+</html>

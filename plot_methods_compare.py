@@ -134,7 +134,8 @@ def main():
 
     highlight = a.highlight or methods[-1][0]
     rew = {d: _rewards(os.path.join(run_dir, d), a.seed) for d, _s, _l in methods}
-    base_r = rew.get("baseline", {})
+    ref = methods[0][0]                       # first column = delta reference (baseline or, e.g., smc)
+    base_r = rew.get(ref, {})
     hi_r = rew.get(highlight, {})
 
     def img_path(d, suf, pi):

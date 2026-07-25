@@ -24,6 +24,7 @@ SAVE_BEST_IMAGES="${SAVE_BEST_IMAGES:-1}"
 
 STEPS="${STEPS:-4}"
 SEED="${SEED:-42}"
+SEED_MAP_FILE="${SEED_MAP_FILE:-}"
 N_SAMPLES="${N_SAMPLES:-1}"
 WIDTH="${WIDTH:-512}"
 HEIGHT="${HEIGHT:-512}"
@@ -663,6 +664,10 @@ run_flux_sharded() {
   mkdir -p "${method_out}" "${method_logs}"
   local -a reward_extra=()
   local -a backend_extra=(--backend "${FLUX_BACKEND}")
+  local -a seed_map_extra=()
+  if [[ -n "${SEED_MAP_FILE}" ]]; then
+    seed_map_extra+=(--seed_map_file "${SEED_MAP_FILE}")
+  fi
   if [[ -n "${FLUX_SIGMAS}" ]]; then
     backend_extra+=(--sigmas ${FLUX_SIGMAS})
   fi
@@ -720,6 +725,8 @@ PY
       --width "${WIDTH}" \
       --height "${HEIGHT}" \
       --seed "${SEED}" \
+      "${seed_map_extra[@]}" \
+      --prompt_index_offset "${shard_start}" \
       --dtype bf16 \
       --device cuda \
       --auto_select_gpu \

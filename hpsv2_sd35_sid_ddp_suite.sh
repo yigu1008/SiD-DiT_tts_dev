@@ -31,6 +31,7 @@ STEPS="${STEPS:-4}"
 WIDTH="${WIDTH:-1024}"
 HEIGHT="${HEIGHT:-1024}"
 SEED="${SEED:-42}"
+SEED_MAP_FILE="${SEED_MAP_FILE:-}"
 N_VARIANTS="${N_VARIANTS:-3}"
 CFG_SCALES="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5}"
 BASELINE_CFG="${BASELINE_CFG:-1.0}"
@@ -1516,6 +1517,9 @@ run_method() {
   # reads from the exact local path instead of doing a cache lookup in offline mode.
   if [[ -n "${SD35_LOCAL_DIR:-}" ]]; then
     extra+=(--model_id "${SD35_LOCAL_DIR}")
+  fi
+  if [[ -n "${SEED_MAP_FILE}" ]]; then
+    extra+=(--seed_map_file "${SEED_MAP_FILE}")
   fi
   # Do NOT pass SENSEFLOW_LOCAL_DIR as --transformer_id.  The backend config
   # already sets transformer_id="domiso/SenseFlow" with the correct subfolder.

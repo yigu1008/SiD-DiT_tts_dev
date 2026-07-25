@@ -1,0 +1,91 @@
+study_id: human_eval_genai40_v1
+
+# Replace this path with the generated prompts.csv path.  The runner accepts
+# the CSV directly and materializes a temporary one-prompt-per-line file for
+# the existing suites.
+prompts_file: <output_dir>/prompts.csv
+
+models:
+  - model_id: flux_schnell
+    backend: flux
+    model_config_id: black-forest-labs/FLUX.1-schnell
+    runner: hpsv2_flux_schnell_ddp_suite.sh
+  - model_id: sid
+    backend: sid
+    model_config_id: YGu1998/SiD-DiT-SD3.5-large
+    runner: hpsv2_sd35_sid_ddp_suite.sh
+  - model_id: sd35_base
+    backend: sd35_base
+    model_config_id: stabilityai/stable-diffusion-3.5-large
+    runner: hpsv2_sd35_sid_ddp_suite.sh
+  - model_id: senseflow_large
+    backend: senseflow_large
+    model_config_id: stabilityai/stable-diffusion-3.5-large
+    transformer_config_id: domiso/SenseFlow#SenseFlow-SD35L/transformer
+    runner: hpsv2_sd35_sid_ddp_suite.sh
+  - model_id: senseflow_medium
+    backend: senseflow_medium
+    model_config_id: stabilityai/stable-diffusion-3.5-medium
+    transformer_config_id: domiso/SenseFlow#SenseFlow-SD35M/transformer
+    runner: hpsv2_sd35_sid_ddp_suite.sh
+
+algorithms:
+  - baseline
+  - bon
+  - das
+  - bon_mcts
+
+output_dir: <existing_output_root>/human_eval_genai40_v1
+generation_base_seed: 12345
+
+# Select every search result with the strict, equal-weight normalized
+# ImageReward + HPSv3 + PickScore objective already implemented as
+# reward_backend=composite_3.  The three raw component scores are also
+# post-evaluated against the original prompt and exported to the manifest.
+reward_backend: composite_3
+reward_components:
+  - imagereward
+  - hpsv3
+  - pickscore
+require_all_reward_components: true
+use_reward_server: true
+reward_server_backends:
+  - imagereward
+  - hpsv3
+  - pickscore
+reward_normalization:
+  imagereward: [-3.0, 3.0]
+  hpsv3: [9.0, 14.0]
+  pickscore: [17.0, 23.0]
+resume: true
+overwrite: false
+
+# These are the suite defaults recorded from the current shell entry points.
+# NFE is always taken from each method's rank JSONL, never inferred as matched.
+algorithm_budgets:
+  baseline:
+    candidate_count: 1
+    total_nfe: logged_per_image
+    reward_model: configured_reward_backend
+  bon:
+    candidate_count: 16
+    total_nfe: logged_per_image
+    reward_model: configured_reward_backend
+  das:
+    candidate_count: 16
+    total_nfe: logged_per_image
+    reward_model: configured_reward_backend
+    action_sampling: continuous_cfg_and_correction
+  bon_mcts:
+    prescreen_seed_count: 8
+    topk: 2
+    n_sims: backend_default
+    total_nfe: logged_per_image
+    reward_model: configured_reward_backend
+
+generation:
+  prompt_count: 40
+  expected_images: 800
+  expected_groups: 200
+  width: 1024
+  height: 1024

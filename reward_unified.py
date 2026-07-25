@@ -372,6 +372,18 @@ class UnifiedRewardScorer:
                     "Requested backend=composite_ir_ps, but BOTH imagereward and pickscore must be available."
                     f" Currently available: {self.available}"
                 )
+        if target == "composite_3":
+            missing = [
+                backend
+                for backend in ("imagereward", "hpsv3", "pickscore")
+                if backend not in self.available
+            ]
+            if missing:
+                raise RuntimeError(
+                    "Requested backend=composite_3, but ImageReward, HPSv3, and "
+                    f"PickScore are all required. Missing: {missing}. "
+                    f"Currently available: {self.available}"
+                )
         if target == "composite_all4":
             missing = [b for b in ("imagereward", "hpsv3", "hpsv2", "pickscore") if b not in self.available]
             if not self.available:

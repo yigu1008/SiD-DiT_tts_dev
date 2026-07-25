@@ -145,7 +145,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--lora_scale", type=float, default=None,
                    help="fuse_lora scale (e.g. 0.125 for TDD-FLUX).")
     p.add_argument("--prompt", default=None)
-    p.add_argument("--prompt_file", default=None)
+    p.add_argument("--prompt_file", "--prompts-file", dest="prompt_file", default=None,
+                   help="Prompt txt file or prepared prompts.csv.")
+    p.add_argument(
+        "--seed_map_file",
+        default=None,
+        help="Optional JSON seed map keyed by prompt index; overrides --seed for each prompt.",
+    )
+    p.add_argument(
+        "--prompt_index_offset",
+        type=int,
+        default=0,
+        help="Global index of the first prompt in a sharded --prompt_file.",
+    )
     p.add_argument("--n_prompts", type=int, default=-1)
     p.add_argument(
         "--shuffle_prompts",
@@ -745,14 +757,35 @@ def load_prompts(args: argparse.Namespace) -> list[str]:
         return [str(args.prompt).strip()]
     if not args.prompt_file:
         raise RuntimeError("Provide --prompt or --prompt_file.")
-    with open(args.prompt_file, encoding="utf-8") as f:
-        all_prompts = [line.strip() for line in f if line.strip()]
+    if str(args.prompt_file).casefold().endswith(".csv"):
+        import csv
+
+        with open(args.prompt_file, newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            if not reader.fieldnames or "prompt" not in {str(x).casefold() for x in reader.fieldnames}:
+                raise ValueError(f"prepared prompt CSV must contain a prompt column: {args.prompt_file}")
+            prompt_key = next(x for x in reader.fieldnames if str(x).casefold() == "prompt")
+            all_prompts = [str(row[prompt_key]) for row in reader if str(row.get(prompt_key, ""))]
+    else:
+        with open(args.prompt_file, encoding="utf-8") as f:
+            all_prompts = [line.strip() for line in f if line.strip()]
     if args.shuffle_prompts:
         rng = random.Random(args.seed)
         rng.shuffle(all_prompts)
     if args.n_prompts < 0:
         return all_prompts
     return all_prompts[: int(args.n_prompts)]
+
+
+def load_seed_map(seed_map_file: str | None) -> dict[int, int]:
+    if not seed_map_file:
+        return {}
+    payload = json.load(open(seed_map_file, encoding="utf-8"))
+    if isinstance(payload, dict) and "seeds" in payload:
+        payload = payload["seeds"]
+    if not isinstance(payload, dict):
+        raise ValueError(f"seed map must be a JSON object keyed by prompt index: {seed_map_file}")
+    return {int(k): int(v) for k, v in payload.items()}
 
 
 def build_prompt_bank(prompt: str) -> list[tuple[str, str]]:
@@ -2868,6 +2901,7 @@ def run(args: argparse.Namespace) -> None:
 
     os.makedirs(args.out_dir, exist_ok=True)
     prompts = load_prompts(args)
+    seed_map = load_seed_map(args.seed_map_file)
     if not prompts:
         raise RuntimeError("No prompts loaded.")
 
@@ -2892,9 +2926,10 @@ def run(args: argparse.Namespace) -> None:
 
     summary: list[dict[str, Any]] = []
 
-    for p_idx, prompt in enumerate(prompts):
+    for local_p_idx, prompt in enumerate(prompts):
+        p_idx = int(args.prompt_index_offset) + int(local_p_idx)
         slug = f"p{p_idx:04d}"
-        save_entry_artifacts = args.save_first_k < 0 or p_idx < int(args.save_first_k)
+        save_entry_artifacts = args.save_first_k < 0 or local_p_idx < int(args.save_first_k)
         print(f"\n{'=' * 72}\n[{slug}] {prompt}\n{'=' * 72}")
 
         prompt_bank = select_prompt_bank(prompt, int(args.n_variants))
@@ -2906,7 +2941,7 @@ def run(args: argparse.Namespace) -> None:
 
         prompt_samples: list[dict[str, Any]] = []
         for sample_i in range(int(args.n_samples)):
-            seed = int(args.seed) + sample_i
+            seed = int(seed_map.get(p_idx, int(args.seed))) + sample_i
             print(f"  sample {sample_i + 1}/{args.n_samples} seed={seed}")
 
             baseline_actions = [(0, float(args.baseline_guidance_scale)) for _ in range(int(args.steps))]

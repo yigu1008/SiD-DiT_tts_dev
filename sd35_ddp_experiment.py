@@ -58,7 +58,15 @@ def parse_args() -> argparse.Namespace:
                         help="HuggingFace repo for the transformer (e.g. domiso/SenseFlow).")
     parser.add_argument("--transformer_subfolder", default=None,
                         help="Subfolder within --transformer_id (e.g. SenseFlow-SD35L/transformer).")
-    parser.add_argument("--prompt_file", required=True, help="Prompt txt file (one prompt per line).")
+    parser.add_argument(
+        "--prompt_file", "--prompts-file", dest="prompt_file", required=True,
+        help="Prompt txt file (one prompt per line) or prepared prompts.csv.",
+    )
+    parser.add_argument(
+        "--seed_map_file",
+        default=None,
+        help="Optional JSON seed map keyed by prompt index; overrides --seed for each prompt.",
+    )
     parser.add_argument("--start_index", type=int, default=0)
     parser.add_argument("--end_index", type=int, default=-1, help="Exclusive end index; -1 means all.")
     parser.add_argument("--out_dir", default="./sd35_ddp_out")
@@ -390,7 +398,17 @@ def wait_for_rank_logs(log_dir: str, world_size: int, timeout_sec: int, poll_sec
 
 
 def load_prompt_range(prompt_file: str, start_index: int, end_index: int) -> List[Tuple[int, str]]:
-    prompts = [line.strip() for line in open(prompt_file, encoding="utf-8") if line.strip()]
+    if str(prompt_file).casefold().endswith(".csv"):
+        import csv
+
+        with open(prompt_file, newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            if not reader.fieldnames or "prompt" not in {str(x).casefold() for x in reader.fieldnames}:
+                raise ValueError(f"prepared prompt CSV must contain a prompt column: {prompt_file}")
+            prompt_key = next(x for x in reader.fieldnames if str(x).casefold() == "prompt")
+            prompts = [str(row[prompt_key]) for row in reader if str(row.get(prompt_key, ""))]
+    else:
+        prompts = [line.strip() for line in open(prompt_file, encoding="utf-8") if line.strip()]
     if end_index == -1:
         end_index = len(prompts)
     start = max(0, start_index)
@@ -399,6 +417,17 @@ def load_prompt_range(prompt_file: str, start_index: int, end_index: int) -> Lis
     for global_idx in range(start, end):
         selected.append((global_idx, prompts[global_idx]))
     return selected
+
+
+def load_seed_map(seed_map_file: str | None) -> Dict[int, int]:
+    if not seed_map_file:
+        return {}
+    payload = json.load(open(seed_map_file, encoding="utf-8"))
+    if isinstance(payload, dict) and "seeds" in payload:
+        payload = payload["seeds"]
+    if not isinstance(payload, dict):
+        raise ValueError(f"seed map must be a JSON object keyed by prompt index: {seed_map_file}")
+    return {int(k): int(v) for k, v in payload.items()}
 
 
 def shard(entries: List[Tuple[int, str]], rank: int, world_size: int) -> List[Tuple[int, str]]:
@@ -547,6 +576,7 @@ def main() -> None:
         os.makedirs(img_dir, exist_ok=True)
 
     all_entries = load_prompt_range(args.prompt_file, args.start_index, args.end_index)
+    seed_map = load_seed_map(args.seed_map_file)
     my_entries = shard(all_entries, rank, world_size)
 
     # Resume: skip prompts already written to the rank log.
@@ -596,7 +626,10 @@ def main() -> None:
             t0_batch = time.time()
             batch_prompts = [p for _, p in batch_entries]
             batch_indices = [i for i, _ in batch_entries]
-            batch_seeds = [args.seed + i if args.seed_per_prompt else args.seed for i in batch_indices]
+            batch_seeds = [
+                seed_map.get(i, args.seed + i if args.seed_per_prompt else args.seed)
+                for i in batch_indices
+            ]
 
             # --- variants + embeddings for every prompt in the batch ---
             batch_variants: List[List[str]] = []
@@ -763,6 +796,7 @@ def main() -> None:
                         "baseline_score": float(base_score),
                         "nfe": int(ctx.nfe),
                         "actions": [[int(v), float(c), float(r)] for v, c, r in mcts.actions],
+                        "search_diagnostics": mcts.diagnostics,
                     })
                     total_rows_written += 1
 

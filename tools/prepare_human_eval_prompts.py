@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Prepare a deterministic, stratified GenAI-Bench prompt subset.
+"""Download and prepare a deterministic GenAI-Bench prompt subset.
 
 This module intentionally has no model-generation dependencies.  It accepts
-CSV, JSONL, or Parquet metadata and writes the exact original prompt text to a
-portable CSV plus a reserve set and processing report.
+CSV, JSONL, or Parquet metadata, or downloads the compact official metadata
+from Hugging Face.  It writes the exact original prompt text to a portable CSV
+plus a reserve set and processing report.
 """
 
 from __future__ import annotations
@@ -23,8 +24,24 @@ from typing import Any, Iterable, Mapping
 
 
 DEFAULT_SEED = 20260725
+DEFAULT_HF_REPO = "BaiqiL/GenAI-Bench-1600"
+DEFAULT_HF_REVISION = "cb30b856aacd0c5e68e21773444dca6da4b6c628"
 DIFFICULTIES = ("basic", "advanced")
 QUARTILES = (1, 2, 3, 4)
+BASIC_SKILL_NAMES = (
+    "attribute",
+    "scene",
+    "spatial relation",
+    "action relation",
+    "part relation",
+)
+ADVANCED_SKILL_NAMES = (
+    "counting",
+    "comparison",
+    "differentiation",
+    "negation",
+    "universal",
+)
 
 
 @dataclass(frozen=True)
@@ -147,6 +164,95 @@ def _read_rows(path: Path) -> list[Mapping[str, Any]]:
             except ImportError as exc:
                 raise RuntimeError("Parquet input requires pyarrow or pandas") from exc
     raise ValueError(f"Unsupported input format {path.suffix!r}; use CSV, JSONL, or Parquet")
+
+
+def download_genai_bench_metadata(
+    output_path: str | Path,
+    repo_id: str = DEFAULT_HF_REPO,
+    revision: str = DEFAULT_HF_REVISION,
+) -> Path:
+    """Download only GenAI-Bench prompt/skill metadata and join it as JSONL.
+
+    The companion repository stores prompt text in ``genai_image.json`` and
+    skill membership in ``genai_skills.json``.  Downloading those two files is
+    roughly 1.5 MB and avoids pulling the multi-gigabyte generated-image
+    archives or image-bearing Parquet split.
+    """
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        raise RuntimeError(
+            "Hugging Face download requires huggingface_hub; "
+            "install it with: pip install huggingface_hub"
+        ) from exc
+
+    prompt_path = Path(
+        hf_hub_download(
+            repo_id=repo_id,
+            repo_type="dataset",
+            filename="genai_image.json",
+            revision=revision,
+        )
+    )
+    skill_path = Path(
+        hf_hub_download(
+            repo_id=repo_id,
+            repo_type="dataset",
+            filename="genai_skills.json",
+            revision=revision,
+        )
+    )
+    prompt_payload = json.loads(prompt_path.read_text(encoding="utf-8"))
+    skill_payload = json.loads(skill_path.read_text(encoding="utf-8"))
+    if not isinstance(prompt_payload, Mapping) or not isinstance(skill_payload, Mapping):
+        raise ValueError("unexpected GenAI-Bench metadata structure")
+
+    skill_membership: dict[str, set[int]] = {}
+    for name in BASIC_SKILL_NAMES + ADVANCED_SKILL_NAMES:
+        values = skill_payload.get(name)
+        if not isinstance(values, list):
+            raise ValueError(f"GenAI-Bench skill metadata is missing list {name!r}")
+        skill_membership[name] = {int(value) for value in values}
+
+    broad_basic = {int(value) for value in skill_payload.get("basic", [])}
+    broad_advanced = {int(value) for value in skill_payload.get("advanced", [])}
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_name(output_path.name + ".tmp")
+    row_count = 0
+    with temporary.open("w", encoding="utf-8") as f:
+        for source_key in sorted(prompt_payload, key=lambda value: int(value)):
+            entry = prompt_payload[source_key]
+            if not isinstance(entry, Mapping):
+                raise ValueError(f"GenAI-Bench prompt entry {source_key!r} is not an object")
+            source_id = str(entry.get("id", source_key))
+            index = int(source_id)
+            prompt = entry.get("prompt")
+            if not isinstance(prompt, str) or not prompt.strip():
+                raise ValueError(f"GenAI-Bench prompt entry {source_key!r} has no prompt text")
+            basic_skills = [
+                name for name in BASIC_SKILL_NAMES if index in skill_membership[name]
+            ]
+            advanced_skills = [
+                name for name in ADVANCED_SKILL_NAMES if index in skill_membership[name]
+            ]
+            if index in broad_basic and not basic_skills:
+                raise ValueError(f"basic prompt {source_id} has no specific basic skill tag")
+            if index in broad_advanced and not advanced_skills:
+                raise ValueError(f"advanced prompt {source_id} has no specific advanced skill tag")
+            row = {
+                "Index": source_id,
+                "Prompt": prompt,
+                "basic_skills": basic_skills,
+                "advanced_skills": advanced_skills,
+            }
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            row_count += 1
+    if row_count != 1600:
+        temporary.unlink(missing_ok=True)
+        raise ValueError(f"expected 1600 GenAI-Bench prompts, downloaded {row_count}")
+    temporary.replace(output_path)
+    return output_path
 
 
 def _quartile_assign(records: list[PromptRecord]) -> list[PromptRecord]:
@@ -365,13 +471,38 @@ def prepare_prompts(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, type=Path)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--input", type=Path, help="Local CSV, JSONL, or Parquet metadata.")
+    source.add_argument(
+        "--from-huggingface",
+        action="store_true",
+        help="Download compact official GenAI-Bench metadata from Hugging Face.",
+    )
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--num-prompts", type=int, default=40)
     parser.add_argument("--num-reserve", type=int, default=16)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument("--hf-repo", default=DEFAULT_HF_REPO)
+    parser.add_argument("--hf-revision", default=DEFAULT_HF_REVISION)
+    parser.add_argument(
+        "--hf-metadata-output",
+        type=Path,
+        default=None,
+        help="Where to retain joined Hugging Face metadata (default: beside prompts.csv).",
+    )
     args = parser.parse_args()
-    summary = prepare_prompts(args.input, args.output, args.num_prompts, args.num_reserve, args.seed)
+    input_path = args.input
+    if args.from_huggingface:
+        metadata_output = args.hf_metadata_output or args.output.with_name(
+            "genai_bench_metadata.jsonl"
+        )
+        input_path = download_genai_bench_metadata(
+            metadata_output,
+            repo_id=str(args.hf_repo),
+            revision=str(args.hf_revision),
+        )
+    assert input_path is not None
+    summary = prepare_prompts(input_path, args.output, args.num_prompts, args.num_reserve, args.seed)
     print(json.dumps(asdict(summary), indent=2, ensure_ascii=False))
     return 0
 

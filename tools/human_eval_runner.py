@@ -98,6 +98,14 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def _copy_if_different(source: Path, destination: Path) -> None:
+    """Copy a study input unless it is already at the export destination."""
+    if source.resolve() == destination.resolve():
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+
+
 def _seed_plan(config: dict[str, Any], prompts: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, int]]]:
     study_id = str(config["study_id"])
     base_seed = int(config["generation_base_seed"])
@@ -636,11 +644,11 @@ def prepare_layout(config_path: Path, prompts_file: Path, output_dir: Path, exec
     if tuple(algorithms) != ALGORITHMS:
         raise ValueError(f"configuration algorithms must be {ALGORITHMS}, found {algorithms}")
     output_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(prompts_file, output_dir / "prompts.csv")
+    _copy_if_different(prompts_file, output_dir / "prompts.csv")
     for companion in ("prompts_reserve.csv", "prompt_processing_report.json"):
         companion_path = prompts_file.with_name(companion)
         if companion_path.is_file():
-            shutil.copyfile(companion_path, output_dir / companion)
+            _copy_if_different(companion_path, output_dir / companion)
     try:
         import yaml
 

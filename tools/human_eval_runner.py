@@ -106,6 +106,35 @@ def _copy_if_different(source: Path, destination: Path) -> None:
     shutil.copyfile(source, destination)
 
 
+def _infer_conda_base(environment: dict[str, str]) -> Path | None:
+    """Infer the active Conda installation root without assuming /opt/conda."""
+    explicit = str(environment.get("REWARD_ENV_CONDA_BASE", "")).strip()
+    if explicit:
+        return Path(explicit).expanduser()
+
+    conda_exe = str(environment.get("CONDA_EXE", "")).strip()
+    if conda_exe:
+        candidate = Path(conda_exe).expanduser().resolve().parent.parent
+        if (candidate / "bin" / "conda").is_file():
+            return candidate
+
+    conda_prefix = str(environment.get("CONDA_PREFIX", "")).strip()
+    if conda_prefix:
+        prefix = Path(conda_prefix).expanduser().resolve()
+        candidate = prefix.parent.parent if prefix.parent.name == "envs" else prefix
+        if (candidate / "bin" / "conda").is_file():
+            return candidate
+
+    executable = Path(sys.executable).resolve()
+    for parent in executable.parents:
+        if parent.name == "envs" and (parent.parent / "bin" / "conda").is_file():
+            return parent.parent
+    candidate = executable.parent.parent
+    if (candidate / "bin" / "conda").is_file():
+        return candidate
+    return None
+
+
 def _seed_plan(config: dict[str, Any], prompts: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, int]]]:
     study_id = str(config["study_id"])
     base_seed = int(config["generation_base_seed"])
@@ -533,6 +562,16 @@ def _run_one_model_algorithm(config: dict[str, Any], model: dict[str, Any], algo
     model_id = str(model["model_id"])
     legacy_root = output_dir / "legacy_runs" / model_id / algorithm
     env = os.environ.copy()
+    configured_conda_base = str(config.get("reward_env_conda_base", "")).strip()
+    if configured_conda_base:
+        env["REWARD_ENV_CONDA_BASE"] = configured_conda_base
+    else:
+        inferred_conda_base = _infer_conda_base(env)
+        if inferred_conda_base is not None:
+            env["REWARD_ENV_CONDA_BASE"] = str(inferred_conda_base)
+    env["REWARD_ENV_NAME"] = str(
+        config.get("reward_env_name", env.get("REWARD_ENV_NAME", "reward"))
+    )
     env.update({
         "PROMPT_FILE": str(prompts_txt),
         "METHODS": algorithm,

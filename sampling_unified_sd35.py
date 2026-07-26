@@ -385,8 +385,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="PickScore model id.",
     )
     parser.add_argument(
+        "--vqascore_model",
+        default="clip-flant5-xxl",
+        help="t2v_metrics VQAScore model name (served out-of-process).",
+    )
+    parser.add_argument(
         "--reward_backend",
-        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "all", "composite_hpsv3_ir", "composite_ir_ps", "composite_3", "composite_all4"],
+        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "vqascore", "hpsv3", "hpsv2", "blend", "all", "composite_hpsv3_ir", "composite_ir_ps", "composite_ir_vqa", "composite_3", "composite_all4"],
         default="unifiedreward",
     )
     parser.add_argument(
@@ -757,6 +762,7 @@ def load_reward_model(args: argparse.Namespace, device: str) -> UnifiedRewardSco
         backend=args.reward_backend,
         image_reward_model=args.image_reward_model,
         pickscore_model=getattr(args, "pickscore_model", "yuvalkirstain/PickScore_v1"),
+        vqascore_model=getattr(args, "vqascore_model", "clip-flant5-xxl"),
         unifiedreward_model=unified_model,
         unified_weights=(float(args.reward_weights[0]), float(args.reward_weights[1])),
         unifiedreward_api_base=args.reward_api_base,

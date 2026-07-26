@@ -107,8 +107,10 @@ class UnifiedRewardScorer:
       - unified      : alias of unifiedreward (kept for compatibility)
       - imagereward
       - pickscore
+      - vqascore    : CLIP-FlanT5 VQAScore through the reward server
       - hpsv3
       - hpsv2
+      - composite_ir_vqa: normalized 50/50 ImageReward + VQAScore
       - blend        : weighted average of ImageReward and HPSv2
       - all          : equal-weight mean of imagereward, pickscore, hpsv3, hpsv2 (available subset)
       - auto         : prefer unifiedreward, then imagereward, then pickscore, then hpsv3, then hpsv2
@@ -166,6 +168,14 @@ class UnifiedRewardScorer:
         "  pip install -U transformers accelerate sentencepiece\n"
         "  pip install -U \"timm>=1.0.15\""
     )
+    _vqascore_install_hint = (
+        "VQAScore is intentionally served out-of-process because "
+        "clip-flant5-xxl is large. Install the legacy GenAI-Bench runtime in "
+        "the reward-server environment:\n"
+        "  python -m pip install \"t2v-metrics==3.0\"\n"
+        "Then launch with USE_REWARD_SERVER=1 and "
+        "REWARD_SERVER_BACKENDS='vqascore' (or 'imagereward vqascore')."
+    )
     _hpsv3_install_hint = (
         "Install HPSv3 dependencies, e.g.:\n"
         "  pip install -U hpsv3 open_clip_torch omegaconf hydra-core\n"
@@ -181,6 +191,7 @@ class UnifiedRewardScorer:
         backend: str = "auto",
         image_reward_model: str = "ImageReward-v1.0",
         pickscore_model: str = "yuvalkirstain/PickScore_v1",
+        vqascore_model: str = "clip-flant5-xxl",
         unifiedreward_model: str = DEFAULT_UNIFIEDREWARD_MODEL,
         unified_weights: Tuple[float, float] = (1.0, 1.0),
         unifiedreward_api_base: Optional[str] = None,
@@ -189,7 +200,7 @@ class UnifiedRewardScorer:
         max_new_tokens: int = 512,
         unifiedreward_prompt_mode: str = "standard",
     ) -> None:
-        valid = {"auto", "imagereward", "pickscore", "hpsv3", "hpsv2", "blend", "all", "unified", "unifiedreward", "composite_hpsv3_ir", "composite_ir_ps", "composite_3", "composite_all4"}
+        valid = {"auto", "imagereward", "pickscore", "vqascore", "hpsv3", "hpsv2", "blend", "all", "unified", "unifiedreward", "composite_hpsv3_ir", "composite_ir_ps", "composite_ir_vqa", "composite_3", "composite_all4"}
         if backend not in valid:
             raise ValueError(f"Unsupported backend: {backend}")
         if unifiedreward_prompt_mode not in {"standard", "strict"}:
@@ -200,6 +211,7 @@ class UnifiedRewardScorer:
         self.backend = backend
         self.image_reward_model = image_reward_model
         self.pickscore_model = pickscore_model
+        self.vqascore_model = vqascore_model
         self.unifiedreward_model = unifiedreward_model
         self.unified_weights = unified_weights
         self.unifiedreward_api_base = unifiedreward_api_base
@@ -274,7 +286,8 @@ class UnifiedRewardScorer:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        timeout = float(os.environ.get("REWARD_SERVER_SCORE_TIMEOUT", "300"))
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
 
         if "error" in data:
@@ -291,14 +304,16 @@ class UnifiedRewardScorer:
             "hpsv3": self.state.hpsv3_inferencer,
             "hpsv2": self.state.hps_model or self.state.hps_module,
             "pickscore": self.state.pickscore_model,
+            "vqascore": None,
         }
         return backend in self.available and local_state_map.get(backend) is None
 
     def _load_backends(self) -> None:
         target = "unifiedreward" if self.backend == "unified" else self.backend
         need_unifiedreward = target in {"unifiedreward", "auto"}
-        need_imagereward = target in {"imagereward", "blend", "auto", "all", "composite_hpsv3_ir", "composite_ir_ps", "composite_3", "composite_all4"}
+        need_imagereward = target in {"imagereward", "blend", "auto", "all", "composite_hpsv3_ir", "composite_ir_ps", "composite_ir_vqa", "composite_3", "composite_all4"}
         need_pickscore = target in {"pickscore", "auto", "all", "composite_ir_ps", "composite_3", "composite_all4"}
+        need_vqascore = target in {"vqascore", "composite_ir_vqa"}
         need_hpsv3 = target in {"hpsv3", "blend", "auto", "all", "composite_hpsv3_ir", "composite_3", "composite_all4"}
         need_hpsv2 = target in {"hpsv2", "blend", "auto", "all", "composite_all4"}
 
@@ -319,6 +334,8 @@ class UnifiedRewardScorer:
                 need_hpsv2 = False
             if "pickscore" in server_backends:
                 need_pickscore = False
+            if "vqascore" in server_backends:
+                need_vqascore = False
 
         if need_unifiedreward:
             self._try_load_unifiedreward()
@@ -330,6 +347,10 @@ class UnifiedRewardScorer:
             self._try_load_hpsv3()
         if need_hpsv2:
             self._try_load_hpsv2()
+        if need_vqascore:
+            # CLIP-FlanT5-XXL is deliberately not loaded in every DDP worker.
+            # The single reward-server process owns the model.
+            print("[Reward] VQAScore is unavailable from the configured reward server.")
 
         if target == "unifiedreward" and "unifiedreward" not in self.available:
             detail = f" Last error: {self.unifiedreward_last_error}" if self.unifiedreward_last_error else ""
@@ -348,6 +369,11 @@ class UnifiedRewardScorer:
             raise RuntimeError(
                 "Requested backend=pickscore, but PickScore is unavailable."
                 f"{detail}\n{self._pickscore_install_hint}"
+            )
+        if target == "vqascore" and "vqascore" not in self.available:
+            raise RuntimeError(
+                "Requested backend=vqascore, but VQAScore is unavailable.\n"
+                f"{self._vqascore_install_hint}"
             )
         if target == "hpsv3" and "hpsv3" not in self.available:
             detail = f" Last error: {self.hpsv3_last_error}" if self.hpsv3_last_error else ""
@@ -371,6 +397,19 @@ class UnifiedRewardScorer:
                 raise RuntimeError(
                     "Requested backend=composite_ir_ps, but BOTH imagereward and pickscore must be available."
                     f" Currently available: {self.available}"
+                )
+        if target == "composite_ir_vqa":
+            missing = [
+                backend
+                for backend in ("imagereward", "vqascore")
+                if backend not in self.available
+            ]
+            if missing:
+                raise RuntimeError(
+                    "Requested backend=composite_ir_vqa, but ImageReward and "
+                    f"VQAScore are both required. Missing: {missing}. "
+                    f"Currently available: {self.available}\n"
+                    f"{self._vqascore_install_hint}"
                 )
         if target == "composite_3":
             missing = [
@@ -1038,8 +1077,18 @@ class UnifiedRewardScorer:
                 f"ir_range=[{ir_lo},{ir_hi}] pickscore_range=[{ps_lo},{ps_hi}] "
                 f"(half-half min-max normalized)"
             )
+        if target == "composite_ir_vqa":
+            ir_lo, ir_hi = self._COMPOSITE_IR_RANGE
+            vqa_lo, vqa_hi = self._COMPOSITE_VQASCORE_RANGE
+            return (
+                f"backend=composite_ir_vqa available={self.available} "
+                f"ir_range=[{ir_lo},{ir_hi}] vqascore_range=[{vqa_lo},{vqa_hi}] "
+                f"(half-half min-max normalized)"
+            )
         if target == "pickscore":
             return f"backend=pickscore model={self.pickscore_model} available={self.available}"
+        if target == "vqascore":
+            return f"backend=vqascore model={self.vqascore_model} available={self.available}"
         if target == "unifiedreward":
             mode = "api" if self.state.unifiedreward_api_base else "local"
             detail = self.state.unifiedreward_api_model if mode == "api" else self.unifiedreward_model
@@ -1062,6 +1111,8 @@ class UnifiedRewardScorer:
             return "hpsv3"
         if "hpsv2" in self.available:
             return "hpsv2"
+        if "vqascore" in self.available:
+            return "vqascore"
         raise RuntimeError("No available backend for auto mode.")
 
     def _prep_hps_image(self, image: Image.Image) -> torch.Tensor:
@@ -1412,6 +1463,15 @@ class UnifiedRewardScorer:
                 pass
         return float(logits.squeeze().item())
 
+    @torch.no_grad()
+    def _score_vqascore(self, prompt: str, image: Image.Image) -> float:
+        if self._is_server_backend("vqascore"):
+            return self._score_via_server(prompt, image, "vqascore")
+        raise RuntimeError(
+            "VQAScore must be provided by the reward server.\n"
+            f"{self._vqascore_install_hint}"
+        )
+
     def _unifiedreward_question(self, prompt: str) -> str:
         if self.unifiedreward_prompt_mode == "strict":
             return self._point_prompt_strict.format(prompt=prompt)
@@ -1592,6 +1652,10 @@ class UnifiedRewardScorer:
         float(os.environ.get("COMPOSITE_PICKSCORE_LO", "17.0")),
         float(os.environ.get("COMPOSITE_PICKSCORE_HI", "23.0")),
     )
+    _COMPOSITE_VQASCORE_RANGE = (
+        float(os.environ.get("COMPOSITE_VQASCORE_LO", "0.0")),
+        float(os.environ.get("COMPOSITE_VQASCORE_HI", "1.0")),
+    )
 
     def _norm(self, val: float, lo: float, hi: float) -> float:
         span = max(1e-6, hi - lo)
@@ -1681,6 +1745,14 @@ class UnifiedRewardScorer:
         ps_norm = self._norm(ps, ps_lo, ps_hi)
         return 0.5 * ir_norm + 0.5 * ps_norm
 
+    def _score_composite_ir_vqa(self, prompt: str, image: Image.Image) -> float:
+        """Equal 50/50 ImageReward–VQAScore objective after fixed scaling."""
+        ir_lo, ir_hi = self._COMPOSITE_IR_RANGE
+        vqa_lo, vqa_hi = self._COMPOSITE_VQASCORE_RANGE
+        ir = self._norm(self._score_imagereward(prompt, image), ir_lo, ir_hi)
+        vqa = self._norm(self._score_vqascore(prompt, image), vqa_lo, vqa_hi)
+        return float(0.5 * ir + 0.5 * vqa)
+
     def _score_blend(self, prompt: str, image: Image.Image) -> float:
         scored: Dict[str, float] = {}
         if "imagereward" in self.available:
@@ -1711,6 +1783,8 @@ class UnifiedRewardScorer:
             return self._score_imagereward(prompt, image)
         if target == "pickscore":
             return self._score_pickscore(prompt, image)
+        if target == "vqascore":
+            return self._score_vqascore(prompt, image)
         if target == "hpsv3":
             return self._score_hpsv3(prompt, image)
         if target == "hpsv2":
@@ -1721,6 +1795,8 @@ class UnifiedRewardScorer:
             return self._score_composite_hpsv3_ir(prompt, image)
         if target == "composite_ir_ps":
             return self._score_composite_ir_ps(prompt, image)
+        if target == "composite_ir_vqa":
+            return self._score_composite_ir_vqa(prompt, image)
         if target == "composite_3":
             return self._score_composite_3(prompt, image)
         if target == "composite_all4":
@@ -1737,6 +1813,8 @@ class UnifiedRewardScorer:
                 return self._score_imagereward(prompt, image)
             if selected == "pickscore":
                 return self._score_pickscore(prompt, image)
+            if selected == "vqascore":
+                return self._score_vqascore(prompt, image)
             if selected == "hpsv3":
                 return self._score_hpsv3(prompt, image)
             return self._score_hpsv2(prompt, image)

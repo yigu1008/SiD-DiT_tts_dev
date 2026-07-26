@@ -662,7 +662,16 @@ def _combination_complete(
     return True
 
 
-def prepare_layout(config_path: Path, prompts_file: Path, output_dir: Path, execute: bool = False, prompt_limit: int | None = None, resume_override: bool | None = None) -> dict[str, Any]:
+def prepare_layout(
+    config_path: Path,
+    prompts_file: Path,
+    output_dir: Path,
+    execute: bool = False,
+    prompt_limit: int | None = None,
+    resume_override: bool | None = None,
+    model_filter: set[str] | None = None,
+    algorithm_filter: set[str] | None = None,
+) -> dict[str, Any]:
     config = _load_yaml(config_path)
     if resume_override is not None:
         config["resume"] = resume_override
@@ -685,6 +694,17 @@ def prepare_layout(config_path: Path, prompts_file: Path, output_dir: Path, exec
         raise ValueError(f"configuration must specify exactly five models, found {len(models)}")
     if tuple(algorithms) != ALGORITHMS:
         raise ValueError(f"configuration algorithms must be {ALGORITHMS}, found {algorithms}")
+    configured_model_ids = {str(model["model_id"]) for model in models}
+    selected_model_ids = set(model_filter or configured_model_ids)
+    selected_algorithms = set(algorithm_filter or algorithms)
+    unknown_models = selected_model_ids - configured_model_ids
+    unknown_algorithms = selected_algorithms - set(algorithms)
+    if unknown_models:
+        raise ValueError(f"unknown --models values: {sorted(unknown_models)}")
+    if unknown_algorithms:
+        raise ValueError(f"unknown --algorithms values: {sorted(unknown_algorithms)}")
+    if not selected_model_ids or not selected_algorithms:
+        raise ValueError("model/algorithm filters cannot be empty")
     output_dir.mkdir(parents=True, exist_ok=True)
     _copy_if_different(prompts_file, output_dir / "prompts.csv")
     for companion in ("prompts_reserve.csv", "prompt_processing_report.json"):
@@ -719,7 +739,11 @@ def prepare_layout(config_path: Path, prompts_file: Path, output_dir: Path, exec
                 seed_map.parent.mkdir(parents=True, exist_ok=True)
                 _write_seed_map(seed_map, model_id, algorithm, run_prompts, plan)
                 source_roots[(model_id, algorithm)] = None
-                if execute:
+                selected = (
+                    model_id in selected_model_ids
+                    and algorithm in selected_algorithms
+                )
+                if execute and selected:
                     if bool(config.get("resume", True)) and _combination_complete(
                         output_dir, model_id, algorithm, run_prompts,
                         reward_backend, reward_components,
@@ -735,7 +759,29 @@ def prepare_layout(config_path: Path, prompts_file: Path, output_dir: Path, exec
         overwrite=bool(config.get("overwrite", False)),
     )
     validation = validate_layout(output_dir, expected_prompt_count=len(run_prompts))
-    return {"output_dir": str(output_dir), "validation": validation, "executed": execute}
+    selected_pairs = [
+        (model_id, algorithm)
+        for model_id in sorted(selected_model_ids)
+        for algorithm in algorithms
+        if algorithm in selected_algorithms
+    ]
+    selection_passed = all(
+        _combination_complete(
+            output_dir, model_id, algorithm, run_prompts,
+            reward_backend, reward_components,
+        )
+        for model_id, algorithm in selected_pairs
+    )
+    return {
+        "output_dir": str(output_dir),
+        "validation": validation,
+        "executed": execute,
+        "selected_models": sorted(selected_model_ids),
+        "selected_algorithms": [
+            algorithm for algorithm in algorithms if algorithm in selected_algorithms
+        ],
+        "selection_passed": selection_passed,
+    }
 
 
 def main() -> int:
@@ -748,6 +794,19 @@ def main() -> int:
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--smoke-test", action="store_true", help="Use the first two prompts and write output under <output-dir>/smoke_test")
     parser.add_argument("--expected-prompts", type=int, default=40, help="Expected prompt count for --validate-only")
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        default=None,
+        help="Execute only these configured model_id values; e.g. senseflow_large.",
+    )
+    parser.add_argument(
+        "--algorithms",
+        nargs="+",
+        choices=ALGORITHMS,
+        default=None,
+        help="Execute only these algorithms. Defaults to all four.",
+    )
     args = parser.parse_args()
     if args.validate_only:
         result = validate_layout(args.output_dir, expected_prompt_count=args.expected_prompts)
@@ -756,9 +815,16 @@ def main() -> int:
         result = prepare_layout(
             args.config, args.prompts_file, output_dir, execute=args.execute,
             prompt_limit=2 if args.smoke_test else None, resume_override=args.resume,
+            model_filter=set(args.models) if args.models else None,
+            algorithm_filter=set(args.algorithms) if args.algorithms else None,
         )
     print(json.dumps(result, indent=2, ensure_ascii=False))
-    return 0 if result.get("validation", result).get("passed", False) else (0 if not args.execute else 1)
+    if result.get("validation", result).get("passed", False):
+        return 0
+    if not args.execute:
+        return 0
+    filtered = bool(args.models or args.algorithms)
+    return 0 if filtered and bool(result.get("selection_passed")) else 1
 
 
 if __name__ == "__main__":

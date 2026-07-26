@@ -33,9 +33,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--backends", nargs="+", default=["hpsv3", "imagereward"],
-                    help="Backends to load (hpsv3, imagereward, hpsv2, pickscore)")
+                    help="Backends to load (hpsv3, imagereward, hpsv2, pickscore, vqascore)")
     p.add_argument("--image_reward_model", default="ImageReward-v1.0")
     p.add_argument("--pickscore_model", default="yuvalkirstain/PickScore_v1")
+    p.add_argument("--vqascore_model", default="clip-flant5-xxl")
     p.add_argument(
         "--require_all_backends",
         action="store_true",
@@ -210,6 +211,40 @@ def _load_pickscore(device: str, model_name: str = "yuvalkirstain/PickScore_v1")
         with torch.no_grad():
             logits = model(**inputs).logits_per_image
         return float(logits[0][0].item())
+
+    return score_fn
+
+
+def _load_vqascore(device: str, model_name: str = "clip-flant5-xxl"):
+    """Load the legacy CLIP-FlanT5 VQAScore used by GenAI-Bench.
+
+    t2v_metrics selects the only CUDA device visible to this reward-server
+    process.  The suite isolates the server to one physical GPU, exposed as
+    cuda:0, so no model copy is created in the generation workers.
+    """
+    del device  # Device placement is managed internally by t2v_metrics.
+    import tempfile
+
+    import t2v_metrics
+    import torch
+
+    scorer = t2v_metrics.VQAScore(model=model_name)
+
+    def score_fn(prompt: str, image: Image.Image) -> float:
+        tmp_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                image.convert("RGB").save(f, format="PNG")
+                tmp_path = f.name
+            with torch.inference_mode():
+                values = scorer(images=[tmp_path], texts=[prompt])
+            value = values[0][0]
+            if hasattr(value, "detach"):
+                value = value.detach().float().cpu().item()
+            return float(value)
+        finally:
+            if tmp_path:
+                os.unlink(tmp_path)
 
     return score_fn
 
@@ -397,6 +432,7 @@ def main():
         "imagereward": lambda: _load_imagereward(args.device, args.image_reward_model),
         "hpsv2": lambda: _load_hpsv2(args.device),
         "pickscore": lambda: _load_pickscore(args.device, args.pickscore_model),
+        "vqascore": lambda: _load_vqascore(args.device, args.vqascore_model),
     }
 
     for backend in args.backends:

@@ -74,6 +74,7 @@ REWARD_MODEL="${REWARD_MODEL:-CodeGoat24/UnifiedReward-qwen-7b}"
 UNIFIEDREWARD_MODEL="${UNIFIEDREWARD_MODEL:-${REWARD_MODEL}}"
 IMAGE_REWARD_MODEL="${IMAGE_REWARD_MODEL:-ImageReward-v1.0}"
 PICKSCORE_MODEL="${PICKSCORE_MODEL:-yuvalkirstain/PickScore_v1}"
+VQASCORE_MODEL="${VQASCORE_MODEL:-clip-flant5-xxl}"
 REWARD_WEIGHTS="${REWARD_WEIGHTS:-1.0 1.0}"
 REWARD_API_BASE="${REWARD_API_BASE:-}"
 REWARD_API_KEY="${REWARD_API_KEY:-unifiedreward}"
@@ -116,6 +117,7 @@ export SID_FORCE_WANDB_STUB WANDB_DISABLED
 # NUM_GPUS is decremented by 1 so torchrun only uses the remaining GPUs.
 USE_REWARD_SERVER="${USE_REWARD_SERVER:-0}"
 REWARD_SERVER_PORT="${REWARD_SERVER_PORT:-5100}"
+REWARD_SERVER_MAX_WAIT="${REWARD_SERVER_MAX_WAIT:-300}"
 REWARD_SERVER_BACKENDS="${REWARD_SERVER_BACKENDS:-hpsv3 imagereward}"
 REWARD_SERVER_REQUIRE_ALL="${REWARD_SERVER_REQUIRE_ALL:-0}"
 REWARD_ENV_NAME="${REWARD_ENV_NAME:-reward}"
@@ -196,13 +198,14 @@ start_reward_server() {
     --backends ${REWARD_SERVER_BACKENDS} \
     --image_reward_model "${IMAGE_REWARD_MODEL}" \
     --pickscore_model "${PICKSCORE_MODEL}" \
+    --vqascore_model "${VQASCORE_MODEL}" \
     "${reward_server_strict_extra[@]}" \
     &>"${RUN_DIR}/reward_server.log" &
   REWARD_SERVER_PID="$!"
   echo "[reward-server] PID=${REWARD_SERVER_PID} log=${RUN_DIR}/reward_server.log"
 
   # Wait for server to become healthy (models need time to load)
-  local max_wait=300
+  local max_wait="${REWARD_SERVER_MAX_WAIT}"
   local waited=0
   while (( waited < max_wait )); do
     if ! kill -0 "${REWARD_SERVER_PID}" 2>/dev/null; then
@@ -406,7 +409,7 @@ fi
 
 mkdir -p "${OUT_ROOT}"
 chmod -R u+rwX "${OUT_ROOT}" 2>/dev/null || true
-RUN_TS="$(date +%Y%m%d_%H%M%S)"
+RUN_TS="${RUN_TS:-$(date +%Y%m%d_%H%M%S)}"
 RUN_DIR="${OUT_ROOT}/run_${RUN_TS}"
 mkdir -p "${RUN_DIR}"
 SUITE_TSV="${RUN_DIR}/suite_summary.tsv"
@@ -1594,6 +1597,7 @@ PY
     --unifiedreward_model "${UNIFIEDREWARD_MODEL}" \
     --image_reward_model "${IMAGE_REWARD_MODEL}" \
     --pickscore_model "${PICKSCORE_MODEL}" \
+    --vqascore_model "${VQASCORE_MODEL}" \
     --reward_weights ${REWARD_WEIGHTS} \
     --reward_api_key "${REWARD_API_KEY}" \
     --reward_api_model "${REWARD_API_MODEL}" \

@@ -34,15 +34,11 @@ fi
 echo "[vqa-env] installing the legacy GenAI-Bench VQAScore runtime"
 "${PIP}" install --no-cache-dir "t2v-metrics==3.0"
 
-# The legacy PyPI wheel eagerly imports all VQAScore model modules but does
-# not declare its Git-based LLaVA/PyTorchVideo packages.  They are required
-# even when the selected model is CLIP-FlanT5.  These are the upstream v3.0
-# installation commands.
-echo "[vqa-env] installing undeclared legacy VQAScore backends"
-"${PIP}" install --no-cache-dir \
-  "git+https://github.com/LLaVA-VL/LLaVA-NeXT.git"
-"${PIP}" install --no-cache-dir \
-  "git+https://github.com/linzhiqiu/pytorchvideo.git"
+# The 3.0 wheel eagerly imports every optional VQA/CLIP/ITM backend.
+# Restrict this reward-only environment to the requested CLIP-FlanT5 family,
+# avoiding irrelevant LLaVA/InternVideo/FlashAttention dependencies.
+echo "[vqa-env] applying CLIP-FlanT5-only import registry"
+"${PY}" "${SCRIPT_DIR}/tools/patch_t2v_metrics_clip_flant5_only.py"
 
 echo "[vqa-env] installing ImageReward without changing VQAScore's pins"
 "${PIP}" install --no-cache-dir --no-deps "image-reward==1.5" || \

@@ -152,7 +152,7 @@ for package, wanted in expected.items():
         found = md.version(package)
     except md.PackageNotFoundError:
         found = "<missing>"
-    if found != wanted:
+    if found.split("+", 1)[0] != wanted:
         bad.append(f"{package}={found} (expected {wanted})")
 if bad:
     raise SystemExit("generation environment mismatch: " + ", ".join(bad))
@@ -160,9 +160,11 @@ print("[preflight] generation environment pins OK")
 PY
 then
   echo "Error: the generation environment was modified by t2v-metrics." >&2
-  echo "Stop jobs using sid_dit, then restore it with:" >&2
+  echo "Stop jobs using sid_dit, then run the targeted repair:" >&2
+  echo "  ENV_NAME=sid_dit CONDA_ROOT=${REWARD_ENV_CONDA_BASE} bash repair_sid_env_after_t2v.sh" >&2
+  echo "If targeted verification fails, use the full fallback:" >&2
   echo "  ENV_NAME=sid_dit CONDA_ROOT=${REWARD_ENV_CONDA_BASE} bash rebuild_sid_env.sh" >&2
-  echo "VQAScore will remain isolated in ${VQA_REWARD_ENV_NAME} after rebuilding." >&2
+  echo "VQAScore will remain isolated in ${VQA_REWARD_ENV_NAME} after repair." >&2
   exit 1
 fi
 

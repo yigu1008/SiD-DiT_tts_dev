@@ -147,9 +147,30 @@ expected = {
 }
 if models != expected:
     raise SystemExit(f"unexpected VQAScore registry: {sorted(models)}")
-for forbidden in ("llava", "internvideo", "flash_attn"):
-    if any(forbidden in name.lower() for name in sys.modules):
-        raise SystemExit(f"unrelated backend imported during preflight: {forbidden}")
+allowed_vqa_prefixes = (
+    "t2v_metrics.models.vqascore_models.clip_t5",
+    "t2v_metrics.models.vqascore_models.mm_utils",
+    "t2v_metrics.models.vqascore_models.vqa_model",
+)
+unexpected_t2v_modules = sorted(
+    name
+    for name in sys.modules
+    if (
+        name.startswith("t2v_metrics.clipscore")
+        or name.startswith("t2v_metrics.itmscore")
+        or name.startswith("t2v_metrics.models.clipscore_models")
+        or name.startswith("t2v_metrics.models.itmscore_models")
+        or (
+            name.startswith("t2v_metrics.models.vqascore_models.")
+            and not name.startswith(allowed_vqa_prefixes)
+        )
+    )
+)
+if unexpected_t2v_modules:
+    raise SystemExit(
+        "unrelated t2v-metrics backends imported during preflight: "
+        f"{unexpected_t2v_modules}"
+    )
 print(
     f"[preflight] ImageReward OK; t2v-metrics={version}; "
     f"CLIP-FlanT5-only registry OK"

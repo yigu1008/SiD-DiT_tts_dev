@@ -83,10 +83,29 @@ expected = {
     "clip-flant5-xxl-no-system-no-user",
 }
 assert models == expected, f"unexpected VQAScore registry: {sorted(models)}"
-for forbidden in ("llava", "internvideo", "flash_attn"):
-    assert not any(forbidden in name.lower() for name in sys.modules), (
-        f"unrelated backend imported during VQAScore preflight: {forbidden}"
+allowed_vqa_prefixes = (
+    "t2v_metrics.models.vqascore_models.clip_t5",
+    "t2v_metrics.models.vqascore_models.mm_utils",
+    "t2v_metrics.models.vqascore_models.vqa_model",
+)
+unexpected_t2v_modules = sorted(
+    name
+    for name in sys.modules
+    if (
+        name.startswith("t2v_metrics.clipscore")
+        or name.startswith("t2v_metrics.itmscore")
+        or name.startswith("t2v_metrics.models.clipscore_models")
+        or name.startswith("t2v_metrics.models.itmscore_models")
+        or (
+            name.startswith("t2v_metrics.models.vqascore_models.")
+            and not name.startswith(allowed_vqa_prefixes)
+        )
     )
+)
+assert not unexpected_t2v_modules, (
+    "unrelated t2v-metrics backends imported during VQAScore preflight: "
+    f"{unexpected_t2v_modules}"
+)
 print(f"t2v-metrics={version}")
 print(f"ffmpeg={shutil.which('ffmpeg')}")
 print(f"VQAScore registry OK: {sorted(models)}")

@@ -36,6 +36,11 @@ def parse_args() -> argparse.Namespace:
                     help="Backends to load (hpsv3, imagereward, hpsv2, pickscore)")
     p.add_argument("--image_reward_model", default="ImageReward-v1.0")
     p.add_argument("--pickscore_model", default="yuvalkirstain/PickScore_v1")
+    p.add_argument(
+        "--require_all_backends",
+        action="store_true",
+        help="Exit during startup unless every backend requested by --backends loads.",
+    )
     return p.parse_args()
 
 
@@ -408,6 +413,13 @@ def main():
 
     if not _scorers:
         print("[reward_server] ERROR: No backends loaded. Exiting.")
+        sys.exit(1)
+    missing = [backend for backend in args.backends if backend not in _scorers]
+    if args.require_all_backends and missing:
+        print(
+            "[reward_server] ERROR: required backends failed to load: "
+            f"{missing}; loaded={list(_scorers.keys())}"
+        )
         sys.exit(1)
 
     print(f"[reward_server] Serving on {args.host}:{args.port} with backends: {list(_scorers.keys())}")

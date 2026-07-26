@@ -171,19 +171,28 @@ echo "[setup_reward_env] Installing remaining deps ..."
     "${PIP}" install --no-cache-dir "hpsv2" || \
     echo "[setup_reward_env] WARNING: hpsv2x/hpsv2 install failed"
 
+# hpsv2/ImageReward dependency resolution can leave an old protobuf behind,
+# while current TensorBoard-generated modules import
+# google.protobuf.runtime_version. Restore the project-wide compatible pin
+# after every reward dependency has been installed.
+echo "[setup_reward_env] Restoring protobuf runtime compatibility ..."
+"${PIP}" install --no-cache-dir --upgrade "protobuf==6.31.1"
+
 echo "[setup_reward_env] Verifying ..."
 "${PY}" -c "
 import torch
 print(f'torch={torch.__version__} cuda={torch.cuda.is_available()}')
+import google.protobuf
+from google.protobuf import runtime_version
+print(f'protobuf={google.protobuf.__version__}')
 import transformers
 print(f'transformers={transformers.__version__}')
 import trl
 print(f'trl={trl.__version__}')
 import huggingface_hub
 print(f'huggingface_hub={huggingface_hub.__version__}')
-try:
-    import hpsv3; print('hpsv3 OK')
-except Exception as e: print(f'hpsv3 FAILED: {e}')
+import hpsv3
+print('hpsv3 OK')
 try:
     import ImageReward; print('ImageReward OK')
 except Exception as e: print(f'ImageReward FAILED: {e}')

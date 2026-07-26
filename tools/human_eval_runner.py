@@ -596,6 +596,9 @@ def _run_one_model_algorithm(config: dict[str, Any], model: dict[str, Any], algo
                 config.get("reward_components", DEFAULT_REWARD_COMPONENTS),
             )
         ),
+        "REWARD_SERVER_REQUIRE_ALL": (
+            "1" if bool(config.get("require_all_reward_components", True)) else "0"
+        ),
         "WIDTH": str((config.get("generation") or {}).get("width", 1024)),
         "HEIGHT": str((config.get("generation") or {}).get("height", 1024)),
         "START_INDEX": "0",

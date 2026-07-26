@@ -62,6 +62,7 @@ export SID_FORCE_WANDB_STUB WANDB_DISABLED
 USE_REWARD_SERVER="${USE_REWARD_SERVER:-0}"
 REWARD_SERVER_PORT="${REWARD_SERVER_PORT:-5100}"
 REWARD_SERVER_BACKENDS="${REWARD_SERVER_BACKENDS:-hpsv3 imagereward}"
+REWARD_SERVER_REQUIRE_ALL="${REWARD_SERVER_REQUIRE_ALL:-0}"
 REWARD_ENV_NAME="${REWARD_ENV_NAME:-reward}"
 REWARD_ENV_CONDA_BASE="${REWARD_ENV_CONDA_BASE:-/opt/conda}"
 REWARD_SERVER_PID=""
@@ -94,6 +95,10 @@ start_reward_server() {
 
   echo "[reward-server] Starting on GPU ${REWARD_SERVER_GPU}, port ${REWARD_SERVER_PORT} ..."
   echo "[reward-server] Backends: ${REWARD_SERVER_BACKENDS}"
+  local -a reward_server_strict_extra=()
+  if [[ "${REWARD_SERVER_REQUIRE_ALL}" == "1" ]]; then
+    reward_server_strict_extra+=(--require_all_backends)
+  fi
   CUDA_VISIBLE_DEVICES="${REWARD_SERVER_GPU}" \
     "${reward_py}" -u "${SCRIPT_DIR}/reward_server.py" \
     --port "${REWARD_SERVER_PORT}" \
@@ -101,6 +106,7 @@ start_reward_server() {
     --backends ${REWARD_SERVER_BACKENDS} \
     --image_reward_model "${IMAGE_REWARD_MODEL}" \
     --pickscore_model "${PICKSCORE_MODEL}" \
+    "${reward_server_strict_extra[@]}" \
     &>"${RUN_DIR}/reward_server.log" &
   REWARD_SERVER_PID="$!"
   echo "[reward-server] PID=${REWARD_SERVER_PID} log=${RUN_DIR}/reward_server.log"

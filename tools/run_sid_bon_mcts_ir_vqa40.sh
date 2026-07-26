@@ -107,11 +107,24 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
   exit 1
 fi
 
+# Repair a stale t2v-metrics 3.0 install in place before importing it.  The
+# upstream package imports LLaVA, InternVideo2, and FlashAttention even when
+# only CLIP-FlanT5 is requested.  This is safe and idempotent, and does not
+# touch the generation environment.
+if ! "${REWARD_PY}" \
+  "${REPO}/tools/patch_t2v_metrics_clip_flant5_only.py" --check \
+  >/dev/null 2>&1
+then
+  echo "[preflight] repairing legacy t2v-metrics registry in ${REWARD_ENV_NAME}"
+  "${REWARD_PY}" "${REPO}/tools/patch_t2v_metrics_clip_flant5_only.py"
+fi
+
 if ! (
   cd "${REPO}"
   "${REWARD_PY}" - <<'PY'
 import importlib.metadata as md
 import shutil
+import sys
 
 import reward_server
 
@@ -125,7 +138,22 @@ if version.split(".", 1)[0] != "3":
         f"t2v-metrics==3.x is required for clip-flant5-xxl; found {version}"
     )
 assert shutil.which("ffmpeg"), "ffmpeg is not visible to t2v_metrics"
-print(f"[preflight] ImageReward OK; t2v-metrics={version}")
+models = set(t2v_metrics.list_all_models())
+expected = {
+    "clip-flant5-xxl",
+    "clip-flant5-xl",
+    "clip-flant5-xxl-no-system",
+    "clip-flant5-xxl-no-system-no-user",
+}
+if models != expected:
+    raise SystemExit(f"unexpected VQAScore registry: {sorted(models)}")
+for forbidden in ("llava", "internvideo", "flash_attn"):
+    if any(forbidden in name.lower() for name in sys.modules):
+        raise SystemExit(f"unrelated backend imported during preflight: {forbidden}")
+print(
+    f"[preflight] ImageReward OK; t2v-metrics={version}; "
+    f"CLIP-FlanT5-only registry OK"
+)
 PY
 )
 then

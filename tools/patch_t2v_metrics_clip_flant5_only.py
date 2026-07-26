@@ -15,6 +15,9 @@ import os
 from pathlib import Path
 
 
+PATCH_MARKER = "SiD compatibility registry: legacy t2v-metrics, CLIP-FlanT5 only."
+VQA_PATCH_MARKER = "SiD compatibility registry: expose only CLIP-FlanT5 VQAScore."
+
 TOP_LEVEL = '''\
 """SiD compatibility registry: legacy t2v-metrics, CLIP-FlanT5 only."""
 import shutil
@@ -71,6 +74,54 @@ def _atomic_replace(path: Path, content: str) -> None:
     os.replace(temporary, path)
 
 
+def _package_root(override: Path | None) -> Path:
+    if override is not None:
+        return override.expanduser().resolve()
+
+    version = metadata.version("t2v-metrics")
+    if version.split(".", 1)[0] != "3":
+        raise RuntimeError(f"expected t2v-metrics 3.x, found {version}")
+    distribution = metadata.distribution("t2v-metrics")
+    return Path(distribution.locate_file("t2v_metrics")).resolve()
+
+
+def _registry_paths(package_root: Path) -> tuple[Path, Path]:
+    top_level = package_root / "__init__.py"
+    vqa_registry = package_root / "models" / "vqascore_models" / "__init__.py"
+    for path in (top_level, vqa_registry):
+        if not path.is_file():
+            raise FileNotFoundError(path)
+    return top_level, vqa_registry
+
+
+def _check_registry(top_level: Path, vqa_registry: Path) -> None:
+    top_text = top_level.read_text(encoding="utf-8")
+    vqa_text = vqa_registry.read_text(encoding="utf-8")
+    problems = []
+    if PATCH_MARKER not in top_text:
+        problems.append(f"{top_level} lacks the SiD CLIP-FlanT5-only marker")
+    if VQA_PATCH_MARKER not in vqa_text:
+        problems.append(f"{vqa_registry} lacks the SiD CLIP-FlanT5-only marker")
+
+    forbidden = (
+        "clipscore",
+        "itmscore",
+        "llava",
+        "internvideo",
+        "flash_attn",
+        "qwen2vl",
+    )
+    combined = f"{top_text}\n{vqa_text}".lower()
+    leaked = [name for name in forbidden if name in combined]
+    if leaked:
+        problems.append(
+            "patched registries still reference unrelated backends: "
+            + ", ".join(leaked)
+        )
+    if problems:
+        raise RuntimeError("; ".join(problems))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -79,26 +130,21 @@ def main() -> int:
         default=None,
         help="Testing override for the installed t2v_metrics package directory.",
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Verify that the installed registries are patched; do not modify files.",
+    )
     args = parser.parse_args()
 
-    if args.package_root is None:
-        version = metadata.version("t2v-metrics")
-        if version.split(".", 1)[0] != "3":
-            raise RuntimeError(f"expected t2v-metrics 3.x, found {version}")
-        distribution = metadata.distribution("t2v-metrics")
-        package_root = Path(distribution.locate_file("t2v_metrics")).resolve()
-    else:
-        package_root = args.package_root.expanduser().resolve()
-
-    top_level = package_root / "__init__.py"
-    vqa_registry = package_root / "models" / "vqascore_models" / "__init__.py"
-    for path in (top_level, vqa_registry):
-        if not path.is_file():
-            raise FileNotFoundError(path)
-
-    _atomic_replace(top_level, TOP_LEVEL)
-    _atomic_replace(vqa_registry, VQA_REGISTRY)
-    print(f"[t2v-patch] CLIP-FlanT5-only registry installed under {package_root}")
+    package_root = _package_root(args.package_root)
+    top_level, vqa_registry = _registry_paths(package_root)
+    if not args.check:
+        _atomic_replace(top_level, TOP_LEVEL)
+        _atomic_replace(vqa_registry, VQA_REGISTRY)
+    _check_registry(top_level, vqa_registry)
+    action = "verified" if args.check else "installed and verified"
+    print(f"[t2v-patch] CLIP-FlanT5-only registry {action} under {package_root}")
     return 0
 
 

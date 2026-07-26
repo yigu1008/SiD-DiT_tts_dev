@@ -39,6 +39,7 @@ echo "[vqa-env] installing the legacy GenAI-Bench VQAScore runtime"
 # avoiding irrelevant LLaVA/InternVideo/FlashAttention dependencies.
 echo "[vqa-env] applying CLIP-FlanT5-only import registry"
 "${PY}" "${SCRIPT_DIR}/tools/patch_t2v_metrics_clip_flant5_only.py"
+"${PY}" "${SCRIPT_DIR}/tools/patch_t2v_metrics_clip_flant5_only.py" --check
 
 echo "[vqa-env] installing ImageReward without changing VQAScore's pins"
 "${PIP}" install --no-cache-dir --no-deps "image-reward==1.5" || \
@@ -74,9 +75,32 @@ import t2v_metrics  # noqa: F401,E402
 assert shutil.which("ffmpeg"), "ffmpeg is not visible"
 version = md.version("t2v-metrics")
 assert version.split(".", 1)[0] == "3", version
+models = set(t2v_metrics.list_all_models())
+expected = {
+    "clip-flant5-xxl",
+    "clip-flant5-xl",
+    "clip-flant5-xxl-no-system",
+    "clip-flant5-xxl-no-system-no-user",
+}
+assert models == expected, f"unexpected VQAScore registry: {sorted(models)}"
+for forbidden in ("llava", "internvideo", "flash_attn"):
+    assert not any(forbidden in name.lower() for name in sys.modules), (
+        f"unrelated backend imported during VQAScore preflight: {forbidden}"
+    )
 print(f"t2v-metrics={version}")
 print(f"ffmpeg={shutil.which('ffmpeg')}")
+print(f"VQAScore registry OK: {sorted(models)}")
 print("ImageReward import OK")
 PY
+
+if [[ "${VQA_LOAD_SMOKE_TEST:-0}" == "1" ]]; then
+  echo "[vqa-env] loading ${VQASCORE_MODEL:-clip-flant5-xxl} and scoring one image"
+  PATH="${PREFIX}/bin:${PATH}" "${PY}" \
+    "${SCRIPT_DIR}/tools/smoke_test_vqascore_reward.py" \
+    --model "${VQASCORE_MODEL:-clip-flant5-xxl}" \
+    --device "${VQA_SMOKE_DEVICE:-cuda:0}"
+else
+  echo "[vqa-env] model-load smoke test skipped (set VQA_LOAD_SMOKE_TEST=1 to run it)"
+fi
 
 echo "[vqa-env] ready: ${PY}"

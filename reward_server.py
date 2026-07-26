@@ -218,17 +218,15 @@ def _load_pickscore(device: str, model_name: str = "yuvalkirstain/PickScore_v1")
 def _load_vqascore(device: str, model_name: str = "clip-flant5-xxl"):
     """Load the legacy CLIP-FlanT5 VQAScore used by GenAI-Bench.
 
-    t2v_metrics selects the only CUDA device visible to this reward-server
-    process.  The suite isolates the server to one physical GPU, exposed as
-    cuda:0, so no model copy is created in the generation workers.
+    The suite isolates the server to one physical GPU, exposed as cuda:0, so
+    no model copy is created in the generation workers.
     """
-    del device  # Device placement is managed internally by t2v_metrics.
     import tempfile
 
     import t2v_metrics
     import torch
 
-    scorer = t2v_metrics.VQAScore(model=model_name)
+    scorer = t2v_metrics.VQAScore(model=model_name, device=device)
 
     def score_fn(prompt: str, image: Image.Image) -> float:
         tmp_path = ""

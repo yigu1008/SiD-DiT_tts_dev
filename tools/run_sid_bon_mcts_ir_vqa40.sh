@@ -11,7 +11,7 @@ set -euo pipefail
 # Typical launch:
 #   HUMAN_EVAL_ROOT=/data/ygu/human_eval_genai40_v1 \
 #   REWARD_ENV_CONDA_BASE=/home/ygu/miniconda3 \
-#   REWARD_ENV_NAME=sid_dit \
+#   VQA_REWARD_ENV_NAME=vqascore_reward \
 #   bash tools/run_sid_bon_mcts_ir_vqa40.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -64,11 +64,46 @@ resolve_conda_base() {
 }
 
 REWARD_ENV_CONDA_BASE="$(resolve_conda_base)"
-REWARD_ENV_NAME="${REWARD_ENV_NAME:-sid_dit}"
+VQA_REWARD_ENV_NAME="${VQA_REWARD_ENV_NAME:-vqascore_reward}"
+REWARD_ENV_NAME="${VQA_REWARD_ENV_NAME}"
 REWARD_PY="${REWARD_ENV_CONDA_BASE}/envs/${REWARD_ENV_NAME}/bin/python"
 if [[ ! -x "${REWARD_PY}" ]]; then
-  echo "Error: reward environment Python not found: ${REWARD_PY}" >&2
-  echo "Set REWARD_ENV_CONDA_BASE and REWARD_ENV_NAME to the environment containing ImageReward and t2v-metrics." >&2
+  if [[ "${AUTO_SETUP_VQA_REWARD_ENV:-1}" != "1" ]]; then
+    echo "Error: isolated VQAScore environment not found: ${REWARD_PY}" >&2
+    echo "Run: CONDA_BASE=${REWARD_ENV_CONDA_BASE} bash setup_vqascore_reward_env.sh" >&2
+    exit 1
+  fi
+  CONDA_BASE="${REWARD_ENV_CONDA_BASE}" \
+  VQA_REWARD_ENV_NAME="${VQA_REWARD_ENV_NAME}" \
+    bash "${REPO}/setup_vqascore_reward_env.sh"
+fi
+
+mkdir -p "${STUDY_ROOT}"
+
+# Official t2v-metrics requires an ffmpeg executable.  The isolated setup
+# installs it with Conda; this fallback exposes imageio-ffmpeg's bundled
+# binary under the expected name for environments created before this fix.
+export PATH="${REWARD_ENV_CONDA_BASE}/envs/${REWARD_ENV_NAME}/bin:${PATH}"
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  bundled_ffmpeg="$("${REWARD_PY}" - <<'PY' 2>/dev/null || true
+try:
+    import imageio_ffmpeg
+    print(imageio_ffmpeg.get_ffmpeg_exe())
+except Exception:
+    pass
+PY
+)"
+  if [[ -n "${bundled_ffmpeg}" && -x "${bundled_ffmpeg}" ]]; then
+    runtime_bin="${STUDY_ROOT}/.runtime_bin"
+    mkdir -p "${runtime_bin}"
+    ln -sfn "${bundled_ffmpeg}" "${runtime_bin}/ffmpeg"
+    export PATH="${runtime_bin}:${PATH}"
+  fi
+fi
+
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "Error: ffmpeg is unavailable in ${REWARD_ENV_NAME}." >&2
+  echo "Run: ${REWARD_ENV_CONDA_BASE}/bin/conda install -y -n ${REWARD_ENV_NAME} -c conda-forge ffmpeg=6.1.2" >&2
   exit 1
 fi
 
@@ -76,6 +111,7 @@ if ! (
   cd "${REPO}"
   "${REWARD_PY}" - <<'PY'
 import importlib.metadata as md
+import shutil
 
 import reward_server
 
@@ -88,17 +124,48 @@ if version.split(".", 1)[0] != "3":
     raise SystemExit(
         f"t2v-metrics==3.x is required for clip-flant5-xxl; found {version}"
     )
+assert shutil.which("ffmpeg"), "ffmpeg is not visible to t2v_metrics"
 print(f"[preflight] ImageReward OK; t2v-metrics={version}")
 PY
 )
 then
-  echo "Error: the reward environment is missing the compatible VQAScore runtime." >&2
-  echo "Install the legacy CLIP-FlanT5 release, then rerun:" >&2
-  echo "  ${REWARD_PY} -m pip install 't2v-metrics==3.0'" >&2
+  echo "Error: isolated reward environment ${REWARD_ENV_NAME} is incomplete." >&2
+  echo "Repair it without touching sid_dit:" >&2
+  echo "  CONDA_BASE=${REWARD_ENV_CONDA_BASE} VQA_REWARD_ENV_NAME=${VQA_REWARD_ENV_NAME} bash setup_vqascore_reward_env.sh" >&2
   exit 1
 fi
 
-mkdir -p "${STUDY_ROOT}"
+# t2v-metrics must not be allowed to downgrade the generation environment.
+# Refuse the known-bad stack produced by installing v3.0 into sid_dit.
+if ! "${PYTHON_BIN}" - <<'PY'
+import importlib.metadata as md
+
+expected = {
+    "torch": "2.7.1",
+    "torchvision": "0.22.1",
+    "transformers": "4.52.4",
+    "diffusers": "0.33.1",
+}
+bad = []
+for package, wanted in expected.items():
+    try:
+        found = md.version(package)
+    except md.PackageNotFoundError:
+        found = "<missing>"
+    if found != wanted:
+        bad.append(f"{package}={found} (expected {wanted})")
+if bad:
+    raise SystemExit("generation environment mismatch: " + ", ".join(bad))
+print("[preflight] generation environment pins OK")
+PY
+then
+  echo "Error: the generation environment was modified by t2v-metrics." >&2
+  echo "Stop jobs using sid_dit, then restore it with:" >&2
+  echo "  ENV_NAME=sid_dit CONDA_ROOT=${REWARD_ENV_CONDA_BASE} bash rebuild_sid_env.sh" >&2
+  echo "VQAScore will remain isolated in ${VQA_REWARD_ENV_NAME} after rebuilding." >&2
+  exit 1
+fi
+
 SEED_MAP_FILE="${STUDY_ROOT}/shared_bon_mcts_seed_map_${RUN_ID}.json"
 STUDY_MANIFEST="${STUDY_ROOT}/study_manifest_${RUN_ID}.json"
 PROMPT_SNAPSHOT="${STUDY_ROOT}/prompts_${RUN_ID}.csv"

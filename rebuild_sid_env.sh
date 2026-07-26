@@ -39,7 +39,7 @@ conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
 
 echo "[env] installing xformers from ${TORCH_INDEX_URL}"
 conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
-  xformers \
+  xformers==0.0.31.post1 \
   --index-url "${TORCH_INDEX_URL}"
 
 echo "[env] pinning cuDNN for CUDA 12.6"
@@ -64,7 +64,7 @@ conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
   requests==2.31.0 \
   safetensors==0.5.3 \
   scipy==1.13.0 \
-  timm==0.9.16 \
+  timm==1.0.15 \
   tokenizers==0.21.1 \
   tqdm==4.66.4 \
   transformers==4.52.4 \
@@ -78,15 +78,18 @@ conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
   PyWavelets==1.6.0
 
 echo "[env] installing reward packages"
-if ! conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
+if ! conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir --no-deps \
   --index-url "${PYPI_INDEX_URL}" "image-reward==1.5"; then
   echo "[env] PyPI image-reward unavailable, falling back to GitHub"
   conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
     --index-url "${PYPI_INDEX_URL}" "setuptools==75.8.0"
   conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
-    --no-build-isolation \
+    --no-deps --no-build-isolation \
     "git+https://github.com/THUDM/ImageReward.git"
 fi
+
+conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \
+  --index-url "${PYPI_INDEX_URL}" "fairscale==0.4.4"
 
 echo "[env] installing clip module required by ImageReward"
 if ! conda run -n "${ENV_NAME}" python -m pip install --no-cache-dir \

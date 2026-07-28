@@ -257,12 +257,22 @@ if [[ "${DRY_RUN}" == "1" ]]; then
   exit 0
 fi
 
-for executable in "${PYTHON_BIN}" "${VQASCORE_REWARD_PY}" "${STANDARD_REWARD_PY}"; do
-  if [[ ! -x "${executable}" ]]; then
-    echo "Error: required Python is not executable: ${executable}" >&2
+require_executable() {
+  local executable="$1"
+  if [[ "${executable}" == */* ]]; then
+    if [[ ! -x "${executable}" ]]; then
+      echo "Error: required executable is unavailable: ${executable}" >&2
+      exit 1
+    fi
+  elif ! command -v "${executable}" >/dev/null 2>&1; then
+    echo "Error: required command is not on PATH: ${executable}" >&2
     exit 1
   fi
-done
+}
+
+require_executable "${PYTHON_BIN}"
+require_executable "${VQASCORE_REWARD_PY}"
+require_executable "${STANDARD_REWARD_PY}"
 
 # Keep CLIP-FlanT5 isolated and repair only its intentionally reduced registry.
 if ! "${VQASCORE_REWARD_PY}" \

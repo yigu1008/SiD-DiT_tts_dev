@@ -191,6 +191,7 @@ start_reward_server() {
     reward_server_strict_extra+=(--require_all_backends)
   fi
   # Give the server its own CUDA_VISIBLE_DEVICES so it sees exactly 1 GPU as cuda:0
+  PATH="$(dirname "${reward_py}"):${PATH}" \
   CUDA_VISIBLE_DEVICES="${REWARD_SERVER_GPU}" \
     "${reward_py}" -u "${SCRIPT_DIR}/reward_server.py" \
     --port "${REWARD_SERVER_PORT}" \

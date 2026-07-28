@@ -68,6 +68,7 @@ start_server_for_backend() {
     strict_server_flag=(--require_all_backends)
   fi
   env -u NCCL_P2P_LEVEL -u NCCL_ASYNC_ERROR_HANDLING -u TORCH_NCCL_ASYNC_ERROR_HANDLING \
+      PATH="$(dirname "${reward_python}"):${PATH}" \
       CUDA_VISIBLE_DEVICES="${REWARD_CUDA_VISIBLE_DEVICES}" TOKENIZERS_PARALLELISM=false HF_HOME="${REWARD_HF_HOME}" \
       "${reward_python}" -u "${SCRIPT_DIR}/reward_server.py" \
         --port "${REWARD_SERVER_PORT}" \

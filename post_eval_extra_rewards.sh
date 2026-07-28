@@ -17,6 +17,8 @@
 # Optional:
 #   POSTHOC_LAYOUT          : sd35 (default) | flux | sana
 #   HEALTH_TIMEOUT_SECS     : seconds to wait for /health (default 1800)
+#   REWARD_CUDA_VISIBLE_DEVICES: physical reward GPU (default 0)
+#   VQASCORE_MODEL          : VQAScore model (default clip-flant5-xxl)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -31,6 +33,8 @@ IMAGE_REWARD_MODEL="${IMAGE_REWARD_MODEL:-ImageReward-v1.0}"
 PICKSCORE_MODEL="${PICKSCORE_MODEL:-yuvalkirstain/PickScore_v1}"
 HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-1800}"
 REWARD_HF_HOME="${REWARD_HF_HOME:-${HF_HOME:-/mnt/data/v-yigu/model_cache/hf_cache}}"
+REWARD_CUDA_VISIBLE_DEVICES="${REWARD_CUDA_VISIBLE_DEVICES:-0}"
+VQASCORE_MODEL="${VQASCORE_MODEL:-clip-flant5-xxl}"
 
 REWARD_SERVER_URL="http://localhost:${REWARD_SERVER_PORT}"
 
@@ -44,13 +48,14 @@ start_server_for_backend() {
   local log_path="$2"
   echo "[posthoc] starting reward server (${backend}) on port ${REWARD_SERVER_PORT}"
   env -u NCCL_P2P_LEVEL -u NCCL_ASYNC_ERROR_HANDLING -u TORCH_NCCL_ASYNC_ERROR_HANDLING \
-      CUDA_VISIBLE_DEVICES=0 TOKENIZERS_PARALLELISM=false HF_HOME="${REWARD_HF_HOME}" \
+      CUDA_VISIBLE_DEVICES="${REWARD_CUDA_VISIBLE_DEVICES}" TOKENIZERS_PARALLELISM=false HF_HOME="${REWARD_HF_HOME}" \
       "${REWARD_PY}" -u "${SCRIPT_DIR}/reward_server.py" \
         --port "${REWARD_SERVER_PORT}" \
         --device cuda:0 \
         --backends "${backend}" \
         --image_reward_model "${IMAGE_REWARD_MODEL}" \
         --pickscore_model "${PICKSCORE_MODEL}" \
+        --vqascore_model "${VQASCORE_MODEL}" \
       > "${log_path}" 2>&1 &
   echo $!
 }

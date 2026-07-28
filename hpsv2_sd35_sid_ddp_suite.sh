@@ -967,6 +967,20 @@ run_method() {
       SMC_LAMBDA="${FKSTEERING_LAMBDA:-${SMC_LAMBDA:-10.0}}"
       ;;
     bon) mode_arg="bon" ;;
+    bon_rewrite_control)
+      # Cheap prompt-search control: one cached rewritten prompt is fixed for
+      # the complete trajectory. Generate BON_N trajectories at the canonical
+      # CFG and reward-select the terminal image against the original prompt.
+      # The supplied cache should contain rewrites only (no c0 entry).
+      mode_arg="bon"
+      BON_ACTION_DIVERSE=1
+      CFG_SCALES="${BASELINE_CFG}"
+      CORRECTION_STRENGTHS="0.0"
+      if [[ ! -s "${REWRITES_FILE}" ]]; then
+        echo "Error: bon_rewrite_control requires a non-empty rewrite-only cache: ${REWRITES_FILE}" >&2
+        exit 1
+      fi
+      ;;
     bon_actdiff)
       # Best-of-N over the structured ActDiff action bank
       # (variant × cfg × correction).  Same N, richer candidate diversity.

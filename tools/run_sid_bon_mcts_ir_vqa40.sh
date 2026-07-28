@@ -329,7 +329,7 @@ manifest = {
         "shared_rewrites_file": os.environ["REWRITES_FILE"],
         "rule": (
             "All reward arms reuse the same rewrite cache when Qwen is enabled; "
-            "otherwise the sampler's deterministic legacy prompt variants are used."
+            "when Qwen is disabled, SD3.5 conditions only on the original prompt c0."
         ),
     },
     "reward_prompt_invariant": (
@@ -348,18 +348,21 @@ manifest = {
         {
             "arm_id": "imagereward",
             "reward_backend": "imagereward",
-            "server_backends": ["imagereward"],
+            "server_backends": ["imagereward", "vqascore"],
+            "eval_backends": ["imagereward", "vqascore"],
         },
         {
             "arm_id": "vqascore",
             "reward_backend": "vqascore",
-            "server_backends": ["vqascore"],
+            "server_backends": ["imagereward", "vqascore"],
+            "eval_backends": ["imagereward", "vqascore"],
             "vqascore_model": os.environ["VQASCORE_MODEL"],
         },
         {
             "arm_id": "ir_vqa_equal",
             "reward_backend": "composite_ir_vqa",
             "server_backends": ["imagereward", "vqascore"],
+            "eval_backends": ["imagereward", "vqascore"],
             "formula": "0.5*minmax(ImageReward,-3,3) + 0.5*minmax(VQAScore,0,1)",
         },
     ],
@@ -402,7 +405,10 @@ common_env=(
   "SAVE_IMAGES=0"
   "SAVE_BEST_IMAGES=1"
   "SAVE_VARIANTS=1"
-  "EVAL_BEST_IMAGES=0"
+  "EVAL_BEST_IMAGES=1"
+  "EVAL_BACKENDS=imagereward vqascore"
+  "EVAL_ALLOW_MISSING_BACKENDS=0"
+  "EVAL_REWARD_DEVICE=cpu"
   "USE_REWARD_SERVER=1"
   "REWARD_SERVER_REQUIRE_ALL=1"
   "REWARD_SERVER_MAX_WAIT=${REWARD_SERVER_MAX_WAIT:-1800}"
@@ -420,8 +426,8 @@ common_env=(
 )
 
 arms=(
-  "imagereward|imagereward|imagereward"
-  "vqascore|vqascore|vqascore"
+  "imagereward|imagereward|imagereward vqascore"
+  "vqascore|vqascore|imagereward vqascore"
   "ir_vqa_equal|composite_ir_vqa|imagereward vqascore"
 )
 

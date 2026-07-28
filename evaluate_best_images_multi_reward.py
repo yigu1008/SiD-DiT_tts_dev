@@ -84,6 +84,10 @@ def _sd35_mode_key_and_suffix(method: str) -> tuple[str, str]:
         # bon_mcts dispatches via sd35_ddp_experiment_bon_mcts.py which writes
         # mode="mcts" and images as {slug}_mcts.png (same as plain mcts).
         return "mcts", "mcts"
+    if m.startswith("bon_"):
+        # Prompt/CFG controls dispatch through run_bon and therefore retain
+        # mode="bon" and the standard {slug}_bon.png image suffix.
+        return "bon", "bon"
     if m.startswith("mcts"):
         # SD3.5 DDP writes mode/image suffix as "mcts" even for method aliases
         # like mcts_lookahead_dynamiccfg, mcts_dynamiccfg_only, etc.

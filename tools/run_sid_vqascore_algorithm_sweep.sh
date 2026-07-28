@@ -31,7 +31,6 @@ REPO="$(cd "${SCRIPT_DIR}/.." && pwd)"
 source "${REPO}/shell_env.sh"
 
 HUMAN_EVAL_ROOT="${HUMAN_EVAL_ROOT:-/data/ygu/human_eval_genai40_v1}"
-PROMPTS_FILE="${PROMPTS_FILE:-${HUMAN_EVAL_ROOT}/prompts.csv}"
 STUDY_ROOT="${STUDY_ROOT:-${HUMAN_EVAL_ROOT}/sid_vqascore_algorithm_sweep}"
 RUN_ID="${RUN_ID:-v1}"
 RUN_ROOT="${STUDY_ROOT}/${RUN_ID}"
@@ -40,6 +39,15 @@ STUDY_ID="${STUDY_ID:-sid_vqascore_algorithm_sweep_${RUN_ID}}"
 SUBSET_SIZE="${SUBSET_SIZE:-16}"
 SUBSET_SEED="${SUBSET_SEED:-20260728}"
 GENERATION_BASE_SEED="${GENERATION_BASE_SEED:-12345}"
+if [[ -z "${PROMPTS_FILE:-}" ]]; then
+  if (( SUBSET_SIZE > 40 )); then
+    PROMPTS_FILE="${HUMAN_EVAL_ROOT}/prompts_genai${SUBSET_SIZE}.csv"
+  else
+    PROMPTS_FILE="${HUMAN_EVAL_ROOT}/prompts.csv"
+  fi
+fi
+AUTO_PREPARE_PROMPTS="${AUTO_PREPARE_PROMPTS:-1}"
+PROMPT_RESERVE_SIZE="${PROMPT_RESERVE_SIZE:-40}"
 INCLUDE_MULTISTEP_BASELINE="${INCLUDE_MULTISTEP_BASELINE:-1}"
 MULTISTEP_STEPS="${MULTISTEP_STEPS:-28}"
 USE_QWEN="${USE_QWEN:-1}"
@@ -68,10 +76,6 @@ GA_POPULATION="${GA_POPULATION:-24}"
 GA_GENERATIONS="${GA_GENERATIONS:-8}"
 DTS_M_ITER="${DTS_M_ITER:-64}"
 
-if [[ ! -f "${PROMPTS_FILE}" ]]; then
-  echo "Error: prepared GenAI-Bench prompts file not found: ${PROMPTS_FILE}" >&2
-  exit 1
-fi
 if [[ "${RUN_ID}" == *"/"* ]]; then
   echo "Error: RUN_ID cannot contain '/': ${RUN_ID}" >&2
   exit 1
@@ -110,6 +114,21 @@ resolve_conda_base() {
 REWARD_ENV_CONDA_BASE="$(resolve_conda_base)"
 VQASCORE_REWARD_PY="${REWARD_ENV_CONDA_BASE}/envs/${VQA_REWARD_ENV_NAME}/bin/python"
 STANDARD_REWARD_PY="${REWARD_ENV_CONDA_BASE}/envs/${STANDARD_REWARD_ENV_NAME}/bin/python"
+
+if [[ ! -f "${PROMPTS_FILE}" ]]; then
+  if [[ "${AUTO_PREPARE_PROMPTS}" != "1" ]]; then
+    echo "Error: prepared GenAI-Bench prompts file not found: ${PROMPTS_FILE}" >&2
+    exit 1
+  fi
+  echo "[prompts] preparing ${SUBSET_SIZE} prompts from Hugging Face"
+  echo "[prompts] target: ${PROMPTS_FILE}"
+  "${PYTHON_BIN}" "${REPO}/tools/prepare_human_eval_prompts.py" \
+    --from-huggingface \
+    --output "${PROMPTS_FILE}" \
+    --num-prompts "${SUBSET_SIZE}" \
+    --num-reserve "${PROMPT_RESERVE_SIZE}" \
+    --seed "${SUBSET_SEED}"
+fi
 
 mkdir -p "${RUN_ROOT}"
 SUBSET_CSV="${RUN_ROOT}/prompts_subset.csv"

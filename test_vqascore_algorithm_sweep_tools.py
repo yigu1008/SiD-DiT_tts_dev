@@ -10,10 +10,63 @@ from pathlib import Path
 from evaluate_best_images_multi_reward import _sd35_mode_key_and_suffix
 from dynamic_cfg_x0 import DynamicCfgX0Config, evaluator_weights
 from tools.merge_posthoc_reward_evals import _merge_method
+from tools.prepare_human_eval_prompts import prepare_prompts
 from tools.prepare_genai_sweep_subset import prepare
 
 
 class PrepareSubsetTest(unittest.TestCase):
+    def test_genai200_has_fifty_prompts_per_length_category(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "metadata.csv"
+            fields = [
+                "Index",
+                "Prompt",
+                "basic_skills",
+                "advanced_skills",
+            ]
+            with source.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fields)
+                writer.writeheader()
+                for difficulty in ("basic", "advanced"):
+                    for index in range(120):
+                        writer.writerow(
+                            {
+                                "Index": f"{difficulty}-{index}",
+                                "Prompt": (
+                                    f"{difficulty} prompt {index} "
+                                    + " ".join(["detail"] * (index + 1))
+                                ),
+                                "basic_skills": (
+                                    '["scene"]' if difficulty == "basic" else "[]"
+                                ),
+                                "advanced_skills": (
+                                    '["counting"]'
+                                    if difficulty == "advanced"
+                                    else "[]"
+                                ),
+                            }
+                        )
+            summary = prepare_prompts(
+                source,
+                root / "prompts_genai200.csv",
+                num_prompts=200,
+                num_reserve=16,
+                seed=20260728,
+            )
+            self.assertEqual(summary.selected_count, 200)
+            cell_counts = summary.counts_by_difficulty_and_length_quartile
+            self.assertEqual(set(cell_counts.values()), {25})
+            quartile_totals = {
+                quartile: sum(
+                    cell_counts[f"{difficulty}/q{quartile}"]
+                    for difficulty in ("basic", "advanced")
+                )
+                for quartile in range(1, 5)
+            }
+            self.assertEqual(set(quartile_totals.values()), {50})
+            self.assertTrue((root / "prompts_genai200_reserve.csv").is_file())
+
     def test_balanced_subset_and_shared_seed_map(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

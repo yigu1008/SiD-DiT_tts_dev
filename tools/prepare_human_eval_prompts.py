@@ -313,15 +313,23 @@ def _write_prompt_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def _validate_selected(selected: list[PromptRecord], reserve: list[PromptRecord], num_prompts: int) -> None:
+def _validate_selected(
+    selected: list[PromptRecord],
+    reserve: list[PromptRecord],
+    num_prompts: int,
+) -> None:
     if len(selected) != num_prompts:
         raise RuntimeError(f"selected prompt count is {len(selected)}, expected {num_prompts}")
-    if len(selected) != 40:
-        raise RuntimeError("this study requires exactly 40 selected prompts")
-    if sum(r.difficulty == "basic" for r in selected) != 20:
-        raise RuntimeError("selected set must contain exactly 20 basic prompts")
-    if sum(r.difficulty == "advanced" for r in selected) != 20:
-        raise RuntimeError("selected set must contain exactly 20 advanced prompts")
+    expected_per_difficulty = num_prompts // len(DIFFICULTIES)
+    expected_per_cell = num_prompts // (len(DIFFICULTIES) * len(QUARTILES))
+    if sum(r.difficulty == "basic" for r in selected) != expected_per_difficulty:
+        raise RuntimeError(
+            f"selected set must contain exactly {expected_per_difficulty} basic prompts"
+        )
+    if sum(r.difficulty == "advanced" for r in selected) != expected_per_difficulty:
+        raise RuntimeError(
+            f"selected set must contain exactly {expected_per_difficulty} advanced prompts"
+        )
     selected_keys = {r.normalized_prompt for r in selected}
     if len(selected_keys) != len(selected):
         raise RuntimeError("duplicate normalized prompts appear in selected set")
@@ -330,9 +338,11 @@ def _validate_selected(selected: list[PromptRecord], reserve: list[PromptRecord]
     counts = Counter((r.difficulty, r.length_quartile) for r in selected)
     for difficulty in DIFFICULTIES:
         for quartile in QUARTILES:
-            if counts[(difficulty, quartile)] != 5:
+            if counts[(difficulty, quartile)] != expected_per_cell:
                 raise RuntimeError(
-                    f"cell {difficulty}/q{quartile} has {counts[(difficulty, quartile)]} prompts, expected 5"
+                    f"cell {difficulty}/q{quartile} has "
+                    f"{counts[(difficulty, quartile)]} prompts, "
+                    f"expected {expected_per_cell}"
                 )
 
 
@@ -350,10 +360,15 @@ def prepare_prompts(
     """
     input_path = Path(input_path)
     output_path = Path(output_path)
-    if num_prompts != 40:
-        raise ValueError("num_prompts must be exactly 40 for human_eval_genai40_v1")
-    if num_reserve != 16:
-        raise ValueError("num_reserve must be exactly 16 for human_eval_genai40_v1")
+    num_cells = len(DIFFICULTIES) * len(QUARTILES)
+    if num_prompts <= 0 or num_prompts % num_cells:
+        raise ValueError(
+            f"num_prompts must be a positive multiple of {num_cells} "
+            "to balance difficulty x length-quartile cells"
+        )
+    if num_reserve < 0:
+        raise ValueError("num_reserve must be nonnegative")
+    selected_per_cell = num_prompts // num_cells
     rows = _read_rows(input_path)
     if not rows:
         raise ValueError("input metadata contains no rows")
@@ -408,10 +423,13 @@ def prepare_prompts(
         f"{difficulty}/q{quartile}": len(pools[(difficulty, quartile)])
         for difficulty in DIFFICULTIES
         for quartile in QUARTILES
-        if len(pools[(difficulty, quartile)]) < 5
+        if len(pools[(difficulty, quartile)]) < selected_per_cell
     }
     if missing_cells:
-        raise ValueError(f"difficulty/length cell has fewer than five prompts: {missing_cells}")
+        raise ValueError(
+            f"difficulty/length cell has fewer than {selected_per_cell} prompts: "
+            f"{missing_cells}"
+        )
 
     rng = random.Random(seed)
     selected: list[PromptRecord] = []
@@ -420,7 +438,7 @@ def prepare_prompts(
         for quartile in QUARTILES:
             cell = list(pools[(difficulty, quartile)])
             rng.shuffle(cell)
-            picks = cell[:5]
+            picks = cell[:selected_per_cell]
             selected.extend(picks)
             selected_keys.update(r.normalized_prompt for r in picks)
 
@@ -436,8 +454,14 @@ def prepare_prompts(
     selected_rows = [_csv_row(record, f"p{index:03d}", seed) for index, record in enumerate(selected)]
     reserve_rows = [_csv_row(record, f"r{index:03d}", seed) for index, record in enumerate(reserve)]
     _write_prompt_csv(output_path, selected_rows)
-    reserve_path = output_path.with_name("prompts_reserve.csv")
-    report_path = output_path.with_name("prompt_processing_report.json")
+    if output_path.name == "prompts.csv":
+        reserve_path = output_path.with_name("prompts_reserve.csv")
+        report_path = output_path.with_name("prompt_processing_report.json")
+    else:
+        reserve_path = output_path.with_name(f"{output_path.stem}_reserve.csv")
+        report_path = output_path.with_name(
+            f"{output_path.stem}_processing_report.json"
+        )
     _write_prompt_csv(reserve_path, reserve_rows)
     digest = hashlib.sha256(output_path.read_bytes()).hexdigest()
 

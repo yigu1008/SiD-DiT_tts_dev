@@ -5,7 +5,7 @@
 #
 # Required env (set by the caller / YAML):
 #   OUT_ROOT                : run output root (contains run_<TS>/<method>/...)
-#   REWARD_PY               : python in the isolated reward env
+#   REWARD_PY               : fallback python in an isolated reward env
 #   REWARD_SERVER_PORT      : port the previous server used (we kill+reuse)
 #   REWARD_HF_HOME          : HF_HOME for the reward env (local-staged or shared)
 #   POSTHOC_EVAL_BACKENDS   : space-sep list of extra backends, e.g.
@@ -19,6 +19,10 @@
 #   HEALTH_TIMEOUT_SECS     : seconds to wait for /health (default 1800)
 #   REWARD_CUDA_VISIBLE_DEVICES: physical reward GPU (default 0)
 #   VQASCORE_MODEL          : VQAScore model (default clip-flant5-xxl)
+#   VQASCORE_REWARD_PY      : Python used only for the vqascore server
+#   STANDARD_REWARD_PY      : Python used for all non-vqascore servers
+#   POSTHOC_ALLOW_MISSING_BACKENDS: 1 preserves best-effort behavior (default);
+#                                   set 0 for a strict complete evaluation
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -35,6 +39,9 @@ HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-1800}"
 REWARD_HF_HOME="${REWARD_HF_HOME:-${HF_HOME:-/mnt/data/v-yigu/model_cache/hf_cache}}"
 REWARD_CUDA_VISIBLE_DEVICES="${REWARD_CUDA_VISIBLE_DEVICES:-0}"
 VQASCORE_MODEL="${VQASCORE_MODEL:-clip-flant5-xxl}"
+VQASCORE_REWARD_PY="${VQASCORE_REWARD_PY:-${REWARD_PY}}"
+STANDARD_REWARD_PY="${STANDARD_REWARD_PY:-${REWARD_PY}}"
+POSTHOC_ALLOW_MISSING_BACKENDS="${POSTHOC_ALLOW_MISSING_BACKENDS:-1}"
 
 REWARD_SERVER_URL="http://localhost:${REWARD_SERVER_PORT}"
 
@@ -46,16 +53,30 @@ sleep 2
 start_server_for_backend() {
   local backend="$1"
   local log_path="$2"
-  echo "[posthoc] starting reward server (${backend}) on port ${REWARD_SERVER_PORT}"
+  local reward_python="${STANDARD_REWARD_PY}"
+  if [[ "${backend,,}" == "vqascore" ]]; then
+    reward_python="${VQASCORE_REWARD_PY}"
+  fi
+  if [[ ! -x "${reward_python}" ]]; then
+    echo "[posthoc] reward Python is not executable for backend=${backend}: ${reward_python}" >&2
+    return 1
+  fi
+  echo "[posthoc] starting reward server (${backend}) on port ${REWARD_SERVER_PORT}" >&2
+  echo "[posthoc] reward python: ${reward_python}" >&2
+  local -a strict_server_flag=()
+  if [[ "${POSTHOC_ALLOW_MISSING_BACKENDS}" == "0" ]]; then
+    strict_server_flag=(--require_all_backends)
+  fi
   env -u NCCL_P2P_LEVEL -u NCCL_ASYNC_ERROR_HANDLING -u TORCH_NCCL_ASYNC_ERROR_HANDLING \
       CUDA_VISIBLE_DEVICES="${REWARD_CUDA_VISIBLE_DEVICES}" TOKENIZERS_PARALLELISM=false HF_HOME="${REWARD_HF_HOME}" \
-      "${REWARD_PY}" -u "${SCRIPT_DIR}/reward_server.py" \
+      "${reward_python}" -u "${SCRIPT_DIR}/reward_server.py" \
         --port "${REWARD_SERVER_PORT}" \
         --device cuda:0 \
         --backends "${backend}" \
         --image_reward_model "${IMAGE_REWARD_MODEL}" \
         --pickscore_model "${PICKSCORE_MODEL}" \
         --vqascore_model "${VQASCORE_MODEL}" \
+        "${strict_server_flag[@]}" \
       > "${log_path}" 2>&1 &
   echo $!
 }
@@ -103,6 +124,10 @@ eval_one_dir_one_backend() {
   local out_json="${method_out}/best_images_${backend}.json"
   local out_agg="${method_out}/best_images_${backend}_aggregate.json"
   echo "[posthoc] eval method=${method_name} backend=${backend} dir=${method_out}"
+  local -a missing_backend_flag=(--allow_missing_backends)
+  if [[ "${POSTHOC_ALLOW_MISSING_BACKENDS}" == "0" ]]; then
+    missing_backend_flag=(--no-allow_missing_backends)
+  fi
   REWARD_SERVER_URL="${REWARD_SERVER_URL}" \
   "${PYTHON_BIN}" "${SCRIPT_DIR}/evaluate_best_images_multi_reward.py" \
       --layout "${POSTHOC_LAYOUT}" \
@@ -114,8 +139,7 @@ eval_one_dir_one_backend() {
       --pickscore_model "${PICKSCORE_MODEL}" \
       --out_json "${out_json}" \
       --out_aggregate "${out_agg}" \
-      --allow_missing_backends \
-    || echo "[posthoc] WARN: eval failed for method=${method_name} backend=${backend}"
+      "${missing_backend_flag[@]}"
 }
 
 for backend in ${POSTHOC_EVAL_BACKENDS}; do

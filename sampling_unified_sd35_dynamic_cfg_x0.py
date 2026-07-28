@@ -43,6 +43,8 @@ def _make_eval_fn(reward_model: su.UnifiedRewardScorer):
             return float(reward_model._score_hpsv2(prompt, image))
         if e == "pickscore":
             return float(reward_model._score_pickscore(prompt, image))
+        if e == "vqascore":
+            return float(reward_model._score_vqascore(prompt, image))
         raise ValueError(f"unknown evaluator: {evaluator}")
     return _eval
 

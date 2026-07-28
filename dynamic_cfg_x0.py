@@ -177,7 +177,15 @@ def evaluator_weights(progress: float, cfg: DynamicCfgX0Config) -> dict[str, flo
         raw = _piecewise_weights(progress, cfg.prompt_type)
     enabled = [e for e in cfg.evaluators if e in raw]
     if not enabled:
-        return {}
+        # Custom/single-objective evaluators (for example VQAScore) need no
+        # hand-authored temporal schedule. Give them equal weight instead of
+        # returning an empty combination, which would make CFG selection depend
+        # only on regularization and systematically choose the smallest value.
+        custom = [str(e).strip().lower() for e in cfg.evaluators if str(e).strip()]
+        if not custom:
+            return {}
+        equal = 1.0 / len(custom)
+        return {name: equal for name in custom}
     sub = {k: float(raw[k]) for k in enabled}
     s = sum(sub.values())
     if s <= 1e-8:

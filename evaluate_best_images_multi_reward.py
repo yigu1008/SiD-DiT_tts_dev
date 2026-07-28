@@ -80,6 +80,16 @@ def _sd35_mode_key_and_suffix(method: str) -> tuple[str, str]:
         # sd35_ddp_experiment_dynamic_cfg_x0.py monkey-patch), so logs
         # are written with mode="base" and images as {slug}_base.png.
         return "base", "base"
+    if m == "das":
+        # DAS is implemented by run_bon with continuously sampled, fixed
+        # trajectory actions, so it retains mode/image suffix "bon".
+        return "bon", "bon"
+    if m == "fksteering":
+        # FK-Steering is the reward-difference-potential SMC variant.
+        return "smc", "smc"
+    if m in {"dts", "dts_star"}:
+        # Both DTS runners patch run_mcts and retain its log/image names.
+        return "mcts", "mcts"
     if m == "bon_mcts" or m.startswith("bon_mcts"):
         # bon_mcts dispatches via sd35_ddp_experiment_bon_mcts.py which writes
         # mode="mcts" and images as {slug}_mcts.png (same as plain mcts).
@@ -92,7 +102,7 @@ def _sd35_mode_key_and_suffix(method: str) -> tuple[str, str]:
         # SD3.5 DDP writes mode/image suffix as "mcts" even for method aliases
         # like mcts_lookahead_dynamiccfg, mcts_dynamiccfg_only, etc.
         return "mcts", "mcts"
-    if m in {"greedy", "ga", "smc", "bon", "beam"}:
+    if m in {"greedy", "ga", "smc", "bon", "beam", "sop"}:
         return m, m
     return m, m
 

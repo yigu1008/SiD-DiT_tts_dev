@@ -324,6 +324,7 @@ def import_legacy(
     *,
     root_override: Path | None = None,
     overwrite: bool = False,
+    allow_incomplete: bool = False,
 ) -> dict[str, Any]:
     """Copy existing legacy-summary images into the pairwise input layout."""
     config, paths = _settings(config_path, root_override)
@@ -431,6 +432,7 @@ def import_legacy(
                 imported += 1
     report = {
         "valid": not errors,
+        "allow_incomplete": allow_incomplete,
         "source_manifest": str(manifest_path),
         "source_manifest_sha256": _sha256(manifest_path),
         "destination_images": str(paths["images"]),
@@ -449,12 +451,14 @@ def build_tasks(
     *,
     root_override: Path | None = None,
     overwrite: bool = False,
+    allow_incomplete: bool = False,
+    seed_override: int | None = None,
 ) -> dict[str, Any]:
     config, paths = _settings(config_path, root_override)
     validation = validate_inputs(
         config_path, root_override=root_override, write_report=True
     )
-    if not validation["valid"]:
+    if not validation["valid"] and not allow_incomplete:
         raise RuntimeError(
             f"input validation failed with {validation['error_count']} errors; "
             f"see {paths['validation_report']}"
@@ -464,18 +468,60 @@ def build_tasks(
     models = _models(config)
     prompts = _prompts(paths["prompts"], int(config.get("expected_prompt_count", 40)))
     method_files = _method_files(config)
-    seed = int(config.get("random_seed", 20260729))
+    seed = (
+        int(seed_override)
+        if seed_override is not None
+        else int(config.get("random_seed", 20260729))
+    )
     rng = random.Random(seed)
     tasks: list[dict[str, Any]] = []
+    exclusions: list[dict[str, str]] = []
 
     for model in models:
         for competitor in COMPETITORS:
-            prompt_order = list(prompts)
+            valid_prompts: list[dict[str, str]] = []
+            for prompt in prompts:
+                required_paths = {
+                    "actdiff": _image_path(
+                        paths["images"],
+                        model["id"],
+                        prompt["prompt_id"],
+                        method_files["actdiff"],
+                    ),
+                    competitor: _image_path(
+                        paths["images"],
+                        model["id"],
+                        prompt["prompt_id"],
+                        method_files[competitor],
+                    ),
+                }
+                invalid: list[str] = []
+                for method, image_path in required_paths.items():
+                    if not image_path.is_file():
+                        invalid.append(f"{method}:missing")
+                        continue
+                    try:
+                        with Image.open(image_path) as image:
+                            image.verify()
+                    except (OSError, ValueError):
+                        invalid.append(f"{method}:unreadable")
+                if invalid:
+                    exclusions.append(
+                        {
+                            "model_id": model["id"],
+                            "prompt_id": prompt["prompt_id"],
+                            "competitor": competitor,
+                            "reason": ",".join(invalid),
+                        }
+                    )
+                else:
+                    valid_prompts.append(prompt)
+            prompt_order = list(valid_prompts)
             rng.shuffle(prompt_order)
-            side_flags = [False] * (len(prompts) // 2) + [True] * (
-                len(prompts) // 2
+            side_flags = [False] * (len(valid_prompts) // 2) + [True] * (
+                len(valid_prompts) // 2
             )
-            if len(prompts) % 2:
+            if len(valid_prompts) % 2:
                 side_flags.append(bool(rng.getrandbits(1)))
             rng.shuffle(side_flags)
             for prompt, actdiff_on_right in zip(prompt_order, side_flags):
@@ -519,8 +565,10 @@ def build_tasks(
                 )
     rng.shuffle(tasks)
     expected = len(models) * len(prompts) * len(COMPETITORS)
-    if len(tasks) != expected:
+    if not allow_incomplete and len(tasks) != expected:
         raise AssertionError(f"expected {expected} tasks, constructed {len(tasks)}")
+    if not tasks:
+        raise RuntimeError("no complete ActDiff pairwise tasks could be constructed")
     _write_jsonl(paths["tasks"], tasks)
     side_counts: dict[str, dict[str, int]] = {}
     for model in models:
@@ -536,10 +584,13 @@ def build_tasks(
                 "right": sum(task["right_method"] == "actdiff" for task in rows),
             }
     report = {
-        "valid": True,
+        "valid": len(tasks) == expected,
+        "allow_incomplete": allow_incomplete,
         "random_seed": seed,
         "task_count": len(tasks),
         "expected_task_count": expected,
+        "excluded_task_count": len(exclusions),
+        "exclusions": exclusions,
         "comparison_count_per_model_prompt": len(COMPETITORS),
         "comparisons": [f"actdiff vs {name}" for name in COMPETITORS],
         "side_counts": side_counts,
@@ -719,6 +770,13 @@ def serve_annotations(
     port_override: int | None = None,
 ) -> None:
     config, paths = _settings(config_path, root_override)
+    if not paths["tasks"].is_file():
+        raise FileNotFoundError(
+            f"pairwise task file is missing: {paths['tasks']}\n"
+            "Prepare it from existing legacy outputs first:\n"
+            f"  HUMAN_EVAL_ROOT={paths['root']} "
+            "bash tools/prepare_pairwise_human_eval.sh --allow-incomplete"
+        )
     tasks = _read_jsonl(paths["tasks"])
     annotator = str(config.get("annotator_id", "")).strip()
     if not annotator:
@@ -944,15 +1002,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override study_root from the YAML configuration.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("validate")
+    validator = subparsers.add_parser("validate")
+    validator.add_argument("--allow-incomplete", action="store_true")
     importer = subparsers.add_parser(
         "import-legacy",
         help="Copy existing legacy-manifest images; map bon_mcts to actdiff.",
     )
     importer.add_argument("--manifest", required=True, type=Path)
     importer.add_argument("--overwrite", action="store_true")
+    importer.add_argument("--allow-incomplete", action="store_true")
     builder = subparsers.add_parser("build-tasks")
     builder.add_argument("--overwrite", action="store_true")
+    builder.add_argument("--allow-incomplete", action="store_true")
+    builder.add_argument("--seed", type=int, default=None)
     server = subparsers.add_parser("serve")
     server.add_argument("--host", default=None)
     server.add_argument("--port", type=int, default=None)
@@ -965,21 +1027,24 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "validate":
         result = validate_inputs(args.config, root_override=args.root)
         print(json.dumps(result, indent=2))
-        return 0 if result["valid"] else 1
+        return 0 if result["valid"] or args.allow_incomplete else 1
     if args.command == "import-legacy":
         result = import_legacy(
             args.config,
             args.manifest,
             root_override=args.root,
             overwrite=args.overwrite,
+            allow_incomplete=args.allow_incomplete,
         )
         print(json.dumps(result, indent=2))
-        return 0 if result["valid"] else 1
+        return 0 if result["valid"] or args.allow_incomplete else 1
     if args.command == "build-tasks":
         result = build_tasks(
             args.config,
             root_override=args.root,
             overwrite=args.overwrite,
+            allow_incomplete=args.allow_incomplete,
+            seed_override=args.seed,
         )
         print(json.dumps(result, indent=2))
         return 0

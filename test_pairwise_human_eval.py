@@ -13,6 +13,7 @@ from tools.pairwise_human_eval import (
     build_tasks,
     compute_winrates,
     import_legacy,
+    serve_annotations,
     validate_inputs,
 )
 
@@ -202,6 +203,38 @@ class PairwiseHumanEvalTest(unittest.TestCase):
             self.assertFalse(root.joinpath("images/model_0/p000/bon_mcts.png").exists())
             self.assertEqual(source_actdiff.read_bytes(), original_digest)
             self.assertTrue(validate_inputs(config)["valid"])
+
+    def test_allow_incomplete_builds_usable_pairs_and_logs_exclusions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = self._fixture(root)
+            (root / "images/model_0/p000/baseline.png").unlink()
+            (root / "images/model_0/p001/actdiff.png").unlink()
+            validation = validate_inputs(config)
+            self.assertFalse(validation["valid"])
+            self.assertEqual(validation["error_count"], 2)
+            with self.assertRaises(RuntimeError):
+                build_tasks(config)
+            report = build_tasks(
+                config,
+                allow_incomplete=True,
+                overwrite=True,
+                seed_override=99,
+            )
+            self.assertFalse(report["valid"])
+            self.assertEqual(report["random_seed"], 99)
+            self.assertEqual(report["task_count"], 596)
+            self.assertEqual(report["excluded_task_count"], 4)
+            self.assertEqual(len(report["exclusions"]), 4)
+
+    def test_serve_explains_how_to_prepare_missing_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = self._fixture(root)
+            with self.assertRaisesRegex(
+                FileNotFoundError, "prepare_pairwise_human_eval.sh"
+            ):
+                serve_annotations(config)
 
 
 if __name__ == "__main__":

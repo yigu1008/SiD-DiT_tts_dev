@@ -1,0 +1,39 @@
+schema_version: "1.0"
+study_root: /data/ygu/human_eval_genai40_v1
+random_seed: 20260729
+annotator_id: annotator_01
+expected_model_count: 5
+expected_prompt_count: 40
+
+models:
+  - id: flux_schnell
+    display_name: Flux-Schnell
+  - id: sid
+    display_name: SiD-SD3.5
+  - id: sd35_base
+    display_name: SD3.5-Base
+  - id: senseflow_large
+    display_name: SenseFlow-SD3.5-Large
+  - id: senseflow_medium
+    display_name: SenseFlow-SD3.5-Medium
+
+method_files:
+  baseline: baseline.png
+  bon: bon.png
+  das: das.png
+  actdiff: actdiff.png
+
+paths:
+  prompts: prompts.csv
+  images: images
+  tasks: tasks/pairwise_tasks.jsonl
+  validation_report: tasks/validation_report.json
+  build_report: tasks/task_build_report.json
+  responses: responses/responses.csv
+  winrates: results/winrates.csv
+  markdown: results/winrates.md
+  legacy_import_report: tasks/legacy_import_report.json
+
+server:
+  host: 127.0.0.1
+  port: 8000

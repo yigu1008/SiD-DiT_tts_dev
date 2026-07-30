@@ -113,13 +113,18 @@ class Hpsv2FixedRewriteBon8RewardSweepTest(unittest.TestCase):
         self.assertIn("score_image(reward_model, prompt, img)", sampler)
         self.assertIn('return [("fixed_rewrite", values[0])]', sampler)
 
-    def test_runner_repairs_only_the_reward_environment_protobuf(self) -> None:
+    def test_runner_repairs_only_the_reward_environment_runtime(self) -> None:
         runner = RUNNER.read_text(encoding="utf-8")
         self.assertIn('REPAIR_REWARD_PROTOBUF="${REPAIR_REWARD_PROTOBUF:-1}"', runner)
         self.assertIn('"${STANDARD_REWARD_PY}" -m pip install', runner)
         self.assertIn('"protobuf==6.31.1"', runner)
         self.assertIn('"click==8.2.1"', runner)
+        self.assertIn('"platformdirs==4.3.8"', runner)
         self.assertIn("from google.protobuf import runtime_version", runner)
+        self.assertLess(
+            runner.index("reward_server._inject_wandb_stub()"),
+            runner.index("import hpsv3"),
+        )
         self.assertNotIn('"${PYTHON_BIN}" -m pip install', runner)
 
 

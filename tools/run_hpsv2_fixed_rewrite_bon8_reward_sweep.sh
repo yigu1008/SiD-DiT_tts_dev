@@ -298,18 +298,28 @@ if [[ ! -x "${STANDARD_REWARD_PY}" ]]; then
 fi
 
 verify_reward_hpsv3_runtime() {
+  PYTHONPATH="${REPO}${PYTHONPATH:+:${PYTHONPATH}}" \
   "${STANDARD_REWARD_PY}" - <<'PY'
 import google.protobuf
 from google.protobuf import runtime_version
 from importlib.metadata import version
 import tensorboard
 import click
+import platformdirs
+
+# Match the real reward-server import path. Importing hpsv3 directly activates
+# the real W&B package and its training-only dependencies, while inference
+# always uses this existing stub.
+import reward_server
+reward_server._inject_wandb_stub()
+reward_server._patch_transformers_generic_layers_for_trl()
 import hpsv3
 print(
     "[reward-preflight] "
     f"protobuf={google.protobuf.__version__} "
     f"tensorboard={tensorboard.__version__} "
-    f"click={version('click')} hpsv3=OK"
+    f"click={version('click')} "
+    f"platformdirs={version('platformdirs')} hpsv3=OK"
 )
 PY
 }
@@ -320,9 +330,9 @@ if ! verify_reward_hpsv3_runtime; then
     echo "Set REPAIR_REWARD_PROTOBUF=1 or repair ${STANDARD_REWARD_PY} manually." >&2
     exit 1
   fi
-  echo "[reward-preflight] repairing protobuf/click in reward env only"
+  echo "[reward-preflight] repairing lightweight HPSv3 runtime in reward env only"
   "${STANDARD_REWARD_PY}" -m pip install --no-cache-dir --upgrade \
-    "protobuf==6.31.1" "click==8.2.1"
+    "protobuf==6.31.1" "click==8.2.1" "platformdirs==4.3.8"
   if ! verify_reward_hpsv3_runtime; then
     echo "Error: HPSv3 still fails after the targeted reward-runtime repair." >&2
     exit 1

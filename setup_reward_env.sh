@@ -82,7 +82,7 @@ echo "[setup_reward_env] Installing hpsv3 runtime deps ..."
     "opencv-python>=4.5.0" "deepspeed>=0.12.0" \
     "qwen-vl-utils>=0.0.8" \
     "matplotlib" "prettytable" "pandas" "pydantic" "requests" \
-    "tensorboard" "packaging" "click==8.2.1"
+    "tensorboard" "packaging" "click==8.2.1" "platformdirs==4.3.8"
 
 echo "[setup_reward_env] Installing ImageReward ..."
 # Use --no-deps to avoid clobbering the transformers==4.45.2 / trl==0.12.2 pin

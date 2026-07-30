@@ -301,12 +301,15 @@ verify_reward_hpsv3_runtime() {
   "${STANDARD_REWARD_PY}" - <<'PY'
 import google.protobuf
 from google.protobuf import runtime_version
+from importlib.metadata import version
 import tensorboard
+import click
 import hpsv3
 print(
     "[reward-preflight] "
     f"protobuf={google.protobuf.__version__} "
-    f"tensorboard={tensorboard.__version__} hpsv3=OK"
+    f"tensorboard={tensorboard.__version__} "
+    f"click={version('click')} hpsv3=OK"
 )
 PY
 }
@@ -317,11 +320,11 @@ if ! verify_reward_hpsv3_runtime; then
     echo "Set REPAIR_REWARD_PROTOBUF=1 or repair ${STANDARD_REWARD_PY} manually." >&2
     exit 1
   fi
-  echo "[reward-preflight] repairing protobuf in reward env only"
+  echo "[reward-preflight] repairing protobuf/click in reward env only"
   "${STANDARD_REWARD_PY}" -m pip install --no-cache-dir --upgrade \
-    "protobuf==6.31.1"
+    "protobuf==6.31.1" "click==8.2.1"
   if ! verify_reward_hpsv3_runtime; then
-    echo "Error: HPSv3 still fails after the targeted protobuf repair." >&2
+    echo "Error: HPSv3 still fails after the targeted reward-runtime repair." >&2
     exit 1
   fi
 fi

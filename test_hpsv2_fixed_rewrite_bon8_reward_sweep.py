@@ -118,6 +118,7 @@ class Hpsv2FixedRewriteBon8RewardSweepTest(unittest.TestCase):
         self.assertIn('REPAIR_REWARD_PROTOBUF="${REPAIR_REWARD_PROTOBUF:-1}"', runner)
         self.assertIn('"${STANDARD_REWARD_PY}" -m pip install', runner)
         self.assertIn('"protobuf==6.31.1"', runner)
+        self.assertIn('"click==8.2.1"', runner)
         self.assertIn("from google.protobuf import runtime_version", runner)
         self.assertNotIn('"${PYTHON_BIN}" -m pip install', runner)
 

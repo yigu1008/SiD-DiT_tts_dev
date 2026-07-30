@@ -86,9 +86,25 @@ def _backend_stats(
 
 def _model_fields(method_dir: Path, root: Path) -> tuple[str, str]:
     relative_parts = set(method_dir.relative_to(root).parts)
+    if "flux_schnell" in relative_parts:
+        return "flux_schnell", "Flux-Schnell"
+    if "senseflow_large" in relative_parts:
+        return "senseflow_large", "SenseFlow-SD3.5-Large"
+    if "sd35_base" in relative_parts:
+        return "sd35_base", "SD3.5-Base"
+    if "sid" in relative_parts:
+        return "sid", "SiD-SD3.5"
     if "multi_step_baseline" in relative_parts:
         return "sd35_base", "SD3.5-Base"
     return "sid", "SiD-SD3.5"
+
+
+def _reward_arm(method_dir: Path, root: Path) -> str:
+    relative_parts = set(method_dir.relative_to(root).parts)
+    for value in ("imagereward", "hpsv3", "multi_reward"):
+        if value in relative_parts:
+            return value
+    return ""
 
 
 def _mean_logged_nfe(method_dir: Path) -> float | None:
@@ -103,6 +119,18 @@ def _mean_logged_nfe(method_dir: Path) -> float | None:
             value = row.get("nfe")
             if isinstance(value, (int, float)) and math.isfinite(float(value)):
                 values.append(float(value))
+    if not values:
+        for summary_path in sorted(method_dir.glob("rank_*/summary.json")):
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, list):
+                continue
+            for prompt_row in payload:
+                for sample in prompt_row.get("samples", []):
+                    value = sample.get("diagnostics", {}).get("nfe_total")
+                    if isinstance(value, (int, float)) and math.isfinite(
+                        float(value)
+                    ):
+                        values.append(float(value))
     return statistics.fmean(values) if values else None
 
 
@@ -168,15 +196,17 @@ def _merge_method(
     stats = _backend_stats(rows, backends)
     method = method_dir.name
     model_id, model_name = _model_fields(method_dir, root)
+    reward_arm = _reward_arm(method_dir, root)
     label = (
         "Multi-step Baseline"
         if model_id == "sd35_base" and method == "baseline"
         else METHOD_LABELS.get(method, method)
     )
     aggregate = {
-        "layout": "sd35",
+        "layout": "flux" if model_id == "flux_schnell" else "sd35",
         "model_id": model_id,
         "model_name": model_name,
+        "reward_arm": reward_arm,
         "method": method,
         "method_label": label,
         "method_out": str(method_dir.resolve()),
@@ -196,6 +226,7 @@ def _merge_method(
     summary: dict[str, Any] = {
         "model_id": model_id,
         "model_name": model_name,
+        "reward_arm": reward_arm,
         "method": method,
         "method_label": label,
         "prompt_count": generation.get("num_samples", len(rows)),
@@ -260,6 +291,7 @@ def main() -> int:
     fields = [
         "model_id",
         "model_name",
+        "reward_arm",
         "method",
         "method_label",
         "prompt_count",

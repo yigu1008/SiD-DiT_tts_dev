@@ -240,7 +240,7 @@ fi
 
 mkdir -p "${OUT_ROOT}"
 chmod -R u+rwX "${OUT_ROOT}" 2>/dev/null || true
-RUN_TS="$(date +%Y%m%d_%H%M%S)"
+RUN_TS="${RUN_TS:-$(date +%Y%m%d_%H%M%S)}"
 RUN_DIR="${OUT_ROOT}/run_${RUN_TS}"
 mkdir -p "${RUN_DIR}"
 SUITE_TSV="${RUN_DIR}/suite_summary.tsv"
@@ -547,7 +547,7 @@ append_method_summary() {
   local method_out="$1"
   local method_name="$2"
   local elapsed_sec="$3"
-  "${PYTHON_BIN}" - <<'PY' "${method_out}" "${method_name}" "${elapsed_sec}" "${SUITE_TSV}" "${EVAL_BACKENDS}"
+  "${PYTHON_BIN}" - <<'PY' "${method_out}" "${method_name}" "${elapsed_sec}" "${SUITE_TSV}" "${EVAL_BACKENDS}" "${REWARD_BACKEND}"
 import csv
 import glob
 import json
@@ -561,6 +561,7 @@ method = sys.argv[2]
 elapsed = int(sys.argv[3])
 suite_tsv = sys.argv[4]
 eval_backends = [x for x in str(sys.argv[5]).split() if x]
+search_reward = sys.argv[6] if len(sys.argv) > 6 else ""
 
 baseline = []
 search = []
@@ -598,6 +599,7 @@ mean_delta = float(statistics.fmean(deltas))
 
 aggregate = {
     "method": method,
+    "search_reward": search_reward,
     "elapsed_sec": elapsed,
     "num_samples": len(baseline),
     "mean_baseline_score": mean_baseline,
@@ -957,6 +959,22 @@ for method in ${METHODS}; do
       run_flux_sharded "bon" "bon" \
         --bon_n "${BON_N}" \
         --bon_action_diverse "${BON_ACTION_DIVERSE:-0}"
+      ;;
+    bon_fixed_rewrite)
+      # Fixed-rewrite BoN control. The cache contains exactly one rewrite per
+      # c0; all BON_N roots use that rewrite and canonical guidance throughout
+      # the trajectory. Terminal candidates are still scored against c0.
+      if [[ ! -s "${REWRITES_FILE:-}" ]]; then
+        echo "Error: bon_fixed_rewrite requires a non-empty one-rewrite cache: ${REWRITES_FILE:-<unset>}" >&2
+        exit 1
+      fi
+      run_flux_sharded "bon_fixed_rewrite" "bon" \
+        --bon_n "${BON_N}" \
+        --bon_action_diverse 0 \
+        --n_variants 1 \
+        --cfg_scales "${BASELINE_GUIDANCE_SCALE}" \
+        --rewrites_file "${REWRITES_FILE}" \
+        --fixed_rewrite_only
       ;;
     bon_actdiff_cfg)
       # FLUX BoN over CFG action bank (no rewrites).

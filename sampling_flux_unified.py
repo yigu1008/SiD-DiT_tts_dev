@@ -177,6 +177,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--n_variants", type=int, default=-1, help="Prompt variants to keep from the bank; <=0 keeps all.")
     p.add_argument(
+        "--rewrites_file",
+        default=None,
+        help="Optional JSON mapping from original prompts to prompt rewrites.",
+    )
+    p.add_argument(
+        "--fixed_rewrite_only",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use exactly one cached rewrite as variant 0, excluding c0 and the "
+            "built-in FLUX prompt bank. Intended for the fixed-rewrite BoN control."
+        ),
+    )
+    p.add_argument(
         "--cfg_scales",
         nargs="+",
         type=float,
@@ -804,6 +818,45 @@ def select_prompt_bank(prompt: str, n_variants: int) -> list[tuple[str, str]]:
         return bank
     keep = max(1, min(int(n_variants), len(bank)))
     return bank[:keep]
+
+
+def load_rewrites_cache(rewrites_file: str | None) -> dict[str, list[str]]:
+    if not rewrites_file:
+        return {}
+    path = os.path.expanduser(rewrites_file)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"rewrites cache not found: {path}")
+    with open(path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise ValueError(f"rewrites cache must be a JSON object: {path}")
+    cache: dict[str, list[str]] = {}
+    for prompt, values in payload.items():
+        if not isinstance(values, list):
+            raise ValueError(f"rewrites cache entry must be a list: {prompt!r}")
+        cache[str(prompt)] = [str(value).strip() for value in values if str(value).strip()]
+    return cache
+
+
+def select_prompt_bank_with_rewrites(
+    prompt: str,
+    n_variants: int,
+    rewrites_cache: dict[str, list[str]],
+    fixed_rewrite_only: bool,
+) -> list[tuple[str, str]]:
+    if not fixed_rewrite_only:
+        return select_prompt_bank(prompt, n_variants)
+    values = [
+        value
+        for value in rewrites_cache.get(prompt, [])
+        if value and value != prompt
+    ]
+    if len(values) != 1:
+        raise ValueError(
+            "fixed-rewrite mode requires exactly one cached rewrite distinct "
+            f"from c0; prompt={prompt!r} found={len(values)}"
+        )
+    return [("fixed_rewrite", values[0])]
 
 
 def guidance_bank_for_search(args: argparse.Namespace) -> list[float]:
@@ -1530,6 +1583,7 @@ def run_bon(
             "guidance": baseline_guidance,
             "action_diverse": int(action_diverse),
             "n_unique_actions": len(set(action_tuples)) if action_diverse else 1,
+            "nfe_total": int(n * int(args.steps)),
         },
     )
 
@@ -2902,8 +2956,11 @@ def run(args: argparse.Namespace) -> None:
     os.makedirs(args.out_dir, exist_ok=True)
     prompts = load_prompts(args)
     seed_map = load_seed_map(args.seed_map_file)
+    rewrites_cache = load_rewrites_cache(args.rewrites_file)
     if not prompts:
         raise RuntimeError("No prompts loaded.")
+    if args.fixed_rewrite_only and not args.rewrites_file:
+        raise RuntimeError("--fixed_rewrite_only requires --rewrites_file")
 
     device = pick_device(args)
     dtype = resolve_dtype(args.dtype)
@@ -2932,7 +2989,12 @@ def run(args: argparse.Namespace) -> None:
         save_entry_artifacts = args.save_first_k < 0 or local_p_idx < int(args.save_first_k)
         print(f"\n{'=' * 72}\n[{slug}] {prompt}\n{'=' * 72}")
 
-        prompt_bank = select_prompt_bank(prompt, int(args.n_variants))
+        prompt_bank = select_prompt_bank_with_rewrites(
+            prompt,
+            int(args.n_variants),
+            rewrites_cache,
+            bool(args.fixed_rewrite_only),
+        )
         embeds = encode_prompt_bank(args, ctx, prompt_bank)
         if save_entry_artifacts:
             with open(os.path.join(args.out_dir, f"{slug}_variants.txt"), "w", encoding="utf-8") as f:

@@ -44,6 +44,7 @@ REWARD_SERVER_BASE_PORT="${REWARD_SERVER_BASE_PORT:-5200}"
 POSTHOC_REWARD_SERVER_PORT="${POSTHOC_REWARD_SERVER_PORT:-5290}"
 REWARD_SERVER_MAX_WAIT="${REWARD_SERVER_MAX_WAIT:-1800}"
 HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-1800}"
+REPAIR_REWARD_PROTOBUF="${REPAIR_REWARD_PROTOBUF:-1}"
 
 POST_EVAL_ONLY="${POST_EVAL_ONLY:-0}"
 SKIP_POST_EVAL="${SKIP_POST_EVAL:-0}"
@@ -67,7 +68,7 @@ if [[ ! -f "${QWEN_SYSTEM_PROMPT_FILE}" ]]; then
   exit 1
 fi
 for value in "${POST_EVAL_ONLY}" "${SKIP_POST_EVAL}" "${DRY_RUN}" \
-  "${REWRITES_OVERWRITE}" "${FAIL_FAST}"; do
+  "${REWRITES_OVERWRITE}" "${FAIL_FAST}" "${REPAIR_REWARD_PROTOBUF}"; do
   case "${value}" in 0|1) ;; *)
     echo "Error: boolean controls must be 0 or 1; got ${value}" >&2
     exit 1
@@ -294,6 +295,35 @@ STANDARD_REWARD_PY="${REWARD_ENV_CONDA_BASE}/envs/${STANDARD_REWARD_ENV_NAME}/bi
 if [[ ! -x "${STANDARD_REWARD_PY}" ]]; then
   echo "Error: standard reward Python is not executable: ${STANDARD_REWARD_PY}" >&2
   exit 1
+fi
+
+verify_reward_hpsv3_runtime() {
+  "${STANDARD_REWARD_PY}" - <<'PY'
+import google.protobuf
+from google.protobuf import runtime_version
+import tensorboard
+import hpsv3
+print(
+    "[reward-preflight] "
+    f"protobuf={google.protobuf.__version__} "
+    f"tensorboard={tensorboard.__version__} hpsv3=OK"
+)
+PY
+}
+
+if ! verify_reward_hpsv3_runtime; then
+  if [[ "${REPAIR_REWARD_PROTOBUF}" != "1" ]]; then
+    echo "Error: reward environment failed the HPSv3/protobuf preflight." >&2
+    echo "Set REPAIR_REWARD_PROTOBUF=1 or repair ${STANDARD_REWARD_PY} manually." >&2
+    exit 1
+  fi
+  echo "[reward-preflight] repairing protobuf in reward env only"
+  "${STANDARD_REWARD_PY}" -m pip install --no-cache-dir --upgrade \
+    "protobuf==6.31.1"
+  if ! verify_reward_hpsv3_runtime; then
+    echo "Error: HPSv3 still fails after the targeted protobuf repair." >&2
+    exit 1
+  fi
 fi
 
 validate_rewrite_cache() {

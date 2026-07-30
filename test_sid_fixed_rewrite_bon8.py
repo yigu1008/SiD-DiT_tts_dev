@@ -61,6 +61,10 @@ class FixedRewriteBon8Test(unittest.TestCase):
             self.assertEqual(manifest["fixed_cfg"], 1.0)
             self.assertEqual(manifest["prompt_count"], 2)
             self.assertEqual(manifest["seed_source"], str(seed_map.resolve()))
+            self.assertEqual(
+                manifest["fixed_rewrite_cache"],
+                str((study / "dry" / "fixed_rewrite_cache.json").resolve()),
+            )
             self.assertIn("original c0", manifest["reward_prompt_invariant"])
             written_seeds = json.loads(
                 (study / "dry" / "root_seed_map.json").read_text(encoding="utf-8")

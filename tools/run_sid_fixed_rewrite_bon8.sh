@@ -99,8 +99,8 @@ mkdir -p "${RUN_ROOT}"
 PROMPTS_TXT="${RUN_ROOT}/prompts.txt"
 PROMPTS_SNAPSHOT="${RUN_ROOT}/prompts.csv"
 SEED_MAP_FILE="${RUN_ROOT}/root_seed_map.json"
-RAW_REWRITES_FILE="${RUN_ROOT}/rewrite_cache_with_c0.json"
-REWRITES_FILE="${RUN_ROOT}/fixed_rewrite_cache.json"
+RAW_REWRITES_FILE="${RAW_REWRITES_FILE:-${RUN_ROOT}/rewrite_cache_with_c0.json}"
+REWRITES_FILE="${REWRITES_FILE:-${RUN_ROOT}/fixed_rewrite_cache.json}"
 STUDY_MANIFEST="${RUN_ROOT}/study_manifest.json"
 
 # If a matching algorithm-sweep map exists for this RUN_ID, use it
@@ -118,6 +118,7 @@ PROMPTS_SNAPSHOT="${PROMPTS_SNAPSHOT}" \
 SEED_MAP_FILE="${SEED_MAP_FILE}" \
 SOURCE_SEED_MAP_FILE="${SOURCE_SEED_MAP_FILE}" \
 STUDY_MANIFEST="${STUDY_MANIFEST}" \
+REWRITES_FILE="${REWRITES_FILE}" \
 QWEN_SYSTEM_PROMPT_FILE="${QWEN_SYSTEM_PROMPT_FILE}" \
 QWEN_ID="${QWEN_ID}" \
 RUN_ID="${RUN_ID}" \
@@ -235,6 +236,9 @@ manifest = {
     "steps_per_candidate": 4,
     "fixed_cfg": float(os.environ["BASELINE_CFG"]),
     "rewrite_count_per_prompt": 1,
+    "fixed_rewrite_cache": str(
+        Path(os.environ["REWRITES_FILE"]).expanduser().resolve()
+    ),
     "prompt_rewriter": {
         "model": os.environ["QWEN_ID"],
         "system_prompt_file": str(system_path),

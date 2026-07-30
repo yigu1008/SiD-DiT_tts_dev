@@ -982,6 +982,21 @@ run_method() {
         exit 1
       fi
       ;;
+    bon_fixed_rewrite)
+      # Fixed-rewrite BoN control: the cache contains exactly one rewrite per
+      # c0. Every BoN particle uses that same rewrite for every denoising step;
+      # only the candidate root seed changes. Selection is still scored against
+      # the original prompt passed to the runner.
+      mode_arg="bon"
+      BON_ACTION_DIVERSE=0
+      N_VARIANTS=1
+      CFG_SCALES="${BASELINE_CFG}"
+      CORRECTION_STRENGTHS="0.0"
+      if [[ ! -s "${REWRITES_FILE}" ]]; then
+        echo "Error: bon_fixed_rewrite requires a non-empty one-rewrite cache: ${REWRITES_FILE}" >&2
+        exit 1
+      fi
+      ;;
     bon_actdiff)
       # Best-of-N over the structured ActDiff action bank
       # (variant × cfg × correction).  Same N, richer candidate diversity.

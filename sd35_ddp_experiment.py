@@ -643,7 +643,11 @@ def main() -> None:
                 slug = f"p{prompt_index:05d}"
                 variants = generate_variants(args, prompt, rewrite_cache)
                 if len(rewrite_rows) < max(0, int(args.rewrite_check_topk)):
-                    changed = [v for v in variants[1:] if str(v).strip() != str(prompt).strip()]
+                    changed = [
+                        v
+                        for v in variants
+                        if str(v).strip() != str(prompt).strip()
+                    ]
                     rewrite_rows.append({
                         "rank": int(rank), "prompt_index": int(prompt_index), "slug": slug,
                         "original": prompt, "variants": [str(v) for v in variants],

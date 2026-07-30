@@ -23,6 +23,10 @@ REWRITE_SYSTEM = (
     "or add/remove one small detail. "
     "Output ONLY the rewritten prompt, no explanation, no quotes."
 )
+_system_env = os.environ.get("REWRITE_SYSTEM_OVERRIDE", "").strip()
+if _system_env:
+    REWRITE_SYSTEM = _system_env
+    print("[rewrites] using REWRITE_SYSTEM_OVERRIDE", flush=True)
 
 REWRITE_STYLES = [
     "Adjust the lighting or time of day slightly.",

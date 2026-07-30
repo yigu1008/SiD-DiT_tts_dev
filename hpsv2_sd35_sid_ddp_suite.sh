@@ -1312,6 +1312,9 @@ run_method() {
   if [[ -f "${REWRITES_FILE}" ]]; then
     extra+=(--rewrites_file "${REWRITES_FILE}")
   fi
+  if [[ "${method}" == "bon_fixed_rewrite" ]]; then
+    extra+=(--fixed_rewrite_only)
+  fi
   if [[ "${MCTS_FRESH_NOISE_KEY_STEPS}" == "1" ]]; then
     extra+=(--mcts_fresh_noise_key_steps)
   fi

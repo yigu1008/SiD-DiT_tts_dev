@@ -113,6 +113,17 @@ class Hpsv2FixedRewriteBon8RewardSweepTest(unittest.TestCase):
         self.assertIn("score_image(reward_model, prompt, img)", sampler)
         self.assertIn('return [("fixed_rewrite", values[0])]', sampler)
 
+        sd_sampler = (REPO / "sampling_unified_sd35.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("--fixed_rewrite_only", sd_sampler)
+        self.assertIn("if len(values) != 1:", sd_sampler)
+        self.assertIn("return [values[0]]", sd_sampler)
+        sd_suite = (REPO / "hpsv2_sd35_sid_ddp_suite.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('extra+=(--fixed_rewrite_only)', sd_suite)
+
     def test_runner_repairs_only_the_reward_environment_runtime(self) -> None:
         runner = RUNNER.read_text(encoding="utf-8")
         self.assertIn('REPAIR_REWARD_PROTOBUF="${REPAIR_REWARD_PROTOBUF:-1}"', runner)
@@ -126,6 +137,12 @@ class Hpsv2FixedRewriteBon8RewardSweepTest(unittest.TestCase):
             runner.index("import hpsv3"),
         )
         self.assertNotIn('"${PYTHON_BIN}" -m pip install', runner)
+
+    def test_runner_audits_one_effective_prompt_per_c0(self) -> None:
+        runner = RUNNER.read_text(encoding="utf-8")
+        self.assertIn("audit_effective_prompt_bank()", runner)
+        self.assertIn("expected_one_effective_prompt", runner)
+        self.assertIn("the same rewrite is reused at every denoising step", runner)
 
 
 if __name__ == "__main__":

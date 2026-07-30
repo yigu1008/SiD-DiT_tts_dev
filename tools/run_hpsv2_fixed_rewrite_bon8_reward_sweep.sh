@@ -374,6 +374,70 @@ print(f"[sweep] rewrite invariant OK: {len(prompts)} prompts x 1 rewrite")
 PY
 }
 
+audit_effective_prompt_bank() {
+  local method_out="$1"
+  REWRITES_FILE="${REWRITES_FILE}" \
+  PROMPTS_TXT="${PROMPTS_TXT}" \
+  METHOD_OUT="${method_out}" \
+  "${PYTHON_BIN}" - <<'PY'
+import json
+import os
+import re
+from pathlib import Path
+
+method_out = Path(os.environ["METHOD_OUT"])
+prompts = [
+    line.strip()
+    for line in Path(os.environ["PROMPTS_TXT"]).read_text(encoding="utf-8").splitlines()
+    if line.strip()
+]
+cache = json.loads(Path(os.environ["REWRITES_FILE"]).read_text(encoding="utf-8"))
+files = sorted(method_out.glob("rank_*/p*_variants.txt"))
+if len(files) != len(prompts):
+    raise SystemExit(
+        f"{method_out}: found {len(files)} effective prompt-bank files; "
+        f"expected {len(prompts)}"
+    )
+seen = set()
+bad = []
+for path in files:
+    match = re.fullmatch(r"p(\d+)_variants\.txt", path.name)
+    if match is None:
+        bad.append({"file": str(path), "reason": "unrecognized_name"})
+        continue
+    index = int(match.group(1))
+    if index >= len(prompts) or index in seen:
+        bad.append({"file": str(path), "reason": "bad_or_duplicate_index"})
+        continue
+    seen.add(index)
+    lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(lines) != 1 or ":" not in lines[0]:
+        bad.append(
+            {"file": str(path), "reason": "expected_one_effective_prompt", "lines": len(lines)}
+        )
+        continue
+    effective = lines[0].split(":", 1)[1].strip()
+    expected = str(cache[prompts[index]][0]).strip()
+    if effective != expected:
+        bad.append(
+            {"file": str(path), "reason": "cache_mismatch", "index": index}
+        )
+if len(seen) != len(prompts):
+    bad.append(
+        {"reason": "prompt_index_coverage", "seen": len(seen), "expected": len(prompts)}
+    )
+if bad:
+    raise SystemExit(
+        f"{method_out}: effective prompt-bank audit failed; "
+        f"bad={len(bad)} examples={bad[:3]}"
+    )
+print(
+    f"[sweep] effective prompt-bank OK: {len(files)} prompts x 1 rewrite; "
+    "the same rewrite is reused at every denoising step"
+)
+PY
+}
+
 if [[ "${POST_EVAL_ONLY}" != "1" ]]; then
   if [[ "${REWRITES_OVERWRITE}" == "1" ]]; then
     rm -f "${RAW_REWRITES_FILE}" "${REWRITES_FILE}"
@@ -484,6 +548,7 @@ for backend in ${BACKENDS}; do
     fi
     if [[ -s "${method_out}/aggregate_ddp.json" ]]; then
       echo "[resume] complete: ${backend}/${arm}"
+      audit_effective_prompt_bank "${method_out}"
       continue
     fi
 
@@ -542,6 +607,7 @@ for backend in ${BACKENDS}; do
     fi
 
     if env "${common_env[@]}" bash "${suite}"; then
+      audit_effective_prompt_bank "${method_out}"
       echo "[sweep] OK ${backend}/${arm}"
     else
       rc=$?

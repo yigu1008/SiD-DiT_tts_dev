@@ -108,6 +108,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--qwen_dtype", choices=["float16", "bfloat16"], default="bfloat16")
     parser.add_argument("--qwen_timeout_sec", type=float, default=240.0)
     parser.add_argument("--rewrites_file", default=None)
+    parser.add_argument(
+        "--fixed_rewrite_only",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use exactly one cached rewrite as the complete prompt bank, "
+            "excluding c0 and all generated/built-in variants."
+        ),
+    )
 
     parser.add_argument("--steps", type=int, default=4)
     parser.add_argument(
@@ -925,6 +934,23 @@ def _generate_legacy_variants(args: argparse.Namespace, prompt: str) -> list[str
 
 def generate_variants(args: argparse.Namespace, prompt: str, cache: dict[str, Any]) -> list[str]:
     entry = cache.get(prompt)
+    if bool(getattr(args, "fixed_rewrite_only", False)):
+        raw_values: list[Any] = []
+        if isinstance(entry, list):
+            raw_values = list(entry)
+        elif isinstance(entry, dict) and isinstance(entry.get("variants"), list):
+            raw_values = list(entry["variants"])
+        values: list[str] = []
+        for value in raw_values:
+            text = sanitize_rewrite_text(value, prompt)
+            if text != prompt and text not in values:
+                values.append(text)
+        if len(values) != 1:
+            raise ValueError(
+                "fixed-rewrite mode requires exactly one cached rewrite "
+                f"distinct from c0; prompt={prompt!r} found={len(values)}"
+            )
+        return [values[0]]
     if entry is not None:
         from_cache = _read_legacy_cache_entry(entry, prompt, _legacy_target_size(args))
         if from_cache is not None:

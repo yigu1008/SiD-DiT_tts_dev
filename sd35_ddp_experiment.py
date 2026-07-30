@@ -96,6 +96,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qwen_dtype", default="bfloat16", choices=["float16", "bfloat16"])
     parser.add_argument("--qwen_timeout_sec", type=float, default=240.0)
     parser.add_argument("--rewrites_file", default=None)
+    parser.add_argument(
+        "--fixed_rewrite_only",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Require exactly one cached rewrite as the complete prompt bank.",
+    )
     parser.add_argument("--max_sequence_length", type=int, default=256)
 
     parser.add_argument("--n_sims", type=int, default=50)

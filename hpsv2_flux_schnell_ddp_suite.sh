@@ -36,6 +36,7 @@ REWARD_MODEL="${REWARD_MODEL:-CodeGoat24/UnifiedReward-qwen-7b}"
 UNIFIEDREWARD_MODEL="${UNIFIEDREWARD_MODEL:-${REWARD_MODEL}}"
 IMAGE_REWARD_MODEL="${IMAGE_REWARD_MODEL:-ImageReward-v1.0}"
 PICKSCORE_MODEL="${PICKSCORE_MODEL:-yuvalkirstain/PickScore_v1}"
+VQASCORE_MODEL="${VQASCORE_MODEL:-clip-flant5-xxl}"
 REWARD_WEIGHTS="${REWARD_WEIGHTS:-1.0 1.0}"
 REWARD_API_BASE="${REWARD_API_BASE:-}"
 REWARD_API_KEY="${REWARD_API_KEY:-unifiedreward}"
@@ -106,6 +107,7 @@ start_reward_server() {
     --backends ${REWARD_SERVER_BACKENDS} \
     --image_reward_model "${IMAGE_REWARD_MODEL}" \
     --pickscore_model "${PICKSCORE_MODEL}" \
+    --vqascore_model "${VQASCORE_MODEL}" \
     "${reward_server_strict_extra[@]}" \
     &>"${RUN_DIR}/reward_server.log" &
   REWARD_SERVER_PID="$!"
@@ -744,6 +746,7 @@ PY
       --unifiedreward_model "${UNIFIEDREWARD_MODEL}" \
       --image_reward_model "${IMAGE_REWARD_MODEL}" \
       --pickscore_model "${PICKSCORE_MODEL}" \
+      --vqascore_model "${VQASCORE_MODEL}" \
       --reward_weights ${REWARD_WEIGHTS} \
       --reward_api_key "${REWARD_API_KEY}" \
       --reward_api_model "${REWARD_API_MODEL}" \

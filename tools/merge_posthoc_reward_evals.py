@@ -90,6 +90,8 @@ def _model_fields(method_dir: Path, root: Path) -> tuple[str, str]:
         return "flux_schnell", "Flux-Schnell"
     if "senseflow_large" in relative_parts:
         return "senseflow_large", "SenseFlow-SD3.5-Large"
+    if "senseflow_medium" in relative_parts:
+        return "senseflow_medium", "SenseFlow-SD3.5-Medium"
     if "sd35_base" in relative_parts:
         return "sd35_base", "SD3.5-Base"
     if "sid" in relative_parts:

@@ -30,6 +30,7 @@ paths:
   validation_report: tasks/validation_report.json
   build_report: tasks/task_build_report.json
   responses: responses/responses.csv
+  evaluators: responses/evaluators.csv
   winrates: results/winrates.csv
   markdown: results/winrates.md
   legacy_import_report: tasks/legacy_import_report.json
@@ -37,3 +38,5 @@ paths:
 server:
   host: 127.0.0.1
   port: 8000
+  round_size: 30
+  round_number: 1

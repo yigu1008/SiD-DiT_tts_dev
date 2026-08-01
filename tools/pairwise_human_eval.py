@@ -15,6 +15,7 @@ import json
 import mimetypes
 import os
 import random
+import re
 import shutil
 import threading
 from collections import defaultdict
@@ -32,6 +33,13 @@ METHODS = ("baseline", "bon", "das", "actdiff")
 COMPETITORS = ("baseline", "bon", "das")
 CHOICES = ("left", "right", "tie", "skip")
 RESPONSE_FIELDS = ("annotator_id", "task_id", "choice", "timestamp")
+EVALUATOR_FIELDS = (
+    "annotator_id",
+    "created_at",
+    "registration_source",
+    "round_size",
+    "task_count",
+)
 RESULT_FIELDS = (
     "model",
     "comparison",
@@ -176,6 +184,7 @@ def _settings(
         ),
         "build_report": resolve("build_report", "tasks/task_build_report.json"),
         "responses": resolve("responses", "responses/responses.csv"),
+        "evaluators": resolve("evaluators", "responses/evaluators.csv"),
         "winrates": resolve("winrates", "results/winrates.csv"),
         "markdown": resolve("markdown", "results/winrates.md"),
         "legacy_import_report": resolve(
@@ -183,6 +192,79 @@ def _settings(
         ),
     }
     return config, resolved
+
+
+def _known_annotators(paths: dict[str, Path]) -> set[str]:
+    known: set[str] = set()
+    for key in ("evaluators", "responses"):
+        path = paths[key]
+        if not path.is_file():
+            continue
+        for row in _read_csv(path):
+            value = str(row.get("annotator_id", "")).strip()
+            if value:
+                known.add(value)
+    return known
+
+
+def _register_annotator(
+    paths: dict[str, Path],
+    annotator_id: str,
+    *,
+    source: str,
+    round_size: int | None,
+    task_count: int,
+) -> bool:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", annotator_id):
+        raise ValueError(
+            "annotator ID may contain only letters, numbers, '.', '_', and '-'"
+        )
+    registry = paths["evaluators"]
+    rows = _read_csv(registry) if registry.is_file() else []
+    if any(str(row.get("annotator_id", "")) == annotator_id for row in rows):
+        return False
+    rows.append(
+        {
+            "annotator_id": annotator_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "registration_source": source,
+            "round_size": "" if round_size is None else round_size,
+            "task_count": task_count,
+        }
+    )
+    _write_csv(registry, rows, EVALUATOR_FIELDS)
+    return True
+
+
+def _select_annotator(
+    config: dict[str, Any],
+    paths: dict[str, Path],
+    *,
+    annotator_override: str | None,
+    new_annotator: bool,
+) -> tuple[str, str]:
+    known = _known_annotators(paths)
+    if new_annotator:
+        used_numbers = {
+            int(match.group(1))
+            for value in known
+            if (match := re.fullmatch(r"annotator_(\d+)", value))
+        }
+        number = 1
+        while number in used_numbers:
+            number += 1
+        annotator = f"annotator_{number:02d}"
+        source = "auto"
+    else:
+        annotator = str(
+            annotator_override
+            if annotator_override is not None
+            else config.get("annotator_id", "")
+        ).strip()
+        source = "explicit" if annotator_override is not None else "config"
+    if not annotator:
+        raise ValueError("config annotator_id must be nonempty or use --new-annotator")
+    return annotator, source
 
 
 def _prompts(path: Path, expected_count: int) -> list[dict[str, str]]:
@@ -649,7 +731,22 @@ async function loadTask() {
   disabled(true);
   const response = await fetch("/api/task");
   const data = await response.json();
-  document.getElementById("progress").textContent = `${data.completed} / ${data.total}`;
+  const roundLabel = data.round_size
+    ? `Round ${data.round_number}: ${data.completed} / ${data.total}`
+    : `${data.completed} / ${data.total}`;
+  const overallLabel = data.overall_total
+    ? ` · Overall: ${data.overall_completed} / ${data.overall_total}`
+    : "";
+  document.getElementById("progress").textContent = roundLabel + overallLabel;
+  if (data.round_complete && !data.done) {
+    currentTask = null;
+    document.getElementById("prompt").textContent = `Round ${data.round_number} is complete.`;
+    document.getElementById("left").removeAttribute("src");
+    document.getElementById("right").removeAttribute("src");
+    document.getElementById("status").textContent =
+      `All ${data.total} responses in this round have been saved. Start the server with --round ${data.round_number + 1} for the next round.`;
+    return;
+  }
   if (data.done) {
     currentTask = null;
     document.getElementById("prompt").textContent = "All tasks are complete.";
@@ -693,28 +790,72 @@ loadTask().catch(error => document.getElementById("status").textContent = error)
 
 
 class AnnotationStore:
-    def __init__(self, tasks: list[dict[str, Any]], responses: Path, annotator: str):
-        self.tasks = tasks
-        self.by_id = {str(task["task_id"]): task for task in tasks}
-        if len(self.by_id) != len(tasks):
+    def __init__(
+        self,
+        tasks: list[dict[str, Any]],
+        responses: Path,
+        annotator: str,
+        *,
+        round_size: int | None = None,
+        round_number: int = 1,
+    ):
+        self.all_tasks = tasks
+        all_by_id = {str(task["task_id"]): task for task in tasks}
+        if len(all_by_id) != len(tasks):
             raise ValueError("task file contains duplicate task IDs")
+        if round_number < 1:
+            raise ValueError("round number must be at least 1")
+        if round_size is not None and round_size < 1:
+            raise ValueError("round size must be at least 1")
+        self.round_size = round_size
+        self.round_number = round_number
+        if round_size is None:
+            if round_number != 1:
+                raise ValueError("--round requires a positive --round-size")
+            self.tasks = tasks
+        else:
+            start = (round_number - 1) * round_size
+            if start >= len(tasks):
+                total_rounds = (len(tasks) + round_size - 1) // round_size
+                raise ValueError(
+                    f"round {round_number} is outside this task set; "
+                    f"valid rounds are 1..{total_rounds}"
+                )
+            self.tasks = tasks[start : start + round_size]
+        self.by_id = {str(task["task_id"]): task for task in self.tasks}
         self.responses = responses
         self.annotator = annotator
         self.lock = threading.Lock()
-        self.completed = self._completed()
+        self.all_completed = self._completed(set(all_by_id))
+        self.completed = self.all_completed & set(self.by_id)
         self.image_paths: dict[str, Path] = {}
-        for task in tasks:
+        for task in self.tasks:
             self.image_paths[str(task["left_image"])] = Path(task["left_image_path"])
             self.image_paths[str(task["right_image"])] = Path(task["right_image_path"])
 
-    def _completed(self) -> set[str]:
+    def _completed(self, known_task_ids: set[str]) -> set[str]:
         completed: set[str] = set()
         if not self.responses.is_file():
             return completed
         for row in _read_csv(self.responses):
-            if row.get("annotator_id") == self.annotator and row.get("choice") in CHOICES:
-                completed.add(str(row.get("task_id", "")))
+            task_id = str(row.get("task_id", ""))
+            if (
+                row.get("annotator_id") == self.annotator
+                and row.get("choice") in CHOICES
+                and task_id in known_task_ids
+            ):
+                completed.add(task_id)
         return completed
+
+    def _progress(self) -> dict[str, Any]:
+        return {
+            "completed": len(self.completed),
+            "total": len(self.tasks),
+            "round_size": self.round_size,
+            "round_number": self.round_number,
+            "overall_completed": len(self.all_completed),
+            "overall_total": len(self.all_tasks),
+        }
 
     def next_task(self) -> dict[str, Any]:
         with self.lock:
@@ -722,17 +863,17 @@ class AnnotationStore:
                 if task["task_id"] not in self.completed:
                     return {
                         "done": False,
-                        "completed": len(self.completed),
-                        "total": len(self.tasks),
+                        "round_complete": False,
+                        **self._progress(),
                         "task_id": task["task_id"],
                         "prompt": task["prompt"],
                         "left_image": f"/image/{task['left_image']}",
                         "right_image": f"/image/{task['right_image']}",
                     }
             return {
-                "done": True,
-                "completed": len(self.completed),
-                "total": len(self.tasks),
+                "done": len(self.all_completed) == len(self.all_tasks),
+                "round_complete": True,
+                **self._progress(),
             }
 
     def record(self, task_id: str, choice: str) -> None:
@@ -741,6 +882,8 @@ class AnnotationStore:
         if choice not in CHOICES:
             raise ValueError("choice must be left, right, tie, or skip")
         with self.lock:
+            if task_id in self.completed:
+                return
             self.responses.parent.mkdir(parents=True, exist_ok=True)
             new_file = not self.responses.exists()
             with self.responses.open("a", newline="", encoding="utf-8") as handle:
@@ -760,6 +903,7 @@ class AnnotationStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             self.completed.add(task_id)
+            self.all_completed.add(task_id)
 
 
 def serve_annotations(
@@ -768,6 +912,10 @@ def serve_annotations(
     root_override: Path | None = None,
     host_override: str | None = None,
     port_override: int | None = None,
+    round_size_override: int | None = None,
+    round_number_override: int | None = None,
+    annotator_override: str | None = None,
+    new_annotator: bool = False,
 ) -> None:
     config, paths = _settings(config_path, root_override)
     if not paths["tasks"].is_file():
@@ -778,10 +926,31 @@ def serve_annotations(
             "bash tools/prepare_pairwise_human_eval.sh --allow-incomplete"
         )
     tasks = _read_jsonl(paths["tasks"])
-    annotator = str(config.get("annotator_id", "")).strip()
-    if not annotator:
-        raise ValueError("config annotator_id must be nonempty")
-    store = AnnotationStore(tasks, paths["responses"], annotator)
+    server_config = config.get("server") or {}
+    configured_round_size = server_config.get("round_size")
+    round_size = (
+        round_size_override
+        if round_size_override is not None
+        else int(configured_round_size) if configured_round_size is not None else None
+    )
+    round_number = (
+        round_number_override
+        if round_number_override is not None
+        else int(server_config.get("round_number", 1))
+    )
+    annotator, registration_source = _select_annotator(
+        config,
+        paths,
+        annotator_override=annotator_override,
+        new_annotator=new_annotator,
+    )
+    store = AnnotationStore(
+        tasks,
+        paths["responses"],
+        annotator,
+        round_size=round_size,
+        round_number=round_number,
+    )
 
     class Handler(BaseHTTPRequestHandler):
         def _json(self, value: Any, status: int = 200) -> None:
@@ -840,13 +1009,34 @@ def serve_annotations(
         def log_message(self, format: str, *args: Any) -> None:
             print(f"[human-eval] {self.address_string()} {format % args}")
 
-    server_config = config.get("server") or {}
     host = host_override or str(server_config.get("host", "127.0.0.1"))
     port = port_override or int(server_config.get("port", 8000))
-    print(f"Serving blinded pairwise evaluation at http://{host}:{port}")
-    print(f"Annotator: {annotator}")
-    print(f"Responses: {paths['responses']}")
-    ThreadingHTTPServer((host, port), Handler).serve_forever()
+    httpd = ThreadingHTTPServer((host, port), Handler)
+    try:
+        evaluator_created = _register_annotator(
+            paths,
+            annotator,
+            source=registration_source,
+            round_size=round_size,
+            task_count=len(tasks),
+        )
+        print(f"Serving blinded pairwise evaluation at http://{host}:{port}")
+        registration = "newly registered" if evaluator_created else "resuming"
+        print(f"Annotator: {annotator} ({registration})")
+        if round_size is not None:
+            total_rounds = (len(tasks) + round_size - 1) // round_size
+            print(
+                f"Round: {round_number}/{total_rounds} "
+                f"({len(store.tasks)} tasks; limit={round_size})"
+            )
+        print(f"Responses: {paths['responses']}")
+        print(f"Evaluator registry: {paths['evaluators']}")
+        print(f"Resume with: --annotator-id {annotator} --round {round_number}")
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\n[human-eval] server stopped")
+    finally:
+        httpd.server_close()
 
 
 def _metric(rows: list[tuple[str, str]]) -> dict[str, Any]:
@@ -868,6 +1058,7 @@ def compute_winrates(
     config_path: Path,
     *,
     root_override: Path | None = None,
+    annotator_override: str | None = None,
 ) -> dict[str, Any]:
     config, paths = _settings(config_path, root_override)
     models = _models(config)
@@ -875,7 +1066,24 @@ def compute_winrates(
     task_by_id = {str(task["task_id"]): task for task in tasks}
     if not paths["responses"].is_file():
         raise FileNotFoundError(f"responses not found: {paths['responses']}")
-    annotator = str(config.get("annotator_id", "")).strip()
+    annotator = str(
+        annotator_override
+        if annotator_override is not None
+        else config.get("annotator_id", "")
+    ).strip()
+    if not annotator:
+        raise ValueError("annotator ID must be nonempty")
+    if annotator_override is None:
+        winrates_path = paths["winrates"]
+        markdown_path = paths["markdown"]
+    else:
+        suffix = re.sub(r"[^A-Za-z0-9_.-]+", "_", annotator)
+        winrates_path = paths["winrates"].with_name(
+            f"{paths['winrates'].stem}_{suffix}{paths['winrates'].suffix}"
+        )
+        markdown_path = paths["markdown"].with_name(
+            f"{paths['markdown'].stem}_{suffix}{paths['markdown'].suffix}"
+        )
     latest: dict[str, dict[str, str]] = {}
     ignored_annotators = 0
     for response in _read_csv(paths["responses"]):
@@ -951,7 +1159,7 @@ def compute_winrates(
             **_metric(aggregate),
         }
     )
-    _write_csv(paths["winrates"], result_rows, RESULT_FIELDS)
+    _write_csv(winrates_path, result_rows, RESULT_FIELDS)
 
     rates = {
         (str(row["model"]), str(row["comparison"])): row["win_rate"]
@@ -974,8 +1182,8 @@ def compute_winrates(
             f"{percent(rates.get((name, 'actdiff vs das')))} | "
             f"{percent(rates.get((name, 'overall')))} |"
         )
-    paths["markdown"].parent.mkdir(parents=True, exist_ok=True)
-    paths["markdown"].write_text("\n".join(lines) + "\n", encoding="utf-8")
+    markdown_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {
         "annotator_id": annotator,
         "task_count": len(tasks),
@@ -983,8 +1191,8 @@ def compute_winrates(
         "valid_responses": len(outcomes),
         "skips": skips,
         "ignored_other_annotator_rows": ignored_annotators,
-        "winrates_csv": str(paths["winrates"]),
-        "markdown": str(paths["markdown"]),
+        "winrates_csv": str(winrates_path),
+        "markdown": str(markdown_path),
     }
 
 
@@ -1018,7 +1226,36 @@ def build_parser() -> argparse.ArgumentParser:
     server = subparsers.add_parser("serve")
     server.add_argument("--host", default=None)
     server.add_argument("--port", type=int, default=None)
-    subparsers.add_parser("winrates")
+    server.add_argument(
+        "--round-size",
+        type=int,
+        default=None,
+        help="Serve only this many tasks from the selected deterministic round.",
+    )
+    server.add_argument(
+        "--round",
+        dest="round_number",
+        type=int,
+        default=None,
+        help="One-based round number; requires a configured or explicit round size.",
+    )
+    annotator_group = server.add_mutually_exclusive_group()
+    annotator_group.add_argument(
+        "--annotator-id",
+        default=None,
+        help="Use or resume this evaluator ID; it is registered automatically.",
+    )
+    annotator_group.add_argument(
+        "--new-annotator",
+        action="store_true",
+        help="Allocate and register the next annotator_NN evaluator ID.",
+    )
+    winrates = subparsers.add_parser("winrates")
+    winrates.add_argument(
+        "--annotator-id",
+        default=None,
+        help="Compute results for this evaluator instead of the config default.",
+    )
     return parser
 
 
@@ -1054,10 +1291,18 @@ def main(argv: list[str] | None = None) -> int:
             root_override=args.root,
             host_override=args.host,
             port_override=args.port,
+            round_size_override=args.round_size,
+            round_number_override=args.round_number,
+            annotator_override=args.annotator_id,
+            new_annotator=args.new_annotator,
         )
         return 0
     if args.command == "winrates":
-        result = compute_winrates(args.config, root_override=args.root)
+        result = compute_winrates(
+            args.config,
+            root_override=args.root,
+            annotator_override=args.annotator_id,
+        )
         print(json.dumps(result, indent=2))
         return 0
     raise AssertionError(args.command)

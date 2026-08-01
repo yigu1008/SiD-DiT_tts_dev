@@ -10,6 +10,9 @@ from PIL import Image
 
 from tools.pairwise_human_eval import (
     ANNOTATION_HTML,
+    AnnotationStore,
+    _register_annotator,
+    _select_annotator,
     build_tasks,
     compute_winrates,
     import_legacy,
@@ -152,6 +155,9 @@ class PairwiseHumanEvalTest(unittest.TestCase):
             self.assertEqual(aggregate["win_rate"], "0.500000")
             markdown = (root / "results" / "winrates.md").read_text()
             self.assertIn("| Model | vs. baseline | vs. BoN | vs. DAS | Overall |", markdown)
+            overridden = compute_winrates(config, annotator_override="tester")
+            self.assertTrue(overridden["winrates_csv"].endswith("winrates_tester.csv"))
+            self.assertTrue(Path(overridden["winrates_csv"]).is_file())
 
     def test_imports_legacy_bon_mcts_as_actdiff_without_renaming_source(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -235,6 +241,108 @@ class PairwiseHumanEvalTest(unittest.TestCase):
                 FileNotFoundError, "prepare_pairwise_human_eval.sh"
             ):
                 serve_annotations(config)
+
+    def test_round_limit_is_deterministic_and_resumable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tasks = [
+                {
+                    "task_id": f"task_{index}",
+                    "prompt": f"Prompt {index}",
+                    "left_image": f"left_{index}",
+                    "right_image": f"right_{index}",
+                    "left_image_path": str(root / f"left_{index}.png"),
+                    "right_image_path": str(root / f"right_{index}.png"),
+                }
+                for index in range(7)
+            ]
+            responses = root / "responses.csv"
+            with responses.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["annotator_id", "task_id", "choice", "timestamp"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "annotator_id": "tester",
+                        "task_id": "task_3",
+                        "choice": "left",
+                        "timestamp": "existing",
+                    }
+                )
+            store = AnnotationStore(
+                tasks,
+                responses,
+                "tester",
+                round_size=3,
+                round_number=2,
+            )
+            first = store.next_task()
+            self.assertEqual(first["task_id"], "task_4")
+            self.assertEqual(first["completed"], 1)
+            self.assertEqual(first["total"], 3)
+            self.assertEqual(first["overall_completed"], 1)
+            store.record("task_4", "tie")
+            store.record("task_5", "right")
+            complete = store.next_task()
+            self.assertTrue(complete["round_complete"])
+            self.assertFalse(complete["done"])
+            self.assertEqual(complete["completed"], 3)
+            with responses.open(newline="", encoding="utf-8") as handle:
+                self.assertEqual(len(list(csv.DictReader(handle))), 3)
+
+    def test_new_annotator_is_allocated_and_registered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            responses = root / "responses.csv"
+            with responses.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["annotator_id", "task_id", "choice", "timestamp"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "annotator_id": "annotator_01",
+                        "task_id": "task_1",
+                        "choice": "left",
+                        "timestamp": "existing",
+                    }
+                )
+            paths = {
+                "responses": responses,
+                "evaluators": root / "evaluators.csv",
+            }
+            annotator, source = _select_annotator(
+                {"annotator_id": "annotator_01"},
+                paths,
+                annotator_override=None,
+                new_annotator=True,
+            )
+            self.assertEqual((annotator, source), ("annotator_02", "auto"))
+            self.assertTrue(
+                _register_annotator(
+                    paths,
+                    annotator,
+                    source=source,
+                    round_size=30,
+                    task_count=480,
+                )
+            )
+            self.assertFalse(
+                _register_annotator(
+                    paths,
+                    annotator,
+                    source=source,
+                    round_size=30,
+                    task_count=480,
+                )
+            )
+            with paths["evaluators"].open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(rows[0]["annotator_id"], "annotator_02")
+            self.assertEqual(rows[0]["round_size"], "30")
 
 
 if __name__ == "__main__":

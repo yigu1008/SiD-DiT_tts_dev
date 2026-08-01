@@ -23,6 +23,10 @@
 #   STANDARD_REWARD_PY      : Python used for all non-vqascore servers
 #   POSTHOC_ALLOW_MISSING_BACKENDS: 1 preserves best-effort behavior (default);
 #                                   set 0 for a strict complete evaluation
+#   POSTHOC_SKIP_COMPLETE: 1 skips an existing backend file when its row count
+#                          equals POSTHOC_EXPECTED_COUNT (default 0)
+#   POSTHOC_EXPECTED_COUNT: required positive row count for skip checks
+#   POSTHOC_RUN_ID: if set, only discover OUT_ROOT/run_<id>/<method>
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -42,6 +46,18 @@ VQASCORE_MODEL="${VQASCORE_MODEL:-clip-flant5-xxl}"
 VQASCORE_REWARD_PY="${VQASCORE_REWARD_PY:-${REWARD_PY}}"
 STANDARD_REWARD_PY="${STANDARD_REWARD_PY:-${REWARD_PY}}"
 POSTHOC_ALLOW_MISSING_BACKENDS="${POSTHOC_ALLOW_MISSING_BACKENDS:-1}"
+POSTHOC_SKIP_COMPLETE="${POSTHOC_SKIP_COMPLETE:-0}"
+POSTHOC_EXPECTED_COUNT="${POSTHOC_EXPECTED_COUNT:-0}"
+POSTHOC_RUN_ID="${POSTHOC_RUN_ID:-}"
+
+case "${POSTHOC_SKIP_COMPLETE}" in
+  0|1) ;;
+  *) echo "Error: POSTHOC_SKIP_COMPLETE must be 0 or 1." >&2; exit 1 ;;
+esac
+if [[ ! "${POSTHOC_EXPECTED_COUNT}" =~ ^[0-9]+$ ]]; then
+  echo "Error: POSTHOC_EXPECTED_COUNT must be a non-negative integer." >&2
+  exit 1
+fi
 
 REWARD_SERVER_URL="http://localhost:${REWARD_SERVER_PORT}"
 
@@ -107,8 +123,13 @@ wait_for_health() {
   return 1
 }
 
-# Discover (method_out, method_name) pairs by walking run_*/<method>/aggregate_ddp.json.
-mapfile -t METHOD_DIRS < <(find "${OUT_ROOT}" -maxdepth 6 -type f -name aggregate_ddp.json 2>/dev/null | sed 's|/aggregate_ddp.json$||' | sort)
+# Discover (method_out, method_name) pairs. A run ID keeps continuation jobs
+# scoped to the requested run when older run_* directories coexist.
+METHOD_SEARCH_ROOT="${OUT_ROOT}"
+if [[ -n "${POSTHOC_RUN_ID}" ]]; then
+  METHOD_SEARCH_ROOT="${OUT_ROOT}/run_${POSTHOC_RUN_ID}"
+fi
+mapfile -t METHOD_DIRS < <(find "${METHOD_SEARCH_ROOT}" -maxdepth 4 -type f -name aggregate_ddp.json 2>/dev/null | sed 's|/aggregate_ddp.json$||' | sort)
 if [[ "${#METHOD_DIRS[@]}" -eq 0 ]]; then
   echo "[posthoc] no method dirs with aggregate_ddp.json under ${OUT_ROOT}; nothing to evaluate" >&2
   exit 0
@@ -143,10 +164,45 @@ eval_one_dir_one_backend() {
       "${missing_backend_flag[@]}"
 }
 
+eval_is_complete() {
+  local method_out="$1"
+  local backend="$2"
+  local out_json="${method_out}/best_images_${backend}.json"
+  if [[ "${POSTHOC_SKIP_COMPLETE}" != "1" || "${POSTHOC_EXPECTED_COUNT}" == "0" ]]; then
+    return 1
+  fi
+  [[ -s "${out_json}" ]] || return 1
+  "${PYTHON_BIN}" - "${out_json}" "${POSTHOC_EXPECTED_COUNT}" <<'PY'
+import json
+import sys
+
+path, expected = sys.argv[1], int(sys.argv[2])
+try:
+    payload = json.load(open(path, encoding="utf-8"))
+    rows = payload.get("rows", [])
+except (OSError, ValueError, TypeError):
+    raise SystemExit(1)
+raise SystemExit(0 if isinstance(rows, list) and len(rows) == expected else 1)
+PY
+}
+
 for backend in ${POSTHOC_EVAL_BACKENDS}; do
   echo "════════════════════════════════════════════════════════════════════"
   echo "[posthoc] backend=${backend}"
   echo "════════════════════════════════════════════════════════════════════"
+  pending_method_dirs=()
+  for method_out in "${METHOD_DIRS[@]}"; do
+    if eval_is_complete "${method_out}" "${backend}"; then
+      echo "[posthoc] resume: complete method=$(basename "${method_out}") backend=${backend}"
+    else
+      pending_method_dirs+=("${method_out}")
+    fi
+  done
+  if (( ${#pending_method_dirs[@]} == 0 )); then
+    echo "[posthoc] backend=${backend}: all method outputs already complete"
+    continue
+  fi
+
   log_path="${OUT_ROOT}/reward_server_${backend}.log"
   pid="$(start_server_for_backend "${backend}" "${log_path}")"
   trap 'kill "'"${pid}"'" >/dev/null 2>&1 || true' EXIT
@@ -157,7 +213,7 @@ for backend in ${POSTHOC_EVAL_BACKENDS}; do
     continue
   fi
 
-  for method_out in "${METHOD_DIRS[@]}"; do
+  for method_out in "${pending_method_dirs[@]}"; do
     eval_one_dir_one_backend "${method_out}" "${backend}"
   done
 

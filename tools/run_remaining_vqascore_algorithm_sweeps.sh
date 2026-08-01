@@ -29,6 +29,9 @@ STANDARD_REWARD_ENV_NAME="${STANDARD_REWARD_ENV_NAME:-reward}"
 REWARD_SERVER_BASE_PORT="${REWARD_SERVER_BASE_PORT:-5300}"
 POSTHOC_REWARD_SERVER_PORT="${POSTHOC_REWARD_SERVER_PORT:-5390}"
 HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-1800}"
+POSTHOC_EVAL_BACKENDS="${POSTHOC_EVAL_BACKENDS:-imagereward hpsv3 pickscore vqascore}"
+POSTHOC_SKIP_COMPLETE="${POSTHOC_SKIP_COMPLETE:-1}"
+POSTHOC_MERGE_SCOPE="${POSTHOC_MERGE_SCOPE:-run}"
 
 N_SIMS="${N_SIMS:-25}"
 BON_MCTS_N_SEEDS="${BON_MCTS_N_SEEDS:-8}"
@@ -86,7 +89,7 @@ if [[ " ${METHODS} " != " baseline " && ! -s "${REWRITES_FILE}" ]]; then
 fi
 
 mkdir -p "${RUN_ROOT}"
-STUDY_MANIFEST="${RUN_ROOT}/study_manifest.json"
+STUDY_MANIFEST="${STUDY_MANIFEST:-${RUN_ROOT}/study_manifest.json}"
 PROMPT_COUNT="$(${PYTHON_BIN} - <<'PY' "${SUBSET_MANIFEST}"
 import json, sys
 print(int(json.load(open(sys.argv[1], encoding="utf-8"))["subset_size"]))
@@ -249,23 +252,47 @@ if [[ "${SKIP_POST_EVAL}" != "1" ]]; then
     STANDARD_REWARD_PY="${STANDARD_REWARD_PY}" VQASCORE_REWARD_PY="${VQASCORE_REWARD_PY}" \
     PYTHON_BIN="${PYTHON_BIN}" REWARD_SERVER_PORT="${POSTHOC_REWARD_SERVER_PORT}" \
     REWARD_CUDA_VISIBLE_DEVICES="${REWARD_CUDA_VISIBLE_DEVICES}" \
-    POSTHOC_EVAL_BACKENDS="imagereward hpsv3 pickscore vqascore" \
+    POSTHOC_EVAL_BACKENDS="${POSTHOC_EVAL_BACKENDS}" \
+    POSTHOC_SKIP_COMPLETE="${POSTHOC_SKIP_COMPLETE}" \
+    POSTHOC_EXPECTED_COUNT="${PROMPT_COUNT}" \
+    POSTHOC_RUN_ID="${RUN_ID}" \
     POSTHOC_ALLOW_MISSING_BACKENDS=0 POSTHOC_LAYOUT="${layout}" \
     VQASCORE_MODEL="${VQASCORE_MODEL}" HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS}" \
     bash "${REPO}/post_eval_extra_rewards.sh"
   done
-  "${PYTHON_BIN}" "${REPO}/tools/merge_posthoc_reward_evals.py" \
-    --root "${RUN_ROOT}" --backends imagereward hpsv3 pickscore vqascore \
-    --summary-csv "${RUN_ROOT}/vqa_remaining_models_summary.csv" \
-    --expected-count "${PROMPT_COUNT}" --strict
+  case "${POSTHOC_MERGE_SCOPE}" in
+    run)
+      "${PYTHON_BIN}" "${REPO}/tools/merge_posthoc_reward_evals.py" \
+        --root "${RUN_ROOT}" --backends ${POSTHOC_EVAL_BACKENDS} \
+        --run-id "${RUN_ID}" \
+        --summary-csv "${RUN_ROOT}/vqa_remaining_models_summary.csv" \
+        --expected-count "${PROMPT_COUNT}" --strict
+      ;;
+    model)
+      for backend in ${BACKENDS}; do
+        model_root="${RUN_ROOT}/${backend}"
+        [[ -d "${model_root}" ]] || continue
+        "${PYTHON_BIN}" "${REPO}/tools/merge_posthoc_reward_evals.py" \
+          --root "${RUN_ROOT}" --backends ${POSTHOC_EVAL_BACKENDS} \
+          --include-models "${backend}" --run-id "${RUN_ID}" \
+          --summary-csv "${model_root}/vqa_ood_summary.csv" \
+          --expected-count "${PROMPT_COUNT}" --strict
+      done
+      ;;
+    *)
+      echo "Error: POSTHOC_MERGE_SCOPE must be run or model." >&2
+      exit 1
+      ;;
+  esac
 fi
 
 audit_extra=()
 if [[ "${SKIP_POST_EVAL}" == "1" ]]; then audit_extra+=(--no-strict); fi
 "${PYTHON_BIN}" "${REPO}/tools/audit_vqascore_sweep_coverage.py" \
   --root "${RUN_ROOT}" --models ${BACKENDS} --methods ${METHODS} \
+  --eval-backends ${POSTHOC_EVAL_BACKENDS} \
   --expected-prompts "${PROMPT_COUNT}" --run-id "${RUN_ID}" \
-  --out-csv "${RUN_ROOT}/vqascore_coverage.csv" \
+  --out-csv "${AUDIT_OUT_CSV:-${RUN_ROOT}/vqascore_coverage.csv}" \
   "${audit_extra[@]}"
 
 echo "[remaining-vqa] complete: ${RUN_ROOT}"

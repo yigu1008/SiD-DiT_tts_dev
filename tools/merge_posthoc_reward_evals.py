@@ -254,6 +254,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--summary-csv", type=Path, default=None)
     parser.add_argument("--expected-count", type=int, default=None)
     parser.add_argument(
+        "--include-models",
+        nargs="+",
+        default=[],
+        help="Only merge method directories beneath these model IDs.",
+    )
+    parser.add_argument(
+        "--run-id",
+        default="",
+        help="Only merge method directories beneath run_<run-id>.",
+    )
+    parser.add_argument(
         "--strict",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -268,6 +279,20 @@ def main() -> int:
     method_dirs = sorted(
         path.parent for path in root.rglob("aggregate_ddp.json")
     )
+    if args.include_models:
+        included = set(args.include_models)
+        method_dirs = [
+            path
+            for path in method_dirs
+            if included.intersection(path.relative_to(root).parts)
+        ]
+    if args.run_id:
+        run_component = f"run_{args.run_id}"
+        method_dirs = [
+            path
+            for path in method_dirs
+            if run_component in path.relative_to(root).parts
+        ]
     if not method_dirs:
         raise SystemExit(f"no aggregate_ddp.json files found under {root}")
 

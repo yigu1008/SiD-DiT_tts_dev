@@ -179,7 +179,10 @@ def _merge_method(
                 rows_by_key[key]["scores"] = {}
             merged = rows_by_key[key]
             if str(merged.get("prompt", "")) != str(row.get("prompt", "")):
-                raise ValueError(f"{method_dir}: prompt mismatch for image key {key}")
+                raise ValueError(
+                    f"{method_dir}: {backend} prompt mismatch for image key {key}; "
+                    "backend files must be rescored against the current original c0"
+                )
             if str(merged.get("image_path", "")) != str(row.get("image_path", "")):
                 raise ValueError(f"{method_dir}: image-path mismatch for image key {key}")
             value = row.get("scores", {}).get(backend)

@@ -7,9 +7,12 @@ import unittest
 from collections import Counter
 from pathlib import Path
 
+from PIL import Image
+
 from evaluate_best_images_multi_reward import _sd35_mode_key_and_suffix
 from dynamic_cfg_x0 import DynamicCfgX0Config, evaluator_weights
 from tools.merge_posthoc_reward_evals import _merge_method
+from tools.check_posthoc_eval_complete import check_complete
 from tools.prepare_human_eval_prompts import prepare_prompts
 from tools.prepare_genai_sweep_subset import prepare
 
@@ -117,6 +120,59 @@ class PrepareSubsetTest(unittest.TestCase):
 
 
 class MergeEvaluationsTest(unittest.TestCase):
+    def test_posthoc_resume_rejects_stale_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            method_dir = Path(temporary) / "dynamic_cfg_x0"
+            rank_dir = method_dir / "rank_0"
+            rank_dir.mkdir(parents=True)
+            image_path = rank_dir / "p0000_s0_dynamic_cfg_x0.png"
+            Image.new("RGB", (8, 8), "white").save(image_path)
+            (rank_dir / "summary.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "slug": "p0000",
+                            "prompt": "current original c0",
+                            "search_method": "dynamic_cfg_x0",
+                            "samples": [{"search_score": 0.8}],
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            eval_path = method_dir / "best_images_imagereward.json"
+            row = {
+                "prompt_index": 0,
+                "slug": "p0000",
+                "sample_index": 0,
+                "prompt": "current original c0",
+                "image_path": str(image_path),
+                "scores": {"imagereward": 1.0},
+            }
+            eval_path.write_text(json.dumps({"rows": [row]}), encoding="utf-8")
+            complete, _ = check_complete(
+                layout="flux",
+                method_out=method_dir,
+                method="dynamic_cfg_x0",
+                backend="imagereward",
+                eval_json=eval_path,
+                expected_count=1,
+            )
+            self.assertTrue(complete)
+
+            row["prompt"] = "stale prompt from a different subset"
+            eval_path.write_text(json.dumps({"rows": [row]}), encoding="utf-8")
+            complete, reason = check_complete(
+                layout="flux",
+                method_out=method_dir,
+                method="dynamic_cfg_x0",
+                backend="imagereward",
+                eval_json=eval_path,
+                expected_count=1,
+            )
+            self.assertFalse(complete)
+            self.assertIn("prompt mismatch", reason)
+
     def test_aliases_and_four_backend_merge(self) -> None:
         self.assertEqual(_sd35_mode_key_and_suffix("das"), ("bon", "bon"))
         self.assertEqual(

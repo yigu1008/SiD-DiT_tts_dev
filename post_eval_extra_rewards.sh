@@ -172,18 +172,13 @@ eval_is_complete() {
     return 1
   fi
   [[ -s "${out_json}" ]] || return 1
-  "${PYTHON_BIN}" - "${out_json}" "${POSTHOC_EXPECTED_COUNT}" <<'PY'
-import json
-import sys
-
-path, expected = sys.argv[1], int(sys.argv[2])
-try:
-    payload = json.load(open(path, encoding="utf-8"))
-    rows = payload.get("rows", [])
-except (OSError, ValueError, TypeError):
-    raise SystemExit(1)
-raise SystemExit(0 if isinstance(rows, list) and len(rows) == expected else 1)
-PY
+  "${PYTHON_BIN}" "${SCRIPT_DIR}/tools/check_posthoc_eval_complete.py" \
+    --layout "${POSTHOC_LAYOUT}" \
+    --method-out "${method_out}" \
+    --method "$(basename "${method_out}")" \
+    --backend "${backend}" \
+    --eval-json "${out_json}" \
+    --expected-count "${POSTHOC_EXPECTED_COUNT}"
 }
 
 for backend in ${POSTHOC_EVAL_BACKENDS}; do

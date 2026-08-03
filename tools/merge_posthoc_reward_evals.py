@@ -42,11 +42,12 @@ def _read_json(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _row_key(row: dict[str, Any]) -> tuple[int, str, int]:
+def _row_key(row: dict[str, Any]) -> tuple[int, str, int, str]:
     return (
         int(row.get("prompt_index", -1)),
         str(row.get("slug", "")),
         int(row.get("sample_index", 0)),
+        str(Path(str(row.get("image_path", ""))).expanduser().resolve()),
     )
 
 
@@ -155,8 +156,8 @@ def _merge_method(
         print(f"[merge] WARN {message}")
         return None
 
-    rows_by_key: dict[tuple[int, str, int], dict[str, Any]] = {}
-    expected_keys: set[tuple[int, str, int]] | None = None
+    rows_by_key: dict[tuple[int, str, int, str], dict[str, Any]] = {}
+    expected_keys: set[tuple[int, str, int, str]] | None = None
     for backend in backends:
         payload = _read_json(source_paths[backend])
         backend_rows = payload.get("rows", [])

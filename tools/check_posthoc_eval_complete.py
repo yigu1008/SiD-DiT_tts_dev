@@ -17,11 +17,13 @@ if str(REPO) not in sys.path:
 from evaluate_best_images_multi_reward import collect_records  # noqa: E402
 
 
-def _key(value: Any) -> tuple[int, str, int]:
+def _key(value: Any) -> tuple[int, str, int, str]:
+    image_path = value.image_path if hasattr(value, "image_path") else value.get("image_path", "")
     return (
         int(value.prompt_index if hasattr(value, "prompt_index") else value.get("prompt_index", -1)),
         str(value.slug if hasattr(value, "slug") else value.get("slug", "")),
         int(value.sample_index if hasattr(value, "sample_index") else value.get("sample_index", 0)),
+        str(Path(str(image_path)).expanduser().resolve()),
     )
 
 

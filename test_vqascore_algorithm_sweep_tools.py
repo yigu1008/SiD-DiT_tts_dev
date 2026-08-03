@@ -120,6 +120,46 @@ class PrepareSubsetTest(unittest.TestCase):
 
 
 class MergeEvaluationsTest(unittest.TestCase):
+    def test_merge_distinguishes_rank_local_duplicate_slugs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            method_dir = root / "flux_schnell" / "run_v1" / "dynamic_cfg_x0"
+            method_dir.mkdir(parents=True)
+            (method_dir / "aggregate_ddp.json").write_text(
+                json.dumps({"num_samples": 2, "mean_search_score": 0.8}),
+                encoding="utf-8",
+            )
+            backends = ["imagereward", "hpsv3", "pickscore"]
+            for backend_index, backend in enumerate(backends):
+                rows = []
+                for rank in (0, 1):
+                    rows.append(
+                        {
+                            "prompt_index": 0,
+                            "slug": "p0000",
+                            "sample_index": 0,
+                            "prompt": f"rank {rank} original c0",
+                            "image_path": f"/tmp/rank_{rank}/p0000.png",
+                            "scores": {backend: float(backend_index + rank)},
+                        }
+                    )
+                (method_dir / f"best_images_{backend}.json").write_text(
+                    json.dumps({"rows": rows}), encoding="utf-8"
+                )
+            summary = _merge_method(
+                method_dir,
+                root,
+                backends,
+                strict=True,
+                expected_count=2,
+            )
+            assert summary is not None
+            self.assertEqual(summary["prompt_count"], 2)
+            merged = json.loads(
+                (method_dir / "best_images_multi_reward.json").read_text()
+            )
+            self.assertEqual(len(merged["rows"]), 2)
+
     def test_posthoc_resume_rejects_stale_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             method_dir = Path(temporary) / "dynamic_cfg_x0"

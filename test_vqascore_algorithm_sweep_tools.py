@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from collections import Counter
@@ -120,6 +122,92 @@ class PrepareSubsetTest(unittest.TestCase):
 
 
 class MergeEvaluationsTest(unittest.TestCase):
+    def test_merge_cli_writes_csv_and_json_reports(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            method_dir = root / "sd35_base" / "run_v1" / "baseline"
+            method_dir.mkdir(parents=True)
+            (method_dir / "aggregate_ddp.json").write_text(
+                json.dumps({"num_samples": 1, "mean_search_score": 0.5}),
+                encoding="utf-8",
+            )
+            row = {
+                "prompt_index": 0,
+                "slug": "p0000",
+                "sample_index": 0,
+                "prompt": "original c0",
+                "image_path": "/tmp/base/p0000.png",
+                "scores": {"imagereward": 0.75},
+            }
+            (method_dir / "best_images_imagereward.json").write_text(
+                json.dumps({"rows": [row]}), encoding="utf-8"
+            )
+            report = root / "sd35_base" / "run_v1" / "reports" / "summary.csv"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).parent / "tools" / "merge_posthoc_reward_evals.py"),
+                    "--root",
+                    str(root),
+                    "--include-models",
+                    "sd35_base",
+                    "--run-id",
+                    "v1",
+                    "--backends",
+                    "imagereward",
+                    "--summary-csv",
+                    str(report),
+                    "--expected-count",
+                    "1",
+                    "--strict",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertTrue(report.is_file())
+            payload = json.loads(report.with_suffix(".json").read_text())
+            self.assertEqual(payload["row_count"], 1)
+            self.assertEqual(payload["complete_row_count"], 1)
+
+    def test_non_strict_merge_preserves_partial_backend_results(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            method_dir = root / "senseflow_large" / "run_v1" / "baseline"
+            method_dir.mkdir(parents=True)
+            (method_dir / "aggregate_ddp.json").write_text(
+                json.dumps({"num_samples": 1, "mean_search_score": 0.7}),
+                encoding="utf-8",
+            )
+            row = {
+                "prompt_index": 0,
+                "slug": "p0000",
+                "sample_index": 0,
+                "prompt": "original c0",
+                "image_path": "/tmp/senseflow/p0000.png",
+                "scores": {"imagereward": 1.25},
+            }
+            (method_dir / "best_images_imagereward.json").write_text(
+                json.dumps({"rows": [row]}), encoding="utf-8"
+            )
+
+            summary = _merge_method(
+                method_dir,
+                root,
+                ["imagereward", "hpsv3", "pickscore"],
+                strict=False,
+                expected_count=1,
+            )
+            assert summary is not None
+            self.assertFalse(summary["ood_complete"])
+            self.assertEqual(summary["backends_available"], "imagereward")
+            self.assertEqual(summary["eval_imagereward_count"], 1)
+            self.assertEqual(summary["eval_hpsv3_count"], 0)
+            aggregate = json.loads(
+                (method_dir / "best_images_multi_reward_aggregate.json").read_text()
+            )
+            self.assertEqual(aggregate["backends_missing"], ["hpsv3", "pickscore"])
+
     def test_merge_distinguishes_rank_local_duplicate_slugs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

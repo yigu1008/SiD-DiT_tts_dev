@@ -247,6 +247,8 @@ if [[ "${SKIP_POST_EVAL}" != "1" ]]; then
   for backend in ${BACKENDS}; do
     model_root="${RUN_ROOT}/${backend}"
     [[ -d "${model_root}" ]] || continue
+    report_dir="${model_root}/run_${RUN_ID}/reports"
+    mkdir -p "${report_dir}"
     [[ "${backend}" == "flux_schnell" ]] && layout=flux || layout=sd35
     OUT_ROOT="${model_root}" REWARD_PY="${STANDARD_REWARD_PY}" \
     STANDARD_REWARD_PY="${STANDARD_REWARD_PY}" VQASCORE_REWARD_PY="${VQASCORE_REWARD_PY}" \
@@ -257,6 +259,9 @@ if [[ "${SKIP_POST_EVAL}" != "1" ]]; then
     POSTHOC_EXPECTED_COUNT="${PROMPT_COUNT}" \
     POSTHOC_RUN_ID="${RUN_ID}" \
     POSTHOC_ALLOW_MISSING_BACKENDS=0 POSTHOC_LAYOUT="${layout}" \
+    POSTHOC_SNAPSHOT_ROOT="${RUN_ROOT}" \
+    POSTHOC_SNAPSHOT_MODEL="${backend}" \
+    POSTHOC_SNAPSHOT_SUMMARY="${report_dir}/vqa_ood_summary_partial.csv" \
     VQASCORE_MODEL="${VQASCORE_MODEL}" HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS}" \
     bash "${REPO}/post_eval_extra_rewards.sh"
   done
@@ -272,11 +277,15 @@ if [[ "${SKIP_POST_EVAL}" != "1" ]]; then
       for backend in ${BACKENDS}; do
         model_root="${RUN_ROOT}/${backend}"
         [[ -d "${model_root}" ]] || continue
+        report_dir="${model_root}/run_${RUN_ID}/reports"
+        mkdir -p "${report_dir}"
         "${PYTHON_BIN}" "${REPO}/tools/merge_posthoc_reward_evals.py" \
           --root "${RUN_ROOT}" --backends ${POSTHOC_EVAL_BACKENDS} \
           --include-models "${backend}" --run-id "${RUN_ID}" \
-          --summary-csv "${model_root}/vqa_ood_summary.csv" \
+          --summary-csv "${report_dir}/vqa_ood_summary.csv" \
           --expected-count "${PROMPT_COUNT}" --strict
+        cp "${report_dir}/vqa_ood_summary.csv" "${model_root}/vqa_ood_summary.csv"
+        cp "${report_dir}/vqa_ood_summary.json" "${model_root}/vqa_ood_summary.json"
       done
       ;;
     *)

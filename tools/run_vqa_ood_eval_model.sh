@@ -39,6 +39,7 @@ else
   STUDY_RUN_ROOT="${STUDY_RUN_ROOT:-${HUMAN_EVAL_ROOT}/vqascore_remaining_models/${RUN_ID}}"
 fi
 MODEL_ROOT="${STUDY_RUN_ROOT}/${MODEL}"
+REPORT_DIR="${MODEL_ROOT}/run_${RUN_ID}/reports"
 
 PYTHON_BIN="${PYTHON_BIN:-/home/ygu/miniconda3/envs/sid_dit/bin/python}"
 REWARD_ENV_CONDA_BASE="${REWARD_ENV_CONDA_BASE:-/home/ygu/miniconda3}"
@@ -73,6 +74,7 @@ if [[ ! -d "${MODEL_ROOT}/run_${RUN_ID}" ]]; then
   echo "Error: generated run directory is missing: ${MODEL_ROOT}/run_${RUN_ID}" >&2
   exit 1
 fi
+mkdir -p "${REPORT_DIR}"
 
 MODEL_ROOT="${MODEL_ROOT}" RUN_ID="${RUN_ID}" METHODS="${METHODS}" \
 EXPECTED_PROMPTS="${EXPECTED_PROMPTS}" "${PYTHON_BIN}" - <<'PY'
@@ -120,6 +122,9 @@ POSTHOC_EXPECTED_COUNT="${EXPECTED_PROMPTS}" \
 POSTHOC_RUN_ID="${RUN_ID}" \
 POSTHOC_ALLOW_MISSING_BACKENDS=0 \
 POSTHOC_LAYOUT="${LAYOUT}" \
+POSTHOC_SNAPSHOT_ROOT="${STUDY_RUN_ROOT}" \
+POSTHOC_SNAPSHOT_MODEL="${MODEL}" \
+POSTHOC_SNAPSHOT_SUMMARY="${REPORT_DIR}/vqa_ood_summary_partial.csv" \
 bash "${REPO}/post_eval_extra_rewards.sh"
 
 "${PYTHON_BIN}" "${REPO}/tools/merge_posthoc_reward_evals.py" \
@@ -127,7 +132,7 @@ bash "${REPO}/post_eval_extra_rewards.sh"
   --include-models "${MODEL}" \
   --run-id "${RUN_ID}" \
   --backends ${OOD_EVAL_BACKENDS} \
-  --summary-csv "${MODEL_ROOT}/vqa_ood_summary.csv" \
+  --summary-csv "${REPORT_DIR}/vqa_ood_summary.csv" \
   --expected-count "${EXPECTED_PROMPTS}" \
   --strict
 
@@ -138,6 +143,13 @@ bash "${REPO}/post_eval_extra_rewards.sh"
   --expected-prompts "${EXPECTED_PROMPTS}" \
   --eval-backends ${OOD_EVAL_BACKENDS} \
   --run-id "${RUN_ID}" \
-  --out-csv "${MODEL_ROOT}/vqascore_coverage.csv"
+  --out-csv "${REPORT_DIR}/vqascore_coverage.csv"
 
-echo "[ood-only] complete: ${MODEL_ROOT}/vqa_ood_summary.csv"
+# Compatibility mirrors for older reporting commands. Canonical run-scoped
+# reports remain under run_<id>/reports so multiple runs cannot overwrite one
+# another.
+cp "${REPORT_DIR}/vqa_ood_summary.csv" "${MODEL_ROOT}/vqa_ood_summary.csv"
+cp "${REPORT_DIR}/vqa_ood_summary.json" "${MODEL_ROOT}/vqa_ood_summary.json"
+cp "${REPORT_DIR}/vqascore_coverage.csv" "${MODEL_ROOT}/vqascore_coverage.csv"
+
+echo "[ood-only] complete: ${REPORT_DIR}/vqa_ood_summary.csv"

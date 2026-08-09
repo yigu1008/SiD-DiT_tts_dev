@@ -27,6 +27,10 @@
 #                          equals POSTHOC_EXPECTED_COUNT (default 0)
 #   POSTHOC_EXPECTED_COUNT: required positive row count for skip checks
 #   POSTHOC_RUN_ID: if set, only discover OUT_ROOT/run_<id>/<method>
+#   POSTHOC_SNAPSHOT_ROOT: study root passed to the partial merge hook
+#   POSTHOC_SNAPSHOT_MODEL: model ID selected by the partial merge hook
+#   POSTHOC_SNAPSHOT_SUMMARY: partial cross-method CSV refreshed after each
+#                             backend (a companion JSON is written beside it)
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -49,6 +53,9 @@ POSTHOC_ALLOW_MISSING_BACKENDS="${POSTHOC_ALLOW_MISSING_BACKENDS:-1}"
 POSTHOC_SKIP_COMPLETE="${POSTHOC_SKIP_COMPLETE:-0}"
 POSTHOC_EXPECTED_COUNT="${POSTHOC_EXPECTED_COUNT:-0}"
 POSTHOC_RUN_ID="${POSTHOC_RUN_ID:-}"
+POSTHOC_SNAPSHOT_ROOT="${POSTHOC_SNAPSHOT_ROOT:-}"
+POSTHOC_SNAPSHOT_MODEL="${POSTHOC_SNAPSHOT_MODEL:-}"
+POSTHOC_SNAPSHOT_SUMMARY="${POSTHOC_SNAPSHOT_SUMMARY:-}"
 
 case "${POSTHOC_SKIP_COMPLETE}" in
   0|1) ;;
@@ -181,6 +188,24 @@ eval_is_complete() {
     --expected-count "${POSTHOC_EXPECTED_COUNT}"
 }
 
+write_partial_snapshot() {
+  local completed_backend="$1"
+  if [[ -z "${POSTHOC_SNAPSHOT_ROOT}" || -z "${POSTHOC_SNAPSHOT_MODEL}" || -z "${POSTHOC_SNAPSHOT_SUMMARY}" ]]; then
+    return 0
+  fi
+  echo "[posthoc] refreshing partial report after backend=${completed_backend}"
+  if ! "${PYTHON_BIN}" "${SCRIPT_DIR}/tools/merge_posthoc_reward_evals.py" \
+      --root "${POSTHOC_SNAPSHOT_ROOT}" \
+      --include-models "${POSTHOC_SNAPSHOT_MODEL}" \
+      --run-id "${POSTHOC_RUN_ID}" \
+      --backends ${POSTHOC_EVAL_BACKENDS} \
+      --summary-csv "${POSTHOC_SNAPSHOT_SUMMARY}" \
+      --expected-count "${POSTHOC_EXPECTED_COUNT}" \
+      --no-strict; then
+    echo "[posthoc] WARN: unable to refresh partial report after backend=${completed_backend}" >&2
+  fi
+}
+
 for backend in ${POSTHOC_EVAL_BACKENDS}; do
   echo "════════════════════════════════════════════════════════════════════"
   echo "[posthoc] backend=${backend}"
@@ -195,6 +220,7 @@ for backend in ${POSTHOC_EVAL_BACKENDS}; do
   done
   if (( ${#pending_method_dirs[@]} == 0 )); then
     echo "[posthoc] backend=${backend}: all method outputs already complete"
+    write_partial_snapshot "${backend}"
     continue
   fi
 
@@ -221,6 +247,7 @@ for backend in ${POSTHOC_EVAL_BACKENDS}; do
   fuser -k "${REWARD_SERVER_PORT}/tcp" >/dev/null 2>&1 || true
   sleep 5
   trap - EXIT
+  write_partial_snapshot "${backend}"
 done
 
 echo "[posthoc] done."

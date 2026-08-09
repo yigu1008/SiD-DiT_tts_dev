@@ -154,11 +154,15 @@ def _merge_method(
         if strict:
             raise FileNotFoundError(message)
         print(f"[merge] WARN {message}")
+    available_backends = [
+        backend for backend in backends if source_paths[backend].is_file()
+    ]
+    if not available_backends:
         return None
 
     rows_by_key: dict[tuple[int, str, int, str], dict[str, Any]] = {}
     expected_keys: set[tuple[int, str, int, str]] | None = None
-    for backend in backends:
+    for backend in available_backends:
         payload = _read_json(source_paths[backend])
         backend_rows = payload.get("rows", [])
         if not isinstance(backend_rows, list):
@@ -169,10 +173,14 @@ def _merge_method(
         elif current_keys != expected_keys:
             missing_here = sorted((expected_keys or set()) - current_keys)
             extra_here = sorted(current_keys - (expected_keys or set()))
-            raise ValueError(
+            message = (
                 f"{method_dir}: {backend} image keys differ; "
                 f"missing={missing_here[:3]} extra={extra_here[:3]}"
             )
+            if strict:
+                raise ValueError(message)
+            print(f"[merge] WARN {message}; skipping method")
+            return None
         for row in backend_rows:
             key = _row_key(row)
             if key not in rows_by_key:
@@ -195,10 +203,13 @@ def _merge_method(
 
     rows = [rows_by_key[key] for key in sorted(rows_by_key)]
     if expected_count is not None and len(rows) != expected_count:
-        raise ValueError(
+        message = (
             f"{method_dir}: found {len(rows)} selected images, "
             f"expected {expected_count}"
         )
+        if strict:
+            raise ValueError(message)
+        print(f"[merge] WARN {message}")
     stats = _backend_stats(rows, backends)
     method = method_dir.name
     model_id, model_name = _model_fields(method_dir, root)
@@ -217,10 +228,19 @@ def _merge_method(
         "method_label": label,
         "method_out": str(method_dir.resolve()),
         "backends_requested": backends,
+        "backends_available": available_backends,
+        "backends_missing": missing,
+        "complete": (
+            not missing
+            and all(int(stats[b]["count"] or 0) == len(rows) for b in backends)
+            and (expected_count is None or len(rows) == expected_count)
+        ),
         "num_images_found": len(rows),
         "num_images_scored": len(rows),
         "backend_stats": stats,
-        "source_files": [str(source_paths[b].resolve()) for b in backends],
+        "source_files": [
+            str(source_paths[b].resolve()) for b in available_backends
+        ],
     }
     _atomic_json(
         method_dir / "best_images_multi_reward.json",
@@ -239,6 +259,9 @@ def _merge_method(
         "search_reward": generation.get("search_reward", "vqascore"),
         "mean_nfe": _mean_logged_nfe(method_dir),
         "mean_search_score": generation.get("mean_search_score"),
+        "ood_complete": bool(aggregate["complete"]),
+        "backends_available": " ".join(available_backends),
+        "backends_missing": " ".join(missing),
         "run_path": str(method_dir.resolve()),
     }
     for backend in backends:
@@ -256,6 +279,12 @@ def parse_args() -> argparse.Namespace:
         default=["imagereward", "hpsv3", "pickscore", "vqascore"],
     )
     parser.add_argument("--summary-csv", type=Path, default=None)
+    parser.add_argument(
+        "--summary-json",
+        type=Path,
+        default=None,
+        help="Companion JSON summary (default: summary CSV with .json suffix).",
+    )
     parser.add_argument("--expected-count", type=int, default=None)
     parser.add_argument(
         "--include-models",
@@ -329,6 +358,9 @@ def main() -> int:
         "search_reward",
         "mean_nfe",
         "mean_search_score",
+        "ood_complete",
+        "backends_available",
+        "backends_missing",
     ]
     for backend in backends:
         fields.extend([f"eval_{backend}_mean", f"eval_{backend}_count"])
@@ -339,7 +371,29 @@ def main() -> int:
         writer.writeheader()
         writer.writerows(summaries)
     os.replace(temporary, summary_path)
+    summary_json_path = (
+        args.summary_json.expanduser().resolve()
+        if args.summary_json
+        else summary_path.with_suffix(".json")
+    )
+    summary_json_path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_json(
+        summary_json_path,
+        {
+            "root": str(root),
+            "run_id": str(args.run_id),
+            "backends_requested": backends,
+            "expected_count": args.expected_count,
+            "strict": bool(args.strict),
+            "row_count": len(summaries),
+            "complete_row_count": sum(
+                1 for row in summaries if bool(row.get("ood_complete"))
+            ),
+            "rows": summaries,
+        },
+    )
     print(f"[merge] wrote {len(summaries)} rows: {summary_path}")
+    print(f"[merge] wrote JSON summary: {summary_json_path}")
     return 0
 
 

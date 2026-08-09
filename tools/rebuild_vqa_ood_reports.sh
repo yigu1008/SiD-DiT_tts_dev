@@ -63,6 +63,39 @@ for model in ${MODELS}; do
     "${model_root}/vqa_ood_summary_partial.json"
   cp "${report_dir}/vqascore_coverage.csv" \
     "${model_root}/vqascore_coverage.csv"
+
+  if SUMMARY_JSON="${report_dir}/vqa_ood_summary_partial.json" \
+      METHODS="${METHODS}" "${PYTHON_BIN}" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+payload = json.loads(Path(os.environ["SUMMARY_JSON"]).read_text(encoding="utf-8"))
+expected = len(os.environ["METHODS"].split())
+raise SystemExit(
+    0
+    if int(payload.get("row_count", 0)) == expected
+    and int(payload.get("complete_row_count", 0)) == expected
+    else 1
+)
+PY
+  then
+    echo "[rebuild] ${model}: all requested methods complete; writing strict final report"
+    "${PYTHON_BIN}" "${REPO}/tools/merge_posthoc_reward_evals.py" \
+      --root "${STUDY_RUN_ROOT}" \
+      --include-models "${model}" \
+      --run-id "${RUN_ID}" \
+      --backends ${OOD_EVAL_BACKENDS} \
+      --summary-csv "${report_dir}/vqa_ood_summary.csv" \
+      --expected-count "${EXPECTED_PROMPTS}" \
+      --strict
+    cp "${report_dir}/vqa_ood_summary.csv" \
+      "${model_root}/vqa_ood_summary.csv"
+    cp "${report_dir}/vqa_ood_summary.json" \
+      "${model_root}/vqa_ood_summary.json"
+  else
+    echo "[rebuild] ${model}: incomplete; retained partial report"
+  fi
 done
 
 echo "[rebuild] reports are under each model's run_${RUN_ID}/reports directory"

@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Continue the existing GenAI-200 SD3.5-Base VQAScore sweep with ActDiff only.
-# GA must be complete. DTS, DTS*, and Dynamic CFG are never dispatched.
+# GA is complete by default; REQUIRE_GA_COMPLETE=0 explicitly preserves an
+# interrupted GA and continues. DTS, DTS*, and Dynamic CFG are never dispatched.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -21,9 +22,13 @@ ACTDIFF_AGGREGATE="${RUN_ROOT}/bon_mcts/aggregate_ddp.json"
 LOG_DIR="${RUN_ROOT}/reports"
 LOG_FILE="${LOG_FILE:-${LOG_DIR}/actdiff_only_launcher.log}"
 DRY_RUN="${DRY_RUN:-0}"
+REQUIRE_GA_COMPLETE="${REQUIRE_GA_COMPLETE:-1}"
 
 case "${DRY_RUN}" in 0|1) ;;
   *) echo "Error: DRY_RUN must be 0 or 1." >&2; exit 2 ;;
+esac
+case "${REQUIRE_GA_COMPLETE}" in 0|1) ;;
+  *) echo "Error: REQUIRE_GA_COMPLETE must be 0 or 1." >&2; exit 2 ;;
 esac
 IFS=',' read -r -a gpu_array <<< "${GPUS}"
 if (( ${#gpu_array[@]} != 4 )); then
@@ -44,21 +49,38 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
   echo "Error: PYTHON_BIN is not executable: ${PYTHON_BIN}" >&2
   exit 1
 fi
-if [[ ! -s "${GA_AGGREGATE}" ]]; then
-  echo "Error: GA is not complete: ${GA_AGGREGATE}" >&2
-  echo "Stop the old suite only after it writes the GA aggregate, then rerun." >&2
-  exit 1
-fi
-
-ga_count="$(${PYTHON_BIN} - "${GA_AGGREGATE}" <<'PY'
+ga_count="$(${PYTHON_BIN} - "${GA_AGGREGATE}" "${RUN_ROOT}/ga/logs" <<'PY'
+import glob
 import json
 import sys
-print(int(json.load(open(sys.argv[1], encoding="utf-8")).get("num_samples", 0)))
+from pathlib import Path
+
+aggregate = Path(sys.argv[1])
+if aggregate.is_file():
+    print(int(json.loads(aggregate.read_text(encoding="utf-8")).get("num_samples", 0)))
+    raise SystemExit(0)
+
+done = set()
+for path in glob.glob(str(Path(sys.argv[2]) / "rank_[0-9][0-9][0-9].jsonl")):
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if row.get("mode") == "ga" and "prompt_index" in row:
+                done.add(int(row["prompt_index"]))
+print(len(done))
 PY
 )"
-if [[ "${ga_count}" != "${EXPECTED_PROMPTS}" ]]; then
+if [[ "${REQUIRE_GA_COMPLETE}" == "1" && "${ga_count}" != "${EXPECTED_PROMPTS}" ]]; then
   echo "Error: GA coverage is ${ga_count}/${EXPECTED_PROMPTS}; refusing to continue." >&2
+  echo "Set REQUIRE_GA_COMPLETE=0 to preserve partial GA results and run ActDiff now." >&2
   exit 1
+fi
+if [[ "${ga_count}" != "${EXPECTED_PROMPTS}" ]]; then
+  echo "[actdiff-only] WARN: proceeding with partial GA coverage ${ga_count}/${EXPECTED_PROMPTS}."
+  echo "[actdiff-only] Existing GA rank logs are preserved for a later resume."
 fi
 if [[ -s "${ACTDIFF_AGGREGATE}" ]]; then
   actdiff_count="$(${PYTHON_BIN} - "${ACTDIFF_AGGREGATE}" <<'PY'
@@ -74,7 +96,7 @@ PY
 fi
 
 mkdir -p "${LOG_DIR}"
-echo "[actdiff-only] GA complete (${ga_count}/${EXPECTED_PROMPTS}); starting ActDiff only."
+echo "[actdiff-only] GA coverage=${ga_count}/${EXPECTED_PROMPTS}; starting ActDiff only."
 echo "[actdiff-only] Make sure the previous suite and reward server have exited before this launch."
 
 env \

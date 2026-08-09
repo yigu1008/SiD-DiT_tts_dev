@@ -574,6 +574,21 @@ def _load_done_indices(rank_log: str) -> set:
     return done
 
 
+def _load_done_indices_from_all_ranks(log_dir: str) -> set:
+    """Return completed prompt indices across every prior rank log.
+
+    Looking only at the current rank's log is incorrect when a resumed run uses
+    a different world size: prompt-to-rank assignment changes and completed
+    prompts can otherwise be generated a second time.
+    """
+    done = set()
+    for name in os.listdir(log_dir) if os.path.isdir(log_dir) else []:
+        if not name.startswith("rank_") or not name.endswith(".jsonl"):
+            continue
+        done.update(_load_done_indices(os.path.join(log_dir, name)))
+    return done
+
+
 def main() -> None:
     faulthandler.enable(all_threads=True)
     args = normalize_paths(parse_args())
@@ -590,10 +605,11 @@ def main() -> None:
     seed_map = load_seed_map(args.seed_map_file)
     my_entries = shard(all_entries, rank, world_size)
 
-    # Resume: skip prompts already written to the rank log.
+    # Resume globally so changing the number of DDP generation ranks does not
+    # regenerate prompts that belonged to a different rank previously.
     rank_log = os.path.join(log_dir, f"rank_{rank:03d}.jsonl")
     if args.resume:
-        done_indices = _load_done_indices(rank_log)
+        done_indices = _load_done_indices_from_all_ranks(log_dir)
         if done_indices:
             before = len(my_entries)
             my_entries = [(i, p) for i, p in my_entries if i not in done_indices]

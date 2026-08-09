@@ -12,6 +12,7 @@ RUNNER="${REPO}/tools/run_vqa_model_phase.sh"
 HUMAN_EVAL_ROOT="${HUMAN_EVAL_ROOT:-/data/ygu/human_eval_genai40_v1}"
 RUN_ID="${RUN_ID:-genai200_v1}"
 EXPECTED_PROMPTS="${EXPECTED_PROMPTS:-200}"
+TARGET_PROMPTS="${TARGET_PROMPTS:-${EXPECTED_PROMPTS}}"
 GPUS="${GPUS:-4,5,6,7}"
 PYTHON_BIN="${PYTHON_BIN:-/home/ygu/miniconda3/envs/sid_dit/bin/python}"
 STUDY_ROOT="${STUDY_ROOT:-${HUMAN_EVAL_ROOT}/vqascore_remaining_models}"
@@ -31,13 +32,21 @@ case "${REQUIRE_GA_COMPLETE}" in 0|1) ;;
   *) echo "Error: REQUIRE_GA_COMPLETE must be 0 or 1." >&2; exit 2 ;;
 esac
 IFS=',' read -r -a gpu_array <<< "${GPUS}"
-if (( ${#gpu_array[@]} != 4 )); then
-  echo "Error: GPUS must contain exactly four GPUs (three generation + one reward)." >&2
+if [[ ! "${EXPECTED_PROMPTS}" =~ ^[1-9][0-9]*$ ]] || \
+   [[ ! "${TARGET_PROMPTS}" =~ ^[1-9][0-9]*$ ]] || \
+   (( TARGET_PROMPTS > EXPECTED_PROMPTS )); then
+  echo "Error: TARGET_PROMPTS must be in [1, EXPECTED_PROMPTS]." >&2
+  exit 2
+fi
+if (( ${#gpu_array[@]} < 3 )); then
+  echo "Error: GPUS must contain at least three GPUs (2+ generation + one reward)." >&2
   exit 2
 fi
 
 echo "[actdiff-only] model=sd35_base run_id=${RUN_ID}"
-echo "[actdiff-only] GPUs=${GPUS}; reward GPU=${gpu_array[3]}"
+reward_gpu="${gpu_array[${#gpu_array[@]}-1]}"
+echo "[actdiff-only] GPUs=${GPUS}; reward GPU=${reward_gpu}"
+echo "[actdiff-only] target=${TARGET_PROMPTS}/${EXPECTED_PROMPTS} prompts"
 echo "[actdiff-only] methods=bon_mcts"
 echo "[actdiff-only] run_root=${RUN_ROOT}"
 echo "[actdiff-only] log=${LOG_FILE}"
@@ -89,14 +98,14 @@ import sys
 print(int(json.load(open(sys.argv[1], encoding="utf-8")).get("num_samples", 0)))
 PY
 )"
-  if [[ "${actdiff_count}" == "${EXPECTED_PROMPTS}" ]]; then
-    echo "[actdiff-only] ActDiff already complete (${actdiff_count}/${EXPECTED_PROMPTS}); nothing to run."
+  if (( actdiff_count >= TARGET_PROMPTS )); then
+    echo "[actdiff-only] ActDiff target already complete (${actdiff_count}/${TARGET_PROMPTS}); nothing to run."
     exit 0
   fi
 fi
 
 mkdir -p "${LOG_DIR}"
-echo "[actdiff-only] GA coverage=${ga_count}/${EXPECTED_PROMPTS}; starting ActDiff only."
+echo "[actdiff-only] GA coverage=${ga_count}/${EXPECTED_PROMPTS}; starting ActDiff through prompt ${TARGET_PROMPTS}."
 echo "[actdiff-only] Make sure the previous suite and reward server have exited before this launch."
 
 env \
@@ -108,7 +117,8 @@ env \
   STUDY_ROOT="${STUDY_ROOT}" \
   RUN_ID="${RUN_ID}" \
   PYTHON_BIN="${PYTHON_BIN}" \
+  GENERATION_END_INDEX="${TARGET_PROMPTS}" \
   RESUME_PROMPTS=1 \
   bash "${RUNNER}" 2>&1 | tee -a "${LOG_FILE}"
 
-echo "[actdiff-only] complete: ${ACTDIFF_AGGREGATE}"
+echo "[actdiff-only] target complete (${TARGET_PROMPTS}/${EXPECTED_PROMPTS}): ${ACTDIFF_AGGREGATE}"

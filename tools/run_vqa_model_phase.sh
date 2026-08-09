@@ -46,8 +46,8 @@ if [[ -z "${GPUS:-}" ]]; then
   fi
 fi
 IFS=',' read -r -a gpu_array <<< "${GPUS}"
-if [[ "${PHASE}" == "generate" && ${#gpu_array[@]} -ne 4 ]]; then
-  echo "Error: VQAScore generation requires exactly four GPUs (3 generation + 1 reward)." >&2
+if [[ "${PHASE}" == "generate" && ${#gpu_array[@]} -lt 3 ]]; then
+  echo "Error: VQAScore generation requires at least three GPUs (2+ generation + 1 reward)." >&2
   exit 2
 fi
 if (( ${#gpu_array[@]} < 1 )); then
@@ -80,6 +80,9 @@ esac
 
 echo "[model-phase] model=${MODEL} phase=${PHASE}"
 echo "[model-phase] GPUs=${GPUS}; reward GPU=${REWARD_GPU}"
+if [[ "${PHASE}" == "generate" ]]; then
+  echo "[model-phase] generation GPU count=$((${#gpu_array[@]} - 1))"
+fi
 echo "[model-phase] run_root=${RUN_ROOT}"
 echo "[model-phase] methods=${METHODS}"
 if [[ "${PHASE}" == "ood_eval" ]]; then
@@ -136,6 +139,7 @@ exec env \
   REWARD_SERVER_BASE_PORT="${REWARD_SERVER_BASE_PORT}" \
   POSTHOC_REWARD_SERVER_PORT="${POSTHOC_REWARD_SERVER_PORT}" \
   POST_EVAL_ONLY="${POST_EVAL_ONLY}" SKIP_POST_EVAL="${SKIP_POST_EVAL}" \
+  GENERATION_END_INDEX="${GENERATION_END_INDEX:-}" \
   POSTHOC_EVAL_BACKENDS="${OOD_EVAL_BACKENDS}" \
   POSTHOC_SKIP_COMPLETE=1 POSTHOC_MERGE_SCOPE=model FAIL_FAST=1 \
   bash "${REPO}/tools/run_remaining_vqascore_algorithm_sweeps.sh"

@@ -32,6 +32,7 @@ HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-1800}"
 POSTHOC_EVAL_BACKENDS="${POSTHOC_EVAL_BACKENDS:-imagereward hpsv3 pickscore vqascore}"
 POSTHOC_SKIP_COMPLETE="${POSTHOC_SKIP_COMPLETE:-1}"
 POSTHOC_MERGE_SCOPE="${POSTHOC_MERGE_SCOPE:-run}"
+GENERATION_END_INDEX="${GENERATION_END_INDEX:-}"
 
 N_SIMS="${N_SIMS:-25}"
 BON_MCTS_N_SEEDS="${BON_MCTS_N_SEEDS:-8}"
@@ -95,10 +96,19 @@ import json, sys
 print(int(json.load(open(sys.argv[1], encoding="utf-8"))["subset_size"]))
 PY
 )"
+if [[ -z "${GENERATION_END_INDEX}" ]]; then
+  GENERATION_END_INDEX="${PROMPT_COUNT}"
+fi
+if [[ ! "${GENERATION_END_INDEX}" =~ ^[1-9][0-9]*$ ]] || (( GENERATION_END_INDEX > PROMPT_COUNT )); then
+  echo "Error: GENERATION_END_INDEX must be in [1, ${PROMPT_COUNT}]." >&2
+  exit 1
+fi
+TARGET_PROMPT_COUNT="${GENERATION_END_INDEX}"
 
 SOURCE_SID_RUN_ROOT="${SOURCE_SID_RUN_ROOT}" RUN_ROOT="${RUN_ROOT}" \
 BACKENDS="${BACKENDS}" METHODS="${METHODS}" \
-PROMPT_COUNT="${PROMPT_COUNT}" VQASCORE_MODEL="${VQASCORE_MODEL}" \
+PROMPT_COUNT="${PROMPT_COUNT}" TARGET_PROMPT_COUNT="${TARGET_PROMPT_COUNT}" \
+VQASCORE_MODEL="${VQASCORE_MODEL}" \
 STUDY_MANIFEST="${STUDY_MANIFEST}" "${PYTHON_BIN}" - <<'PY'
 import json, os
 from pathlib import Path
@@ -116,6 +126,7 @@ payload = {
     "source_sid_run_root": str(Path(os.environ["SOURCE_SID_RUN_ROOT"]).resolve()),
     "run_root": str(Path(os.environ["RUN_ROOT"]).resolve()),
     "prompt_count": int(os.environ["PROMPT_COUNT"]),
+    "generation_end_index": int(os.environ["TARGET_PROMPT_COUNT"]),
     "search_reward": "vqascore",
     "vqascore_model": os.environ["VQASCORE_MODEL"],
     "models": [{"model_id": value, "model_name": models[value]} for value in backends],
@@ -138,7 +149,7 @@ PY
 
 if [[ "${DRY_RUN}" == "1" ]]; then
   echo "[dry-run] source_sid=${SOURCE_SID_RUN_ROOT}"
-  echo "[dry-run] prompts=${PROMPT_COUNT} backends=${BACKENDS}"
+  echo "[dry-run] prompts=${TARGET_PROMPT_COUNT}/${PROMPT_COUNT} backends=${BACKENDS}"
   echo "[dry-run] methods=${METHODS}"
   echo "[dry-run] output=${RUN_ROOT}"
   exit 0
@@ -184,20 +195,36 @@ for backend in ${BACKENDS}; do
   model_root="${RUN_ROOT}/${backend}"
   pending=()
   for method in ${backend_methods}; do
-    if [[ -s "${model_root}/run_${RUN_ID}/${method}/aggregate_ddp.json" ]]; then
-      echo "[resume] ${backend}/${method} complete"
-    else
-      pending+=("${method}")
+    aggregate_path="${model_root}/run_${RUN_ID}/${method}/aggregate_ddp.json"
+    aggregate_count=0
+    if [[ -s "${aggregate_path}" ]]; then
+      aggregate_count="$(${PYTHON_BIN} - "${aggregate_path}" <<'PY'
+import json
+import sys
+try:
+    print(int(json.load(open(sys.argv[1], encoding="utf-8")).get("num_samples", 0) or 0))
+except (OSError, ValueError, TypeError, json.JSONDecodeError):
+    print(0)
+PY
+)"
     fi
+    if (( aggregate_count >= TARGET_PROMPT_COUNT )); then
+      echo "[resume] ${backend}/${method} complete (${aggregate_count}/${TARGET_PROMPT_COUNT})"
+      continue
+    fi
+    if (( aggregate_count > 0 )); then
+      echo "[resume] ${backend}/${method} partial (${aggregate_count}/${TARGET_PROMPT_COUNT})"
+    fi
+    pending+=("${method}")
   done
   if [[ "${POST_EVAL_ONLY}" == "1" || ${#pending[@]} -eq 0 ]]; then
     continue
   fi
   cell_index=$((cell_index + 1))
-  echo "[remaining-vqa] backend=${backend} methods=${pending[*]} prompts=${PROMPT_COUNT}"
+  echo "[remaining-vqa] backend=${backend} methods=${pending[*]} prompts=${TARGET_PROMPT_COUNT}/${PROMPT_COUNT}"
   common=(
     "PROMPT_FILE=${PROMPTS_TXT}" "METHODS=${pending[*]}" "START_INDEX=0"
-    "END_INDEX=${PROMPT_COUNT}" "SEED_MAP_FILE=${SEED_MAP_FILE}"
+    "END_INDEX=${TARGET_PROMPT_COUNT}" "SEED_MAP_FILE=${SEED_MAP_FILE}"
     "RUN_TS=${RUN_ID}" "OUT_ROOT=${model_root}" "STEPS=${steps}"
     "WIDTH=1024" "HEIGHT=1024"
     "N_VARIANTS=3" "USE_QWEN=0" "PRECOMPUTE_REWRITES=0"
@@ -256,7 +283,7 @@ if [[ "${SKIP_POST_EVAL}" != "1" ]]; then
     REWARD_CUDA_VISIBLE_DEVICES="${REWARD_CUDA_VISIBLE_DEVICES}" \
     POSTHOC_EVAL_BACKENDS="${POSTHOC_EVAL_BACKENDS}" \
     POSTHOC_SKIP_COMPLETE="${POSTHOC_SKIP_COMPLETE}" \
-    POSTHOC_EXPECTED_COUNT="${PROMPT_COUNT}" \
+    POSTHOC_EXPECTED_COUNT="${TARGET_PROMPT_COUNT}" \
     POSTHOC_RUN_ID="${RUN_ID}" \
     POSTHOC_ALLOW_MISSING_BACKENDS=0 POSTHOC_LAYOUT="${layout}" \
     POSTHOC_SNAPSHOT_ROOT="${RUN_ROOT}" \
@@ -271,7 +298,7 @@ if [[ "${SKIP_POST_EVAL}" != "1" ]]; then
         --root "${RUN_ROOT}" --backends ${POSTHOC_EVAL_BACKENDS} \
         --run-id "${RUN_ID}" \
         --summary-csv "${RUN_ROOT}/vqa_remaining_models_summary.csv" \
-        --expected-count "${PROMPT_COUNT}" --strict
+        --expected-count "${TARGET_PROMPT_COUNT}" --strict
       ;;
     model)
       for backend in ${BACKENDS}; do
@@ -283,7 +310,7 @@ if [[ "${SKIP_POST_EVAL}" != "1" ]]; then
           --root "${RUN_ROOT}" --backends ${POSTHOC_EVAL_BACKENDS} \
           --include-models "${backend}" --run-id "${RUN_ID}" \
           --summary-csv "${report_dir}/vqa_ood_summary.csv" \
-          --expected-count "${PROMPT_COUNT}" --strict
+          --expected-count "${TARGET_PROMPT_COUNT}" --strict
         cp "${report_dir}/vqa_ood_summary.csv" "${model_root}/vqa_ood_summary.csv"
         cp "${report_dir}/vqa_ood_summary.json" "${model_root}/vqa_ood_summary.json"
       done
@@ -300,7 +327,7 @@ if [[ "${SKIP_POST_EVAL}" == "1" ]]; then audit_extra+=(--no-strict); fi
 "${PYTHON_BIN}" "${REPO}/tools/audit_vqascore_sweep_coverage.py" \
   --root "${RUN_ROOT}" --models ${BACKENDS} --methods ${METHODS} \
   --eval-backends ${POSTHOC_EVAL_BACKENDS} \
-  --expected-prompts "${PROMPT_COUNT}" --run-id "${RUN_ID}" \
+  --expected-prompts "${TARGET_PROMPT_COUNT}" --run-id "${RUN_ID}" \
   --out-csv "${AUDIT_OUT_CSV:-${RUN_ROOT}/vqascore_coverage.csv}" \
   "${audit_extra[@]}"
 

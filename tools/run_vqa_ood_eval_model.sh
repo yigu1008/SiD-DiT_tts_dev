@@ -46,9 +46,14 @@ REWARD_ENV_CONDA_BASE="${REWARD_ENV_CONDA_BASE:-/home/ygu/miniconda3}"
 STANDARD_REWARD_ENV_NAME="${STANDARD_REWARD_ENV_NAME:-reward}"
 STANDARD_REWARD_PY="${REWARD_ENV_CONDA_BASE}/envs/${STANDARD_REWARD_ENV_NAME}/bin/python"
 DRY_RUN="${DRY_RUN:-0}"
+FINALIZE_REPORT="${FINALIZE_REPORT:-1}"
+SNAPSHOT_STEM="${SNAPSHOT_STEM:-vqa_ood_summary_partial}"
 
 case "${DRY_RUN}" in 0|1) ;;
   *) echo "Error: DRY_RUN must be 0 or 1." >&2; exit 2 ;;
+esac
+case "${FINALIZE_REPORT}" in 0|1) ;;
+  *) echo "Error: FINALIZE_REPORT must be 0 or 1." >&2; exit 2 ;;
 esac
 if [[ ! "${EXPECTED_PROMPTS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "Error: EXPECTED_PROMPTS must be positive." >&2
@@ -124,8 +129,13 @@ POSTHOC_ALLOW_MISSING_BACKENDS=0 \
 POSTHOC_LAYOUT="${LAYOUT}" \
 POSTHOC_SNAPSHOT_ROOT="${STUDY_RUN_ROOT}" \
 POSTHOC_SNAPSHOT_MODEL="${MODEL}" \
-POSTHOC_SNAPSHOT_SUMMARY="${REPORT_DIR}/vqa_ood_summary_partial.csv" \
+POSTHOC_SNAPSHOT_SUMMARY="${REPORT_DIR}/${SNAPSHOT_STEM}.csv" \
 bash "${REPO}/post_eval_extra_rewards.sh"
+
+if [[ "${FINALIZE_REPORT}" == "0" ]]; then
+  echo "[ood-only] backend files complete; canonical cross-backend report was left untouched."
+  exit 0
+fi
 
 "${PYTHON_BIN}" "${REPO}/tools/merge_posthoc_reward_evals.py" \
   --root "${STUDY_RUN_ROOT}" \

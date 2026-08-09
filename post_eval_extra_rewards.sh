@@ -27,6 +27,8 @@
 #                          equals POSTHOC_EXPECTED_COUNT (default 0)
 #   POSTHOC_EXPECTED_COUNT: required positive row count for skip checks
 #   POSTHOC_RUN_ID: if set, only discover OUT_ROOT/run_<id>/<method>
+#   POSTHOC_METHODS: optional space-separated method-directory names to score;
+#                    all discovered methods are used when unset
 #   POSTHOC_SNAPSHOT_ROOT: study root passed to the partial merge hook
 #   POSTHOC_SNAPSHOT_MODEL: model ID selected by the partial merge hook
 #   POSTHOC_SNAPSHOT_SUMMARY: partial cross-method CSV refreshed after each
@@ -53,6 +55,7 @@ POSTHOC_ALLOW_MISSING_BACKENDS="${POSTHOC_ALLOW_MISSING_BACKENDS:-1}"
 POSTHOC_SKIP_COMPLETE="${POSTHOC_SKIP_COMPLETE:-0}"
 POSTHOC_EXPECTED_COUNT="${POSTHOC_EXPECTED_COUNT:-0}"
 POSTHOC_RUN_ID="${POSTHOC_RUN_ID:-}"
+POSTHOC_METHODS="${POSTHOC_METHODS:-}"
 POSTHOC_SNAPSHOT_ROOT="${POSTHOC_SNAPSHOT_ROOT:-}"
 POSTHOC_SNAPSHOT_MODEL="${POSTHOC_SNAPSHOT_MODEL:-}"
 POSTHOC_SNAPSHOT_SUMMARY="${POSTHOC_SNAPSHOT_SUMMARY:-}"
@@ -137,9 +140,22 @@ if [[ -n "${POSTHOC_RUN_ID}" ]]; then
   METHOD_SEARCH_ROOT="${OUT_ROOT}/run_${POSTHOC_RUN_ID}"
 fi
 mapfile -t METHOD_DIRS < <(find "${METHOD_SEARCH_ROOT}" -maxdepth 4 -type f -name aggregate_ddp.json 2>/dev/null | sed 's|/aggregate_ddp.json$||' | sort)
+if [[ -n "${POSTHOC_METHODS}" ]]; then
+  filtered_method_dirs=()
+  for method_dir in "${METHOD_DIRS[@]}"; do
+    method_name="$(basename "${method_dir}")"
+    for requested_method in ${POSTHOC_METHODS}; do
+      if [[ "${method_name}" == "${requested_method}" ]]; then
+        filtered_method_dirs+=("${method_dir}")
+        break
+      fi
+    done
+  done
+  METHOD_DIRS=("${filtered_method_dirs[@]}")
+fi
 if [[ "${#METHOD_DIRS[@]}" -eq 0 ]]; then
-  echo "[posthoc] no method dirs with aggregate_ddp.json under ${OUT_ROOT}; nothing to evaluate" >&2
-  exit 0
+  echo "[posthoc] no requested method dirs with aggregate_ddp.json under ${OUT_ROOT}" >&2
+  exit 1
 fi
 
 echo "[posthoc] found ${#METHOD_DIRS[@]} method dirs:"

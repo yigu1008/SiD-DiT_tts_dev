@@ -34,6 +34,10 @@ SEED="${SEED:-42}"
 SEED_MAP_FILE="${SEED_MAP_FILE:-}"
 N_VARIANTS="${N_VARIANTS:-3}"
 CFG_SCALES="${CFG_SCALES:-1.0 1.25 1.5 1.75 2.0 2.25 2.5}"
+RESUME_PROMPTS="${RESUME_PROMPTS:-0}"
+case "${RESUME_PROMPTS}" in 0|1) ;;
+  *) echo "Error: RESUME_PROMPTS must be 0 or 1." >&2; exit 2 ;;
+esac
 BASELINE_CFG="${BASELINE_CFG:-1.0}"
 N_SIMS="${N_SIMS:-60}"
 # Per-backend N_SIMS recommendation: 25 for 4-step distilled backends
@@ -1309,6 +1313,9 @@ run_method() {
   esac
 
   local -a extra=()
+  if [[ "${RESUME_PROMPTS}" == "1" ]]; then
+    extra+=(--resume)
+  fi
   if [[ -f "${REWRITES_FILE}" ]]; then
     extra+=(--rewrites_file "${REWRITES_FILE}")
   fi

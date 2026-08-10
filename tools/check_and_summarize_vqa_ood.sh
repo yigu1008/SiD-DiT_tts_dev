@@ -12,12 +12,14 @@ RUN_ID="${RUN_ID:-genai200_v1}"
 EXPECTED_PROMPTS="${EXPECTED_PROMPTS:-200}"
 OOD_EVAL_BACKENDS="${OOD_EVAL_BACKENDS:-imagereward hpsv3 pickscore hpsv2}"
 FLUX_METHODS="${FLUX_METHODS:-baseline fksteering bon beam sop ga dts dts_star dynamic_cfg_x0 bon_mcts}"
+SID_METHODS="${SID_METHODS:-baseline fksteering bon beam sop ga dts dts_star dynamic_cfg_x0 bon_mcts}"
 SENSE_METHODS="${SENSE_METHODS:-baseline fksteering bon beam sop ga dts dts_star dynamic_cfg_x0 bon_mcts}"
 SD35_BASE_METHODS="${SD35_BASE_METHODS:-baseline fksteering bon beam sop ga}"
 PYTHON_BIN="${PYTHON_BIN:-/home/ygu/miniconda3/envs/sid_dit/bin/python}"
 REQUIRE_COMPLETE="${REQUIRE_COMPLETE:-0}"
 
 STUDY_RUN_ROOT="${STUDY_RUN_ROOT:-${HUMAN_EVAL_ROOT}/vqascore_remaining_models/${RUN_ID}}"
+SID_STUDY_RUN_ROOT="${SID_STUDY_RUN_ROOT:-${HUMAN_EVAL_ROOT}/sid_vqascore_algorithm_sweep/${RUN_ID}}"
 REPORT_ROOT="${REPORT_ROOT:-${STUDY_RUN_ROOT}/reports}"
 COMBINED_CSV="${REPORT_ROOT}/vqa_ood_score_summary.csv"
 COMBINED_JSON="${REPORT_ROOT}/vqa_ood_score_summary.json"
@@ -38,35 +40,47 @@ if [[ ! -d "${STUDY_RUN_ROOT}" ]]; then
   echo "Error: study root is missing: ${STUDY_RUN_ROOT}" >&2
   exit 1
 fi
+if [[ ! -d "${SID_STUDY_RUN_ROOT}" ]]; then
+  echo "Error: SiD study root is missing: ${SID_STUDY_RUN_ROOT}" >&2
+  exit 1
+fi
 mkdir -p "${REPORT_ROOT}"
 
 audit_model() {
-  local model="$1"
-  local methods="$2"
-  local model_report_dir="${STUDY_RUN_ROOT}/${model}/run_${RUN_ID}/reports"
+  local study_root="$1"
+  local model="$2"
+  local methods="$3"
+  local model_report_dir="${study_root}/${model}/run_${RUN_ID}/reports"
   mkdir -p "${model_report_dir}"
   echo "[ood-summary] auditing model=${model}"
   "${PYTHON_BIN}" "${REPO}/tools/audit_vqascore_sweep_coverage.py" \
-    --root "${STUDY_RUN_ROOT}" --models "${model}" --methods ${methods} \
+    --root "${study_root}" --models "${model}" --methods ${methods} \
     --expected-prompts "${EXPECTED_PROMPTS}" \
     --eval-backends ${OOD_EVAL_BACKENDS} --run-id "${RUN_ID}" \
     --out-csv "${model_report_dir}/vqascore_coverage.csv" --no-strict
 }
 
-audit_model flux_schnell "${FLUX_METHODS}"
-audit_model senseflow_large "${SENSE_METHODS}"
-audit_model sd35_base "${SD35_BASE_METHODS}"
+audit_model "${STUDY_RUN_ROOT}" flux_schnell "${FLUX_METHODS}"
+audit_model "${SID_STUDY_RUN_ROOT}" sid "${SID_METHODS}"
+audit_model "${STUDY_RUN_ROOT}" senseflow_large "${SENSE_METHODS}"
+audit_model "${STUDY_RUN_ROOT}" sd35_base "${SD35_BASE_METHODS}"
 
-missing_count="$(${PYTHON_BIN} - "${STUDY_RUN_ROOT}" "${RUN_ID}" <<'PY'
+missing_count="$(${PYTHON_BIN} - "${STUDY_RUN_ROOT}" "${SID_STUDY_RUN_ROOT}" "${RUN_ID}" <<'PY'
 import csv
 import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
-run_id = sys.argv[2]
+sid_root = Path(sys.argv[2])
+run_id = sys.argv[3]
 missing = 0
-for model in ("flux_schnell", "senseflow_large", "sd35_base"):
-    path = root / model / f"run_{run_id}" / "reports" / "vqascore_coverage.csv"
+for study_root, model in (
+    (root, "flux_schnell"),
+    (sid_root, "sid"),
+    (root, "senseflow_large"),
+    (root, "sd35_base"),
+):
+    path = study_root / model / f"run_{run_id}" / "reports" / "vqascore_coverage.csv"
     with path.open(newline="", encoding="utf-8") as handle:
         missing += sum(row.get("status") != "OK" for row in csv.DictReader(handle))
 print(missing)
@@ -79,23 +93,26 @@ if (( missing_count > 0 )) && [[ "${REQUIRE_COMPLETE}" == "1" ]]; then
 fi
 
 summarize_model() {
-  local model="$1"
-  local methods="$2"
-  local model_report_dir="${STUDY_RUN_ROOT}/${model}/run_${RUN_ID}/reports"
+  local study_root="$1"
+  local model="$2"
+  local methods="$3"
+  local model_report_dir="${study_root}/${model}/run_${RUN_ID}/reports"
   echo "[ood-summary] summarizing model=${model}"
   "${PYTHON_BIN}" "${REPO}/tools/merge_posthoc_reward_evals.py" \
-    --root "${STUDY_RUN_ROOT}" --include-models "${model}" \
+    --root "${study_root}" --include-models "${model}" \
     --include-methods ${methods} --run-id "${RUN_ID}" \
     --backends ${OOD_EVAL_BACKENDS} \
     --summary-csv "${model_report_dir}/vqa_ood_summary_partial.csv" \
     --expected-count "${EXPECTED_PROMPTS}" --no-strict
 }
 
-summarize_model flux_schnell "${FLUX_METHODS}"
-summarize_model senseflow_large "${SENSE_METHODS}"
-summarize_model sd35_base "${SD35_BASE_METHODS}"
+summarize_model "${STUDY_RUN_ROOT}" flux_schnell "${FLUX_METHODS}"
+summarize_model "${SID_STUDY_RUN_ROOT}" sid "${SID_METHODS}"
+summarize_model "${STUDY_RUN_ROOT}" senseflow_large "${SENSE_METHODS}"
+summarize_model "${STUDY_RUN_ROOT}" sd35_base "${SD35_BASE_METHODS}"
 
-STUDY_RUN_ROOT="${STUDY_RUN_ROOT}" RUN_ID="${RUN_ID}" \
+STUDY_RUN_ROOT="${STUDY_RUN_ROOT}" SID_STUDY_RUN_ROOT="${SID_STUDY_RUN_ROOT}" \
+RUN_ID="${RUN_ID}" \
 COMBINED_CSV="${COMBINED_CSV}" COMBINED_JSON="${COMBINED_JSON}" \
 COMBINED_MD="${COMBINED_MD}" MISSING_COUNT="${missing_count}" \
 OOD_EVAL_BACKENDS="${OOD_EVAL_BACKENDS}" \
@@ -106,14 +123,20 @@ import os
 from pathlib import Path
 
 root = Path(os.environ["STUDY_RUN_ROOT"])
+sid_root = Path(os.environ["SID_STUDY_RUN_ROOT"])
 run_id = os.environ["RUN_ID"]
 backends = os.environ["OOD_EVAL_BACKENDS"].split()
-models = ("flux_schnell", "senseflow_large", "sd35_base")
+model_sources = (
+    (root, "flux_schnell"),
+    (sid_root, "sid"),
+    (root, "senseflow_large"),
+    (root, "sd35_base"),
+)
 rows = []
 fieldnames = None
 sources = []
-for model in models:
-    source = root / model / f"run_{run_id}" / "reports" / "vqa_ood_summary_partial.csv"
+for study_root, model in model_sources:
+    source = study_root / model / f"run_{run_id}" / "reports" / "vqa_ood_summary_partial.csv"
     sources.append(str(source))
     with source.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
@@ -170,16 +193,17 @@ def number(row, name):
     except (TypeError, ValueError):
         return "—"
 
-headers = ["Model", "Method", "N", *backends, "Complete"]
+headers = ["Model", "Method", "N", "VQAScore", *backends, "Complete"]
 lines = [
     "| " + " | ".join(headers) + " |",
-    "|" + "|".join(["---", "---", "---:", *(["---:"] * len(backends)), "---:"]) + "|",
+    "|" + "|".join(["---", "---", "---:", "---:", *(["---:"] * len(backends)), "---:"]) + "|",
 ]
 for row in rows:
     cells = [
         row.get("model_name", row.get("model_id", "")),
         row.get("method_label", row.get("method", "")),
         str(row.get("prompt_count", "")),
+        number(row, "mean_search_score"),
         *[number(row, f"eval_{backend}_mean") for backend in backends],
         "yes" if str(row.get("ood_complete", "")).lower() == "true" else "no",
     ]

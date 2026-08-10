@@ -122,6 +122,50 @@ class PrepareSubsetTest(unittest.TestCase):
 
 
 class MergeEvaluationsTest(unittest.TestCase):
+    def test_merge_cli_filters_methods(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for method in ("baseline", "bon_mcts"):
+                method_dir = root / "sd35_base" / "run_v1" / method
+                method_dir.mkdir(parents=True)
+                (method_dir / "aggregate_ddp.json").write_text(
+                    json.dumps({"num_samples": 1, "mean_search_score": 0.5}),
+                    encoding="utf-8",
+                )
+                row = {
+                    "prompt_index": 0,
+                    "slug": "p0000",
+                    "sample_index": 0,
+                    "prompt": "original c0",
+                    "image_path": f"/tmp/{method}/p0000.png",
+                    "scores": {"imagereward": 0.75},
+                }
+                (method_dir / "best_images_imagereward.json").write_text(
+                    json.dumps({"rows": [row]}), encoding="utf-8"
+                )
+
+            report = root / "summary.csv"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).parent / "tools" / "merge_posthoc_reward_evals.py"),
+                    "--root", str(root),
+                    "--include-models", "sd35_base",
+                    "--include-methods", "baseline",
+                    "--run-id", "v1",
+                    "--backends", "imagereward",
+                    "--summary-csv", str(report),
+                    "--expected-count", "1",
+                    "--strict",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            with report.open(encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual([row["method"] for row in rows], ["baseline"])
+
     def test_merge_cli_writes_csv_and_json_reports(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

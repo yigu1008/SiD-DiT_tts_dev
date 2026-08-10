@@ -293,6 +293,12 @@ def parse_args() -> argparse.Namespace:
         help="Only merge method directories beneath these model IDs.",
     )
     parser.add_argument(
+        "--include-methods",
+        nargs="+",
+        default=[],
+        help="Only merge method directories with these exact method names.",
+    )
+    parser.add_argument(
         "--run-id",
         default="",
         help="Only merge method directories beneath run_<run-id>.",
@@ -318,6 +324,11 @@ def main() -> int:
             path
             for path in method_dirs
             if included.intersection(path.relative_to(root).parts)
+        ]
+    if args.include_methods:
+        included_methods = set(args.include_methods)
+        method_dirs = [
+            path for path in method_dirs if path.name in included_methods
         ]
     if args.run_id:
         run_component = f"run_{args.run_id}"

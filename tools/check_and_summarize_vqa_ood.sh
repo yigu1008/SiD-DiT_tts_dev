@@ -13,7 +13,7 @@ EXPECTED_PROMPTS="${EXPECTED_PROMPTS:-200}"
 OOD_EVAL_BACKENDS="${OOD_EVAL_BACKENDS:-imagereward hpsv3 pickscore hpsv2}"
 FLUX_METHODS="${FLUX_METHODS:-baseline fksteering bon beam sop ga dts dts_star dynamic_cfg_x0 bon_mcts}"
 SENSE_METHODS="${SENSE_METHODS:-baseline fksteering bon beam sop ga dts dts_star dynamic_cfg_x0 bon_mcts}"
-SD35_BASE_METHODS="${SD35_BASE_METHODS:-baseline fksteering bon beam sop ga dts dts_star dynamic_cfg_x0}"
+SD35_BASE_METHODS="${SD35_BASE_METHODS:-baseline fksteering bon beam sop ga}"
 PYTHON_BIN="${PYTHON_BIN:-/home/ygu/miniconda3/envs/sid_dit/bin/python}"
 REQUIRE_COMPLETE="${REQUIRE_COMPLETE:-0}"
 
@@ -98,7 +98,8 @@ summarize_model sd35_base "${SD35_BASE_METHODS}"
 STUDY_RUN_ROOT="${STUDY_RUN_ROOT}" RUN_ID="${RUN_ID}" \
 COMBINED_CSV="${COMBINED_CSV}" COMBINED_JSON="${COMBINED_JSON}" \
 COMBINED_MD="${COMBINED_MD}" MISSING_COUNT="${missing_count}" \
-OOD_EVAL_BACKENDS="${OOD_EVAL_BACKENDS}" "${PYTHON_BIN}" - <<'PY'
+OOD_EVAL_BACKENDS="${OOD_EVAL_BACKENDS}" \
+SD35_BASE_METHODS="${SD35_BASE_METHODS}" "${PYTHON_BIN}" - <<'PY'
 import csv
 import json
 import os
@@ -128,6 +129,28 @@ with temporary.open("w", newline="", encoding="utf-8") as handle:
     writer.writerows(rows)
 temporary.replace(csv_path)
 
+all_methods = (
+    "baseline", "fksteering", "bon", "beam", "sop", "ga", "dts",
+    "dts_star", "dynamic_cfg_x0", "bon_mcts",
+)
+included_base_methods = set(os.environ["SD35_BASE_METHODS"].split())
+exclusions = []
+for method in all_methods:
+    if method in included_base_methods:
+        continue
+    if method == "bon_mcts":
+        reason = "SD3.5-Base ActDiff was explicitly excluded from this OOD summary."
+    else:
+        reason = (
+            "The method was not generated in the SD3.5-Base continuation and "
+            "is excluded from expected OOD coverage."
+        )
+    exclusions.append({
+        "model_id": "sd35_base",
+        "method": method,
+        "reason": reason,
+    })
+
 json_path = Path(os.environ["COMBINED_JSON"])
 json_path.write_text(json.dumps({
     "run_id": run_id,
@@ -135,11 +158,7 @@ json_path.write_text(json.dumps({
     "row_count": len(rows),
     "complete_row_count": sum(str(row.get("ood_complete", "")).lower() == "true" for row in rows),
     "incomplete_coverage_cells": int(os.environ["MISSING_COUNT"]),
-    "exclusions": [{
-        "model_id": "sd35_base",
-        "method": "bon_mcts",
-        "reason": "SD3.5-Base ActDiff was explicitly excluded from this OOD summary.",
-    }],
+    "exclusions": exclusions,
     "sources": sources,
     "rows": rows,
 }, indent=2) + "\n", encoding="utf-8")

@@ -1,0 +1,11 @@
+- [CoT SFT program state, 2026-09-22](cot-sft-program-state-2026-09-22.md) — paused with all arms negative; read DIAGNOSIS.md before proposing new arms
+- [Reward orthogonality result, 2026-09-22](reward-orthogonality-result-2026-09-22.md) — HPSv3 vs VQAScore is ~independent within-prompt (0.11, 0.00 on SiD); all three rewards have only 10-22% within-prompt variance
+- [Image reward env pitfalls](image-reward-env-pitfalls.md) — HPSv3+ImageReward run in `reward` (not sid_dit); t2v_metrics' relative hf_cache path will refill /data
+- [Unattended chain monitoring](unattended-chain-monitoring.md) — bare `wait` + verdict-only monitors caused a 13h silent stall; stall branch + deadline in every monitor
+- [SiD MCTS follow-up 2026-09-24](sid-mcts-followup-2026-09-24.md) — implemented MCTS is UCB1 depth-1 best-of-40 with noise actions; static-vs-MCTS, fixed-bank, Random-IR and VQA-ablation contrasts at n=25 and n=99 (VQA term significant at 99)
+- [SiD method timing and memory 2026-09-25](sid-method-timing-memory-2026-09-25.md) — all 25 methods: memory identical (18.2 GB search peak, 31.6 GB process), timing 10 s to 1688 s per prompt; noise_inject default not budget-matched
+- [AI writing check server setup](ai-writing-check-server-setup.md) — Binoculars/Falcon-7B detector in env `binoculars` (torch must be cu126, not cu13), weights in ~/.cache/huggingface, run/serve commands, root-disk pitfall
+- [VLM decider on base SD3.5, 2026-10-16](vlm-decider-sd35base-2026-10-16.md) — Qwen2.5-VL prunes key-step MCTS on base SD3.5-Large; run dir, servers, arms, probe timings, held-out caveat
+- [A6000 shared-GPU kills, 2026-10-16](a6000-shared-gpu-kills-2026-10-16.md) — ryan's multi-GPU launches SIGTERM ygu processes on the GPUs they take; check owners before launching, GPU 1 was safe
+- [Reward choice beats reward selection, 2026-10-19](reward-choice-beats-reward-selection-2026-10-19.md) — pick the search reward per run (hpsv3 +0.879, held-out flat); per-node Jev reward selection adds nothing, oracle headroom ~0.01
+- [Initial noise dominates action search, 2026-10-19](initial-noise-dominates-action-search-2026-10-19.md) — z0 carries ~5x the reward variance of wording/CFG; best-of-11 noise on HPSv3 beats every search arm, best-of-2 matches MCTS at 1/5.5 NFE

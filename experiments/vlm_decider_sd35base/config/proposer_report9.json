@@ -1,0 +1,389 @@
+[
+ {
+  "prompt_id": "q0000",
+  "base": "A panoramic view of a mountain range, its peaks dusted with snow.",
+  "n_valid": 2,
+  "slots": [
+   {
+    "slot": "explicit",
+    "accepted": null,
+    "trace": [
+     "attempt 1 (T=0.0): dropped ['dusted']",
+     "attempt 2 (T=0.3): dropped ['dusted']",
+     "attempt 3 (T=0.6): dropped ['dusted']",
+     "attempt 4 (T=0.9): dropped ['dusted', 'peaks']",
+     "attempt 5 (T=1.0): dropped ['dusted', 'peaks', 'range']",
+     "attempt 6 (T=1.0): dropped ['dusted', 'peaks']"
+    ]
+   },
+   {
+    "slot": "concrete",
+    "accepted": "A panoramic view of a mountain range, its highest peaks dusted with snow.",
+    "trace": [
+     "attempt 1 (T=0.0): dropped ['dusted']",
+     "attempt 2 (T=0.3): dropped ['dusted']",
+     "attempt 3 (T=0.6): dropped ['dusted']",
+     "attempt 4 (T=0.9): dropped ['dusted']",
+     "attempt 5: ok"
+    ]
+   },
+   {
+    "slot": "frontload",
+    "accepted": "Its peaks dusted with snow, a panoramic view of a mountain range.",
+    "trace": [
+     "attempt 1 (T=0.0): identical to base",
+     "attempt 2 (T=0.3): identical to base",
+     "attempt 3: ok"
+    ]
+   }
+  ],
+  "variants": [
+   "A panoramic view of a mountain range, its peaks dusted with snow.",
+   "A panoramic view of a mountain range, its highest peaks dusted with snow.",
+   "Its peaks dusted with snow, a panoramic view of a mountain range.",
+   "A panoramic view of a mountain range, its peaks dusted with snow."
+  ]
+ },
+ {
+  "prompt_id": "q0004",
+  "base": "A playful kitten with a bell collar on the left, batting at a fluttering butterfly on the right.",
+  "n_valid": 2,
+  "slots": [
+   {
+    "slot": "explicit",
+    "accepted": "A playful kitten wearing a bell collar is positioned on the left, actively batting at a fluttering butterfly located on the right.",
+    "trace": [
+     "attempt 1 (T=0.0): dropped ['batting']",
+     "attempt 2 (T=0.3): dropped ['batting']",
+     "attempt 3: ok"
+    ]
+   },
+   {
+    "slot": "concrete",
+    "accepted": null,
+    "trace": [
+     "attempt 1 (T=0.0): dropped ['batting']",
+     "attempt 2 (T=0.3): dropped ['batting']",
+     "attempt 3 (T=0.6): dropped ['batting']",
+     "attempt 4 (T=0.9): dropped ['fluttering', 'playful']",
+     "attempt 5 (T=1.0): numerals [] -> [1, 1]",
+     "attempt 6 (T=1.0): dropped ['batting']"
+    ]
+   },
+   {
+    "slot": "frontload",
+    "accepted": "On the left, a playful kitten with a bell collar, batting at a fluttering butterfly on the right.",
+    "trace": [
+     "attempt 1 (T=0.0): dropped ['batting']",
+     "attempt 2 (T=0.3): dropped ['batting']",
+     "attempt 3: ok"
+    ]
+   }
+  ],
+  "variants": [
+   "A playful kitten with a bell collar on the left, batting at a fluttering butterfly on the right.",
+   "A playful kitten wearing a bell collar is positioned on the left, actively batting at a fluttering butterfly located on the right.",
+   "On the left, a playful kitten with a bell collar, batting at a fluttering butterfly on the right.",
+   "A playful kitten with a bell collar on the left, batting at a fluttering butterfly on the right."
+  ]
+ },
+ {
+  "prompt_id": "q0011",
+  "base": "There are four dresses on the hanger; the one with a long hemline is the most vibrant.",
+  "n_valid": 2,
+  "slots": [
+   {
+    "slot": "explicit",
+    "accepted": "There are four dresses on the hanger; the one with a long hemline is the most vibrant dress.",
+    "trace": [
+     "attempt 1: ok"
+    ]
+   },
+   {
+    "slot": "concrete",
+    "accepted": null,
+    "trace": [
+     "attempt 1 (T=0.0): numerals [1, 4] -> [4]",
+     "attempt 2 (T=0.3): numerals [1, 4] -> [4]",
+     "attempt 3 (T=0.6): numerals [1, 4] -> [4]",
+     "attempt 4 (T=0.9): dropped ['vibrant']",
+     "attempt 5 (T=1.0): numerals [1, 4] -> [4]",
+     "attempt 6 (T=1.0): numerals [1, 4] -> [1, 4, 4]"
+    ]
+   },
+   {
+    "slot": "frontload",
+    "accepted": "The one with a long hemline is the most vibrant; there are four dresses on the hanger.",
+    "trace": [
+     "attempt 1: ok"
+    ]
+   }
+  ],
+  "variants": [
+   "There are four dresses on the hanger; the one with a long hemline is the most vibrant.",
+   "There are four dresses on the hanger; the one with a long hemline is the most vibrant dress.",
+   "The one with a long hemline is the most vibrant; there are four dresses on the hanger.",
+   "There are four dresses on the hanger; the one with a long hemline is the most vibrant."
+  ]
+ },
+ {
+  "prompt_id": "q0020",
+  "base": "Several umbrellas of varying colors leaned against stands in the hallway.",
+  "n_valid": 1,
+  "slots": [
+   {
+    "slot": "explicit",
+    "accepted": null,
+    "trace": [
+     "attempt 1 (T=0.0): dropped ['against', 'leaned', 'several', 'varying']",
+     "attempt 2 (T=0.3): dropped ['against', 'leaned', 'several', 'varying']",
+     "attempt 3 (T=0.6): dropped ['against', 'colors', 'leaned', 'several', 'varying']",
+     "attempt 4 (T=0.9): dropped ['colors', 'leaned', 'several', 'stands', 'varying']",
+     "attempt 5 (T=1.0): dropped ['against', 'leaned', 'several']",
+     "attempt 6 (T=1.0): numerals [] -> [2, 3, 5]"
+    ]
+   },
+   {
+    "slot": "concrete",
+    "accepted": null,
+    "trace": [
+     "attempt 1 (T=0.0): dropped ['varying']",
+     "attempt 2 (T=0.3): dropped ['varying']",
+     "attempt 3 (T=0.6): dropped ['leaned', 'varying']",
+     "attempt 4 (T=0.9): dropped ['against', 'leaned', 'varying']",
+     "attempt 5 (T=1.0): dropped ['leaned', 'several', 'varying']",
+     "attempt 6 (T=1.0): numerals [] -> [5]"
+    ]
+   },
+   {
+    "slot": "frontload",
+    "accepted": "Several umbrellas leaned against stands in the hallway of varying colors.",
+    "trace": [
+     "attempt 1: ok"
+    ]
+   }
+  ],
+  "variants": [
+   "Several umbrellas of varying colors leaned against stands in the hallway.",
+   "Several umbrellas leaned against stands in the hallway of varying colors.",
+   "Several umbrellas of varying colors leaned against stands in the hallway.",
+   "Several umbrellas of varying colors leaned against stands in the hallway."
+  ]
+ },
+ {
+  "prompt_id": "q0027",
+  "base": "Two birds are chasing each other in the air, with the one flying higher having a long tail and the other bird having a short tail.",
+  "n_valid": 1,
+  "slots": [
+   {
+    "slot": "explicit",
+    "accepted": null,
+    "trace": [
+     "attempt 1 (T=0.0): numerals [1, 2] -> []",
+     "attempt 2 (T=0.3): numerals [1, 2] -> []",
+     "attempt 3 (T=0.6): numerals [1, 2] -> []",
+     "attempt 4 (T=0.9): numerals [1, 2] -> [2]",
+     "attempt 5 (T=1.0): numerals [1, 2] -> []",
+     "attempt 6 (T=1.0): numerals [1, 2] -> []"
+    ]
+   },
+   {
+    "slot": "concrete",
+    "accepted": null,
+    "trace": [
+     "attempt 1 (T=0.0): numerals [1, 2] -> [2]",
+     "attempt 2 (T=0.3): numerals [1, 2] -> [2]",
+     "attempt 3 (T=0.6): numerals [1, 2] -> [2]",
+     "attempt 4 (T=0.9): numerals [1, 2] -> [2]",
+     "attempt 5 (T=1.0): dropped ['chasing', 'each', 'having']",
+     "attempt 6 (T=1.0): dropped ['chasing', 'each', 'flying', 'having', 'long']"
+    ]
+   },
+   {
+    "slot": "frontload",
+    "accepted": "The one flying higher has a long tail; two birds are chasing each other in the air, with the other bird having a short tail.",
+    "trace": [
+     "attempt 1: ok"
+    ]
+   }
+  ],
+  "variants": [
+   "Two birds are chasing each other in the air, with the one flying higher having a long tail and the other bird having a short tail.",
+   "The one flying higher has a long tail; two birds are chasing each other in the air, with the other bird having a short tail.",
+   "Two birds are chasing each other in the air, with the one flying higher having a long tail and the other bird having a short tail.",
+   "Two birds are chasing each other in the air, with the one flying higher having a long tail and the other bird having a short tail."
+  ]
+ },
+ {
+  "prompt_id": "q0033",
+  "base": "A harbor filled with lights, reflecting on the calm water at night.",
+  "n_valid": 3,
+  "slots": [
+   {
+    "slot": "explicit",
+    "accepted": "A brightly lit harbor filled with boats, their lights reflecting on the calm water under a clear night sky.",
+    "trace": [
+     "attempt 1 (T=0.0): dropped ['lights']",
+     "attempt 2 (T=0.3): dropped ['filled']",
+     "attempt 3: ok"
+    ]
+   },
+   {
+    "slot": "concrete",
+    "accepted": "A harbor filled with numerous lights, reflecting on the calm water at night.",
+    "trace": [
+     "attempt 1: ok"
+    ]
+   },
+   {
+    "slot": "frontload",
+    "accepted": "At night, a harbor filled with lights, reflecting on the calm water.",
+    "trace": [
+     "attempt 1: ok"
+    ]
+   }
+  ],
+  "variants": [
+   "A harbor filled with lights, reflecting on the calm water at night.",
+   "A brightly lit harbor filled with boats, their lights reflecting on the calm water under a clear night sky.",
+   "A harbor filled with numerous lights, reflecting on the calm water at night.",
+   "At night, a harbor filled with lights, reflecting on the calm water."
+  ]
+ },
+ {
+  "prompt_id": "q0041",
+  "base": "There are four train toys on the floor, none of which are adjacent to each other.",
+  "n_valid": 1,
+  "slots": [
+   {
+    "slot": "explicit",
+    "accepted": null,
+    "trace": [
+     "attempt 1 (T=0.0): dropped ['adjacent', 'none', 'which']",
+     "attempt 2 (T=0.3): dropped ['adjacent', 'each', 'none', 'which']",
+     "attempt 3 (T=0.6): numerals [4] -> [2, 4]",
+     "attempt 4 (T=0.9): dropped ['each', 'none', 'other', 'which']",
+     "attempt 5 (T=1.0): numerals [4] -> [2, 4]",
+     "attempt 6 (T=1.0): numerals [4] -> [1, 2, 4]"
+    ]
+   },
+   {
+    "slot": "concrete",
+    "accepted": null,
+    "trace": [
+     "attempt 1 (T=0.0): numerals [4] -> [2, 4]",
+     "attempt 2 (T=0.3): numerals [4] -> [2, 4]",
+     "attempt 3 (T=0.6): dropped ['adjacent', 'each', 'none', 'which']",
+     "attempt 4 (T=0.9): numerals [4] -> [2, 4]",
+     "attempt 5 (T=1.0): numerals [4] -> [1, 2, 3]",
+     "attempt 6 (T=1.0): dropped ['adjacent', 'which']"
+    ]
+   },
+   {
+    "slot": "frontload",
+    "accepted": "Four train toys on the floor, none of which are adjacent to each other.",
+    "trace": [
+     "attempt 1 (T=0.0): dropped ['which']",
+     "attempt 2 (T=0.3): dropped ['which']",
+     "attempt 3 (T=0.6): dropped ['which']",
+     "attempt 4 (T=0.9): dropped ['which']",
+     "attempt 5: ok"
+    ]
+   }
+  ],
+  "variants": [
+   "There are four train toys on the floor, none of which are adjacent to each other.",
+   "Four train toys on the floor, none of which are adjacent to each other.",
+   "There are four train toys on the floor, none of which are adjacent to each other.",
+   "There are four train toys on the floor, none of which are adjacent to each other."
+  ]
+ },
+ {
+  "prompt_id": "q0047",
+  "base": "A woman with three silver bracelets sitting on a bench.",
+  "n_valid": 2,
+  "slots": [
+   {
+    "slot": "explicit",
+    "accepted": "A woman wearing three silver bracelets sitting on a bench.",
+    "trace": [
+     "attempt 1 (T=0.0): dropped ['sitting']",
+     "attempt 2 (T=0.3): dropped ['sitting']",
+     "attempt 3: ok"
+    ]
+   },
+   {
+    "slot": "concrete",
+    "accepted": null,
+    "trace": [
+     "attempt 1 (T=0.0): dropped ['sitting']",
+     "attempt 2 (T=0.3): dropped ['sitting']",
+     "attempt 3 (T=0.6): dropped ['sitting']",
+     "attempt 4 (T=0.9): dropped ['sitting']",
+     "attempt 5 (T=1.0): dropped ['sitting']",
+     "attempt 6 (T=1.0): dropped ['sitting']"
+    ]
+   },
+   {
+    "slot": "frontload",
+    "accepted": "Three silver bracelets worn by a woman sitting on a bench.",
+    "trace": [
+     "attempt 1: ok"
+    ]
+   }
+  ],
+  "variants": [
+   "A woman with three silver bracelets sitting on a bench.",
+   "A woman wearing three silver bracelets sitting on a bench.",
+   "Three silver bracelets worn by a woman sitting on a bench.",
+   "A woman with three silver bracelets sitting on a bench."
+  ]
+ },
+ {
+  "prompt_id": "q0055",
+  "base": "Three purple gemstones and one pink gemstone, with the pink gemstone having the smoothest looking surface",
+  "n_valid": 1,
+  "slots": [
+   {
+    "slot": "explicit",
+    "accepted": null,
+    "trace": [
+     "attempt 1 (T=0.0): dropped ['having', 'looking']",
+     "attempt 2 (T=0.3): dropped ['having', 'looking', 'smoothest']",
+     "attempt 3 (T=0.6): dropped ['having', 'looking']",
+     "attempt 4 (T=0.9): dropped ['having', 'looking', 'smoothest', 'surface']",
+     "attempt 5 (T=1.0): dropped ['having', 'looking']",
+     "attempt 6 (T=1.0): dropped ['having', 'looking', 'pink', 'purple', 'surface']"
+    ]
+   },
+   {
+    "slot": "concrete",
+    "accepted": null,
+    "trace": [
+     "attempt 1 (T=0.0): dropped ['looking']",
+     "attempt 2 (T=0.3): dropped ['looking']",
+     "attempt 3 (T=0.6): numerals [1, 3] -> [1, 2]",
+     "attempt 4 (T=0.9): dropped ['having', 'looking']",
+     "attempt 5 (T=1.0): dropped ['having', 'looking', 'surface']",
+     "attempt 6 (T=1.0): dropped ['having', 'looking', 'surface']"
+    ]
+   },
+   {
+    "slot": "frontload",
+    "accepted": "With the pink gemstone having the smoothest looking surface, three purple gemstones and one pink gemstone.",
+    "trace": [
+     "attempt 1 (T=0.0): dropped ['having']",
+     "attempt 2 (T=0.3): numerals [1, 3] -> [1, 1, 3]",
+     "attempt 3 (T=0.6): dropped ['having']",
+     "attempt 4: ok"
+    ]
+   }
+  ],
+  "variants": [
+   "Three purple gemstones and one pink gemstone, with the pink gemstone having the smoothest looking surface",
+   "With the pink gemstone having the smoothest looking surface, three purple gemstones and one pink gemstone.",
+   "Three purple gemstones and one pink gemstone, with the pink gemstone having the smoothest looking surface",
+   "Three purple gemstones and one pink gemstone, with the pink gemstone having the smoothest looking surface"
+  ]
+ }
+]

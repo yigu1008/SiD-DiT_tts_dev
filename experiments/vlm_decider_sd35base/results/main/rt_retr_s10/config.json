@@ -1,0 +1,43 @@
+{
+ "arm": "rt_retr_s10",
+ "backend": "sd35_base",
+ "steps": 28,
+ "key_steps": [
+  0,
+  4,
+  8,
+  12,
+  16,
+  20,
+  24,
+  27
+ ],
+ "n_sims": 10,
+ "ucb_c": 1.41,
+ "cfg_scales": [
+  3.5,
+  4.0,
+  4.5,
+  5.0,
+  5.5,
+  6.0,
+  7.0
+ ],
+ "baseline_cfg": 4.5,
+ "seed": 42,
+ "panels": 3,
+ "min_traces": 2,
+ "design": "retrieval-grounded: Jev is shown the FINAL images of earlier rollouts, one per DISTINCT wording (best-scoring), each captioned with its (wording, CFG), its end-of-trace VLM assessment and its reward, and asked which panel's final image best matches the ORIGINAL prompt - a matching question, which the ablation showed is the only kind it answers from evidence. The winning panel's config becomes the node's preferred action.",
+ "reward": "backend=imagereward available=['imagereward']",
+ "vlm": {
+  "status": "ok",
+  "model": "Qwen/Qwen2.5-VL-7B-Instruct",
+  "requests_served": 0
+ },
+ "jev": {
+  "status": "ok",
+  "model": "akhilaaa3/Jev-Omni",
+  "rev": "5addda86ddee081a68fb067477ea100c221b8917",
+  "requests_served": 0
+ }
+}

@@ -1,0 +1,178 @@
+[
+ {
+  "prompt_id": "q0000",
+  "base": "A panoramic view of a mountain range, its peaks dusted with snow.",
+  "n_valid": 9,
+  "tried": 32,
+  "reject_reasons": {
+   "dropped": 22,
+   "identical": 1
+  },
+  "variants": [
+   "A panoramic view of a mountain range, its peaks dusted with snow.",
+   "A breathtaking panoramic view of a mountain range, its peaks dusted with snow, bathed in the soft light of early morning.",
+   "A panoramic view of a mountain range, its snow-dusted peaks arranged in a sweeping arc across the horizon.",
+   "A mountain range, its peaks dusted with snow, in a panoramic view.",
+   "A breathtaking panoramic view of a majestic mountain range, where its towering peaks are gracefully dusted with pristine white snow, casting a serene and awe-inspiring presence under the clear blue sky.",
+   "A panoramic view of the mountain range, with its snow-dusted peaks prominently positioned at the horizon, creating a striking contrast against the clear sky.",
+   "A mountain range with dusted snow peaks, a panoramic view.",
+   "A breathtaking panoramic view featuring a majestic mountain range with its rugged peaks gracefully dusted with pristine white snow, casting long shadows across the undulating terrain beneath, bathed in soft ambient light that accentuates the textures and contours of the landscape.",
+   "A panoramic view of the snow-dusted mountain range, with jagged peaks standing tall against the horizon.",
+   "Panoramic view, its peaks dusted with snow, of a mountain range."
+  ]
+ },
+ {
+  "prompt_id": "q0004",
+  "base": "A playful kitten with a bell collar on the left, batting at a fluttering butterfly on the right.",
+  "n_valid": 9,
+  "tried": 32,
+  "reject_reasons": {
+   "dropped": 23
+  },
+  "variants": [
+   "A playful kitten with a bell collar on the left, batting at a fluttering butterfly on the right.",
+   "A playful kitten wearing a bell collar on the left, actively batting at a fluttering butterfly on the right.",
+   "A playful kitten adorned with a bell collar sits on the left, its paws gently batting at a fluttering butterfly on the right, both set against a soft, sunlit meadow backdrop.",
+   "A playful kitten with a bell collar on the left, batting at a fluttering butterfly that is clearly visible on the right.",
+   "A charming, fluffy kitten adorned with a delicate bell collar on its left, playfully batting at a vibrant, fluttering butterfly on its right, set against a soft, dappled light that enhances the tender scene.",
+   "A playful kitten adorned with a shiny, silver bell collar sits on the left, gently batting at a delicate, fluttering butterfly suspended mid-air on the right.",
+   "A warmly lit close-up captures a playful kitten on the left, wearing a bell collar, gently batting at a fluttering butterfly on the right. The scene is bathed in soft, natural light, emphasizing the kitten's curious expression and the delicate movement of the butterfly's wings.",
+   "A playful kitten adorned with a shimmering bell collar sits on the left, energetically batting at a delicate butterfly fluttering from the right.",
+   "A playful kitten wearing a bell collar is positioned on the left side of the image, batting at a fluttering butterfly on the far right side of the image.",
+   "A playful kitten with a bell collar on the left, batting at a fluttering butterfly on the right, captured under warm, golden light in midday, using a shallow depth-of-field for a dreamy, focused effect."
+  ]
+ },
+ {
+  "prompt_id": "q0011",
+  "base": "There are four dresses on the hanger; the one with a long hemline is the most vibrant.",
+  "n_valid": 10,
+  "tried": 20,
+  "reject_reasons": {
+   "numerals": 3,
+   "dropped": 6,
+   "too": 1
+  },
+  "variants": [
+   "There are four dresses on the hanger; the one with a long hemline is the most vibrant.",
+   "The most vibrant dress has a long hemline; there are four dresses on the hanger.",
+   "There are four dresses on the hanger, each with distinct colors and patterns, but the one with a long hemline stands out as the most vibrant, featuring a bold, eye-catching design that catches the light beautifully.",
+   "Four dresses hang side by side; the one with the longest hemline is the most vibrant.",
+   "There are four dresses on the hanger; the one with a long hemline is the most vibrant red dress.",
+   "The one with a long hemline is the most vibrant; there are four dresses on the hanger.",
+   "A brightly lit, detailed photograph showcases four elegant dresses hanging side by side, with a close-up view accentuating the vibrant hues of the dress with the longest hemline, set against a soft, natural daylight backdrop.",
+   "On the hanger, there are four dresses, each with a distinct silhouette; the one with a long hemline is particularly vibrant, adorned with intricate beading that catches the light, revealing a shimmering array of colors.",
+   "There are four dresses suspended on a hanger; the most vibrant dress, distinguished by its long hemline, stands out among them.",
+   "Four dresses hang in a row; the one at the far right has a long hemline and stands out as the most vibrant.",
+   "A close-up photograph captures four dresses hanging side by side, bathed in warm afternoon sunlight that highlights the rich, deep hues of each garment. The vibrant dress, distinguished by its longer hemline, stands out in the center, adorned with intricate floral patterns that shimmer under the light."
+  ]
+ },
+ {
+  "prompt_id": "q0020",
+  "base": "Several umbrellas of varying colors leaned against stands in the hallway.",
+  "n_valid": 3,
+  "tried": 32,
+  "reject_reasons": {
+   "dropped": 27,
+   "numerals": 2
+  },
+  "variants": [
+   "Several umbrellas of varying colors leaned against stands in the hallway.",
+   "Several umbrellas leaned against stands in the hallway of varying colors.",
+   "A vibrant photograph captures several umbrellas of varying colors leaning against stands in a hallway, bathed in soft, natural light filtering through a nearby window at golden hour.",
+   "A row of several umbrellas of varying colors leans against stands aligned neatly in the hallway."
+  ]
+ },
+ {
+  "prompt_id": "q0027",
+  "base": "Two birds are chasing each other in the air, with the one flying higher having a long tail and the other bird having a short tail.",
+  "n_valid": 7,
+  "tried": 32,
+  "reject_reasons": {
+   "numerals": 7,
+   "dropped": 18
+  },
+  "variants": [
+   "Two birds are chasing each other in the air, with the one flying higher having a long tail and the other bird having a short tail.",
+   "The one bird flying higher has a long tail while the other bird has a short tail; two birds are chasing each other in the air.",
+   "Two birds are gracefully chasing each other in the air, with the one flying higher displaying a long, elegant tail and the other bird sporting a shorter, stubbier tail.",
+   "With the one flying higher having a long tail, two birds are chasing each other in the air, and the other bird has a short tail.",
+   "Two birds are chasing each other in the air, with the one flying higher sporting a long, vibrant tail and the other bird having a shorter, sleeker tail.",
+   "With the one flying higher having a long tail, two birds are chasing each other in the air, while the other bird has a short tail.",
+   "With the one flying higher having a long tail and the other bird having a short tail, two birds are chasing each other in the air.",
+   "Two birds with vibrant plumage and long, swept-back tails are gracefully soaring in the sky, chasing one another, the higher-flying bird displaying an exceptionally elongated tail, weaving through the air like cascading silk, while the second bird, shorter-tailed yet equally agile, counters with quick, darting maneuvers below."
+  ]
+ },
+ {
+  "prompt_id": "q0033",
+  "base": "A harbor filled with lights, reflecting on the calm water at night.",
+  "n_valid": 8,
+  "tried": 32,
+  "reject_reasons": {
+   "dropped": 24
+  },
+  "variants": [
+   "A harbor filled with lights, reflecting on the calm water at night.",
+   "A harbor filled with twinkling lights reflecting on the serene, glassy surface of the calm water at night.",
+   "A harbor filled with lights, their reflections dancing on the calm water at night, arranged in a serene, symmetrical pattern.",
+   "A harbor filled with twinkling lights reflecting softly on the calm, glassy water under a starlit night sky.",
+   "A harbor filled with lights, reflecting on the calm water at night, with boats scattered across the bay, some closer to the shore and others further out, creating a layered effect in the water's surface.",
+   "A harbor filled with numerous brightly lit boats, their lights reflecting vibrantly on the calm, shimmering waters at night.",
+   "A tranquil harbor filled with numerous twinkling lights that mirror softly on the calm, reflective surface of the water at night.",
+   "A calming harbor filled with lights, at night, reflecting on the water.",
+   "A harbor at night is filled with boats, their lights reflecting on the calm water below."
+  ]
+ },
+ {
+  "prompt_id": "q0041",
+  "base": "There are four train toys on the floor, none of which are adjacent to each other.",
+  "n_valid": 2,
+  "tried": 32,
+  "reject_reasons": {
+   "numerals": 9,
+   "dropped": 19,
+   "duplicate": 2
+  },
+  "variants": [
+   "There are four train toys on the floor, none of which are adjacent to each other.",
+   "None of the four train toys on the floor are adjacent to each other.",
+   "Four train toys are arranged on the floor such that they are evenly spaced and none of them are adjacent directly to any other toy."
+  ]
+ },
+ {
+  "prompt_id": "q0047",
+  "base": "A woman with three silver bracelets sitting on a bench.",
+  "n_valid": 4,
+  "tried": 32,
+  "reject_reasons": {
+   "dropped": 25,
+   "duplicate": 1,
+   "numerals": 2
+  },
+  "variants": [
+   "A woman with three silver bracelets sitting on a bench.",
+   "A woman sitting on a bench with three silver bracelets.",
+   "A bench with a woman sitting on it wearing three silver bracelets.",
+   "The woman has three silver bracelets; she is sitting on a park bench.",
+   "Woman with three silver bracelets sitting on a bench."
+  ]
+ },
+ {
+  "prompt_id": "q0055",
+  "base": "Three purple gemstones and one pink gemstone, with the pink gemstone having the smoothest looking surface",
+  "n_valid": 5,
+  "tried": 32,
+  "reject_reasons": {
+   "dropped": 22,
+   "numerals": 4,
+   "duplicate": 1
+  },
+  "variants": [
+   "Three purple gemstones and one pink gemstone, with the pink gemstone having the smoothest looking surface",
+   "With the pink gemstone having the smoothest looking surface, three purple gemstones and one pink gemstone.",
+   "Three purple gemstones are arranged around a central pink gemstone, which has the smoothest looking surface.",
+   "A single purple gemstone, three purple gemstones, one pink gemstone, with the pink gemstone having the smoothest looking surface",
+   "With the pink gemstone having the smoothest looking surface, three purple gemstones and one pink gemstone are displayed.",
+   "One pink gemstone with the smoothest looking surface and three purple gemstones."
+  ]
+ }
+]

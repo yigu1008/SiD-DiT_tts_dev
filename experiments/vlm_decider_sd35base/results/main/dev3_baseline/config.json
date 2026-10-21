@@ -1,0 +1,31 @@
+{
+ "arm": "baseline",
+ "backend": "sd35_base",
+ "model_id": "stabilityai/stable-diffusion-3.5-large",
+ "dtype": "bfloat16",
+ "euler_sampler": true,
+ "steps": 28,
+ "key_steps": null,
+ "reward_backend": "imagereward",
+ "reward": "backend=imagereward available=['imagereward']",
+ "seed": 42,
+ "n_sims": null,
+ "ucb_c": 1.41,
+ "cfg_scales": [
+  3.5,
+  4.0,
+  4.5,
+  5.0,
+  5.5,
+  6.0,
+  7.0
+ ],
+ "baseline_cfg": 4.5,
+ "n_variants": 3,
+ "width": 1024,
+ "height": 1024,
+ "rewrites_sha256": "ee0257eb5bed2f83ef66984451d1e0c5200839ffa6135a1bf2f2524541607f5c",
+ "selection": "UCB1 untried-first random; rollout uniform-random between key steps; return best rollout vs exploit replay",
+ "noise_actions": "off (steps > 4)",
+ "sparse_noise_refine": false
+}

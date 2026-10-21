@@ -200,7 +200,7 @@ class UnifiedRewardScorer:
         max_new_tokens: int = 512,
         unifiedreward_prompt_mode: str = "standard",
     ) -> None:
-        valid = {"auto", "imagereward", "pickscore", "vqascore", "hpsv3", "hpsv2", "blend", "all", "unified", "unifiedreward", "composite_hpsv3_ir", "composite_ir_ps", "composite_ir_vqa", "composite_3", "composite_all4"}
+        valid = {"auto", "imagereward", "pickscore", "vqascore", "hpsv3", "hpsv2", "blend", "all", "unified", "unifiedreward", "composite_hpsv3_ir", "composite_ir_ps", "composite_ir_vqa", "composite_hpsv3_ir_vqa", "composite_hpsv3_ir_pair", "composite_3", "composite_all4"}
         if backend not in valid:
             raise ValueError(f"Unsupported backend: {backend}")
         if unifiedreward_prompt_mode not in {"standard", "strict"}:
@@ -311,10 +311,10 @@ class UnifiedRewardScorer:
     def _load_backends(self) -> None:
         target = "unifiedreward" if self.backend == "unified" else self.backend
         need_unifiedreward = target in {"unifiedreward", "auto"}
-        need_imagereward = target in {"imagereward", "blend", "auto", "all", "composite_hpsv3_ir", "composite_ir_ps", "composite_ir_vqa", "composite_3", "composite_all4"}
+        need_imagereward = target in {"imagereward", "blend", "auto", "all", "composite_hpsv3_ir", "composite_ir_ps", "composite_ir_vqa", "composite_hpsv3_ir_vqa", "composite_hpsv3_ir_pair", "composite_3", "composite_all4"}
         need_pickscore = target in {"pickscore", "auto", "all", "composite_ir_ps", "composite_3", "composite_all4"}
-        need_vqascore = target in {"vqascore", "composite_ir_vqa"}
-        need_hpsv3 = target in {"hpsv3", "blend", "auto", "all", "composite_hpsv3_ir", "composite_3", "composite_all4"}
+        need_vqascore = target in {"vqascore", "composite_ir_vqa", "composite_hpsv3_ir_vqa"}
+        need_hpsv3 = target in {"hpsv3", "blend", "auto", "all", "composite_hpsv3_ir", "composite_hpsv3_ir_vqa", "composite_hpsv3_ir_pair", "composite_3", "composite_all4"}
         need_hpsv2 = target in {"hpsv2", "blend", "auto", "all", "composite_all4"}
 
         # ── Reward server (separate conda env) ──────────────────────────
@@ -411,6 +411,18 @@ class UnifiedRewardScorer:
                     f"Currently available: {self.available}\n"
                     f"{self._vqascore_install_hint}"
                 )
+        if target == "composite_hpsv3_ir_vqa":
+            missing = [b for b in ("imagereward", "hpsv3", "vqascore") if b not in self.available]
+            if missing:
+                raise RuntimeError(
+                    "Requested backend=composite_hpsv3_ir_vqa, but ImageReward, HPSv3 and "
+                    f"VQAScore are all required. Missing: {missing}. "
+                    f"Currently available: {self.available}"
+                )
+        if target == "composite_hpsv3_ir_pair":
+            missing = [b for b in ("imagereward", "hpsv3") if b not in self.available]
+            if missing:
+                raise RuntimeError(f"Requested backend=composite_hpsv3_ir_pair, but ImageReward and HPSv3 are required. Missing: {missing}. Available: {self.available}")
         if target == "composite_3":
             missing = [
                 backend
@@ -1085,6 +1097,17 @@ class UnifiedRewardScorer:
                 f"ir_range=[{ir_lo},{ir_hi}] vqascore_range=[{vqa_lo},{vqa_hi}] "
                 f"(half-half min-max normalized)"
             )
+        if target == "composite_hpsv3_ir_vqa":
+            return (
+                f"backend=composite_hpsv3_ir_vqa available={self.available} "
+                f"hpsv3_range={list(self._COMPOSITE_HPSV3_RANGE)} ir_range={list(self._COMPOSITE_IR_RANGE)} "
+                f"vqascore_range={list(self._COMPOSITE_VQASCORE_RANGE)} (equal-weight min-max normalized)"
+            )
+        if target == "composite_hpsv3_ir_pair":
+            return (
+                f"backend=composite_hpsv3_ir_pair available={self.available} hpsv3_range={list(self._COMPOSITE_HPSV3_RANGE)} "
+                f"ir_range={list(self._COMPOSITE_IR_RANGE)} (VQA-removal ablation of composite_hpsv3_ir_vqa: (gH+gI)/3, coefficients preserved, NOT renormalized)"
+            )
         if target == "pickscore":
             return f"backend=pickscore model={self.pickscore_model} available={self.available}"
         if target == "vqascore":
@@ -1753,6 +1776,38 @@ class UnifiedRewardScorer:
         vqa = self._norm(self._score_vqascore(prompt, image), vqa_lo, vqa_hi)
         return float(0.5 * ir + 0.5 * vqa)
 
+    def _score_composite_hpsv3_ir_vqa(self, prompt: str, image: Image.Image) -> float:
+        """Equal-weight average of {HPSv3, ImageReward, VQAScore} after fixed
+        min-max scaling (same ranges as the other composites).
+
+        This is the three-reward search target for the orthogonality study;
+        PickScore and HPSv2 are deliberately excluded so they remain held-out
+        judges. All three components are required -- fails loud if any is
+        missing rather than silently degrading to a two-reward objective.
+        """
+        h_lo, h_hi = self._COMPOSITE_HPSV3_RANGE
+        ir_lo, ir_hi = self._COMPOSITE_IR_RANGE
+        vqa_lo, vqa_hi = self._COMPOSITE_VQASCORE_RANGE
+        h = self._norm(self._score_hpsv3(prompt, image), h_lo, h_hi)
+        ir = self._norm(self._score_imagereward(prompt, image), ir_lo, ir_hi)
+        vqa = self._norm(self._score_vqascore(prompt, image), vqa_lo, vqa_hi)
+        return float((h + ir + vqa) / 3.0)
+
+    def _score_composite_hpsv3_ir_pair(self, prompt: str, image: Image.Image) -> float:
+        """Coefficient-preserving VQA-removal ablation of composite_hpsv3_ir_vqa.
+
+        Identical HPSv3/ImageReward min-max transforms and 1/3 coefficients; the
+        VQAScore term's coefficient is set to zero WITHOUT renormalizing, i.e.
+        (gH + gI)/3, not (gH + gI)/2. The objective's scale therefore changes by
+        exactly the removed VQA term; that scale effect is part of what this
+        ablation measures and must not be described as scale-independent.
+        """
+        h_lo, h_hi = self._COMPOSITE_HPSV3_RANGE
+        ir_lo, ir_hi = self._COMPOSITE_IR_RANGE
+        h = self._norm(self._score_hpsv3(prompt, image), h_lo, h_hi)
+        ir = self._norm(self._score_imagereward(prompt, image), ir_lo, ir_hi)
+        return float((h + ir) / 3.0)
+
     def _score_blend(self, prompt: str, image: Image.Image) -> float:
         scored: Dict[str, float] = {}
         if "imagereward" in self.available:
@@ -1797,6 +1852,10 @@ class UnifiedRewardScorer:
             return self._score_composite_ir_ps(prompt, image)
         if target == "composite_ir_vqa":
             return self._score_composite_ir_vqa(prompt, image)
+        if target == "composite_hpsv3_ir_vqa":
+            return self._score_composite_hpsv3_ir_vqa(prompt, image)
+        if target == "composite_hpsv3_ir_pair":
+            return self._score_composite_hpsv3_ir_pair(prompt, image)
         if target == "composite_3":
             return self._score_composite_3(prompt, image)
         if target == "composite_all4":

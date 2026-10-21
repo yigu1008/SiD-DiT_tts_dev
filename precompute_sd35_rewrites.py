@@ -114,8 +114,27 @@ def save_cache(path: str, cache: dict[str, list[str]]) -> None:
     os.replace(tmp, str(out_path))
 
 
+try:  # share the hardened sanitizer with the loader rather than keeping a second copy
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from sampling_unified_sd35 import sanitize_rewrite_text as _sanitize
+except Exception:  # pragma: no cover - keep this script runnable on its own
+    def _sanitize(text: str, fallback: str) -> str:
+        out = re.sub(r"<think>.*?</think>", " ", str(text), flags=re.DOTALL)
+        out = re.sub(r"\s*[/,]?no_think(?![A-Za-z0-9_])", "", out, flags=re.I)
+        out = re.sub(r"(?i)^\s*(?:the\s+)?(?:original|rewritten)\s+prompt\s*[:\-]?\s*", "", out)
+        out = re.sub(r"(?i)^\s*minimal\s+changes?\b[^.:;]*[.:;]\s*", "", out)
+        out = re.sub(r"\s+", " ", out).strip()
+        return out or fallback
+
 def clean_generation(text: str, fallback: str) -> str:
-    decoded = re.sub(r"<think>.*?</think>", "", str(text), flags=re.DOTALL).strip()
+    # ROOT CAUSE of the poisoned genai200_v1 cache: build_chat_prompts appends Qwen3's
+    # "/no_think" control token to the USER message, the model echoes it into some
+    # completions, and this function only removed <think>...</think> spans -- so
+    # "/no_think", ",no_think", a leading "Original prompt:", the instruction text
+    # itself, and mid-sentence language drift were all written to the cache verbatim
+    # and later embedded as literal words by the T5/CLIP encoders (80 of 773 wordings).
+    # Delegate to the single hardened sanitizer so the writer and every reader agree.
+    decoded = _sanitize(str(text), fallback)
     for line in decoded.splitlines():
         line = line.strip()
         if not line:

@@ -1,0 +1,42 @@
+{
+ "arm": "noise_probe",
+ "backend": "sd35_base",
+ "steps": 28,
+ "seeds": [
+  42,
+  1000,
+  1001,
+  1002,
+  1003,
+  1004,
+  1005,
+  1006,
+  1007,
+  1008,
+  1009,
+  1010,
+  1011,
+  1012,
+  1013,
+  1014
+ ],
+ "anchor_wording": 0,
+ "anchor_cfg": 4.5,
+ "nfe_per_generation": 56,
+ "budget_matched_k": 11,
+ "search_rewards": [
+  "imagereward",
+  "hpsv3",
+  "pickscore"
+ ],
+ "reward_server": {
+  "status": "ok",
+  "backends": [
+   "imagereward",
+   "hpsv3",
+   "pickscore"
+  ],
+  "requests_served": 0
+ },
+ "design": "ONE action (anchor wording, anchor CFG), N different initial latents, no search. Isolates the initial-noise axis that every other arm in this study held fixed at seed 42. 616 NFE = 11 generations, so best-of-11 here is exactly budget-matched to the 10-sim MCTS arms."
+}

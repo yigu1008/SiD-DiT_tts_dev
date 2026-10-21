@@ -400,7 +400,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--reward_backend",
-        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "vqascore", "hpsv3", "hpsv2", "blend", "all", "composite_hpsv3_ir", "composite_ir_ps", "composite_ir_vqa", "composite_3", "composite_all4"],
+        choices=["auto", "unifiedreward", "unified", "imagereward", "pickscore", "vqascore", "hpsv3", "hpsv2", "blend", "all", "composite_hpsv3_ir", "composite_ir_ps", "composite_ir_vqa", "composite_hpsv3_ir_vqa", "composite_hpsv3_ir_pair", "composite_3", "composite_all4"],
         default="unifiedreward",
     )
     parser.add_argument(
@@ -852,10 +852,65 @@ print({repr(marker)} + sys.argv[2])
     return prompt
 
 
+# Qwen3's thinking-control token is appended to the USER message by the rewrite
+# scripts (precompute_sd35_rewrites.build_chat_prompts and the inline qwen_rewrite
+# snippets), and the model echoes it back into some completions.  Those completions
+# were cached verbatim, so 80 of 773 wordings in
+# genai200_v1/shared_rewrites_cache.json reached the T5/CLIP encoders still carrying
+# "/no_think", ",no_think", a leading "Original prompt:" or the instruction text
+# itself ("Minimal changes to lighting and time of day."), which the encoders then
+# embed as literal words.  The <think>...</think> span removal above never covered
+# these forms.  Strip them here so every consumer of a cached or freshly generated
+# rewrite is protected, including caches already on disk.  Only the token and its
+# own attached prefix are removed; surrounding sentence punctuation is preserved and
+# any separator left orphaned by the removal is tidied up.
+_ARTIFACT_TOKEN_RE = re.compile(r"\s*[/,]?no_think(?![A-Za-z0-9_])", re.I)
+_ARTIFACT_PREFIX_RES = (
+    re.compile(r"^\s*(?:the\s+)?original\s+prompt\s*[:\-]?\s*", re.I),
+    re.compile(r"^\s*(?:the\s+)?rewritten\s+prompt\s*[:\-]?\s*", re.I),
+    re.compile(r"^\s*rewrite\s*[:\-]\s*", re.I),
+    re.compile(r"^\s*minimal\s+changes?\b[^.:;]*[.:;]\s*", re.I),
+    re.compile(r"^\s*here\s+is\s+(?:the|a|one)\b[^:]{0,40}:\s*", re.I),
+)
+
+
+def _is_ascii_text(text: str) -> bool:
+    try:
+        str(text).encode("ascii")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def _has_non_latin_letters(text: str) -> bool:
+    for ch in str(text):
+        if ch.isalpha() and ord(ch) > 0x2FF:
+            return True
+    return False
+
+
+def _strip_rewrite_artifacts(text: str) -> str:
+    out = _ARTIFACT_TOKEN_RE.sub("", str(text))
+    for pat in _ARTIFACT_PREFIX_RES:
+        prev = None
+        while prev != out:
+            prev = out
+            out = pat.sub("", out, count=1)
+    out = re.sub(r"\s+", " ", out)
+    out = re.sub(r"([.!?;:])\s*[,;:]\s*", r"\1 ", out)
+    out = re.sub(r"([.!?;:])\s*[-\u2013\u2014]\s*", r"\1 ", out)
+    out = re.sub(r"\s+([,.;:!?])", r"\1", out)
+    out = re.sub(r"^[\s,;:.\-\u2013\u2014]+", "", out)
+    return re.sub(r"\s+", " ", out).strip()
+
+
 def sanitize_rewrite_text(candidate: str, fallback: str) -> str:
     text = re.sub(r"<think>.*?</think>", "", str(candidate), flags=re.DOTALL).strip()
     text = text.replace("\ufffd", "")
+    text = _strip_rewrite_artifacts(text)
     text = re.sub(r"\s+", " ", text).strip()
+    if text and _is_ascii_text(fallback) and _has_non_latin_letters(text):
+        return fallback
     if not text:
         return fallback
     text = text.strip("`\"' ")

@@ -433,6 +433,10 @@ def run_mcts_lookahead(
     use_rollout_prior = bool(flags["use_rollout_prior"])
     use_tree_prior = bool(flags["use_tree_prior"])
     adaptive_cfg_width = bool(flags["adaptive_cfg_width"])
+    # Optional external DECIDER (opt-in; default None leaves every code path below unchanged).
+    # It may (a) reshape a node's candidate action set, (b) supply the action prior, (c) rescore
+    # the backup value. Set by a wrapper via args.jev_decider; see vlm_decider run dir.
+    jev_decider = getattr(args, "jev_decider", None)
 
     # SoP-style per-step reward backup.  When alpha>0, the rollout decodes
     # x̂₀ at every key-step (just like SoP does) and mixes the per-step
@@ -590,6 +594,10 @@ def run_mcts_lookahead(
     node_logs: list[dict[str, Any]] = []
 
     rng = np.random.default_rng(int(seed) + 4046)
+    if jev_decider is not None:
+        jev_decider.bind(args=args, ctx=ctx, emb=emb, reward_model=reward_model, prompt=prompt, seed=int(seed),
+                         sched=sched, key_steps=key_steps, n_key=n_key, steps=int(args.steps),
+                         eps_bank=mcts_eps_bank, run_segment=su._run_segment, decode=su.decode_to_pil)
     n_sims = max(1, int(getattr(args, "n_sims", 50)))
     ucb_c = float(getattr(args, "ucb_c", 1.41))
     c_puct = float(getattr(args, "lookahead_c_puct", 1.20))
@@ -725,6 +733,8 @@ def run_mcts_lookahead(
             for cfg in cfg_bank
         ]
         actions = _expand_with_noise(int(node.step), core_actions)
+        if jev_decider is not None:
+            actions = jev_decider.adjust_candidates(node, actions, cfg_bank=cfg_bank, center=center, width=width)
         meta = {
             "step_idx": int(node.step),
             "u_t": float(node.u_t),
@@ -800,6 +810,12 @@ def run_mcts_lookahead(
         base_tau = float(getattr(args, "lookahead_tau", 0.35))
         base_logits = compute_heuristic_logits(node, candidates)
         base_prior = _softmax_prior(base_logits, tau=base_tau)
+        if jev_decider is not None and jev_decider.wants_prior(node):
+            j_prior, j_dbg = jev_decider.action_prior(node, candidates, base_prior)
+            if j_prior is not None:
+                j_prior = np.asarray(j_prior, dtype=np.float64)
+                return np.log(np.maximum(j_prior, 1e-9)), j_prior, {"base_prior": base_prior, "feedback": None,
+                                                                   "prior_mode": "jev_decider", "jev": j_dbg}
         prior_mode = str(getattr(args, "lookahead_prior_mode", "heuristic")).strip().lower()
         signal_modes = {"progress_prompt", "signal", "trajectory_feedback"}
         if prior_mode not in signal_modes:
@@ -945,6 +961,7 @@ def run_mcts_lookahead(
                 "cfg_center_source": str(candidate_meta.get("cfg_center_source", "unknown")),
                 "adaptive_cfg_width": bool(candidate_meta.get("adaptive_cfg_width", False)),
                 "candidate_actions": rows,
+                "jev": (None if prior_debug is None else prior_debug.get("jev")),
                 "action_logits": [float(x) for x in part_logits],
                 "softmax_prior": [float(x) for x in part_prior],
                 "chosen_action": _action_to_dict(chosen_action),
@@ -982,6 +999,7 @@ def run_mcts_lookahead(
         prior_debug: dict[str, Any] | None = None
 
         while not node.is_leaf(n_key):
+            if jev_decider is not None: jev_decider.phase = "tree"
             candidate_meta, candidates = node_candidates(node)
             logits, prior, prior_debug = compute_action_prior(node, candidates)
             untried = node.untried_actions(candidates)
@@ -1097,6 +1115,7 @@ def run_mcts_lookahead(
             if _w.dx is not None:
                 _rollout_dx_history.append(_w.dx.clone())
         while rollout_key_idx < n_key:
+            if jev_decider is not None: jev_decider.phase = "rollout"
             r_meta, r_candidates = node_candidates(rollout_node)
             r_logits, r_prior, r_prior_debug = compute_action_prior(rollout_node, r_candidates)
             if use_rollout_prior:
@@ -1200,6 +1219,8 @@ def run_mcts_lookahead(
         rollout_final = su._final_decode_tensor(rollout_latents, rollout_dx, use_euler)
         rollout_img = su.decode_to_pil(ctx, rollout_final)
         rollout_score = float(su.score_image(reward_model, prompt, rollout_img))
+        if jev_decider is not None:
+            rollout_score = float(jev_decider.backup_score(rollout_img, rollout_score, path=[a_ for _, a_ in path] + list(rollout_actions)))
         # SAVE_ALL_ATTEMPTS_DIR: dump every rollout's final image, named with
         # its IR score and the full per-step (v, cfg) sequence -- gives the
         # complete deliberation trace.

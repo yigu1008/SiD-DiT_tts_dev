@@ -1,0 +1,20 @@
+{
+ "arm": "early_control",
+ "steps": 28,
+ "split": 12,
+ "n_variants": 6,
+ "nfe_early_each": 56,
+ "nfe_late_each": 32,
+ "nfe_full_each": 56,
+ "nfe_fresh_noise": 56,
+ "reward_server": {
+  "status": "ok",
+  "backends": [
+   "imagereward",
+   "hpsv3",
+   "pickscore"
+  ],
+  "requests_served": 0
+ },
+ "design": "best and worst initial noise per prompt (by ladder hpsv3); for each, vary the (wording, CFG) action in the EARLY window [0,split) only, the LATE window [split,28) only, or the FULL trajectory. Early costs the same as a fresh noise draw (56 NFE), late reuses the prefix (32)."
+}

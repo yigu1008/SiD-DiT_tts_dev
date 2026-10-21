@@ -1,0 +1,59 @@
+{
+ "arm": "jev_prune",
+ "backend": "sd35_base",
+ "model_id": "stabilityai/stable-diffusion-3.5-large",
+ "dtype": "bfloat16",
+ "steps": 28,
+ "key_steps": [
+  0,
+  4,
+  8,
+  12,
+  16,
+  20,
+  24,
+  27
+ ],
+ "n_sims": 10,
+ "ucb_c": 1.41,
+ "cfg_scales": [
+  3.5,
+  4.0,
+  4.5,
+  5.0,
+  5.5,
+  6.0,
+  7.0
+ ],
+ "baseline_cfg": 4.5,
+ "n_variants": 3,
+ "reward_backend": "imagereward",
+ "reward": "backend=imagereward available=['imagereward']",
+ "seed": 42,
+ "prune": {
+  "k": 6,
+  "n_variants_keep": 2,
+  "n_cfg_keep": 3,
+  "anchor_added": true,
+  "when": "node creation (root included)",
+  "rollout_policy": "uniform over the leaf's kept set at all remaining key steps"
+ },
+ "vlm": {
+  "status": "ok",
+  "model": "Qwen/Qwen2.5-VL-7B-Instruct",
+  "requests_served": 0
+ },
+ "jev": {
+  "status": "ok",
+  "model": "akhilaaa3/Jev-Omni",
+  "rev": "5addda86ddee081a68fb067477ea100c221b8917",
+  "requests_served": 0
+ },
+ "jev_orders": 3,
+ "preview_px": 512,
+ "joint": true,
+ "puct": true,
+ "c_puct": 1.5,
+ "jev_pipeline": "VLM /generate perception-only readout of the preview (no suggestions) -> Jev-Omni choice over the 4 prompt wordings and choice over the 7 CFG levels (state = original prompt + step + readout; image attached when depth>0); keep = top-2 wordings x top-3 CFGs by Jev probability + anchor",
+ "rewrites_sha256": "ee0257eb5bed2f83ef66984451d1e0c5200839ffa6135a1bf2f2524541607f5c"
+}

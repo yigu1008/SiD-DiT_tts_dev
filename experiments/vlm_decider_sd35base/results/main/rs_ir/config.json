@@ -1,0 +1,64 @@
+{
+ "arm": "rs_ir",
+ "backend": "sd35_base",
+ "steps": 28,
+ "key_steps": [
+  0,
+  4,
+  8,
+  12,
+  16,
+  20,
+  24,
+  27
+ ],
+ "n_sims": 10,
+ "ucb_c": 1.41,
+ "cfg_scales": [
+  3.5,
+  4.0,
+  4.5,
+  5.0,
+  5.5,
+  6.0,
+  7.0
+ ],
+ "baseline_cfg": 4.5,
+ "seed": 42,
+ "panels": 3,
+ "min_traces": 2,
+ "reward_policy": "imagereward",
+ "default_reward": "imagereward",
+ "reward_asks": 1,
+ "search_rewards": [
+  "imagereward",
+  "hpsv3",
+  "pickscore"
+ ],
+ "reward_focus": {
+  "imagereward": "CONTENT AND FAITHFULNESS: something the prompt explicitly asks for is absent, duplicated, miscounted, in the wrong place or relation, or rendered as broken anatomy or unreadable text. The complaint is about WHAT IS IN the picture.",
+  "hpsv3": "APPEARANCE AND CRAFT: everything the prompt asks for is present, but the picture itself looks bad - oversaturated or garish colour, blown contrast, plastic or waxy surfaces, flat or inconsistent lighting, mushy texture, visible noise or compression artifacts. The complaint is about HOW the picture looks, not what it contains.",
+  "pickscore": "KIND AND FRAMING: the picture is clean and contains the right things, but it is the wrong sort of picture for this prompt - wrong genre, medium, period or register, or a subject that is cropped, too distant, too cluttered or awkwardly composed to read as what was asked for. The complaint is about WHICH PICTURE was made, not its content or its finish."
+ },
+ "design": "Each reward is given a FOCUSED AREA (a deficiency class it can see). Every rollout is scored under all three search rewards and its score VECTOR is accumulated at every node on its path, so each node holds three independent running sums per action. A node selects one reward -- Jev matches the end-of-trace VLM complaints against the focus statements -- and reads only that component for UCB1 and exploitation. No min-max normalization and no cross-reward arithmetic anywhere; a node's statistics are always in one reward's native units. The returned image is chosen under the reward the ROOT settled on. VQAScore is held out of the search entirely.",
+ "reward_server": {
+  "status": "ok",
+  "backends": [
+   "imagereward",
+   "hpsv3",
+   "pickscore"
+  ],
+  "requests_served": 15
+ },
+ "vlm": {
+  "status": "ok",
+  "model": "Qwen/Qwen2.5-VL-7B-Instruct",
+  "requests_served": 4
+ },
+ "jev": {
+  "status": "ok",
+  "model": "akhilaaa3/Jev-Omni",
+  "rev": "5addda86ddee081a68fb067477ea100c221b8917",
+  "requests_served": 59
+ }
+}

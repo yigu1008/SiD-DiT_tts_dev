@@ -1,0 +1,29 @@
+{
+ "arm": "ja_randact_v2",
+ "policy": "random",
+ "rewrites_file": "/data/ygu/runs/vlm_decider_sd35base_2026-10-16/config/rewrites_v2_9.json",
+ "n_traj": 11,
+ "key_steps": [
+  0,
+  4,
+  8,
+  12,
+  16,
+  20,
+  24,
+  27
+ ],
+ "nfe_total": 616,
+ "noise_seed": "fixed 42 (noise axis removed on purpose)",
+ "select": "rank3",
+ "reward_server": {
+  "status": "ok",
+  "backends": [
+   "imagereward",
+   "hpsv3",
+   "pickscore"
+  ],
+  "requests_served": 4671
+ },
+ "design": "Jev EXECUTES the action it picks. The winning retrieval panel's exact (wording, CFG) is run for that segment -- no pruning, no PUCT prior, no UCB1 anywhere. Trajectories are sequential and differ only because the retrieval state grows."
+}

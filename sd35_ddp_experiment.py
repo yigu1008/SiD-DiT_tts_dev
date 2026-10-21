@@ -651,6 +651,10 @@ def main() -> None:
 
         for batch_entries in _chunks(my_entries, gbs):
             t0_batch = time.time()
+            _mem_trace = os.environ.get("SID_MEM_TRACE", "0") == "1" and torch.cuda.is_available()
+            if _mem_trace:
+                torch.cuda.synchronize(); torch.cuda.reset_peak_memory_stats()
+                _mem_resident_mib = torch.cuda.memory_allocated() / 2**20
             batch_prompts = [p for _, p in batch_entries]
             batch_indices = [i for i, _ in batch_entries]
             batch_seeds = [
@@ -682,6 +686,11 @@ def main() -> None:
                 batch_variants.append(variants)
                 batch_embs.append(encode_variants(ctx, variants, max_sequence_length=args.max_sequence_length))
 
+            if _mem_trace:
+                torch.cuda.synchronize()
+                _mem_peak_encode = torch.cuda.max_memory_allocated() / 2**20
+                _mem_after_encode = torch.cuda.memory_allocated() / 2**20
+                torch.cuda.reset_peak_memory_stats()
             # --- batched baseline ---
             ctx.nfe = 0
             if gbs > 1 and len(batch_entries) > 1:
@@ -696,6 +705,10 @@ def main() -> None:
                 )
                 batch_base = [(base_img_0, base_score_0)]
             nfe_base = ctx.nfe // len(batch_entries)  # per-prompt NFE
+            if _mem_trace:
+                torch.cuda.synchronize()
+                _mem_peak_baseline = torch.cuda.max_memory_allocated() / 2**20
+                torch.cuda.reset_peak_memory_stats()
 
             # --- batched greedy ---
             batch_greedy = None
@@ -967,10 +980,21 @@ def main() -> None:
 
 
             dt = time.time() - t0_batch
+            _mem_suffix = ""
+            if _mem_trace:
+                torch.cuda.synchronize()
+                _mem_suffix = (
+                    f" mem_resident={_mem_resident_mib:.0f}MiB"
+                    f" mem_after_encode={_mem_after_encode:.0f}MiB"
+                    f" mem_peak_encode={_mem_peak_encode:.0f}MiB"
+                    f" mem_peak_baseline={_mem_peak_baseline:.0f}MiB"
+                    f" mem_peak_search={torch.cuda.max_memory_allocated() / 2**20:.0f}MiB"
+                    f" mem_peak_reserved={torch.cuda.max_memory_reserved() / 2**20:.0f}MiB"
+                )
             print(
                 f"[rank {rank}] batch={[f'p{i:05d}' for i in batch_indices]} "
                 f"base={[f'{batch_base[bi][1]:.4f}' for bi in range(len(batch_entries))]} "
-                f"elapsed={dt:.1f}s"
+                f"elapsed={dt:.1f}s" + _mem_suffix
             )
 
         rank_log_f.close()

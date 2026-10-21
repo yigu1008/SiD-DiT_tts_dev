@@ -261,8 +261,33 @@ def load_prompts(args: argparse.Namespace) -> List[str]:
     return prompts
 
 
+_ARTIFACT_TOKEN_RE2 = re.compile(r"\s*[/,]?no_think(?![A-Za-z0-9_])", re.I)
+_ARTIFACT_PREFIX_RES2 = (
+    re.compile(r"^\s*(?:the\s+)?(?:original|rewritten)\s+prompt\s*[:\-]?\s*", re.I),
+    re.compile(r"^\s*minimal\s+changes?\b[^.:;]*[.:;]\s*", re.I),
+)
+
+
+def _strip_rewrite_artifacts(text: str) -> str:
+    """Same defect as sampling_unified_sd35: the rewrite scripts append Qwen3's
+    "/no_think" to the user message and the model echoes it into completions, which
+    the <think>-span removal below never covered."""
+    out = _ARTIFACT_TOKEN_RE2.sub("", str(text))
+    for pat in _ARTIFACT_PREFIX_RES2:
+        prev = None
+        while prev != out:
+            prev = out
+            out = pat.sub("", out, count=1)
+    out = re.sub(r"\s+", " ", out)
+    out = re.sub(r"([.!?;:])\s*[,;:]\s*", r"\1 ", out)
+    out = re.sub(r"([.!?;:])\s*[-\u2013\u2014]\s*", r"\1 ", out)
+    out = re.sub(r"\s+([,.;:!?])", r"\1", out)
+    return re.sub(r"^[\s,;:.\-]+", "", out).strip()
+
+
 def sanitize_rewrite_text(candidate: str, fallback: str) -> str:
     text = re.sub(r"<think>.*?</think>", "", str(candidate), flags=re.DOTALL).strip()
+    text = _strip_rewrite_artifacts(text)
     if not text:
         return fallback
     text = text.strip("`\"' ")

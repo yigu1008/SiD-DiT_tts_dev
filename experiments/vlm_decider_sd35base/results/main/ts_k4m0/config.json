@@ -1,0 +1,18 @@
+{
+ "arm": "ts_k4m0",
+ "k": 4,
+ "m": 0,
+ "split": 12,
+ "nfe_total": 224,
+ "select": "rank3",
+ "reward_server": {
+  "status": "ok",
+  "backends": [
+   "imagereward",
+   "hpsv3",
+   "pickscore"
+  ],
+  "requests_served": 3591
+ },
+ "design": "stage 1 = k full noise draws at the anchor (cache step-split state); stage 2 = m late-window (wording, CFG) variants from the rank3 winner's cached state. Never touches the early window of a good layout; early control was measured to HURT a good noise (-0.550) while late control helps (+0.551 at 32 NFE)."
+}

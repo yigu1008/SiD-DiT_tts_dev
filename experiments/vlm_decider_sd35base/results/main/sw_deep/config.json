@@ -1,0 +1,67 @@
+{
+ "arm": "sw_deep",
+ "backend": "sd35_base",
+ "model_id": "stabilityai/stable-diffusion-3.5-large",
+ "dtype": "bfloat16",
+ "steps": 28,
+ "key_steps": [
+  0,
+  4,
+  8,
+  12,
+  16,
+  20,
+  24,
+  27
+ ],
+ "n_sims": 40,
+ "ucb_c": 1.41,
+ "cfg_scales": [
+  3.5,
+  4.0,
+  4.5,
+  5.0,
+  5.5,
+  6.0,
+  7.0
+ ],
+ "baseline_cfg": 4.5,
+ "seed": 42,
+ "reward_backend": "imagereward",
+ "reward": "backend=imagereward available=['imagereward']",
+ "preview_px": 896,
+ "online": {
+  "depth": 2,
+  "k_edits": 3,
+  "guard_thresh": 0.7,
+  "max_wordings": 24,
+  "operators": {
+   "emphasize": "restate or stress an element already in the original (e.g. make the count or the spatial relation explicit, repeat the key noun)",
+   "reorder": "move the missing element earlier in the sentence so the model attends to it first",
+   "clarify": "rephrase an ambiguous clause of the original into plainer visual language WITHOUT adding new content",
+   "drop_clause": "remove or shorten a clause that is pulling the image away from the missing element (the element itself must stay)",
+   "revert": "return to the ORIGINAL prompt wording"
+  },
+  "filters": "lexical retention (no original element dropped) + Jev faithfulness guard (no content added)",
+  "encode": "survivors encoded mid-trajectory and appended to this prompt's embedding bank"
+ },
+ "prune": {
+  "k": 6,
+  "n_variants_keep": 2,
+  "n_cfg_keep": 3,
+  "anchor_added": true,
+  "rollout_policy": "uniform over the leaf's kept set at all remaining key steps"
+ },
+ "vlm": {
+  "status": "ok",
+  "model": "Qwen/Qwen2.5-VL-7B-Instruct",
+  "requests_served": 87
+ },
+ "jev": {
+  "status": "ok",
+  "model": "akhilaaa3/Jev-Omni",
+  "rev": "5addda86ddee081a68fb067477ea100c221b8917",
+  "requests_served": 455
+ },
+ "rewrites_sha256": "ee0257eb5bed2f83ef66984451d1e0c5200839ffa6135a1bf2f2524541607f5c"
+}

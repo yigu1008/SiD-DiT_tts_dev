@@ -1,0 +1,33 @@
+{
+ "arm": "nx_reward",
+ "policy": "reward",
+ "budget_nfe": 616,
+ "steps": 28,
+ "nfe_per_step": 2,
+ "abandon_steps": [
+  12,
+  16,
+  20
+ ],
+ "branch_step": 12,
+ "expand_every": 5,
+ "select_on": "hpsv3",
+ "abandon_rate": 0.5,
+ "expand_rate": 0.5,
+ "anchor_cfg": 4.5,
+ "search_rewards": [
+  "imagereward",
+  "hpsv3",
+  "pickscore"
+ ],
+ "reward_server": {
+  "status": "ok",
+  "backends": [
+   "imagereward",
+   "hpsv3",
+   "pickscore"
+  ],
+  "requests_served": 6285
+ },
+ "design": "Attempts are NEW_NOISE (fresh initial latent, anchor action, from step 0) or ACTION_VARIANT (branch the best noise at step 12 with a different wording/CFG). Decision B picks the kind every expand_every finished attempts; decision A can abort an attempt at steps 12/16/20, refunding the unspent steps. Hard NFE cap, exact at 2 NFE/step. Selection on HPSv3."
+}

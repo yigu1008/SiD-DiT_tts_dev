@@ -1,0 +1,23 @@
+{
+ "arm": "jt_s16k1",
+ "budget_nfe": 616,
+ "steps": 28,
+ "nfe_per_step": 2,
+ "branch_step": 12,
+ "screen_n": 16,
+ "keep": 1,
+ "screen_cost_each": 24,
+ "finish_cost_each": 32,
+ "select_on": "hpsv3",
+ "n_action_variants": 6,
+ "reward_server": {
+  "status": "ok",
+  "backends": [
+   "imagereward",
+   "hpsv3",
+   "pickscore"
+  ],
+  "requests_served": 0
+ },
+ "design": "fixed-schedule joint (noise x action) allocation: screen screen_n noises to step 12, finish the top keep by partial hpsv3, spend the remainder on distinct-action branches from step 12. No decider."
+}

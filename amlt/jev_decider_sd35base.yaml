@@ -1,0 +1,137 @@
+description: jev-decider-sd35base
+
+# Jev / VLM decider study on base SD3.5-Large (experiments/vlm_decider_sd35base, branch jev-decider-sd35base).
+# Runs the two experiments that were queued on the A6000 box but never got GPUs:
+#   stage jevact  : corrected Jev-as-policy 2x2 on the real 9-10-wording bank + early/late control  (~1 h)
+#   stage actdiff : the two actdiff (bon_mcts) proposals -- Jev bank/reward engine, Jev per-step probe traces,
+#                   each with a matched random control + rank3-only + shipped base                 (~2 h)
+# then held-out judging (ImageReward/HPSv3/PickScore + HPSv2 + Qwen2-VL alignment + VQAScore).
+# One node, 8 GPUs: reward server (22 GB), Qwen2.5-VL (17 GB) + Jev-Omni (24 GB), samplers (19 GB each).
+# Everything the launchers need is copied to RUN_DIR on the blob mount and path-remapped there (node_remap.sh),
+# so results persist after the job: /mnt/data/v-yigu/jev_decider/{run_tag}/{main,logs,scores.csv}
+#
+# Submit:  amlt run amlt/jev_decider_sd35base.yaml -p hf_token=$HF_TOKEN -p run_tag=jev_v1
+# Skip the 22 GB VQAScore judge:  -p run_vqascore=0     Run one stage only:  -p stages=actdiff
+
+target:
+  service: sing
+  name: GenAI-Shared-UKSouth2
+  workspace_name: Singularity-GenAI-WS-UKSouth2
+  resource_group: singularity-genai-gpu-uksouth2
+
+env_defaults:
+  service: sing
+  PRIORITY: high
+  NODES: 1
+  GPUS: 8
+  MEM: 80
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - export PATH=/home/aiscuser/.local/bin:$$PATH
+    - pip install --user datasets huggingface_hub hpsv2
+
+code:
+  local_dir: ./
+
+storage:
+  output:
+    storage_account_name: vigstandard
+    container_name: data
+    mount_dir: /mnt/data
+
+search:
+  job_template:
+    name: jevdec-{run_tag}
+    sku: ${NODES}x${MEM}G${GPUS}
+    sla_tier: Standard
+    process_count_per_node: 1
+    priority: high
+    mpi: false
+    command:
+      - set -x
+      - export PYTHONNOUSERSITE=1
+      - unset PYTHONPATH || true
+      - export SID_FORCE_WANDB_STUB=1
+      - export WANDB_DISABLED=true
+      - export PATH=/home/aiscuser/.local/bin:$$PATH
+      - export PATH="$$PATH:/home/aiscuser/.local/bin:/root/.local/bin:/opt/conda/envs/ptca/bin"
+      - export PYTHON_BIN=/opt/conda/envs/ptca/bin/python
+      - export HF_HOME=/mnt/data/v-yigu/model_cache/hf_cache
+      - export HF_HUB_CACHE=$$HF_HOME/hub
+      - export HF_TOKEN={hf_token}
+      - export HUGGING_FACE_HUB_TOKEN={hf_token}
+      - export NCCL_ASYNC_ERROR_HANDLING=0
+      - export CODE_DIR=$$PWD
+      # ---- sampler env (ptca) : same pins as sd35_base_dts_imagereward.yaml ----
+      - source /opt/conda/etc/profile.d/conda.sh
+      - /opt/conda/envs/ptca/bin/pip install --upgrade "setuptools>=70,<76" wheel
+      - /opt/conda/envs/ptca/bin/pip install -r requirements.txt
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --force-reinstall --no-deps "xformers==0.0.31.post1" || true
+      - PYTHON_BIN=/opt/conda/envs/ptca/bin/python bash install_reward_deps.sh
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "transformers==4.52.4" "tokenizers==0.21.1" "qwen-vl-utils==0.0.14"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir --no-deps "ftfy>=6.2.3" "regex>=2024.11.6" "xxhash>=3.4.1"
+      - /opt/conda/envs/ptca/bin/pip install --no-cache-dir "pandas>=2.1.4" "pyarrow>=14.0.2" "datasets>=2.19.0"
+      - /opt/conda/envs/ptca/bin/python -c "import torch, transformers, qwen_vl_utils; print('[ptca]', torch.__version__, transformers.__version__)"
+      # ---- reward env (hpsv3 + imagereward + pickscore) ----
+      - export IMAGEREWARD_CACHE=/mnt/data/v-yigu/model_cache/ImageReward
+      - export HPS_ROOT=/mnt/data/v-yigu/model_cache/hpsv2
+      - mkdir -p $$HF_HUB_CACHE $$IMAGEREWARD_CACHE $$HPS_ROOT /home/aiscuser/.cache
+      - ln -sfn $$IMAGEREWARD_CACHE /home/aiscuser/.cache/ImageReward || true
+      - export REWARD_ENV_NAME=reward
+      - export REWARD_ENV_SENTINEL_DIR=/tmp
+      - CONDA_BASE=/opt/conda REWARD_ENV_NAME=reward REWARD_ENV_SENTINEL_DIR=/tmp bash setup_reward_env.sh
+      - export REWARD_PY_PREFIX=$$(cat /tmp/reward_env_prefix_reward)
+      - export REWARD_PY=$$REWARD_PY_PREFIX/bin/python
+      - $$REWARD_PY -m pip install --no-cache-dir --upgrade "setuptools<80" wheel || true
+      - $$REWARD_PY -m pip install --no-cache-dir "fairscale==0.4.4" "timm>=1.0" || true
+      - $$REWARD_PY -m pip install --no-cache-dir --no-deps "diffusers>=0.27,<0.31" "datasets" "wandb" || true
+      - 'IR_INIT=$$($$REWARD_PY -c "import importlib.util; s=importlib.util.find_spec(\"ImageReward\"); print(s.origin if s else \"\")" 2>/dev/null || echo ""); if [ -n "$$IR_INIT" ] && [ -f "$$IR_INIT" ]; then grep -q "^# (patched-no-ReFL)" "$$IR_INIT" || sed -i "s|^from \\.ReFL import|# (patched-no-ReFL) from .ReFL import|" "$$IR_INIT"; fi'
+      - REWARD_BACKENDS='imagereward hpsv3 pickscore' $$REWARD_PY preload_reward_models.py
+      # ---- Jev-Omni env (transformers 5.x for Gemma-4; torch 2.11 cu128 as on the A6000 box, cu126 fallback) ----
+      - export JEV_PY_PREFIX=/opt/conda/envs/jev
+      - '[ -x $$JEV_PY_PREFIX/bin/python ] || /opt/conda/bin/conda create -y -p $$JEV_PY_PREFIX python=3.11 pip'
+      - '$$JEV_PY_PREFIX/bin/pip install --no-cache-dir "torch==2.11.0" "torchvision==0.26.0" --index-url https://download.pytorch.org/whl/cu128 || $$JEV_PY_PREFIX/bin/pip install --no-cache-dir "torch==2.11.0" "torchvision==0.26.0" --index-url https://download.pytorch.org/whl/cu126'
+      - $$JEV_PY_PREFIX/bin/pip install --no-cache-dir "transformers==5.17.0" "accelerate==1.15.0" "safetensors>=0.5" "pillow" "numpy" "huggingface_hub>=1.0"
+      - $$JEV_PY_PREFIX/bin/python -c "import torch, transformers; print('[jev]', torch.__version__, torch.cuda.is_available(), transformers.__version__)"
+      # ---- VQAScore judge env (optional; t2v_metrics pins transformers 4.49 / torch 2.5.1) ----
+      - export VQA_PY_PREFIX=/opt/conda/envs/vqascore
+      - 'if [ "{run_vqascore}" = "1" ]; then [ -x $$VQA_PY_PREFIX/bin/python ] || /opt/conda/bin/conda create -y -p $$VQA_PY_PREFIX python=3.10 pip; $$VQA_PY_PREFIX/bin/pip install --no-cache-dir "torch==2.5.1" "torchvision==0.20.1" --index-url https://download.pytorch.org/whl/cu124; $$VQA_PY_PREFIX/bin/pip install --no-cache-dir "transformers==4.49.0" "t2v_metrics==3.0" "accelerate==1.14.0" "pillow<11" "numpy<2"; fi'
+      # ---- prefetch every model while ONLINE, then go offline ----
+      - export ALL_REPOS='stabilityai/stable-diffusion-3.5-large Qwen/Qwen2.5-VL-7B-Instruct MizzenAI/HPSv3 yuvalkirstain/PickScore_v1'
+      - for repo in $$ALL_REPOS; do /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os, sys; snapshot_download(sys.argv[1], token=os.environ.get('HF_TOKEN'), max_workers=2); print('cache OK:', sys.argv[1])" "$$repo" || ( echo "FATAL prefetch $$repo"; exit 1 ); done
+      - /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download('akhilaaa3/Jev-Omni', revision='5addda86ddee081a68fb067477ea100c221b8917', token=os.environ.get('HF_TOKEN'), max_workers=2); print('cache OK, Jev-Omni @ 5addda86ddee081a68fb067477ea100c221b8917')" || ( echo "FATAL prefetch Jev-Omni"; exit 1 )
+      - 'if [ "{run_vqascore}" = "1" ]; then /opt/conda/envs/ptca/bin/python -c "from huggingface_hub import snapshot_download; import os; snapshot_download(\"zhiqiulin/clip-flant5-xxl\", token=os.environ.get(\"HF_TOKEN\"), max_workers=2); print(\"cache OK: clip-flant5-xxl\")" || ( echo "FATAL prefetch clip-flant5-xxl"; exit 1 ); fi'
+      - test -f $$HF_HUB_CACHE/models--akhilaaa3--Jev-Omni/snapshots/5addda86ddee081a68fb067477ea100c221b8917/jev_omni.py && test -f $$HF_HUB_CACHE/models--akhilaaa3--Jev-Omni/snapshots/5addda86ddee081a68fb067477ea100c221b8917/head.pt || ( echo "FATAL Jev snapshot incomplete"; exit 1 )
+      - export HF_HUB_OFFLINE=1
+      - export TRANSFORMERS_OFFLINE=1
+      # ---- stage the experiment onto the blob mount and remap paths ----
+      - export RUN_DIR=/mnt/data/v-yigu/jev_decider/{run_tag}
+      - mkdir -p $$RUN_DIR/main $$RUN_DIR/logs $$RUN_DIR/state
+      - cp -r experiments/vlm_decider_sd35base/scripts experiments/vlm_decider_sd35base/config experiments/vlm_decider_sd35base/deps experiments/vlm_decider_sd35base/node_remap.sh $$RUN_DIR/
+      - cp experiments/vlm_decider_sd35base/PLAN.md experiments/vlm_decider_sd35base/RECOMMENDATION.md experiments/vlm_decider_sd35base/RESUME.md $$RUN_DIR/
+      - RUN_DIR=$$RUN_DIR REPO_DIR=$$CODE_DIR HF_CACHE=$$HF_HOME SIDDIT_PY_PREFIX=/opt/conda/envs/ptca REWARD_PY_PREFIX=$$REWARD_PY_PREFIX JEV_PY_PREFIX=$$JEV_PY_PREFIX VQA_PY_PREFIX=$$VQA_PY_PREFIX bash $$RUN_DIR/node_remap.sh
+      - '[ "{run_vqascore}" = "1" ] || sed -i "s#^t=\\1792620338; CUDA_VISIBLE_DEVICES=\\ PATH=\"\\/bin.*score_vqa.py.*#echo \"vqascore skipped (run_vqascore=0)\" | tee -a \\/logs/judge_driver.log#" $$RUN_DIR/scripts/judge_base.sh'
+      - nvidia-smi
+      # ---- run (launchers self-check, then start as soon as >=4 GPUs are free -- immediately on a fresh node) ----
+      - 'for st in {stages}; do case $$st in jevact) bash $$RUN_DIR/scripts/run_jevact3.sh ;; actdiff) bash $$RUN_DIR/scripts/run_actdiff_jev.sh ;; *) echo "unknown stage $$st" ;; esac; done'
+      - cp $$RUN_DIR/scores.csv $$RUN_DIR/scores_final.csv 2>/dev/null || true
+      - echo "DONE -> $$RUN_DIR"; ls $$RUN_DIR/main | head -40
+
+    submit_args:
+      env:
+        DATASET_MOUNT_BLOCK_BASED_CACHE_ENABLED: True
+        SHARED_MEMORY_PERCENT: 0.5
+
+  max_trials: 1
+  type: grid
+  params:
+    - name: run_tag
+      values: [ "jev_v1" ]
+    - name: hf_token
+      values: [ "YOUR_HF_TOKEN_HERE" ]
+    - name: run_vqascore
+      values: [ "1" ]
+    - name: stages
+      values: [ "jevact actdiff" ]

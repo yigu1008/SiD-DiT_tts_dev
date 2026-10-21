@@ -1,0 +1,100 @@
+shard,slug,prompt_id,category,skills,prompt
+0,p00,q0000,basic,attribute|scene|part relation,"A panoramic view of a mountain range, its peaks dusted with snow."
+0,p01,q0004,basic,attribute|spatial relation|action relation|part relation,"A playful kitten with a bell collar on the left, batting at a fluttering butterfly on the right."
+0,p02,q0011,advanced,counting|comparison|differentiation,There are four dresses on the hanger; the one with a long hemline is the most vibrant.
+0,p03,q0020,advanced,comparison,Several umbrellas of varying colors leaned against stands in the hallway.
+0,p04,q0027,advanced,counting|comparison|differentiation,"Two birds are chasing each other in the air, with the one flying higher having a long tail and the other bird having a short tail."
+0,p05,q0033,basic,attribute|scene,"A harbor filled with lights, reflecting on the calm water at night."
+0,p06,q0041,advanced,counting|negation|universal,"There are four train toys on the floor, none of which are adjacent to each other."
+0,p07,q0047,advanced,counting,A woman with three silver bracelets sitting on a bench.
+0,p08,q0055,advanced,counting|comparison|differentiation,"Three purple gemstones and one pink gemstone, with the pink gemstone having the smoothest looking surface"
+0,p09,q0061,basic,scene|action relation,"A coffee shop, a chalkboard menu displaying 'Cappuccino'."
+0,p10,q0069,advanced,negation,"A bookshelf filled with books, but not a single magazine."
+0,p11,q0078,advanced,counting|comparison|differentiation,"In the classroom, two boys standing together, the boy in the red jumper is taller than the boy in the white t-shirt."
+0,p12,q0082,advanced,counting,Three turtles in sandals slowly strolling along a sandy beach at sunset.
+0,p13,q0088,basic,attribute|scene|action relation,A saxophonist playing a soulful tune in a jazz club.
+0,p14,q0095,advanced,differentiation,A runner in blue shoes speeds past another in red shoes.
+0,p15,q0104,advanced,universal,All the books on the table are unopened.
+0,p16,q0110,basic,attribute|scene,'Art Center' is spray-painted on the wall of the City Gallery.
+0,p17,q0120,advanced,comparison|differentiation,"In the night market, two vendors are setting up their stalls, and the vendor on the left has a wider range of goods than the vendor on the right."
+0,p18,q0127,basic,spatial relation,'Tea Time' painted on a quaint cafe sign.
+0,p19,q0137,advanced,negation,"In an early morning park, a man in a grey and white tracksuit is not running."
+0,p20,q0148,advanced,negation,"A man without a beanie, feeling the chilly morning air directly on his hair."
+0,p21,q0158,basic,attribute|spatial relation,A map of the United States spread out on a desk.
+0,p22,q0170,advanced,counting|differentiation|negation,"Three ceramic mugs sit on the kitchen counter, one with a floral pattern on it, one with nothing on it, and one with a chevron pattern on it."
+0,p23,q0176,basic,spatial relation|action relation,An oak tree providing shade to a family having a picnic underneath.
+0,p24,q0184,advanced,counting,"One pirate ship sailing through space, crewed by five robots."
+1,p00,q0001,basic,action relation|part relation,A pastry shop window displaying eclairs with 'Sweet Serendipity' piped in chocolate.
+1,p01,q0005,advanced,differentiation,"One person in white jogs with a steady pace, one person in red sprints with all their might."
+1,p02,q0012,basic,attribute|spatial relation,A silver necklace gleaming beside a glass bowl filled with colorful fish.
+1,p03,q0021,basic,attribute|spatial relation|action relation,A turtle slowly crossing a path with a child watching in fascination.
+1,p04,q0030,advanced,attribute;counting,Four bored boys.
+1,p05,q0036,advanced,negation,a red harp without any strings.
+1,p06,q0042,basic,attribute|spatial relation|action relation|part relation,A young lady wearing a T-shirt puts her hand on a puppy's head.
+1,p07,q0051,basic,attribute|scene|spatial relation|action relation,A sparrow pilot flying a paper plane between the clouds.
+1,p08,q0056,advanced,differentiation,"A short sunflower stands tall and faces the sun, while another tall one bends towards the ground."
+1,p09,q0062,basic,attribute|scene|action relation,A chef fervently preparing sushi in a bustling kitchen.
+1,p10,q0070,basic,attribute|spatial relation,"A canvas displays a half-finished portrait, with a cup of rinse water and scattered charcoal pieces nearby."
+1,p11,q0079,advanced,negation,"A giraffe stands to the right of a tree, but the giraffe doesn't eat the leaves."
+1,p12,q0083,advanced,comparison|differentiation|negation,"A little brown-haired boy is clicking on the keyboard to play a computer game, and a little boy next to him who is not brown-haired looks more anxious than he is."
+1,p13,q0090,advanced,counting,Five colorful magnets decorating the door of a white refrigerator.
+1,p14,q0096,basic,,An insulated lunch box.
+1,p15,q0105,basic,attribute|spatial relation|action relation,A yellow taxi waiting outside a modern glass building.
+1,p16,q0113,advanced,comparison,A red and green frog is jumping from one lotus leaf to another bigger one.
+1,p17,q0123,advanced,universal,"A group of people are gathered at a party, all sitting around a dining table."
+1,p18,q0129,basic,attribute|spatial relation|action relation,A cotton canvas bag is lying on a wooden kitchen counter.
+1,p19,q0140,advanced,negation,"A busy office, but not a single bright screen on."
+1,p20,q0150,basic,attribute|part relation,"A cozy fireplace with 'Warm Hearts, Warm Hearth' etched into the wooden mantle."
+1,p21,q0159,advanced,counting|universal,three children are all sitting on a couch.
+1,p22,q0172,basic,attribute|scene|action relation,"a solitary lighthouse standing tall against a backdrop of stormy seas and dark, rolling clouds."
+1,p23,q0177,basic,attribute|scene|spatial relation|action relation,"The college campus in spring, with students lounging on the green lawns between classes."
+1,p24,q0185,basic,attribute|action relation,A towering skyscraper reflecting the early morning sun.
+2,p00,q0002,basic,attribute|scene|spatial relation|action relation,"A rustic barn amid a snow-covered landscape, smoke rising from the chimney."
+2,p01,q0007,advanced,negation,"An office, the computer on, but no one there."
+2,p02,q0014,advanced,negation,A garden with no flowers blooming.
+2,p03,q0023,basic,attribute|scene|spatial relation|action relation,"A bright yellow taxi parked in front, a tall glass building rising behind it amidst clouds."
+2,p04,q0031,basic,attribute|spatial relation|action relation|part relation,"A soft coat was draped over the back of a wooden chair, and a frog sang from the seat."
+2,p05,q0037,basic,attribute|spatial relation|part relation,A book with glowing runes floating beside a mystic crystal.
+2,p06,q0044,basic,attribute|spatial relation,A white wireless mouse on a desk.
+2,p07,q0053,advanced,counting,Two red balloons and three white clouds floating in the blue sky.
+2,p08,q0059,advanced,counting,"Two parrots on a perch, one speaking into a miniature microphone."
+2,p09,q0063,advanced,counting,A pair of glasses resting on an open novel.
+2,p10,q0075,basic,attribute|scene|part relation,A dusty chalkboard in a vintage classroom with 'The future is ours to create' neatly written.
+2,p11,q0080,basic,attribute|spatial relation|action relation,"A sleek, metallic mouse gliding smoothly across a wooden desk."
+2,p12,q0086,advanced,negation,"A snowy landscape with a cabin, but no smoke from the chimney."
+2,p13,q0091,advanced,negation,"In a race between a tortoise and a hare, the tortoise takes a nap, but the hare does not."
+2,p14,q0097,basic,attribute|scene|spatial relation,"A busy urban intersection, a traffic sign at the roadside displaying 'Speed Limit 30 mph'."
+2,p15,q0106,basic,spatial relation|action relation,A single rose growing through a crack.
+2,p16,q0115,advanced,counting,Five wooden forks.
+2,p17,q0125,advanced,negation,"A garden with flowers, but no bees to be seen."
+2,p18,q0131,advanced,comparison,A scene where there are more hats than stools.
+2,p19,q0144,basic,attribute|scene|part relation,"A vintage jukebox in a retro diner, its selection panel lit up with the numbers '45'."
+2,p20,q0154,basic,attribute|scene|action relation,A crystal-clear lake reflecting a mountainous landscape.
+2,p21,q0161,advanced,counting|negation,Two ballet slippers without ribbons.
+2,p22,q0174,advanced,counting,Five canvas bags sit to the right of three woolen hats.
+2,p23,q0178,basic,attribute|part relation,A young woman in a red long-sleeved dress.
+2,p24,q0197,basic,attribute|scene|spatial relation,"A plush velvet armchair in the corner of a library, with a sleek leather sofa along the opposite wall."
+3,p00,q0003,basic,attribute|scene|spatial relation|part relation,A lantern by a camping site glowing with 'Light the Way' etched on its side.
+3,p01,q0010,basic,attribute|scene|action relation,"After a snowfall, a group of kids builds a fort with blocks of snow piled up."
+3,p02,q0019,basic,scene|spatial relation|action relation,A butterfly perched on a wildflower in a meadow.
+3,p03,q0025,basic,attribute|scene|action relation|part relation,"An elephant paints a self-portrait with its trunk in a sunny, open field."
+3,p04,q0032,basic,attribute|scene,A row of colorful townhouses on a sunny street.
+3,p05,q0038,basic,attribute|scene,A narrow alleyway illuminated by strings of fairy lights.
+3,p06,q0045,advanced,universal,"Several giraffes on the African savannah surrounded a tall green tree, and all the giraffes were eating the leaves."
+3,p07,q0054,basic,attribute|spatial relation|action relation,A butterfly landing on a blooming Amaryllis as a child observes closely.
+3,p08,q0060,basic,attribute|scene|action relation,An enchanted broom sweeping in a wizard's lofty chamber.
+3,p09,q0065,basic,part relation,A woman wearing a T-shirt and gloves.
+3,p10,q0076,basic,attribute|spatial relation,a rotary dial telephone on a modern minimalist desk.
+3,p11,q0081,advanced,differentiation,A large pizza with pepperoni on the left half and mushrooms on the right half.
+3,p12,q0087,advanced,negation,"A mountain with no snow, under a bright sky."
+3,p13,q0093,advanced,comparison|differentiation,A library with more shelves filled with books than empty ones.
+3,p14,q0098,basic,,A Bluetooth speaker.
+3,p15,q0107,advanced,counting,Three jealous teachers.
+3,p16,q0117,advanced,differentiation,A woman in a neon jersey waiting at a light next to a woman in a long coat and scarf.
+3,p17,q0126,advanced,counting,One orange kite and four white seagulls flying above the beach.
+3,p18,q0133,advanced,counting|differentiation,"In the art gallery, two paintings hang on the wall, one a vibrant abstract with splashes of color, the other a detailed landscape with intricate brushwork."
+3,p19,q0146,basic,scene|action relation|part relation,A cat wearing ski goggles is exploring in the snow.
+3,p20,q0156,advanced,comparison|differentiation|negation,An elegant cat with a long tail throws a ball at a cute cat without a long tail.
+3,p21,q0166,advanced,counting|comparison,Two candles sit on a table; the one on the left is dimmer than the one on the right.
+3,p22,q0175,basic,attribute|scene|spatial relation|action relation,"A 'Veggie Patch' sign staked in a garden, lush greens around."
+3,p23,q0180,basic,attribute|scene|action relation,A skateboarder performing a trick in an urban skate park.

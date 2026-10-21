@@ -29,7 +29,8 @@ run ${F[3]} ja_randact_v2w random & P2=$!
 wait $P1; wait $P2
 kill $(cat $R/state/vlm_server.pid) $(cat $R/state/jev_server.pid) 2>/dev/null; sleep 10
 # ec_v2 on the real bank: 3 shards on whatever is free now (reward server still up)
-G=($(free_gpus)); [ ${#G[@]} -ge 1 ] || { log "no GPU for ec_v2w"; kill $(cat $R/state/mr3_server.pid); exit 1; }
+G=($(free_gpus)); [ ${#G[@]} -ge 1 ] || { log "no GPU for ec_v2w"; kill $(cat $R/state/mr3_server.pid) 2>/dev/null; exit 1; }
+curl -s --max-time 5 http://127.0.0.1:5142/health | grep -q '"status": "ok"' || { log "mr3 died (killed with the samplers?) -> restarting on gpu${G[0]}"; bash $R/scripts/mr3_server.sh ${G[0]} 5142 >> $R/logs/jevact3_driver.log 2>&1 || { log "mr3 restart failed"; exit 1; }; G=($(free_gpus)); }
 NS=$(( ${#G[@]} < 3 ? ${#G[@]} : 3 )); DIR=$R/main/ec_v2w; PIDS=()
 for i in $(seq 0 $((NS-1))); do
   ( t=$(date +%s); log "--- ec_v2w shard $i/$NS gpu${G[$i]}"; cd /home/ygu/project/SiD-DiT_tts_dev
@@ -41,4 +42,5 @@ done
 for p in "${PIDS[@]}"; do wait $p; done
 cat $DIR/records_shard*.jsonl > $DIR/records_all.jsonl 2>/dev/null
 kill $(cat $R/state/mr3_server.pid) 2>/dev/null
-log "CORRECTED RERUN COMPLETE: $(wc -l < $DIR/records_all.jsonl 2>/dev/null) ec_v2w rows"
+A=$(wc -l < $R/main/ja_jevact_v2w/records.jsonl 2>/dev/null || echo 0); B=$(wc -l < $R/main/ja_randact_v2w/records.jsonl 2>/dev/null || echo 0); C=$(wc -l < $DIR/records_all.jsonl 2>/dev/null || echo 0)
+if [ "$A" -ge 9 ] && [ "$B" -ge 9 ] && [ "$C" -ge 324 ]; then log "CORRECTED RERUN COMPLETE: jevact $A/9 $B/9, ec_v2w $C/324"; exit 0; else log "INCOMPLETE (jevact $A/9 $B/9, ec_v2w $C/324) -- rerun this launcher to resume; arms skip finished prompts"; exit 2; fi

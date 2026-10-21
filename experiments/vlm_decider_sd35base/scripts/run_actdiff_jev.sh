@@ -17,9 +17,16 @@ free_gpus(){ APPS=$(nvidia-smi --query-compute-apps=gpu_uuid --format=csv,nohead
     n=$(echo "$APPS" | grep -c "${u// /}"); [ "${m// /}" -lt 2000 ] && [ "$n" = 0 ] && echo $g; done; }
 DEADLINE=$(( $(date +%s) + 172800 ))
 log "waiting for >=4 free GPUs"
-while :; do F=($(free_gpus)); [ ${#F[@]} -ge 4 ] && { log "free: ${F[*]}"; break; }
+# Serialize with the jevact resume chain: both launchers pick the LOWEST free GPUs, so if all 8 free at once they
+# would collide on the same cards. Start only when jevact is COMPLETE, or when >=8 GPUs are free (then take the
+# HIGHEST four so a concurrent jevact pass gets the lowest four).
+# judged by the RECORDS, not a log line: the jevact log already holds a stale "COMPLETE" from 19:53 that was wrong
+jevact_done(){ [ "$(wc -l < $R/main/ja_jevact_v2w/records.jsonl 2>/dev/null || echo 0)" -ge 9 ] && [ "$(wc -l < $R/main/ja_randact_v2w/records.jsonl 2>/dev/null || echo 0)" -ge 9 ] && [ "$(cat $R/main/ec_v2w/records_shard*.jsonl 2>/dev/null | wc -l)" -ge 324 ]; }
+while :; do F=($(free_gpus | sort -n))
+  if jevact_done && [ ${#F[@]} -ge 4 ]; then log "jevact complete; free: ${F[*]}"; break; fi
+  if [ ${#F[@]} -ge 8 ]; then F=($(free_gpus | sort -rn)); log "8 free, jevact not done -> taking the highest four: ${F[*]:0:4}"; break; fi
   [ "$(date +%s)" -ge "$DEADLINE" ] && { log "STALL 48h; giving up"; exit 1; }; sleep 300; done
-sleep 30; F=($(free_gpus)); [ ${#F[@]} -ge 4 ] || { log "taken during settle"; exit 1; }
+sleep 30; if jevact_done; then F=($(free_gpus | sort -n)); else F=($(free_gpus | sort -rn)); fi; [ ${#F[@]} -ge 4 ] || { log "taken during settle"; exit 1; }
 bash $R/scripts/mr3_server.sh ${F[0]} 5142 >> $R/logs/actdiff_driver.log 2>&1 || { log "mr3 failed"; exit 1; }
 bash $R/scripts/vlm_server.sh ${F[1]} 5151 >> $R/logs/actdiff_driver.log 2>&1 || { log "vlm failed"; exit 1; }
 bash $R/scripts/jev_server.sh ${F[1]} 5161 >> $R/logs/actdiff_driver.log 2>&1 || { log "jev failed"; exit 1; }

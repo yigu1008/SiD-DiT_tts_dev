@@ -59,3 +59,15 @@ Both launchers self-check (`actdiff_jev_main.py --help`, hooks present) and wait
 * Tag output dirs with seconds+PID (two judges launched in one minute shared a directory).
 * Match NFE before believing any comparison; three "wins" here were budget artifacts.
 * Two best-of-11 runs differing only in seed pool differ by +0.527 hpsv3 — share seed pools or use n>=25.
+
+## 7. State at hand-off (2026-10-21 22:15, work moved to another cluster)
+* On the A6000 box the jevact launcher DID run for 46 min (19:05-19:53) before being SIGTERM'd by another user's
+  launch: `ja_jevact_v2w` 7/9, `ja_randact_v2w` 2/9 prompts, all 616 NFE, bank width confirmed delivered
+  (wordings 0-8 used), sheet order permuted. Those partial records/images stay on the A6000 box and are NOT in this
+  repo: on a new cluster start both arms clean (the judge needs images for all 9 prompts in one place).
+* Local launchers were killed at hand-off so nothing fires twice. To re-arm on the A6000 box:
+  `nohup bash scripts/resume_jevact3.sh &` then `nohup bash scripts/run_actdiff_jev.sh &`.
+* Launcher behaviour now: `resume_jevact3.sh` loops `run_jevact3.sh` until records are complete (a SIGTERM costs only
+  the in-flight prompt; restarts the reward server if killed; honest completion status); `run_actdiff_jev.sh` is
+  serialized behind jevact by RECORD COUNTS (not a log line) and takes the highest four GPUs when all eight free.
+* The AMLT job (`amlt/jev_decider_sd35base.yaml`, see DEPLOY.md) runs the same two stages on a fresh node.

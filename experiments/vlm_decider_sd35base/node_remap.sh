@@ -18,6 +18,7 @@ n=0
 for f in $FILES; do
   sed -i \
     -e "s#/data/ygu/runs/vlm_decider_sd35base_2026-10-16#${RUN_DIR}#g" \
+    -e "s#/home/ygu/project/SiD-DiT_tts_dev/hf_cache#${HF_CACHE}/hub#g" \
     -e "s#/home/ygu/project/SiD-DiT_tts_dev#${REPO_DIR}#g" \
     -e "s#/home/ygu/miniconda3/envs/sid_dit#${SIDDIT_PY_PREFIX}#g" \
     -e "s#/home/ygu/miniconda3/envs/reward#${REWARD_PY_PREFIX}#g" \

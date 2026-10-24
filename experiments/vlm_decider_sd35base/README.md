@@ -14,8 +14,8 @@ If you are a fresh Claude Code session that was told "pull my repo and continue"
 4. **Skim the last three sections of `PLAN.md`** — the review of the Jev-as-policy traces, the actdiff hooks, and the
    two experiments that are still pending.
 5. **To run the pending experiments:** on Azure ML, `DEPLOY.md` (one `amlt run`). On a GPU box you control:
-   remap paths with `node_remap.sh` (see RESUME.md §3), start the three servers, then `scripts/resume_jevact3.sh`
-   followed by `scripts/run_actdiff_jev.sh`. Both self-check and wait for >=4 free GPUs.
+   remap paths with `node_remap.sh` (see RESUME.md §3), start the three servers, then `scripts/run_jevact3_flex.sh`
+   followed by `scripts/run_actdiff_jev.sh`. Both self-check and wait for 3 (or 2) clean GPUs; see DEPLOY.md.
 
 What is here: `scripts/` (every arm, probe, launcher, the diversity-first prompt proposer, the actdiff decider module
 and entry wrapper), `config/` (prompt ids, the v2 wording bank), `deps/` (prompt map, shipped bank, judge scripts),

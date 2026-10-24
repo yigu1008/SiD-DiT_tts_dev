@@ -5,7 +5,7 @@
 #   ad_rank3     actdiff + rank3 backup only (no Jev)                    -- isolates the reward change
 #   ad_jevbank   #1 Jev re-centres CFG bank + admits wordings + rank3    ad_randbank  matched random control
 #   ad_jevprobe  #2 per-step probe traces + VLM critique + Jev prior     ad_randprobe matched random (same probes, same NFE)
-# Self-checks: wrapper --help must pass; hooks must be present; waits (with retry) for >=4 free GPUs (ryan holds all).
+# Self-checks: wrapper --help must pass; hooks must be present; waits (with retry) for >=3 clean GPUs.
 set -uo pipefail; R=/data/ygu/runs/vlm_decider_sd35base_2026-10-16; SID=/home/ygu/project/SiD-DiT_tts_dev
 PY=/home/ygu/miniconda3/envs/sid_dit/bin/python
 log(){ echo "[$(date '+%F %T')] $*" | tee -a $R/logs/actdiff_driver.log; }
@@ -22,11 +22,12 @@ log "waiting for >=4 free GPUs"
 # HIGHEST four so a concurrent jevact pass gets the lowest four).
 # judged by the RECORDS, not a log line: the jevact log already holds a stale "COMPLETE" from 19:53 that was wrong
 jevact_done(){ [ "$(wc -l < $R/main/ja_jevact_v2w/records.jsonl 2>/dev/null || echo 0)" -ge 9 ] && [ "$(wc -l < $R/main/ja_randact_v2w/records.jsonl 2>/dev/null || echo 0)" -ge 9 ] && [ "$(cat $R/main/ec_v2w/records_shard*.jsonl 2>/dev/null | wc -l)" -ge 324 ]; }
+# Needs 3 clean GPUs minimum: [mr3] [vlm+jev] [>=1 sampler]; arms are distributed round-robin over sampler GPUs.
 while :; do F=($(free_gpus | sort -n))
-  if jevact_done && [ ${#F[@]} -ge 4 ]; then log "jevact complete; free: ${F[*]}"; break; fi
-  if [ ${#F[@]} -ge 8 ]; then F=($(free_gpus | sort -rn)); log "8 free, jevact not done -> taking the highest four: ${F[*]:0:4}"; break; fi
+  if jevact_done && [ ${#F[@]} -ge 3 ]; then log "jevact complete; free: ${F[*]}"; break; fi
+  if [ ${#F[@]} -ge 8 ]; then F=($(free_gpus | sort -rn)); log "8 free, jevact not done -> taking the highest four: ${F[*]:0:4}"; F=("${F[@]:0:4}"); break; fi
   [ "$(date +%s)" -ge "$DEADLINE" ] && { log "STALL 48h; giving up"; exit 1; }; sleep 300; done
-sleep 30; if jevact_done; then F=($(free_gpus | sort -n)); else F=($(free_gpus | sort -rn)); fi; [ ${#F[@]} -ge 4 ] || { log "taken during settle"; exit 1; }
+sleep 30; if jevact_done; then F=($(free_gpus | sort -n)); else F=($(free_gpus | sort -rn)); F=("${F[@]:0:4}"); fi; [ ${#F[@]} -ge 3 ] || { log "taken during settle"; exit 1; }
 bash $R/scripts/mr3_server.sh ${F[0]} 5142 >> $R/logs/actdiff_driver.log 2>&1 || { log "mr3 failed"; exit 1; }
 bash $R/scripts/vlm_server.sh ${F[1]} 5151 >> $R/logs/actdiff_driver.log 2>&1 || { log "vlm failed"; exit 1; }
 bash $R/scripts/jev_server.sh ${F[1]} 5161 >> $R/logs/actdiff_driver.log 2>&1 || { log "jev failed"; exit 1; }
@@ -45,10 +46,11 @@ run(){ local G=$1 N=$2 D=$3 t=$(date +%s); log "--- $N (decider=$D) gpu$G"; mkdi
       --decider_log $R/main/$N/decider_log.jsonl >> $R/logs/$N.log 2>&1
   log "--- $N end rc=$? in $(( $(date +%s)-t ))s"
   $PY $R/scripts/actdiff_to_records.py --run_dir $R/main/$N --index_map $R/config/prompts_rsel9_index.json --arm $N >> $R/logs/actdiff_driver.log 2>&1; }
-# two samplers in parallel (F[2], F[3]); arms paired so each GPU runs three sequentially
-( run ${F[2]} ad_base none; run ${F[2]} ad_jevbank jevbank; run ${F[2]} ad_jevprobe jevprobe ) & P1=$!
-( run ${F[3]} ad_rank3 rank3only; run ${F[3]} ad_randbank randbank; run ${F[3]} ad_randprobe randprobe ) & P2=$!
-wait $P1; wait $P2
+# arms round-robin over the sampler GPUs F[2..] (1 sampler -> all six sequential; 2 -> three each, as before)
+S=("${F[@]:2}"); ARMS=(ad_base:none ad_rank3:rank3only ad_jevbank:jevbank ad_randbank:randbank ad_jevprobe:jevprobe ad_randprobe:randprobe)
+K=${#S[@]}; [ $K -gt 6 ] && K=6; log "samplers: ${S[*]:0:$K}"; PIDS=()
+for g in $(seq 0 $((K-1))); do ( for i in "${!ARMS[@]}"; do [ $((i % K)) -eq $g ] && run ${S[$g]} ${ARMS[$i]%%:*} ${ARMS[$i]##*:}; done ) & PIDS+=($!); done
+for p in "${PIDS[@]}"; do wait $p; done
 kill $(cat $R/state/vlm_server.pid) $(cat $R/state/jev_server.pid) $(cat $R/state/mr3_server.pid) 2>/dev/null; sleep 15
 DIRS=""; for n in ad_base ad_rank3 ad_jevbank ad_randbank ad_jevprobe ad_randprobe; do [ -s $R/main/$n/records.jsonl ] && DIRS="$DIRS $R/main/$n"; done
 G=($(free_gpus)); [ -n "$DIRS" ] && [ ${#G[@]} -ge 1 ] && bash $R/scripts/judge_base.sh ${G[0]} $R/config/prompt_ids_rsel9.txt $DIRS >> $R/logs/actdiff_driver.log 2>&1

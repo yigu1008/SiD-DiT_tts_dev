@@ -25,7 +25,7 @@ Useful overrides: `-p run_vqascore=0` (skip the 22 GB CLIP-FlanT5-XXL judge; VQA
    roots, prompt map, rewrite cache, judge scripts) to the node's paths. `deps/` carries the data and judge scripts
    that are not otherwise in the repo (`prompt_map.csv`, the shipped wording bank, `score_local/vlm_judge/vqa.py`,
    `build_followup_manifest/export_scores/same_day_analysis/static_arm.py`).
-6. Runs `run_jevact3.sh` then `run_actdiff_jev.sh`. Both self-check first and wait for >=4 free GPUs -- immediate
+6. Runs `run_jevact3.sh` then `run_actdiff_jev.sh`. Both self-check first and wait for free GPUs (4 and 3) -- immediate
    on a fresh node. GPU layout: reward server 22 GB, Qwen2.5-VL 17 GB + Jev-Omni 24 GB (share a GPU), samplers 19 GB.
 7. Judging appends to `RUN_DIR/scores.csv` (also copied to `scores_final.csv`).
 
@@ -46,3 +46,21 @@ Useful overrides: `-p run_vqascore=0` (skip the 22 GB CLIP-FlanT5-XXL judge; VQA
   only to `ad_base` after an NFE-matched base run (raise `--n_sims` to the probe NFE recorded in `records.jsonl`).
 * Two launchers are still armed on the A6000 box waiting for GPUs; kill them (`pkill -f run_jevact3.sh`, by PID, not
   from a shell whose command line contains the pattern) if this job runs, or results land twice.
+
+## Running on a GPU box you control (no AMLT)
+Everything the AMLT job does in software is reproducible by hand; the yaml is the authoritative list of versions.
+1. `git clone -b jev-decider-sd35base git@github.com:yigu1008/SiD-DiT_tts_dev.git` and `pip install -r requirements.txt`
+   into the sampler env (torch 2.7.1, transformers 4.52.4, qwen-vl-utils; see yaml lines 69-75). This env is "sid_dit".
+2. Build the `reward` env with `setup_reward_env.sh` (HPSv3 + ImageReward + PickScore; yaml lines 84-89) and the `jev`
+   env (python 3.11, torch 2.11 cu128 or cu126, transformers 5.17; yaml lines 94-96). Optional `vqascore` env (line 100).
+3. Prefetch weights into one HF cache (yaml lines 103-105): SD3.5-Large, Qwen2.5-VL-7B-Instruct, Jev-Omni@5addda86,
+   MizzenAI/HPSv3, PickScore_v1, optionally clip-flant5-xxl. The HF token is needed for SD3.5 only.
+4. `cp -r experiments/vlm_decider_sd35base $RUN_DIR` and remap paths inside it:
+   `RUN_DIR=... REPO_DIR=... HF_CACHE=... SIDDIT_PY_PREFIX=... REWARD_PY_PREFIX=... JEV_PY_PREFIX=... VQA_PY_PREFIX=... bash $RUN_DIR/node_remap.sh`
+5. Launch (each starts its own servers and is resumable):
+   * `nohup bash $RUN_DIR/scripts/run_jevact3_flex.sh &` -- needs 3 clean GPUs for the Jev-policy arms (reward 22 GB,
+     Qwen2.5-VL 17 GB + Jev-Omni 24 GB on one card, sampler 26 GB) and 2 for the early-control arm; uses more if free.
+   * `nohup bash $RUN_DIR/scripts/run_actdiff_jev.sh &` -- waits for jevact to complete (by records) and 3 clean GPUs.
+   On 80 GB cards all of this fits on 2 GPUs; the scripts still count whole free cards, so give them 3-4.
+6. Results: `$RUN_DIR/main/<arm>/records.jsonl`, judged scores in `$RUN_DIR/scores.csv`; read with `scripts/rsel_table.py`.
+   Start the three arms clean on the new box (do not copy the partial A6000 records; they were produced under a kill).

@@ -112,7 +112,7 @@ search:
       - cp -r experiments/vlm_decider_sd35base/scripts experiments/vlm_decider_sd35base/config experiments/vlm_decider_sd35base/deps experiments/vlm_decider_sd35base/node_remap.sh $$RUN_DIR/
       - cp experiments/vlm_decider_sd35base/PLAN.md experiments/vlm_decider_sd35base/RECOMMENDATION.md experiments/vlm_decider_sd35base/RESUME.md $$RUN_DIR/
       - RUN_DIR=$$RUN_DIR REPO_DIR=$$CODE_DIR HF_CACHE=$$HF_HOME SIDDIT_PY_PREFIX=/opt/conda/envs/ptca REWARD_PY_PREFIX=$$REWARD_PY_PREFIX JEV_PY_PREFIX=$$JEV_PY_PREFIX VQA_PY_PREFIX=$$VQA_PY_PREFIX bash $$RUN_DIR/node_remap.sh
-      - '[ "{run_vqascore}" = "1" ] || sed -i "s#^t=\\1792620338; CUDA_VISIBLE_DEVICES=\\ PATH=\"\\/bin.*score_vqa.py.*#echo \"vqascore skipped (run_vqascore=0)\" | tee -a \\/logs/judge_driver.log#" $$RUN_DIR/scripts/judge_base.sh'
+      - '[ "{run_vqascore}" = "1" ] || sed -i "/score_vqa\.py/c log \"vqascore skipped (run_vqascore=0)\"" $$RUN_DIR/scripts/judge_base.sh'
       - nvidia-smi
       # ---- run (launchers self-check, then start as soon as >=4 GPUs are free -- immediately on a fresh node) ----
       - 'for st in {stages}; do case $$st in jevact) bash $$RUN_DIR/scripts/run_jevact3.sh ;; actdiff) bash $$RUN_DIR/scripts/run_actdiff_jev.sh ;; *) echo "unknown stage $$st" ;; esac; done'

@@ -47,6 +47,21 @@ Useful overrides: `-p run_vqascore=0` (skip the 22 GB CLIP-FlanT5-XXL judge; VQA
 * Two launchers are still armed on the A6000 box waiting for GPUs; kill them (`pkill -f run_jevact3.sh`, by PID, not
   from a shell whose command line contains the pattern) if this job runs, or results land twice.
 
+## Running on TACC Lonestar6 (gpu-a100, 3x A100-40GB per node; no AMLT)
+Everything lives under `$SCRATCH/jev_decider` (= `RUN_DIR`), with `$SCRATCH/jev_decider/env.sh` as the single source of paths:
+```
+$SCRATCH/jev_decider/            RUN_DIR: scripts/ config/ deps/ = remapped copy of this directory (sync_from_repo.sh after every pull)
+  env.sh                         HF_HOME, IMAGEREWARD_CACHE, HPS_ROOT, the four env prefixes, caches off $HOME (its quota is full)
+  main/ logs/ state/ scores.csv  run outputs (main/ns_ladder is copied from results/, early_control.py reads it)
+  setup/setup_envs.sh            builds $SCRATCH/envs/{reward,jev,vqascore} with $SCRATCH/miniforge3 and completes sid_dit
+  scripts/run_ls6.sh|.sbatch     the launcher: fixed GPU placement, all arms sequential on one sampler GPU, resumable
+$SCRATCH/envs/{sid_dit,reward,jev,vqascore}      $SCRATCH/hf_cache/hub (SD3.5/HPSv2/CLIP-H are symlinks into $WORK/model_cache)
+```
+GPU placement on 40 GB cards: GPU0 = mr3 (~22 GB) + Qwen2.5-VL (~16 GB), GPU1 = Jev-Omni (~24 GB), GPU2 = the one sampler.
+`STAGES=smoke bash $RUN_DIR/scripts/run_ls6.sh` runs one jevact prompt against all three servers and logs the per-GPU peak
+(`logs/gpu_mem.log`) -- do this once before the 48 h job. Then `sbatch $RUN_DIR/scripts/run_ls6.sbatch` (stages jevact ec actdiff
+judge; ~25-30 h sequential). Partitions `gpu-a100` only (dev/small partitions have the same 3-GPU nodes but short limits).
+
 ## Running on a GPU box you control (no AMLT)
 Everything the AMLT job does in software is reproducible by hand; the yaml is the authoritative list of versions.
 1. `git clone -b jev-decider-sd35base git@github.com:yigu1008/SiD-DiT_tts_dev.git` and `pip install -r requirements.txt`

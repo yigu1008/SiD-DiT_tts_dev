@@ -1,0 +1,16 @@
+{
+  "num_rows": 9,
+  "num_prompts": 9,
+  "mode_stats": {
+    "mcts": {
+      "count": 9,
+      "mean_score": 1.6392225954267714,
+      "mean_delta_vs_base": 0.6555323931905959,
+      "std_delta_vs_base": 0.2780065193926624,
+      "mean_nfe": 4256.0
+    }
+  },
+  "best_mode_counts": {
+    "mcts": 9
+  }
+}

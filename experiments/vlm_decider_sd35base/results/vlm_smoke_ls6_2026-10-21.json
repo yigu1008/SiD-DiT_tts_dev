@@ -1,0 +1,212 @@
+{
+ "health": {
+  "status": "ok",
+  "model": "Qwen/Qwen2.5-VL-7B-Instruct",
+  "requests_served": 0
+ },
+ "generate": [
+  {
+   "text": "The image contains a red cube on the left and a blue sphere on the right, which matches the original prompt. However, there is no green object present as mentioned in the prompt, and the shapes are not in the correct relative positions (the red cube should be to the left of the blue sphere).",
+   "seconds": 2.68,
+   "n_images": 1,
+   "case": "synthetic",
+   "prompt": "a red cube left of a blue sphere",
+   "wall": 2.9966351985931396
+  },
+  {
+   "text": "The image contains a red square on the left and a blue circle on the right, but there is no green pyramid or yellow ring present. The prompt specifies a green pyramid to the right of a yellow ring, which are both missing from the image.",
+   "seconds": 1.37,
+   "n_images": 1,
+   "case": "synthetic-mismatch",
+   "prompt": "a green pyramid right of a yellow ring",
+   "wall": 1.377060890197754
+  },
+  {
+   "text": "The image does not depict a mountain range; instead, it shows an interior space with a modern kitchen and living area. The prompt's mention of a mountain range and snow is not present in the image, which features wooden flooring, furniture, and indoor lighting.",
+   "seconds": 1.4,
+   "n_images": 1,
+   "case": "photo",
+   "prompt": "A panoramic view of a mountain range, its peaks dusted with snow.",
+   "wall": 1.4639136791229248
+  }
+ ],
+ "decide": [
+  {
+   "comment": "The current image does not match the original prompt as it depicts an indoor living room scene rather than a mountain range. The prompt specifies a panoramic view of a mountain range with snow-capped peaks, which is entirely absent from the image.",
+   "ranking": [
+    0,
+    1,
+    2,
+    3,
+    10,
+    11,
+    12,
+    13,
+    20,
+    21,
+    22,
+    23,
+    30,
+    31,
+    32,
+    33
+   ],
+   "keep": [
+    0,
+    1,
+    2,
+    10,
+    11,
+    12
+   ],
+   "variants_best_first": [
+    "A",
+    "D",
+    "B",
+    "C"
+   ],
+   "variant_texts_best_first": [
+    "A panoramic view of a mountain range, its peaks dusted with snow.",
+    "A breathtaking panoramic view of a mountain range, its peaks dusted with snow, bathed in the soft light of early morning.",
+    "A panoramic view of a mountain range, its snow-dusted peaks arranged in a sweeping arc across the horizon.",
+    "A mountain range, its peaks dusted with snow, in a panoramic view."
+   ],
+   "cfg_best_first": [
+    3.5,
+    4.5,
+    5.5,
+    7.0
+   ],
+   "labels": {
+    "A": "A panoramic view of a mountain range, its peaks dusted with snow.",
+    "B": "A panoramic view of a mountain range, its snow-dusted peaks arranged in a sweeping arc across the horizon.",
+    "C": "A mountain range, its peaks dusted with snow, in a panoramic view.",
+    "D": "A breathtaking panoramic view of a mountain range, its peaks dusted with snow, bathed in the soft light of early morning."
+   },
+   "raw": "```json\n{\n  \"comment\": \"The current image does not match the original prompt as it depicts an indoor living room scene rather than a mountain range. The prompt specifies a panoramic view of a mountain range with snow-capped peaks, which is entirely absent from the image.\",\n  \"variants_best_first\": [],\n  \"cfg_best_first\": []\n}\n```",
+   "parsed": true,
+   "seconds": 1.93,
+   "prompt": "A panoramic view of a mountain range, its peaks dusted with snow.",
+   "n_candidates": 16,
+   "wall": 1.9916863441467285
+  },
+  {
+   "comment": "The current image does not contain any elements related to a kitten, a bell collar, or a butterfly. It depicts a cozy living room scene with furniture and lighting, which is completely unrelated to the prompt. The prompt is missing entirely from the image.",
+   "ranking": [
+    0,
+    1,
+    2,
+    3,
+    10,
+    11,
+    12,
+    13,
+    20,
+    21,
+    22,
+    23,
+    30,
+    31,
+    32,
+    33
+   ],
+   "keep": [
+    0,
+    1,
+    2,
+    10,
+    11,
+    12
+   ],
+   "variants_best_first": [
+    "B",
+    "D",
+    "C",
+    "A"
+   ],
+   "variant_texts_best_first": [
+    "A playful kitten with a bell collar on the left, batting at a fluttering butterfly on the right.",
+    "A playful kitten wearing a bell collar on the left, actively batting at a fluttering butterfly on the right.",
+    "A playful kitten adorned with a bell collar sits on the left, its paws gently batting at a fluttering butterfly on the right, both set against a soft, sunlit meadow backdrop.",
+    "A playful kitten with a bell collar on the left, batting at a fluttering butterfly that is clearly visible on the right."
+   ],
+   "cfg_best_first": [
+    3.5,
+    4.5,
+    5.5,
+    7.0
+   ],
+   "labels": {
+    "A": "A playful kitten with a bell collar on the left, batting at a fluttering butterfly that is clearly visible on the right.",
+    "B": "A playful kitten with a bell collar on the left, batting at a fluttering butterfly on the right.",
+    "C": "A playful kitten adorned with a bell collar sits on the left, its paws gently batting at a fluttering butterfly on the right, both set against a soft, sunlit meadow backdrop.",
+    "D": "A playful kitten wearing a bell collar on the left, actively batting at a fluttering butterfly on the right."
+   },
+   "raw": "```json\n{\n  \"comment\": \"The current image does not contain any elements related to a kitten, a bell collar, or a butterfly. It depicts a cozy living room scene with furniture and lighting, which is completely unrelated to the prompt. The prompt is missing entirely from the image.\",\n  \"variants_best_first\": [],\n  \"cfg_best_first\": []\n}\n```",
+   "parsed": true,
+   "seconds": 2.0,
+   "prompt": "A playful kitten with a bell collar on the left, batting at a fluttering butterfly on the right.",
+   "n_candidates": 16,
+   "wall": 2.068890333175659
+  },
+  {
+   "comment": "The current image does not match the original prompt at all. It shows a living room with furniture and no dresses. The prompt specifies dresses on a hanger, which is not present in the image.",
+   "ranking": [
+    0,
+    1,
+    2,
+    3,
+    10,
+    11,
+    12,
+    13,
+    20,
+    21,
+    22,
+    23,
+    30,
+    31,
+    32,
+    33
+   ],
+   "keep": [
+    0,
+    1,
+    2,
+    10,
+    11,
+    12
+   ],
+   "variants_best_first": [
+    "C",
+    "A",
+    "B",
+    "D"
+   ],
+   "variant_texts_best_first": [
+    "There are four dresses on the hanger; the one with a long hemline is the most vibrant.",
+    "The most vibrant dress has a long hemline; there are four dresses on the hanger.",
+    "There are four dresses on the hanger, each with distinct colors and patterns, but the one with a long hemline stands out as the most vibrant, featuring a bold, eye-catching design that catches the light beautifully.",
+    "Four dresses hang side by side; the one with the longest hemline is the most vibrant."
+   ],
+   "cfg_best_first": [
+    3.5,
+    4.5,
+    5.5,
+    7.0
+   ],
+   "labels": {
+    "A": "The most vibrant dress has a long hemline; there are four dresses on the hanger.",
+    "B": "There are four dresses on the hanger, each with distinct colors and patterns, but the one with a long hemline stands out as the most vibrant, featuring a bold, eye-catching design that catches the light beautifully.",
+    "C": "There are four dresses on the hanger; the one with a long hemline is the most vibrant.",
+    "D": "Four dresses hang side by side; the one with the longest hemline is the most vibrant."
+   },
+   "raw": "```json\n{\n  \"comment\": \"The current image does not match the original prompt at all. It shows a living room with furniture and no dresses. The prompt specifies dresses on a hanger, which is not present in the image.\",\n  \"variants_best_first\": [\"C\"],\n  \"cfg_best_first\": [3.5]\n}\n```",
+   "parsed": true,
+   "seconds": 1.91,
+   "prompt": "There are four dresses on the hanger; the one with a long hemline is the most vibrant.",
+   "n_candidates": 16,
+   "wall": 1.971662998199463
+  }
+ ]
+}

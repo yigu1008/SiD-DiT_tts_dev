@@ -1,0 +1,32 @@
+[2026-10-24 16:03:58] === LS6 launcher on c306-002.ls6.tacc.utexas.edu stages=[smoke jevact ec] : jevact 0/9 randact 0/9 ec_v2w 0/324 actdiff 0/6
+[2026-10-24 16:03:58] servers up (mr3 gpu0, vlm gpu0, jev gpu1):
+[2026-10-24 16:03:58] --- _smoke_jevact (policy=jev) gpu2
+[2026-10-24 16:14:51] --- _smoke_jevact end rc=0 in 653s records=1
+[2026-10-24 16:14:51] smoke peak MiB per GPU: gpu0=39013 gpu1=23505 gpu2=26779 
+[2026-10-24 16:14:51] SMOKE OK
+[2026-10-24 16:14:51] servers up (mr3 gpu0, vlm gpu0, jev gpu1):
+[2026-10-24 16:14:51] --- ja_jevact_v2w (policy=jev) gpu2
+[2026-10-24 17:05:52] --- ja_jevact_v2w end rc=0 in 3061s records=9
+[2026-10-24 17:05:52] --- ja_randact_v2w (policy=random) gpu2
+[2026-10-24 17:38:58] --- ja_randact_v2w end rc=0 in 1986s records=9
+[2026-10-24 17:38:58] servers up (mr3 gpu0, vlm gpu0, jev gpu1):
+[2026-10-24 17:38:58] --- ec_v2w shard 0/3 gpu2
+[2026-10-24 18:09:41] --- ec_v2w shard 0 end rc=0 in 1843s shard_records=108
+[2026-10-24 18:09:41] --- ec_v2w shard 1/3 gpu2
+[2026-10-24 18:40:43] --- ec_v2w shard 1 end rc=0 in 1862s shard_records=108
+[2026-10-24 18:40:43] --- ec_v2w shard 2/3 gpu2
+[2026-10-24 19:11:18] --- ec_v2w shard 2 end rc=0 in 1835s shard_records=108
+[2026-10-24 19:11:18] === LS6 launcher done: jevact 9/9 randact 9/9 ec_v2w 324/324 actdiff 0/6
+[2026-10-24 19:11:18] exit: stopping servers
+[2026-10-24 19:11:56] === LS6 launcher on c306-002.ls6.tacc.utexas.edu stages=[actdiff] : jevact 9/9 randact 9/9 ec_v2w 324/324 actdiff 0/6
+[2026-10-24 19:12:24] mr3 server pid=1122423 gpu=0 port=5142
+healthy after 280 s: {"status": "ok", "backends": ["imagereward", "hpsv3", "pickscore"], "requests_served": 0}
+[2026-10-24 19:17:06] vlm server pid=1123197 gpu=0 port=5151
+healthy after 80 s
+[2026-10-24 19:18:27] jev server pid=1123399 gpu=1 port=5161
+healthy after 190 s
+[2026-10-24 19:21:38] servers up (mr3 gpu0, vlm gpu0, jev gpu1):
+[2026-10-24 19:21:38] --- ad_base (decider=none) gpu2
+[2026-10-24 22:19:51] --- ad_base end rc=0 in 10693s
+wrote /scratch/09398/yigu/jev_decider/main/ad_base/records.jsonl: 9 records from 9 mcts rows
+[2026-10-24 22:19:52] --- ad_rank3 (decider=rank3only) gpu2

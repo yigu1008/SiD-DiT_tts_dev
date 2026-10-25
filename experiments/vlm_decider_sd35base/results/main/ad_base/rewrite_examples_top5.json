@@ -1,0 +1,95 @@
+{
+  "topk": 5,
+  "total_candidates": 5,
+  "examples": [
+    {
+      "rank": 0,
+      "prompt_index": 0,
+      "slug": "p00000",
+      "original": "A panoramic view of a mountain range, its peaks dusted with snow.",
+      "variants": [
+        "A panoramic view of a mountain range, its peaks dusted with snow.",
+        "A breathtaking panoramic view of a mountain range, its peaks dusted with snow, bathed in the soft light of early morning.",
+        "A panoramic view of a mountain range, its snow-dusted peaks arranged in a sweeping arc across the horizon.",
+        "A mountain range, its peaks dusted with snow, in a panoramic view.",
+        "A breathtaking panoramic view of a majestic mountain range, where its towering peaks are gracefully dusted with pristine white snow, casting a serene and awe-inspiring presence under the clear blue sky.",
+        "A panoramic view of the mountain range, with its snow-dusted peaks prominently positioned at the horizon, creating a striking contrast against the clear sky.",
+        "A mountain range with dusted snow peaks, a panoramic view.",
+        "A panoramic view of the snow-dusted mountain range, with jagged peaks standing tall against the horizon.",
+        "Panoramic view, its peaks dusted with snow, of a mountain range."
+      ],
+      "changed_count": 8,
+      "from_cache": true
+    },
+    {
+      "rank": 0,
+      "prompt_index": 1,
+      "slug": "p00001",
+      "original": "A playful kitten with a bell collar on the left, batting at a fluttering butterfly on the right.",
+      "variants": [
+        "A playful kitten with a bell collar on the left, batting at a fluttering butterfly on the right.",
+        "A playful kitten wearing a bell collar on the left, actively batting at a fluttering butterfly on the right.",
+        "A playful kitten adorned with a bell collar sits on the left, its paws gently batting at a fluttering butterfly on the right, both set against a soft, sunlit meadow backdrop.",
+        "A playful kitten with a bell collar on the left, batting at a fluttering butterfly that is clearly visible on the right.",
+        "A charming, fluffy kitten adorned with a delicate bell collar on its left, playfully batting at a vibrant, fluttering butterfly on its right, set against a soft, dappled light that enhances the tender scene.",
+        "A playful kitten adorned with a shiny, silver bell collar sits on the left, gently batting at a delicate, fluttering butterfly suspended mid-air on the right.",
+        "A playful kitten adorned with a shimmering bell collar sits on the left, energetically batting at a delicate butterfly fluttering from the right.",
+        "A playful kitten wearing a bell collar is positioned on the left side of the image, batting at a fluttering butterfly on the far right side of the image.",
+        "A playful kitten with a bell collar on the left, batting at a fluttering butterfly on the right, captured under warm, golden light in midday, using a shallow depth-of-field for a dreamy, focused effect."
+      ],
+      "changed_count": 8,
+      "from_cache": true
+    },
+    {
+      "rank": 0,
+      "prompt_index": 2,
+      "slug": "p00002",
+      "original": "There are four dresses on the hanger; the one with a long hemline is the most vibrant.",
+      "variants": [
+        "There are four dresses on the hanger; the one with a long hemline is the most vibrant.",
+        "The most vibrant dress has a long hemline; there are four dresses on the hanger.",
+        "There are four dresses on the hanger, each with distinct colors and patterns, but the one with a long hemline stands out as the most vibrant, featuring a bold, eye-catching design that catches the light beautifully.",
+        "Four dresses hang side by side; the one with the longest hemline is the most vibrant.",
+        "There are four dresses on the hanger; the one with a long hemline is the most vibrant red dress.",
+        "The one with a long hemline is the most vibrant; there are four dresses on the hanger.",
+        "A brightly lit, detailed photograph showcases four elegant dresses hanging side by side, with a close-up view accentuating the vibrant hues of the dress with the longest hemline, set against a soft, natural daylight backdrop.",
+        "On the hanger, there are four dresses, each with a distinct silhouette; the one with a long hemline is particularly vibrant, adorned with intricate beading that catches the light, revealing a shimmering array of colors.",
+        "There are four dresses suspended on a hanger; the most vibrant dress, distinguished by its long hemline, stands out among them.",
+        "Four dresses hang in a row; the one at the far right has a long hemline and stands out as the most vibrant."
+      ],
+      "changed_count": 9,
+      "from_cache": true
+    },
+    {
+      "rank": 0,
+      "prompt_index": 3,
+      "slug": "p00003",
+      "original": "Several umbrellas of varying colors leaned against stands in the hallway.",
+      "variants": [
+        "Several umbrellas of varying colors leaned against stands in the hallway.",
+        "Several umbrellas leaned against stands in the hallway of varying colors.",
+        "A vibrant photograph captures several umbrellas of varying colors leaning against stands in a hallway, bathed in soft, natural light filtering through a nearby window at golden hour.",
+        "A row of several umbrellas of varying colors leans against stands aligned neatly in the hallway."
+      ],
+      "changed_count": 3,
+      "from_cache": true
+    },
+    {
+      "rank": 0,
+      "prompt_index": 4,
+      "slug": "p00004",
+      "original": "Two birds are chasing each other in the air, with the one flying higher having a long tail and the other bird having a short tail.",
+      "variants": [
+        "Two birds are chasing each other in the air, with the one flying higher having a long tail and the other bird having a short tail.",
+        "The one bird flying higher has a long tail while the other bird has a short tail; two birds are chasing each other in the air.",
+        "Two birds are gracefully chasing each other in the air, with the one flying higher displaying a long, elegant tail and the other bird sporting a shorter, stubbier tail.",
+        "With the one flying higher having a long tail, two birds are chasing each other in the air, and the other bird has a short tail.",
+        "Two birds are chasing each other in the air, with the one flying higher sporting a long, vibrant tail and the other bird having a shorter, sleeker tail.",
+        "With the one flying higher having a long tail, two birds are chasing each other in the air, while the other bird has a short tail.",
+        "With the one flying higher having a long tail and the other bird having a short tail, two birds are chasing each other in the air."
+      ],
+      "changed_count": 6,
+      "from_cache": true
+    }
+  ]
+}

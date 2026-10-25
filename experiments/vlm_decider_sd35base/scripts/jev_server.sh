@@ -5,4 +5,4 @@ LOG=$R/logs/jev_server_gpu${GPU}_p${PORT}.log; echo "[$(date '+%F %T')] === star
 CUDA_VISIBLE_DEVICES=$GPU nohup bash -c "$PY -X faulthandler -u $R/scripts/jev_server.py --port $PORT; echo \"[\$(date '+%F %T')] EXIT code=\$? \"" >> $LOG 2>&1 &
 sleep 0.5; echo $(pgrep -n -f "jev_server.py --port $PORT") > $R/state/jev_server.pid
 echo "[$(date '+%F %T')] jev server pid=$(cat $R/state/jev_server.pid) gpu=$GPU port=$PORT"
-for i in $(seq 1 90); do sleep 5; curl -s --max-time 3 http://127.0.0.1:$PORT/health | grep -q '"status": "ok"' && { echo "healthy after $((i*5)) s"; exit 0; }; kill -0 $(cat $R/state/jev_server.pid) 2>/dev/null || { echo FATAL; tail -25 $R/logs/jev_server_gpu${GPU}_p${PORT}.log; exit 1; }; done; echo "not healthy after 450 s"; exit 1
+for i in $(seq 1 180); do sleep 5; curl -s --max-time 3 http://127.0.0.1:$PORT/health | grep -q '"status": "ok"' && { echo "healthy after $((i*5)) s"; exit 0; }; kill -0 $(cat $R/state/jev_server.pid) 2>/dev/null || { echo FATAL; tail -25 $R/logs/jev_server_gpu${GPU}_p${PORT}.log; exit 1; }; done; echo "not healthy after 900 s"; exit 1

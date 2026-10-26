@@ -36,7 +36,7 @@ PY
 DIRS=""; for s in jev_online jev_prune; do [ -s $R/main/${PRE}_$s/records.jsonl ] && DIRS="$DIRS $R/main/${PRE}_$s"; done
 [ -n "$DIRS" ] && bash $R/scripts/judge_base.sh $A $IDS $DIRS
 kill $(cat $R/state/ir_server.pid) 2>/dev/null
-D=/data/ygu/reward_orthogonality/followup_2026-09-24
+D=/data/ygu/reward_orthogonality/followup_2026-09-24/scripts
 log "=== paired contrasts: ${PRE}_jev_online minus ${PRE}_jev_prune ==="; FF=$R/main/contrast_${PRE}_online_minus_prune.txt; : > $FF
-for M in ir hpsv3 pickscore hpsv2 vqascore qwen_alignment; do $PY $D/scripts/same_day_analysis.py paired --scores $R/scores.csv --ids $IDS --a ${PRE}_jev_online --b ${PRE}_jev_prune --metric $M >> $FF 2>&1; done
+for M in ir hpsv3 pickscore hpsv2 vqascore qwen_alignment; do $PY $D/same_day_analysis.py paired --scores $R/scores.csv --ids $IDS --a ${PRE}_jev_online --b ${PRE}_jev_prune --metric $M >> $FF 2>&1; done
 cat $FF | tee -a $R/logs/online_driver.log; log "ONLINE RUN COMPLETE"

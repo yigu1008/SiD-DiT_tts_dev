@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # After main/opt_prompt finishes: derive the unedited baseline (round-0 images) as arm opt_prompt_r0, judge both on the 25 ids, paired contrasts.  bash finish_cohort_optprompt.sh <GPU>
-set -uo pipefail; R=/data/ygu/runs/vlm_decider_sd35base_2026-10-16; PY=/home/ygu/miniconda3/envs/sid_dit/bin/python; D=/data/ygu/reward_orthogonality/followup_2026-09-24; GPU=${1:-0}
+set -uo pipefail; R=/data/ygu/runs/vlm_decider_sd35base_2026-10-16; PY=/home/ygu/miniconda3/envs/sid_dit/bin/python; D=/data/ygu/reward_orthogonality/followup_2026-09-24/scripts; GPU=${1:-0}
 IDS=$R/config/prompt_ids_25.txt; log(){ echo "[$(date '+%F %T')] $*" | tee -a $R/logs/optprompt_driver.log; }
 $PY - <<'PY'
 import json, hashlib, os
@@ -14,5 +14,5 @@ print("opt_prompt_r0 records:", n)
 PY
 bash $R/scripts/judge_base.sh $GPU $IDS $R/main/opt_prompt $R/main/opt_prompt_r0
 log "=== paired contrasts n=25: opt_prompt minus opt_prompt_r0 ==="; F=$R/main/contrast_n25_opt_prompt_minus_r0.txt; : > $F
-for M in ir hpsv3 pickscore hpsv2 vqascore qwen_alignment; do $PY $D/scripts/same_day_analysis.py paired --scores $R/scores.csv --ids $IDS --a opt_prompt --b opt_prompt_r0 --metric $M >> $F 2>&1; done; cat $F | tee -a $R/logs/optprompt_driver.log
+for M in ir hpsv3 pickscore hpsv2 vqascore qwen_alignment; do $PY $D/same_day_analysis.py paired --scores $R/scores.csv --ids $IDS --a opt_prompt --b opt_prompt_r0 --metric $M >> $F 2>&1; done; cat $F | tee -a $R/logs/optprompt_driver.log
 $PY $R/scripts/make_optprompt_sheet.py $R/main/opt_prompt > /dev/null; log "COHORT OPTPROMPT COMPLETE"

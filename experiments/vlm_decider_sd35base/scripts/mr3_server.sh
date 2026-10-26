@@ -7,7 +7,7 @@ LOG=$R/logs/mr3_server_gpu${GPU}_p${PORT}.log; echo "[$(date '+%F %T')] === star
 CUDA_VISIBLE_DEVICES=$GPU HF_HUB_CACHE=/data/ygu/.cache/hub HF_HOME=/data/ygu/.cache/hub HPSV3_SCORE_STYLE=raw \
   SID_FORCE_WANDB_STUB=1 WANDB_DISABLED=true PATH="$(dirname $RW):$PATH" \
   nohup bash -c "$RW -X faulthandler -u $SID/reward_server.py --host 127.0.0.1 --port $PORT --device cuda:0 --backends imagereward hpsv3 pickscore --require_all_backends; echo \"[\$(date '+%F %T')] EXIT code=\$?\"" >> $LOG 2>&1 &
-sleep 0.5; echo $(pgrep -n -f "reward_server.py --host 127.0.0.1 --port $PORT") > $R/state/mr3_server.pid
+P=""; for k in $(seq 1 20); do P=$(pgrep -n -f "reward_server.py --host 127.0.0.1 --port $PORT"); [ -n "$P" ] && break; sleep 1; done; echo "$P" > $R/state/mr3_server.pid
 echo "[$(date '+%F %T')] mr3 server pid=$(cat $R/state/mr3_server.pid) gpu=$GPU port=$PORT"
 for i in $(seq 1 180); do sleep 5
   curl -s --max-time 3 http://127.0.0.1:$PORT/health | grep -q '"status": "ok"' && { echo "healthy after $((i*5)) s: $(curl -s http://127.0.0.1:$PORT/health)"; exit 0; }

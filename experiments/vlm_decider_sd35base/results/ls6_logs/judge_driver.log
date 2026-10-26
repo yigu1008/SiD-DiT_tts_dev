@@ -1,0 +1,7 @@
+[2026-10-26 01:03:15] === judge gpu0 ids=9 dirs=[/scratch/09398/yigu/jev_decider/main/ja_jevact_v2w /scratch/09398/yigu/jev_decider/main/ja_randact_v2w /scratch/09398/yigu/jev_decider/main/ad_base /scratch/09398/yigu/jev_decider/main/ad_rank3 /scratch/09398/yigu/jev_decider/main/ad_jevbank /scratch/09398/yigu/jev_decider/main/ad_randbank /scratch/09398/yigu/jev_decider/main/ad_jevprobe /scratch/09398/yigu/jev_decider/main/ad_randprobe] tag=1026_010315_3266402
+[2026-10-26 01:11:49] local judges exit=0 513s
+[2026-10-26 01:15:36] qwen2-vl judge exit=0 227s
+[2026-10-26 01:23:42] vqascore exit=0 486s
+appended 432 rows; skipped existing 0; max |rejudged-stored| per metric: {}; missing judge scores: 0 []
+[2026-10-26 01:23:42] === paired contrasts (n=9): each arm minus baseline, and minus mcts ===
+[2026-10-26 01:23:42] JUDGE COMPLETE

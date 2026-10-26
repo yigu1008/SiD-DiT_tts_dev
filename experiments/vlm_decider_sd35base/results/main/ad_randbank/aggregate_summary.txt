@@ -1,0 +1,5 @@
+Mode	Count	MeanScore	MeanDeltaVsBase	StdDeltaVsBase	MeanNFE
+mcts	9	1.590027	+0.606336	0.291037	4040.0
+
+Best mode counts:
+mcts: 9

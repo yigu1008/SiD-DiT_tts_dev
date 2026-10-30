@@ -5,7 +5,7 @@ import json, csv, argparse
 ap = argparse.ArgumentParser(); ap.add_argument("manifest"); ap.add_argument("vqa"); ap.add_argument("vlm"); ap.add_argument("--out", required=True); a = ap.parse_args()
 man = {(r["backend"], r["prompt_id"], str(r["sample_index"])): r for r in map(json.loads, open(a.manifest))}
 rows = {}
-for r in man.values(): rows[r["image"]] = {"image": r["image"], "prompt_id": r["prompt_id"], "stratum": r["stratum"], "mode": r["mode"]}
+for r in man.values(): rows[r["image"]] = {"image": r["image"], "prompt_id": r["prompt_id"], "stratum": r.get("stratum"), "mode": r.get("mode"), "noise_seed": r.get("seed")}
 for f, col, key in ((a.vqa, "vqascore", "vqascore"), (a.vlm, "vlm_yes", "qwen_alignment")):
     for r in csv.DictReader(open(f)):
         m = man.get((r["backend"], r["prompt_id"], str(r["sample_index"])))

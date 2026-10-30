@@ -1,0 +1,107 @@
+=== (1) predictability of FINAL hpsv3 from the preview hpsv3 at step t (across 32 noises, mean over 9 prompts)
+ step  NFE  spearman  top1 hit  best-of-top3  (top1 hit = preview argmax is the final argmax; best-of-top3 = final value of the best among preview top-3, minus final max)
+    4    8     0.042        0%        -0.938
+    8   16     0.347       11%        -0.706
+   12   24     0.613       11%        -0.165
+   16   32     0.667       11%        -0.439
+   20   40     0.793       22%        -0.152
+   24   48     0.913       67%        -0.027
+    step  8: imagereward->hpsv3: 0.275  hpsv3->hpsv3: 0.347  pickscore->hpsv3: 0.196
+    step 12: imagereward->hpsv3: 0.275  hpsv3->hpsv3: 0.613  pickscore->hpsv3: 0.230
+
+=== (2) policy simulation, mean final hpsv3 of the SELECTED noise (selection by its final reward), 300 random noise orderings x 9 prompts
+single noise 10.389 | oracle best of all 32: 12.418
+                policy     112     224     336     448     616     896   (NFE budget; blank = policy infeasible)
+     uniform best-of-k  11.069  11.531  11.742  11.877  12.014  12.170
+       screen@ 4 keep1  10.642  10.677  10.655  10.655  10.655  10.655
+       screen@ 4 keep2  11.063  11.216  11.255  11.236  11.236  11.236
+       screen@ 4 keep3          11.377  11.445  11.480  11.480  11.480
+       screen@ 8 keep1  10.922  11.144  11.287  11.349  11.376  11.376
+       screen@ 8 keep2  11.055  11.443  11.514  11.596  11.712  11.712
+       screen@ 8 keep3          11.550  11.665  11.667  11.701  11.712
+       screen@12 keep1  11.048  11.408  11.509  11.518  11.459  11.419
+       screen@12 keep2  11.063  11.579  11.783  11.872  11.901  11.779
+       screen@12 keep3          11.607  11.879  11.984  12.090  12.253
+       screen@16 keep1  10.954  11.382  11.491  11.514  11.563  11.547
+       screen@16 keep2  11.045  11.559  11.778  11.824  11.897  11.930
+       screen@16 keep3          11.527  11.816  11.940  12.030  12.076
+prompts=9  noises/prompt=32  checkpoints=[4, 8, 12, 16, 20, 24]  budget=336 NFE  full generation=56 NFE  selecting on hpsv3
+
+=== 1. PREDICTABILITY: across-noise Spearman( x0-preview score at step t , FINAL score ) ===
+    (if this is near 0 at a cheap step, no abandonment rule can work there -- Jev's included)
+  step  NFE/noise          ir       hpsv3   pickscore
+-----------------------------------------------------
+     4          8      +0.357      +0.042      +0.209
+     8         16      +0.544      +0.347      +0.476
+    12         24      +0.703      +0.613      +0.617
+    16         32      +0.842      +0.667      +0.762
+    20         40      +0.914      +0.793      +0.884
+    24         48      +0.967      +0.913      +0.950
+    cross-metric: does the partial HPSv3 rank predict the FINAL HPSv3 better than partial IR does?
+
+=== 2. BEST-OF-k over initial latents, finishing every one (k*56 NFE) ===
+   k    NFE          ir       hpsv3   pickscore
+-----------------------------------------------
+   1     56      1.0964     10.3768     23.0082
+   2    112      1.2958     11.0662     23.2422
+   4    224      1.4152     11.5278     23.4342
+   8    448      1.4818     11.8722     23.5891
+  11    616      1.5038     12.0038     23.6642   <-- 616-NFE budget
+  16    896      1.5213     12.1505     23.7452
+  24   1344      1.5367     12.3034     23.8258
+  32   1792      1.5441     12.4181     23.8791
+
+=== 3. SCREEN-AND-FINISH at 336 NFE, selecting on hpsv3 ===
+policy                               t    n   m    NFE      hpsv3  vs uniform
+-----------------------------------------------------------------------------
+uniform best-of-k (= ns_bo11)       28    6   6    336    11.7320     +0.0000
+screen by PARTIAL hpsv3             12   10   3    336    11.8682     +0.1362
+screen by TRUE FINAL (oracle ceiling)   4   32   1    304    12.4181     +0.6861
+screen at RANDOM (control)          24    6   6    336    11.7439     +0.0119
+-----------------------------------------------------------------------------
+  oracle ceiling over uniform          : +0.6861   <-- NO abandonment rule can beat this
+  realisable by partial-score screening: +0.1362
+  attributable to seeing more noises   : +0.0119   (random ranker, same budget)
+  attributable to the INFORMATION      : +0.1243
+
+  => headroom for a Jev saturation decision is at most +0.6861 and a free reward-based screen already gets +0.1362 of it.
+prompts=9  noises/prompt=32  checkpoints=[4, 8, 12, 16, 20, 24]  budget=616 NFE  full generation=56 NFE  selecting on hpsv3
+
+=== 1. PREDICTABILITY: across-noise Spearman( x0-preview score at step t , FINAL score ) ===
+    (if this is near 0 at a cheap step, no abandonment rule can work there -- Jev's included)
+  step  NFE/noise          ir       hpsv3   pickscore
+-----------------------------------------------------
+     4          8      +0.357      +0.042      +0.209
+     8         16      +0.544      +0.347      +0.476
+    12         24      +0.703      +0.613      +0.617
+    16         32      +0.842      +0.667      +0.762
+    20         40      +0.914      +0.793      +0.884
+    24         48      +0.967      +0.913      +0.950
+    cross-metric: does the partial HPSv3 rank predict the FINAL HPSv3 better than partial IR does?
+
+=== 2. BEST-OF-k over initial latents, finishing every one (k*56 NFE) ===
+   k    NFE          ir       hpsv3   pickscore
+-----------------------------------------------
+   1     56      1.0964     10.3768     23.0082
+   2    112      1.2958     11.0662     23.2422
+   4    224      1.4152     11.5278     23.4342
+   8    448      1.4818     11.8722     23.5891
+  11    616      1.5038     12.0038     23.6642   <-- 616-NFE budget
+  16    896      1.5213     12.1505     23.7452
+  24   1344      1.5367     12.3034     23.8258
+  32   1792      1.5441     12.4181     23.8791
+
+=== 3. SCREEN-AND-FINISH at 616 NFE, selecting on hpsv3 ===
+policy                               t    n   m    NFE      hpsv3  vs uniform
+-----------------------------------------------------------------------------
+uniform best-of-k (= ns_bo11)       28   11  11    616    12.0101     +0.0000
+screen by PARTIAL hpsv3             12   19   5    616    12.1498     +0.1397
+screen by TRUE FINAL (oracle ceiling)   8   32   2    592    12.4181     +0.4080
+screen at RANDOM (control)          16   11  11    616    12.0087     -0.0014
+-----------------------------------------------------------------------------
+  oracle ceiling over uniform          : +0.4080   <-- NO abandonment rule can beat this
+  realisable by partial-score screening: +0.1397
+  attributable to seeing more noises   : -0.0014   (random ranker, same budget)
+  attributable to the INFORMATION      : +0.1411
+
+  => headroom for a Jev saturation decision is at most +0.4080 and a free reward-based screen already gets +0.1397 of it.

@@ -23,7 +23,7 @@
    "hpsv3",
    "pickscore"
   ],
-  "requests_served": 33
+  "requests_served": 0
  },
  "design": "Jev EXECUTES the action it picks. The winning retrieval panel's exact (wording, CFG) is run for that segment -- no pruning, no PUCT prior, no UCB1 anywhere. Trajectories are sequential and differ only because the retrieval state grows."
 }

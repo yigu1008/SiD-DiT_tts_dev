@@ -1,0 +1,146 @@
+[2026-10-24 16:03:58] === LS6 launcher on c306-002.ls6.tacc.utexas.edu stages=[smoke jevact ec] : jevact 0/9 randact 0/9 ec_v2w 0/324 actdiff 0/6
+[2026-10-24 16:03:58] servers up (mr3 gpu0, vlm gpu0, jev gpu1):
+[2026-10-24 16:03:58] --- _smoke_jevact (policy=jev) gpu2
+[2026-10-24 16:14:51] --- _smoke_jevact end rc=0 in 653s records=1
+[2026-10-24 16:14:51] smoke peak MiB per GPU: gpu0=39013 gpu1=23505 gpu2=26779 
+[2026-10-24 16:14:51] SMOKE OK
+[2026-10-24 16:14:51] servers up (mr3 gpu0, vlm gpu0, jev gpu1):
+[2026-10-24 16:14:51] --- ja_jevact_v2w (policy=jev) gpu2
+[2026-10-24 17:05:52] --- ja_jevact_v2w end rc=0 in 3061s records=9
+[2026-10-24 17:05:52] --- ja_randact_v2w (policy=random) gpu2
+[2026-10-24 17:38:58] --- ja_randact_v2w end rc=0 in 1986s records=9
+[2026-10-24 17:38:58] servers up (mr3 gpu0, vlm gpu0, jev gpu1):
+[2026-10-24 17:38:58] --- ec_v2w shard 0/3 gpu2
+[2026-10-24 18:09:41] --- ec_v2w shard 0 end rc=0 in 1843s shard_records=108
+[2026-10-24 18:09:41] --- ec_v2w shard 1/3 gpu2
+[2026-10-24 18:40:43] --- ec_v2w shard 1 end rc=0 in 1862s shard_records=108
+[2026-10-24 18:40:43] --- ec_v2w shard 2/3 gpu2
+[2026-10-24 19:11:18] --- ec_v2w shard 2 end rc=0 in 1835s shard_records=108
+[2026-10-24 19:11:18] === LS6 launcher done: jevact 9/9 randact 9/9 ec_v2w 324/324 actdiff 0/6
+[2026-10-24 19:11:18] exit: stopping servers
+[2026-10-24 19:11:56] === LS6 launcher on c306-002.ls6.tacc.utexas.edu stages=[actdiff] : jevact 9/9 randact 9/9 ec_v2w 324/324 actdiff 0/6
+[2026-10-24 19:12:24] mr3 server pid=1122423 gpu=0 port=5142
+healthy after 280 s: {"status": "ok", "backends": ["imagereward", "hpsv3", "pickscore"], "requests_served": 0}
+[2026-10-24 19:17:06] vlm server pid=1123197 gpu=0 port=5151
+healthy after 80 s
+[2026-10-24 19:18:27] jev server pid=1123399 gpu=1 port=5161
+healthy after 190 s
+[2026-10-24 19:21:38] servers up (mr3 gpu0, vlm gpu0, jev gpu1):
+[2026-10-24 19:21:38] --- ad_base (decider=none) gpu2
+[2026-10-24 22:19:51] --- ad_base end rc=0 in 10693s
+wrote /scratch/09398/yigu/jev_decider/main/ad_base/records.jsonl: 9 records from 9 mcts rows
+[2026-10-24 22:19:52] --- ad_rank3 (decider=rank3only) gpu2
+[2026-10-25 01:31:24] --- ad_rank3 end rc=0 in 11492s
+wrote /scratch/09398/yigu/jev_decider/main/ad_rank3/records.jsonl: 9 records from 9 mcts rows
+[2026-10-25 01:31:25] --- ad_jevbank (decider=jevbank) gpu2
+[2026-10-25 14:29:15] === LS6 launcher on c317-001.ls6.tacc.utexas.edu stages=[actdiff judge] : jevact 9/9 randact 9/9 ec_v2w 324/324 actdiff 2/6
+[2026-10-25 14:30:21] mr3 server pid=3168939 gpu=0 port=5142
+not healthy after 360 s
+Loading checkpoint shards:   0%|          | 0/5 [00:00<?, ?it/s]Loading checkpoint shards:  20%|██        | 1/5 [00:00<00:00,  4.78it/s]Loading checkpoint shards:  40%|████      | 2/5 [00:00<00:00,  5.72it/s]Loading checkpoint shards:  60%|██████    | 3/5 [00:00<00:00,  6.10it/s]Loading checkpoint shards:  80%|████████  | 4/5 [00:00<00:00,  5.80it/s]Loading checkpoint shards: 100%|██████████| 5/5 [00:00<00:00,  5.96it/s]Loading checkpoint shards: 100%|██████████| 5/5 [00:00<00:00,  5.83it/s]
+[reward_server][hpsv3] HPSv3RewardInferencer instantiated OK
+[reward_server] hpsv3 loaded OK.
+[reward_server] Loading pickscore on cuda:0 ...
+[reward_server] pickscore loaded OK.
+[reward_server] Serving on 127.0.0.1:5142 with backends: ['imagereward', 'hpsv3', 'pickscore']
+[2026-10-25 14:30:20] === start instance ===
+[reward_server] Loading imagereward on cuda:0 ...
+[reward_server] wandb stub injected.
+load checkpoint from /home1/09398/yigu/.cache/ImageReward/ImageReward.pt
+checkpoint loaded
+[reward_server] imagereward loaded OK.
+[reward_server] Loading hpsv3 on cuda:0 ...
+[reward_server][hpsv3] injecting wandb stub ...
+[reward_server][hpsv3] patching transformers layers ...
+[reward_server][hpsv3] resolving HPSv3.safetensors via hf_hub_download ...
+[reward_server][hpsv3] HPSv3 checkpoint: /scratch/09398/yigu/hf_cache/hub/models--MizzenAI--HPSv3/snapshots/4f81e3e09edd82fe3c5f636444c721b592a735ca/HPSv3.safetensors
+[reward_server][hpsv3] import hpsv3 ...
+Flash Attention is not installed. Falling to SDPA.
+[reward_server][hpsv3] hpsv3 imported OK; restoring hf_hub fns
+[reward_server][hpsv3] instantiating HPSv3RewardInferencer(device=cuda:0, ckpt=...) ...
+Loading checkpoint shards:   0%|          | 0/5 [00:00<?, ?it/s]Loading checkpoint shards:  20%|██        | 1/5 [00:03<00:15,  3.81s/it]Loading checkpoint shards:  40%|████      | 2/5 [00:05<00:07,  2.61s/it]Loading checkpoint shards:  60%|██████    | 3/5 [00:07<00:04,  2.21s/it]Loading checkpoint shards:  80%|████████  | 4/5 [00:08<00:01,  1.99s/it]Loading checkpoint shards: 100%|██████████| 5/5 [00:09<00:00,  1.35s/it]Loading checkpoint shards: 100%|██████████| 5/5 [00:09<00:00,  1.84s/it]
+[reward_server][hpsv3] HPSv3RewardInferencer instantiated OK
+[reward_server] hpsv3 loaded OK.
+[reward_server] Loading pickscore on cuda:0 ...
+[2026-10-25 14:36:21] mr3 failed
+[2026-10-25 14:36:22] exit: stopping servers
+[2026-10-25 14:37:15] === LS6 launcher on c317-001.ls6.tacc.utexas.edu stages=[actdiff judge] : jevact 9/9 randact 9/9 ec_v2w 324/324 actdiff 2/6
+[2026-10-25 14:37:21] mr3 server pid=3171318 gpu=0 port=5142
+healthy after 90 s: {"status": "ok", "backends": ["imagereward", "hpsv3", "pickscore"], "requests_served": 0}
+[2026-10-25 14:38:52] vlm server pid=3171704 gpu=0 port=5151
+healthy after 190 s
+[2026-10-25 14:42:04] jev server pid=3172706 gpu=1 port=5161
+healthy after 270 s
+[2026-10-25 14:46:34] servers up (mr3 gpu0, vlm gpu0, jev gpu1):
+[2026-10-25 14:46:34] ad_base has records, skip
+[2026-10-25 14:46:34] ad_rank3 has records, skip
+[2026-10-25 14:46:34] --- ad_jevbank (decider=jevbank) gpu2
+[2026-10-25 15:14:16] --- ad_jevbank end rc=0 in 1662s
+wrote /scratch/09398/yigu/jev_decider/main/ad_jevbank/records.jsonl: 9 records from 9 mcts rows
+[2026-10-25 15:14:17] --- ad_randbank (decider=randbank) gpu2
+[2026-10-25 18:16:52] --- ad_randbank end rc=0 in 10955s
+wrote /scratch/09398/yigu/jev_decider/main/ad_randbank/records.jsonl: 9 records from 9 mcts rows
+[2026-10-25 18:16:54] --- ad_jevprobe (decider=jevprobe) gpu2
+[2026-10-25 21:39:41] --- ad_jevprobe end rc=0 in 12167s
+wrote /scratch/09398/yigu/jev_decider/main/ad_jevprobe/records.jsonl: 9 records from 9 mcts rows
+[2026-10-25 21:39:42] --- ad_randprobe (decider=randprobe) gpu2
+[2026-10-26 01:03:03] --- ad_randprobe end rc=0 in 12201s
+wrote /scratch/09398/yigu/jev_decider/main/ad_randprobe/records.jsonl: 9 records from 9 mcts rows
+[2026-10-26 01:03:15] === judge gpu0 ids=9 dirs=[/scratch/09398/yigu/jev_decider/main/ja_jevact_v2w /scratch/09398/yigu/jev_decider/main/ja_randact_v2w /scratch/09398/yigu/jev_decider/main/ad_base /scratch/09398/yigu/jev_decider/main/ad_rank3 /scratch/09398/yigu/jev_decider/main/ad_jevbank /scratch/09398/yigu/jev_decider/main/ad_randbank /scratch/09398/yigu/jev_decider/main/ad_jevprobe /scratch/09398/yigu/jev_decider/main/ad_randprobe] tag=1026_010315_3266402
+ja_jevact_v2w: 9 rows -> /scratch/09398/yigu/jev_decider/manifests_1026_010315_3266402/followup_ja_jevact_v2w.jsonl
+ja_randact_v2w: 9 rows -> /scratch/09398/yigu/jev_decider/manifests_1026_010315_3266402/followup_ja_randact_v2w.jsonl
+ad_base: 9 rows -> /scratch/09398/yigu/jev_decider/manifests_1026_010315_3266402/followup_ad_base.jsonl
+ad_rank3: 9 rows -> /scratch/09398/yigu/jev_decider/manifests_1026_010315_3266402/followup_ad_rank3.jsonl
+ad_jevbank: 9 rows -> /scratch/09398/yigu/jev_decider/manifests_1026_010315_3266402/followup_ad_jevbank.jsonl
+ad_randbank: 9 rows -> /scratch/09398/yigu/jev_decider/manifests_1026_010315_3266402/followup_ad_randbank.jsonl
+ad_jevprobe: 9 rows -> /scratch/09398/yigu/jev_decider/manifests_1026_010315_3266402/followup_ad_jevprobe.jsonl
+ad_randprobe: 9 rows -> /scratch/09398/yigu/jev_decider/manifests_1026_010315_3266402/followup_ad_randprobe.jsonl
+[2026-10-26 01:11:49] local judges exit=0 513s
+[2026-10-26 01:15:36] qwen2-vl judge exit=0 227s
+[2026-10-26 01:23:42] vqascore exit=0 486s
+appended 432 rows; skipped existing 0; max |rejudged-stored| per metric: {}; missing judge scores: 0 []
+vqascore rows appended: 72
+[2026-10-26 01:23:42] === paired contrasts (n=9): each arm minus baseline, and minus mcts ===
+[2026-10-26 01:23:42] JUDGE COMPLETE
+[2026-10-26 01:23:43] === LS6 launcher done: jevact 9/9 randact 9/9 ec_v2w 324/324 actdiff 6/6
+[2026-10-26 01:23:43] exit: stopping servers
+[2026-10-29 22:20:36] === LS6 launcher on c316-003.ls6.tacc.utexas.edu stages=[jevact actdiff judge] : jevact 0/9 randact 9/9 ec_v2w 324/324 actdiff 6/6
+[2026-10-29 22:20:36] mr3 server pid=1909798 gpu=0 port=5142
+healthy after 540 s: {"status": "ok", "backends": ["imagereward", "hpsv3", "pickscore"], "requests_served": 0}
+[2026-10-29 22:29:38] vlm server pid=1911251 gpu=0 port=5151
+[2026-10-29 22:34:47] === LS6 launcher on c316-003.ls6.tacc.utexas.edu stages=[jevact actdiff judge] : jevact 0/9 randact 9/9 ec_v2w 324/324 actdiff 6/6
+[2026-10-29 22:34:48] jev server pid=1912216 gpu=1 port=5161
+healthy after 310 s
+healthy after 330 s
+[2026-10-29 22:40:19] servers up (mr3 gpu0, vlm gpu0, jev gpu1):
+[2026-10-29 22:40:19] --- ja_jevact_v2w (policy=jev) gpu2
+[2026-10-29 23:41:33] --- ja_jevact_v2w end rc=0 in 3674s records=9
+[2026-10-29 23:41:33] ja_randact_v2w complete, skip
+[2026-10-29 23:42:48] servers up (mr3 gpu0, vlm gpu0, jev gpu1):
+[2026-10-29 23:42:48] ad_base has records, skip
+[2026-10-29 23:42:48] ad_rank3 has records, skip
+[2026-10-29 23:42:48] --- ad_jevbank (decider=jevbank) gpu2
+[2026-10-30 03:04:27] --- ad_jevbank end rc=0 in 12099s
+wrote /scratch/09398/yigu/jev_decider/main/ad_jevbank/records.jsonl: 9 records from 9 mcts rows
+[2026-10-30 03:04:29] --- ad_randbank (decider=randbank) gpu2
+[2026-10-30 06:17:47] --- ad_randbank end rc=0 in 11598s
+wrote /scratch/09398/yigu/jev_decider/main/ad_randbank/records.jsonl: 9 records from 9 mcts rows
+[2026-10-30 06:17:49] ad_jevprobe has records, skip
+[2026-10-30 06:17:49] ad_randprobe has records, skip
+[2026-10-30 06:17:59] === judge gpu0 ids=9 dirs=[/scratch/09398/yigu/jev_decider/main/ja_jevact_v2w /scratch/09398/yigu/jev_decider/main/ja_randact_v2w /scratch/09398/yigu/jev_decider/main/ad_base /scratch/09398/yigu/jev_decider/main/ad_rank3 /scratch/09398/yigu/jev_decider/main/ad_jevbank /scratch/09398/yigu/jev_decider/main/ad_randbank /scratch/09398/yigu/jev_decider/main/ad_jevprobe /scratch/09398/yigu/jev_decider/main/ad_randprobe] tag=1030_061759_1957214
+ja_jevact_v2w: 9 rows -> /scratch/09398/yigu/jev_decider/manifests_1030_061759_1957214/followup_ja_jevact_v2w.jsonl
+ja_randact_v2w: 9 rows -> /scratch/09398/yigu/jev_decider/manifests_1030_061759_1957214/followup_ja_randact_v2w.jsonl
+ad_base: 9 rows -> /scratch/09398/yigu/jev_decider/manifests_1030_061759_1957214/followup_ad_base.jsonl
+ad_rank3: 9 rows -> /scratch/09398/yigu/jev_decider/manifests_1030_061759_1957214/followup_ad_rank3.jsonl
+ad_jevbank: 9 rows -> /scratch/09398/yigu/jev_decider/manifests_1030_061759_1957214/followup_ad_jevbank.jsonl
+ad_randbank: 9 rows -> /scratch/09398/yigu/jev_decider/manifests_1030_061759_1957214/followup_ad_randbank.jsonl
+ad_jevprobe: 9 rows -> /scratch/09398/yigu/jev_decider/manifests_1030_061759_1957214/followup_ad_jevprobe.jsonl
+ad_randprobe: 9 rows -> /scratch/09398/yigu/jev_decider/manifests_1030_061759_1957214/followup_ad_randprobe.jsonl
+[2026-10-30 06:32:13] local judges exit=0 853s
+[2026-10-30 06:39:08] qwen2-vl judge exit=0 415s
+[2026-10-30 06:50:36] vqascore exit=0 688s
+appended 162 rows; skipped existing 270; max |rejudged-stored| per metric: {'ir': 0.0, 'pickscore': 0.0, 'hpsv2': 0.0, 'hpsv3': 0.0, 'qwen_alignment': 0.0, 'search_score': 0.0}; missing judge scores: 0 []
+vqascore rows appended: 27
+[2026-10-30 06:50:37] === paired contrasts (n=9): each arm minus baseline, and minus mcts ===
+[2026-10-30 06:50:37] JUDGE COMPLETE
+[2026-10-30 06:50:37] === LS6 launcher done: jevact 9/9 randact 9/9 ec_v2w 324/324 actdiff 8/6
+[2026-10-30 06:50:37] exit: stopping servers

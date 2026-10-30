@@ -1,0 +1,27 @@
+=== 288 noises, 9 prompts; preview at step 12 (24 NFE of 56). Within-prompt Spearman of preview readouts with the FINISHED image's judges:
+     jev_prev_E: vs final HPSv3 +0.192 | vs VQAScore +0.120 | vs Qwen +0.399
+   jev_prev_yes: vs final HPSv3 +0.193 | vs VQAScore +0.205 | vs Qwen +0.400
+     prev_hpsv3: vs final HPSv3 +0.659 | vs VQAScore +0.112 | vs Qwen +0.187
+        prev_ir: vs final HPSv3 +0.387 | vs VQAScore +0.133 | vs Qwen +0.269
+  (finished-image references) final HPSv3 vs VQAScore +0.121
+
+=== screen all 32 noises to step 12, finish the top-m by the readout, then pick by {selector} among the finished ones; mean picked values (300 draws)
+                                              policy   NFE     vqascore         qwen  final_hpsv3
+                                        single noise    56        0.825        0.723       10.175
+                           bo-2 finished, pick HPSv3   112        0.828        0.745       11.018
+                           bo-5 finished, pick HPSv3   280        0.831        0.777       11.695
+                          bo-11 finished, pick HPSv3   616        0.839        0.798       12.228
+screen by preview-HPSv3 -> top-2 finished, pick HPSv3   832        0.809        0.746       12.360
+    screen by Jev preview score -> top-2, pick HPSv3   832        0.744        0.806       10.939
+      screen by Jev preview score -> top-2, pick Jev   832        0.836        0.826       10.395
+                     ORACLE fidelity screen -> top-2   832        0.893        0.776       11.311
+screen by preview-HPSv3 -> top-3 finished, pick HPSv3   864        0.818        0.766       12.421
+    screen by Jev preview score -> top-3, pick HPSv3   864        0.820        0.800       11.566
+      screen by Jev preview score -> top-3, pick Jev   864        0.836        0.826       10.395
+                     ORACLE fidelity screen -> top-3   864        0.893        0.776       11.311
+screen by preview-HPSv3 -> top-5 finished, pick HPSv3   928        0.847        0.826       12.651
+    screen by Jev preview score -> top-5, pick HPSv3   928        0.841        0.824       11.833
+      screen by Jev preview score -> top-5, pick Jev   928        0.836        0.826       10.395
+                     ORACLE fidelity screen -> top-5   928        0.893        0.776       11.311
+                   oracle VQAScore over all finished  1792        0.893        0.776       11.311
+                          bo-32 finished, pick HPSv3  1792        0.850        0.828       12.811

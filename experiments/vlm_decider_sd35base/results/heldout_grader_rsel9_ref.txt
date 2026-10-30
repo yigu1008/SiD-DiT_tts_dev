@@ -1,0 +1,15 @@
+n prompts = 9, noises per prompt = 12
+means: bo-N 0.857/0.847/12.340  top2->Jev 0.847/0.834/12.321  top4->Jev 0.822/0.862/11.801  Jev only 0.848/0.849/10.962
+random: 0.816/0.741/10.267
+PRIMARY top-2->Jev
+  vqascore        -0.009 [-0.026,+0.000] up 0 down 2 same 7
+  qwen_alignment  -0.014 [-0.092,+0.051] up 1 down 1 same 7
+  hpsv3           -0.019 [-0.056,+0.000] up 0 down 2 same 7
+top-4->Jev
+  vqascore        -0.035 [-0.107,+0.007] up 2 down 3 same 4
+  qwen_alignment  +0.015 [-0.071,+0.097] up 4 down 1 same 4
+  hpsv3           -0.538 [-0.990,-0.164] up 0 down 5 same 4
+Jev only
+  vqascore        -0.009 [-0.036,+0.012] up 3 down 3 same 3
+  qwen_alignment  +0.002 [-0.070,+0.078] up 4 down 2 same 3
+  hpsv3           -1.378 [-2.516,-0.432] up 0 down 6 same 3

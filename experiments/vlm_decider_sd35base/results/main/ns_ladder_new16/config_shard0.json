@@ -1,0 +1,36 @@
+{
+ "arm": "noise_ladder_probe",
+ "steps": 28,
+ "seeds": [
+  42,
+  2000,
+  2001,
+  2002,
+  2003,
+  2004,
+  2005,
+  2006,
+  2007,
+  2008,
+  2009,
+  2010
+ ],
+ "checkpoints": [
+  4,
+  8,
+  12,
+  16,
+  20,
+  24
+ ],
+ "anchor_wording": 0,
+ "anchor_cfg": 4.5,
+ "nfe_per_step": 2,
+ "nfe_full_generation": 56,
+ "search_rewards": [
+  "imagereward",
+  "hpsv3",
+  "pickscore"
+ ],
+ "design": "one full generation per initial noise at the anchor action, with the x0 preview scored at each checkpoint. Enables offline simulation of any screen-and-finish / early-abandon policy at any NFE budget, plus the across-noise predictability of final quality from partial state."
+}

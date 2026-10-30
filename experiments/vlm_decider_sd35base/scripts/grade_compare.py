@@ -2,17 +2,19 @@
 """Merge Jev and VLM grading jsons by image and compare every readout as a within-prompt SELECTOR against targets.
 Usage: python grade_compare.py --jev jev.json --vlm vlm.json [--targets vec.hpsv3 vec.imagereward vec.pickscore] [--gap 0.5]"""
 import json, argparse, collections, itertools, statistics as st
-ap = argparse.ArgumentParser(); ap.add_argument("--jev"); ap.add_argument("--vlm"); ap.add_argument("--targets", nargs="+", default=["vec.hpsv3", "vec.imagereward", "vec.pickscore"]); ap.add_argument("--gap", type=float, default=0.5)
+ap = argparse.ArgumentParser(); ap.add_argument("--jev"); ap.add_argument("--vlm"); ap.add_argument("--targets", nargs="+", default=["vec.hpsv3", "vec.imagereward", "vec.pickscore"]); ap.add_argument("--gap", type=float, default=0.5); ap.add_argument("--extra", nargs="*", default=[])
 a = ap.parse_args(); rows = {}
-for f, keys in ((a.jev, ["jev_yes", "jev_score_E", "jev_score_P4"]), (a.vlm, ["vlm_rating", "vlm_yes", "vlm_pass"])):
+ap2 = argparse.ArgumentParser(add_help=False); ap2.add_argument("--extra", nargs="*", default=[]); extra = ap2.parse_known_args()[0].extra
+for f in [a.jev, a.vlm] + extra:
     if not f: continue
     for r in json.load(open(f)):
-        d = rows.setdefault(r["image"], {k: v for k, v in r.items() if not isinstance(v, (list, dict))}); d.update({k: r.get(k) for k in keys})
+        d = rows.setdefault(r["image"], {}); d.update({k: v for k, v in r.items() if not isinstance(v, (list, dict))})
 rows = list(rows.values()); byp = collections.defaultdict(list); [byp[r["prompt_id"]].append(r) for r in rows]
+READOUTS = sorted({k for r in rows for k, v in r.items() if (k.startswith("jev_") or k.startswith("vlm_")) and isinstance(v, (int, float)) and not k.endswith("_spread") and not k.endswith("n_items")})
 def spearman(x, y):
     rk = lambda v: {i: s for s, i in enumerate(sorted(range(len(v)), key=lambda i: v[i]))}
     rx, ry = rk(x), rk(y); n = len(x); return 1 - 6 * sum((rx[i] - ry[i]) ** 2 for i in range(n)) / (n * (n * n - 1)) if n > 2 else float("nan")
-reads = [k for k in ["jev_yes", "jev_score_E", "jev_score_P4", "vlm_rating", "vlm_yes", "vlm_pass"] if any(r.get(k) is not None for r in rows)] + a.targets
+reads = READOUTS + a.targets
 ok_rows = lambda k, t: [r for r in rows if r.get(k) is not None and r.get(t) is not None]
 print(f"=== n={len(rows)} images, {len(byp)} prompts. Spearman pooled [within-prompt mean] vs targets")
 print(f"{'readout':>14} " + " ".join(f"{t:>18}" for t in a.targets))

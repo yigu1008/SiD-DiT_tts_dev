@@ -1,0 +1,70 @@
+{
+ "q0000": [
+  "A mountain range spans the horizon.",
+  "Snow covers the peaks of the mountains.",
+  "The sky above the mountains is clear.",
+  "The landscape is vast and expansive.",
+  "The mountains rise steeply from the base.",
+  "The snow appears fresh and undisturbed."
+ ],
+ "q0004": [
+  "A kitten is present.",
+  "The kitten has a bell collar.",
+  "A butterfly is in motion.",
+  "The kitten is on the left side of the image.",
+  "The butterfly is on the right side of the image.",
+  "The kitten is batting at the butterfly."
+ ],
+ "q0011": [
+  "There are four dresses hanging.",
+  "One dress has a long hemline.",
+  "The dress with the long hemline is the most vibrant.",
+  "The other three dresses have shorter hemlines.",
+  "The dresses are evenly spaced on the hanger."
+ ],
+ "q0020": [
+  "There are at least three umbrellas.",
+  "The umbrellas have different colors.",
+  "Each umbrella is leaning against a stand.",
+  "The stands are positioned along the hallway.",
+  "The umbrellas are not touching each other directly.",
+  "The hallway provides a backdrop for the umbrellas and stands."
+ ],
+ "q0027": [
+  "There are two birds in the image.",
+  "One bird has a long tail.",
+  "The other bird has a short tail.",
+  "The bird with the long tail is flying higher than the other bird.",
+  "Both birds are in the air.",
+  "The birds are moving towards each other."
+ ],
+ "q0033": [
+  "A harbor is present.",
+  "Lights illuminate the scene.",
+  "The water is calm.",
+  "Reflections of the lights are visible in the water.",
+  "The time is nighttime."
+ ],
+ "q0041": [
+  "There are exactly four train toys.",
+  "Each train toy is distinct from the others.",
+  "No two train toys are next to each other.",
+  "The train toys are spread out on the floor.",
+  "The train toys are not touching or overlapping with each other."
+ ],
+ "q0047": [
+  "A woman is seated on a bench.",
+  "The woman has three silver bracelets on her wrist.",
+  "The bench is made of wood.",
+  "The woman's hair is styled in a ponytail.",
+  "The bracelets are shiny and metallic.",
+  "The woman is wearing a long-sleeved top."
+ ],
+ "q0055": [
+  "There are four gemstones in total.",
+  "Three of the gemstones are purple.",
+  "One of the gemstones is pink.",
+  "The pink gemstone has a smoother surface than the others.",
+  "The gemstones are arranged together."
+ ]
+}

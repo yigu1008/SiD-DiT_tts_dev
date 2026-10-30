@@ -140,12 +140,11 @@ class BankDecider(_Base):
                 pans = [(prev, f"NOW step {self.k['key_steps'][min(node.step, self.k['n_key']-1)]}")] + \
                        [(t["img"], f"[{i+1}] w{w} @ CFG {cf:g}") for i, (w, (t, cf)) in enumerate(hits)]
                 sh = sheet(pans); sp = os.path.join(self.sheet_dir, f"{self.tag}_bank_s{node.step}_{self.calls}.png"); sh.save(sp)
-                lines = "\n".join(f'  [{i+1}] wording {chr(65+w)} at CFG {cf:g}; assessment: {t["feedback"]}' for i, (w, (t, cf)) in enumerate(hits))
-                state = (f'ORIGINAL PROMPT (the only target): "{self.prompt}"\nLeftmost: the CURRENT unfinished preview (blurry is normal). '
-                         f'Other panels: FINISHED images from this search, by the settings named above them:\n{lines}\n\n'
-                         f'The chosen setting will define the wording and guidance neighbourhood searched next from this point.')
-                r = self.ask(state, "Which numbered panel's FINISHED image best matches the ORIGINAL prompt?",
-                             [f"Panel {i+1}" for i in range(len(hits))], sh, f"bank/s{node.step}")
+                opts = [f'Panel {i+1}: wording {chr(65+w)} at CFG {cf:g}. Assessment: {str(t["feedback"]).strip()[:240]}' for i, (w, (t, cf)) in enumerate(hits)]
+                state = (f'ORIGINAL PROMPT (the only target): "{self.prompt}"\nImage: leftmost = the CURRENT unfinished preview (blur is normal); '
+                         f'the numbered panels are FINISHED images from this search made with the settings in the options. '
+                         f'The chosen setting defines the wording and guidance neighbourhood searched next from this point.')
+                r = self.ask(state, "Which numbered panel's FINISHED image best matches the ORIGINAL prompt?", opts, sh, f"bank/s{node.step}")
                 w, (t, cf) = hits[int(r["argmax"])]; probs = r["probs"]
             self.node_choice[nid] = (w, cf)
             self.log({"kind": "bank", "step": int(node.step), "n_traces": len(self.traces), "panels": [[ww, c] for ww, (tt, c) in hits],
@@ -196,11 +195,11 @@ class ProbeDecider(_Base):
             perm = list(range(len(probes))); self.rng.shuffle(perm)
             pans = [(probes[j]["img"], f"[{m+1}] w{int(probes[j]['action'][0])} @ CFG {probes[j]['action'][1]:g}") for m, j in enumerate(perm)]
             sh = sheet(pans); sp = os.path.join(self.sheet_dir, f"{self.tag}_probe_s{node.step}_{self.calls}.png"); sh.save(sp)
-            lines = "\n".join(f'  [{m+1}] wording {chr(65+int(probes[j]["action"][0]))} at CFG {probes[j]["action"][1]:g}; critique: {crit[j]}' for m, j in enumerate(perm))
-            state = (f'ORIGINAL PROMPT (the only target): "{self.prompt}"\nEach panel is an UNFINISHED preview (step {s1} of {k["steps"]}) of what '
-                     f'the image becomes if a different setting is used for the NEXT {s1-s0} steps from the SAME current state. Blur is normal; '
-                     f'judge layout, content and whether the prompt\'s requirements are taking shape.\n{lines}')
-            r = self.ask(state, "Which numbered continuation best serves the ORIGINAL prompt?", [f"Panel {m+1}" for m in range(len(probes))], sh, f"probe/s{node.step}")
+            opts = [f'Panel {m+1}: wording {chr(65+int(probes[j]["action"][0]))} at CFG {probes[j]["action"][1]:g}. Critique: {str(crit[j]).strip()[:240]}' for m, j in enumerate(perm)]
+            state = (f'ORIGINAL PROMPT (the only target): "{self.prompt}"\nEach numbered panel is an UNFINISHED preview (step {s1} of {k["steps"]}) of what '
+                     f'the image becomes if that option\'s setting is used for the NEXT {s1-s0} steps from the SAME current state. Blur is normal; '
+                     f'judge layout, content and whether the prompt\'s requirements are taking shape.')
+            r = self.ask(state, "Which numbered continuation best serves the ORIGINAL prompt?", opts, sh, f"probe/s{node.step}")
             chosen = perm[int(r["argmax"])]; probs = r["probs"]
         prior = np.full(n, self.smooth / max(1, n), dtype=np.float64)
         prior[probes[chosen]["i"]] += 1.0 - self.smooth; prior /= prior.sum()

@@ -170,17 +170,16 @@ def main():
                             pans = [(cur, f"NOW: step {s0}/{a.steps}")] + [
                                 (Image.open(tr["image"]).convert("RGB"), f"[{i+1}] w{k[0]} @ CFG {k[1]:g}") for i, (k, tr) in enumerate(hits)]
                             sh = sheet(pans); sp = run_dir / "sheets" / f"{pid}_t{t}_s{s0}.png"; sh.save(sp)
-                            lines = "\n".join(f'  [{i+1}] wording {chr(65+k[0])} at CFG {k[1]:g} -> reward {tr["score"]:.3f}; '
-                                              f'assessment: {tr["feedback"]}' for i, (k, tr) in enumerate(hits))
+                            # Option strings carry the per-panel description (Jev-Omni scores option TEXTS; state is context only).
+                            opts = [f'Panel {i+1}: wording {chr(65+k[0])} at CFG {k[1]:g}, search reward {tr["score"]:.3f}. '
+                                    f'Assessment: {str(tr["feedback"]).strip()[:240]}' for i, (k, tr) in enumerate(hits)]
                             state = (f'ORIGINAL PROMPT (the only target): "{prompt}"\n'
-                                     f'Leftmost panel: the sampler\'s CURRENT x0 preview at step {s0} of {a.steps} (blurry '
-                                     f'because sampling is unfinished -- that is normal). The remaining panels are FINISHED '
-                                     f'images already produced for this prompt by the settings named above them:\n{lines}\n\n'
-                                     f'The setting behind the panel you choose will be used for the NEXT {s1-s0} sampling '
-                                     f'steps of the current image.')
+                                     f'Image: leftmost = the sampler\'s CURRENT unfinished preview at step {s0} of {a.steps} (blur is normal); '
+                                     f'the numbered panels are FINISHED images made for this prompt with the settings in the options. '
+                                     f'The chosen setting runs the NEXT {s1-s0} sampling steps of the current image.')
                             r = post(a.jev_server + "/ask", {"state": state,
                                      "question": "Which numbered panel's FINISHED image best matches the ORIGINAL prompt?",
-                                     "options": [f"Panel {i+1}" for i in range(len(hits))], "image_b64": b64(sh),
+                                     "options": opts, "image_b64": b64(sh),
                                      "orders": 3, "seed": 6000 + 31 * t + s0, "tag": f"{pid}/act/t{t}/s{s0}"})
                             n_jev += 1; jev_s += r["ms"] / 1000
                             wk = hits[int(r["argmax"])][0]

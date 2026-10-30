@@ -2,7 +2,7 @@
 """Jev-Omni decision server (jev env).  Pinned local snapshot, order-averaged typed decisions, fully logged.
 
 GET  /health -> {"status":"ok","model":"akhilaaa3/Jev-Omni","rev":...,"requests_served":N}
-POST /ask    -> {"state": str, "question": str, "options": [str,...] (2..256, unique), "image_b64": str|null, "orders": int=3, "seed": int=0, "tag": str?}
+POST /ask    -> {"state": str, "question": str, "options": [str,...] (2..256, unique), "image_b64": str|null, "images_b64": [str,...]|null (several images as separate media), "orders": int=3, "seed": int=0, "tag": str?}
              -> {"probs": [...canonical order...], "spread": [...], "argmax": i, "perms": [...], "ms": float}
 Order-averaging follows jev-cub/src/omni.py: never the identity permutation alone; mean over shuffled option orders,
 spread kept as the noise floor.  Every call is appended to <run_dir>/logs/jev_calls.jsonl with the full state text.
@@ -31,7 +31,19 @@ CLF = jev_omni.JevOmni(model, head, AutoProcessor.from_pretrained(PINNED), decod
 print(f"[jev_server] loaded Jev-Omni rev {REV[:8]} in {time.time()-t0:.0f}s, resident {torch.cuda.memory_allocated()/2**30:.1f} GiB", flush=True)
 _count = 0; TMP = Path(A.log).parent / "jev_tmp"; TMP.mkdir(parents=True, exist_ok=True)
 
-def ask(state, question, options, image_b64=None, orders=3, seed=0, tag=None):
+@torch.inference_mode()
+def predict_multi(state, question, options, images):
+    """Like CLF.predict but with SEVERAL images as separate media entries (the path CondadosAI/jev-omni-eval uses for BLINK)."""
+    content = [{"type": "image", "image": im} for im in images] + [{"type": "text", "text": jev_omni._prompt(state, question, options)}]
+    inputs = CLF.processor.apply_chat_template([{"role": "user", "content": content}], add_generation_prompt=True, tokenize=True, return_dict=True, return_tensors="pt", enable_thinking=False)
+    inputs = {k: v.to(CLF.device, dtype=torch.bfloat16) if torch.is_floating_point(v) else v.to(CLF.device) for k, v in inputs.items()}
+    CLF._capture.clear()
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        CLF.model(**inputs, use_cache=False, **CLF._extra)
+        probs = CLF.head(CLF._capture["hidden"], torch.tensor([len(options)], device=CLF.device))[0, :len(options)].softmax(-1)
+    v = probs.float().cpu().tolist(); return {"probabilities": dict(zip(options, v))}
+
+def ask(state, question, options, image_b64=None, orders=3, seed=0, tag=None, images_b64=None):
     n = len(options)
     if len(set(options)) != n: raise ValueError("options must be unique")
     if not 2 <= n <= 256: raise ValueError("need 2..256 options")
@@ -43,14 +55,14 @@ def ask(state, question, options, image_b64=None, orders=3, seed=0, tag=None):
             q = list(range(n)); rng.shuffle(q)
             if tuple(q) in seen: continue
             seen.add(tuple(q)); perms.append(q)
-    media = None
-    if image_b64:
+    media = None; multi = [Image.open(io.BytesIO(base64.b64decode(b))).convert("RGB") for b in (images_b64 or [])]
+    if image_b64 and not multi:
         media = TMP / f"img_{os.getpid()}_{int(time.time()*1000)}.png"; Image.open(io.BytesIO(base64.b64decode(image_b64))).convert("RGB").save(media)
     t = time.time(); per_order = []
     try:
         for perm in perms:
             shown = [options[i] for i in perm]
-            r = CLF.predict(state=state, question=question, options=shown, media=str(media) if media else None, modality="image" if media else "text")
+            r = predict_multi(state, question, shown, multi) if multi else CLF.predict(state=state, question=question, options=shown, media=str(media) if media else None, modality="image" if media else "text")
             pr = r["probabilities"]; back = [0.0] * n
             for pos, orig in enumerate(perm): back[orig] = float(pr[shown[pos]])
             per_order.append(back)
@@ -61,8 +73,8 @@ def ask(state, question, options, image_b64=None, orders=3, seed=0, tag=None):
     spread = [max(o[i] for o in per_order) - min(o[i] for o in per_order) for i in range(n)]
     out = {"probs": mean, "spread": spread, "argmax": max(range(n), key=lambda i: mean[i]), "perms": perms, "orders": per_order, "ms": round(ms, 1)}
     with open(A.log, "a") as f:
-        f.write(json.dumps({"t": time.time(), "rev": REV, "tag": tag, "modality": "image" if image_b64 else "text", "question": question, "n_options": n,
-                            "options": options, "state": state, "perms": perms, "probs": mean, "spread": spread, "orders": per_order, "ms": ms}) + "\n")
+        f.write(json.dumps({"t": time.time(), "rev": REV, "tag": tag, "modality": "image" if (image_b64 or multi) else "text", "question": question, "n_options": n,
+                            "options": options, "state": state, "perms": perms, "probs": mean, "spread": spread, "orders": per_order, "ms": ms, "n_images": len(multi) or (1 if image_b64 else 0)}) + "\n")
     return out
 
 class H(BaseHTTPRequestHandler):
@@ -76,7 +88,7 @@ class H(BaseHTTPRequestHandler):
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
             if self.path != "/ask": return self._json({"error": "not found"}, 404)
-            r = ask(body["state"], body["question"], list(body["options"]), body.get("image_b64"), int(body.get("orders", 3)), int(body.get("seed", 0)), body.get("tag")); _count += 1; self._json(r)
+            r = ask(body["state"], body["question"], list(body["options"]), body.get("image_b64"), int(body.get("orders", 3)), int(body.get("seed", 0)), body.get("tag"), body.get("images_b64")); _count += 1; self._json(r)
         except Exception as exc:
             tb = traceback.format_exc(); print(f"[jev_server] ERROR: {exc}\n{tb}", flush=True); self._json({"error": str(exc), "traceback": tb}, 500)
     def log_message(self, *a): pass

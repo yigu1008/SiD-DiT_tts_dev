@@ -1,26 +1,30 @@
 288 images, 9 prompts, 32 noises/prompt usable
                                         policy   NFE   vqascore qwen_alignment      hpsv3
-                           random single noise    56      0.825      0.723     10.175
-                                 bo-2 by HPSv3   112      0.828      0.744     10.949
-                                 bo-4 by HPSv3   224      0.829      0.772     11.562
-                                 bo-8 by HPSv3   448      0.836      0.791     12.015
-                                bo-11 by HPSv3   616      0.840      0.797     12.203
-                                bo-16 by HPSv3   896      0.846      0.807     12.425
+                           random single noise    56      0.819      0.719     10.209
+                                 bo-2 by HPSv3   112      0.828      0.749     10.953
+                                 bo-4 by HPSv3   224      0.829      0.775     11.519
+                                 bo-8 by HPSv3   448      0.840      0.794     12.025
+                                bo-16 by HPSv3   896      0.848      0.804     12.424
                                 bo-32 by HPSv3  1792      0.850      0.828     12.811
                         Jev score only, all 32  1792      0.852      0.848     10.797
                        Jev P(yes) only, all 32  1792      0.829      0.897     10.548
            two-layer: top-2 HPSv3 -> Jev score  1792      0.863      0.832     12.546
- two-layer: top-2 HPSv3 -> rank-avg(HPSv3,Jev)  1792      0.855      0.830     12.676
+ two-layer: top-2 HPSv3 -> rank-avg(HPSv3,Jev)  1792      0.856      0.830     12.682
            two-layer: top-4 HPSv3 -> Jev score  1792      0.854      0.839     12.503
  two-layer: top-4 HPSv3 -> rank-avg(HPSv3,Jev)  1792      0.863      0.832     12.546
            two-layer: top-8 HPSv3 -> Jev score  1792      0.856      0.871     12.314
  two-layer: top-8 HPSv3 -> rank-avg(HPSv3,Jev)  1792      0.859      0.832     12.545
-          two-layer: top-11 HPSv3 -> Jev score  1792      0.856      0.871     12.314
-two-layer: top-11 HPSv3 -> rank-avg(HPSv3,Jev)  1792      0.855      0.832     12.503
           two-layer: top-16 HPSv3 -> Jev score  1792      0.847      0.895     11.466
-two-layer: top-16 HPSv3 -> rank-avg(HPSv3,Jev)  1792      0.855      0.831     12.503
+two-layer: top-16 HPSv3 -> rank-avg(HPSv3,Jev)  1792      0.855      0.832     12.503
           two-layer: top-32 HPSv3 -> Jev score  1792      0.852      0.848     10.797
-two-layer: top-32 HPSv3 -> rank-avg(HPSv3,Jev)  1792      0.855      0.833     12.503
-                               oracle VQAScore     0      0.893      0.777     11.202
-                                   oracle Qwen     0      0.860      0.923     10.596
+two-layer: top-32 HPSv3 -> rank-avg(HPSv3,Jev)  1792      0.855      0.832     12.503
+two-layer: top-2 HPSv3 -> rank-avg(Jev score, VLM checklist)  1792      0.859      0.794     12.392
+two-layer: top-4 HPSv3 -> rank-avg(Jev score, VLM checklist)  1792      0.843      0.825     11.993
+two-layer: top-8 HPSv3 -> rank-avg(Jev score, VLM checklist)  1792      0.849      0.841     11.494
+two-layer: top-16 HPSv3 -> rank-avg(Jev score, VLM checklist)  1792      0.844      0.832     10.562
+two-layer: top-32 HPSv3 -> rank-avg(Jev score, VLM checklist)  1792      0.831      0.794      8.497
+rank-avg(Jev score, VLM checklist) over all 32  1792      0.839      0.823     11.459
+                    VLM checklist only, all 32  1792      0.833      0.750     10.362
+                               oracle VQAScore     0      0.893      0.779     11.192
+                                   oracle Qwen     0      0.860      0.923     10.615
                          oracle HPSv3 (bo-all)     0      0.850      0.828     12.811

@@ -5,10 +5,10 @@ Reports, per policy, the mean over prompts of the picked image's VQAScore, Qwen 
 against random, bo-k, grader-only and oracle. Inputs: ladder records (HPSv3), Jev grading json, judges json (same images).
 Usage: python two_layer_policy.py <records_all.jsonl> <jev_grade.json> <judges.json> [--ks 2 4 8 16 32] [--draws 300]"""
 import json, sys, argparse, collections, statistics as st, random
-ap = argparse.ArgumentParser(); ap.add_argument("records"); ap.add_argument("jev"); ap.add_argument("judges"); ap.add_argument("--ks", nargs="+", type=int, default=[2, 4, 8, 16, 32]); ap.add_argument("--draws", type=int, default=300)
+ap = argparse.ArgumentParser(); ap.add_argument("records"); ap.add_argument("jev"); ap.add_argument("judges"); ap.add_argument("--ks", nargs="+", type=int, default=[2, 4, 8, 16, 32]); ap.add_argument("--draws", type=int, default=300); ap.add_argument("--vlm", help="optional vlm_grade json (adds Jev+VLM rank-avg re-rankers)")
 a = ap.parse_args(); rows = {}
 for r in map(json.loads, open(a.records)): rows[r["image"]] = {"image": r["image"], "prompt_id": r["prompt_id"], "hpsv3": r["final"]["hpsv3"], "ir": r["final"]["imagereward"], "pickscore": r["final"]["pickscore"]}
-for f in (a.jev, a.judges):
+for f in [a.jev, a.judges] + ([a.vlm] if a.vlm else []):
     for r in json.load(open(f)):
         if r["image"] in rows: rows[r["image"]].update({k: v for k, v in r.items() if isinstance(v, (int, float)) and not isinstance(v, bool)})
 rows = [r for r in rows.values() if "vqascore" in r and "jev_score_E" in r]; byp = collections.defaultdict(list); [byp[r["prompt_id"]].append(r) for r in rows]
@@ -32,6 +32,11 @@ for k in a.ks:
     if 2 <= k <= N:
         pols.append((f"two-layer: top-{k} HPSv3 -> Jev score", 56 * N, (lambda k: lambda v: argmax(sorted(v, key=lambda r: -r["hpsv3"])[:k], "jev_score_E"))(k)))
         pols.append((f"two-layer: top-{k} HPSv3 -> rank-avg(HPSv3,Jev)", 56 * N, (lambda k: lambda v: rankavg(sorted(v, key=lambda r: -r["hpsv3"])[:k], "hpsv3", "jev_score_E"))(k)))
+if a.vlm and all("vlm_pass" in r for r in rows):
+    for k in a.ks:
+        if 2 <= k <= N: pols.append((f"two-layer: top-{k} HPSv3 -> rank-avg(Jev score, VLM checklist)", 56 * N, (lambda k: lambda v: rankavg(sorted(v, key=lambda r: -r["hpsv3"])[:k], "jev_score_E", "vlm_pass"))(k)))
+    pols.append((f"rank-avg(Jev score, VLM checklist) over all {N}", 56 * N, lambda v: rankavg(v, "jev_score_E", "vlm_pass")))
+    pols.append((f"VLM checklist only, all {N}", 56 * N, lambda v: argmax(v, "vlm_pass")))
 pols += [("oracle VQAScore", 0, lambda v: argmax(v, "vqascore")), ("oracle Qwen", 0, lambda v: argmax(v, "qwen_alignment")), ("oracle HPSv3 (bo-all)", 0, lambda v: argmax(v, "hpsv3"))]
 print(f"{'policy':>46} {'NFE':>5} " + " ".join(f"{t:>10}" for t in T))
 for name, nfe, fn in pols:

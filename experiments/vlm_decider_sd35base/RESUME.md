@@ -59,6 +59,9 @@ Both launchers self-check (`actdiff_jev_main.py --help`, hooks present) and wait
 * Tag output dirs with seconds+PID (two judges launched in one minute shared a directory).
 * Match NFE before believing any comparison; three "wins" here were budget artifacts.
 * Two best-of-11 runs differing only in seed pool differ by +0.527 hpsv3 — share seed pools or use n>=25.
+* A retrieval sheet must contain DISTINCT images: a per-wording map registered one trajectory under every wording it had
+  used, so 62% of jevact sheets and 96% of jevbank sheets were one image x3 (found 2026-10-29 by reading one jev_calls.jsonl
+  row). Assert pairwise-distinct panels and log distinct-count per decision; two Jev arms must be rerun.
 
 ## 7. State at hand-off (2026-10-21 22:15, work moved to another cluster)
 * On the A6000 box the jevact launcher DID run for 46 min (19:05-19:53) before being SIGTERM'd by another user's

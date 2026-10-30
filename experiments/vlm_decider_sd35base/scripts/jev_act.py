@@ -151,12 +151,15 @@ def main():
                     elif a.policy == "random": act = bank[rng.randint(len(bank))]
                     elif len(traces) < a.min_traces: act = anchor if t == 0 else bank[rng.randint(len(bank))]
                     else:
-                        by_w = {}
-                        for tr in traces:
-                            for w in {int(x[0]) for x in tr["actions"]}:
-                                cf = float(np.mean([c for v, c, _ in tr["actions"] if int(v) == w]))
-                                if w not in by_w or tr["score"] > by_w[w][0]["score"]: by_w[w] = (tr, (w, cf))
-                        hits = [(k, tr) for w, (tr, k) in sorted(by_w.items(), key=lambda kv: -kv[1][0]["score"])][: a.panels]
+                        # BUG FIX (2026-10-29): the old per-wording map registered a trace under EVERY wording it had used, so
+                        # one good trajectory filled all panels -- 62% of sheets showed ONE image three times, only 11% were
+                        # three distinct images. Now: one panel per distinct trace, best-first, labelled by its dominant wording.
+                        hits = []
+                        for tr in sorted(traces, key=lambda tr: -tr["score"]):
+                            ws = [int(x[0]) for x in tr["actions"]]; w = max(set(ws), key=lambda v: (ws.count(v), -ws.index(v)))
+                            cf = float(np.mean([c for v, c, _ in tr["actions"] if int(v) == w]))
+                            if all(k[0] != w for k, _ in hits) or len(traces) <= a.panels: hits.append(((w, cf), tr))
+                            if len(hits) == a.panels: break
                         # REVIEW FIX: orders=3 permutes the option STRINGS but the image strip was fixed, so "Panel 1" was always
                         # the leftmost (and highest-IR) image: picked 50-55% vs 33% chance. Permute sheet order per call, log it.
                         perm = list(range(len(hits))); np.random.RandomState(6000 + 31 * t + s0).shuffle(perm)

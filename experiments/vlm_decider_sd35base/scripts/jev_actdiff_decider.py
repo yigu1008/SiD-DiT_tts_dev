@@ -123,12 +123,14 @@ class BankDecider(_Base):
         nid = (int(node.step), id(node))
         if nid not in self.node_choice:
             # one panel per distinct wording, that wording's rank3-best trace
-            tot = ranksum(self.traces, key=lambda t: t["vec"]); by_w = {}
-            for t in self.traces:
-                for w in {int(a[0]) for a in t["path"]}:
-                    cf = float(np.mean([a[1] for a in t["path"] if int(a[0]) == w]))
-                    if w not in by_w or tot[id(t)] > tot[id(by_w[w][0])]: by_w[w] = (t, cf)
-            hits = sorted(by_w.items(), key=lambda kv: -tot[id(kv[1][0])])[: self.panels]
+            # BUG FIX (2026-10-29): one panel per distinct TRACE (rank3-best first), labelled by its dominant wording. The old
+            # per-wording map put the same trajectory under every wording it had used: 96% of ad_jevbank sheets were one image x3.
+            tot = ranksum(self.traces, key=lambda t: t["vec"]); hits = []
+            for t in sorted(self.traces, key=lambda t: -tot[id(t)]):
+                ws = [int(a[0]) for a in t["path"]]; w = max(set(ws), key=lambda v: (ws.count(v), -ws.index(v)))
+                cf = float(np.mean([a[1] for a in t["path"] if int(a[0]) == w]))
+                if all(hw != w for hw, _ in hits) or len(self.traces) <= self.panels: hits.append((w, (t, cf)))
+                if len(hits) == self.panels: break
             if len(hits) < 2: return actions
             if self.policy == "random":
                 w, (t, cf) = hits[self.rng.randint(len(hits))]; probs = None; perm = list(range(len(hits)))
